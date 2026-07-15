@@ -70,6 +70,10 @@
           <button type="button" class="btn btn-primary" id="btn-dev-generate" title="LLM-author a skill from a brief">Generate from description</button>
           <button type="button" class="btn" id="btn-dev-reseed" title="Replace collection with package seed">Reseed from package</button>
           <button type="button" class="btn" id="btn-dev-refresh">Refresh</button>
+          <div class="dev-seg" id="dev-explorer-toggle" role="group" aria-label="Profile explorer">
+            <button type="button" class="dev-seg-btn is-selected" data-hunt-explorer="library" title="Seed and imported profiles">Library</button>
+            <button type="button" class="dev-seg-btn" data-hunt-explorer="custom" title="Custom and generated profiles">Custom &amp; generated</button>
+          </div>
           <span class="controls-hint" id="dev-meta" style="margin-left:auto"></span>
         </div>
       </div>
@@ -80,7 +84,7 @@
           <div class="table-wrap">
             <table class="data" id="dev-profiles-table">
               <thead>
-                <tr>
+                <tr id="dev-profiles-head">
                   <th>Active</th>
                   <th>Id</th>
                   <th>Title</th>
@@ -98,6 +102,7 @@
           <h2 style="margin-top:0" id="dev-editor-title">Editor</h2>
           <p class="controls-hint" id="dev-editor-hint">Select a profile or create a new one.</p>
           <form id="dev-editor-form" class="dev-editor-form" hidden>
+            <p class="controls-hint" id="dev-editor-origin" hidden></p>
             <div class="field">
               <label class="field-label-text" for="dev-id">Profile id</label>
               <input id="dev-id" class="mono" autocomplete="off" spellcheck="false" pattern="[a-z][a-z0-9-]{0,63}" required />
@@ -134,9 +139,12 @@
             <div class="field">
               <label class="field-label-text" for="dev-body">Markdown body</label>
               <textarea id="dev-body" class="dev-body mono" rows="18" spellcheck="false" required placeholder="# Hunt class body…"></textarea>
+              <pre id="dev-body-preview" class="dev-body-preview mono" hidden></pre>
             </div>
-            <div class="modal-actions" style="justify-content:flex-start;gap:0.5rem">
+            <div class="modal-actions" style="justify-content:flex-start;gap:0.5rem;flex-wrap:wrap">
+              <button type="button" class="btn btn-primary" id="dev-edit">Edit</button>
               <button type="submit" class="btn btn-primary" id="dev-save">Save</button>
+              <button type="button" class="btn" id="dev-cancel" hidden>Cancel</button>
               <button type="button" class="btn btn-bad" id="dev-delete">Delete</button>
             </div>
           </form>

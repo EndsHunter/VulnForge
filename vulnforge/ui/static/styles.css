@@ -2182,6 +2182,22 @@ button.cov-plan-action.is-current {
   background: var(--bg);
   font-size: 11px;
 }
+a.cov-class-link {
+  color: inherit;
+  text-decoration: none;
+}
+a.cov-class-link:hover {
+  color: var(--info, #7aa2f7);
+  text-decoration: underline;
+}
+.coverage-grid th a.cov-class-link {
+  display: inline-block;
+  max-width: 7.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
 .coverage-wrap {
   overflow: auto;
   max-height: min(70vh, 720px);
@@ -3496,6 +3512,37 @@ tr.task-row:hover td { background: rgba(255, 61, 110, 0.08); }
 }
 .dev-list-card,
 .dev-editor-card { margin: 0; }
+/* Library | Custom segmented toggle */
+.dev-seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.dev-seg-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0.3rem 0.65rem;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.dev-seg-btn + .dev-seg-btn {
+  border-left: 1px solid var(--border);
+}
+.dev-seg-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
+}
+.dev-seg-btn.is-selected {
+  color: var(--text);
+  background: rgba(122, 162, 247, 0.14);
+}
 /* Markdown body + import JSON (colors from shared form controls) */
 .dev-body {
   min-height: 280px;
@@ -3503,6 +3550,21 @@ tr.task-row:hover td { background: rgba(255, 61, 110, 0.08); }
   line-height: 1.45;
   resize: vertical;
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+}
+.dev-body-preview {
+  margin: 0;
+  min-height: 280px;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12.5px;
+  line-height: 1.45;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
 }
 #dev-import-json.dev-body {
   min-height: 12rem;

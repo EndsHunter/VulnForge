@@ -939,14 +939,17 @@
       return `<div class="empty" style="padding:1rem">Coverage axes empty — wait for recon plan.</div>`;
     }
 
+    const classLink = (c) =>
+      `<a class="cov-class-link mono" href="/dev#hunt/${encodeURIComponent(c)}" target="_blank" rel="noopener">${esc(c)}</a>`;
+
     const classCaption = `<div class="coverage-class-caption controls-hint">
       <strong>${areas.length}</strong> areas × <strong>${classes.length}</strong> classes:
-      ${classes.map((c) => `<span class="mono cov-class-pill">${esc(c)}</span>`).join(" ")}
+      ${classes.map((c) => `<span class="cov-class-pill">${classLink(c)}</span>`).join(" ")}
     </div>`;
 
     const head =
       `<tr><th class="row-head">Area \\ class</th>` +
-      classes.map((c) => `<th title="${esc(c)}">${esc(c)}</th>`).join("") +
+      classes.map((c) => `<th title="${esc(c)}">${classLink(c)}</th>`).join("") +
       `</tr>`;
 
     const rows = areas
@@ -1090,6 +1093,7 @@
               <strong class="mono">${esc(area)}</strong>
               <span class="cov-times">×</span>
               <strong class="mono">${esc(cls)}</strong>
+              <a class="cov-class-link controls-hint" href="/dev#hunt/${encodeURIComponent(cls)}" target="_blank" rel="noopener" style="margin-left:0.5rem;font-weight:500">Open in Dev</a>
             </div>
             <div class="cov-detail-meta">
               <span class="cov-cell ${covDepthClass(d)}" style="display:inline-flex;width:auto;padding:0.15rem 0.5rem">${esc(lab.main)}</span>

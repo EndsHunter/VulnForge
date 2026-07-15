@@ -703,15 +703,66 @@ def _sequential_skills_from_arch(
     return out
 
 
+def origin_from_run_dir(
+    run_dir: Optional[Path | str],
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Parse ``.../runs/{target_id}/{run_id}`` into origin provenance.
+
+    Returns ``(origin_target_id, origin_run_id)`` or ``(None, None)`` when the
+    path does not look like a VulnForge run directory.
+    """
+    if run_dir is None:
+        return None, None
+    try:
+        parts = Path(run_dir).resolve().parts
+    except (OSError, RuntimeError, ValueError, TypeError):
+        try:
+            parts = Path(str(run_dir)).parts
+        except (TypeError, ValueError):
+            return None, None
+    if len(parts) < 2:
+        return None, None
+
+    # Prefer explicit .../runs/{target_id}/{run_id}/...
+    for i, part in enumerate(parts):
+        if part == "runs" and i + 2 < len(parts):
+            target_id = str(parts[i + 1]).strip()
+            run_id = str(parts[i + 2]).strip()
+            if (
+                target_id
+                and run_id
+                and target_id not in (".", "..")
+                and run_id not in (".", "..")
+            ):
+                return target_id, run_id
+
+    # Fallback: last two components when they resemble target/run
+    target_id = str(parts[-2]).strip()
+    run_id = str(parts[-1]).strip()
+    if (
+        target_id
+        and run_id
+        and target_id not in (".", "..")
+        and run_id not in (".", "..")
+        and re.match(r"^run-\d+", run_id, re.I)
+    ):
+        return target_id, run_id
+    return None, None
+
+
 def save_generated_profile(
     skill: dict[str, Any],
     *,
     active: bool = False,
+    origin_target_id: Optional[str] = None,
+    origin_run_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Persist a generated skill via save_profile.
 
     source=\"generated\", active=False by default. Never writes package prompts.
+    Optional origin_* stamps which run authored the skill.
     """
     pid = skill.get("id")
     body = skill.get("body_md")
@@ -723,16 +774,20 @@ def save_generated_profile(
         skill = dict(skill)
         skill["id"] = free
         pid = free
-    return save_profile(
-        pid,
-        body_md=str(body),
-        title=skill.get("title"),
-        description=skill.get("description"),
-        active=bool(active),
-        source="generated",
-        tags=skill.get("tags"),
-        cwe=skill.get("cwe"),
-        angle_ids=skill.get("angle_ids"),
-        sink_families=skill.get("sink_families"),
-        create=True,
-    )
+    kwargs: dict[str, Any] = {
+        "body_md": str(body),
+        "title": skill.get("title"),
+        "description": skill.get("description"),
+        "active": bool(active),
+        "source": "generated",
+        "tags": skill.get("tags"),
+        "cwe": skill.get("cwe"),
+        "angle_ids": skill.get("angle_ids"),
+        "sink_families": skill.get("sink_families"),
+        "create": True,
+    }
+    if origin_target_id is not None:
+        kwargs["origin_target_id"] = origin_target_id
+    if origin_run_id is not None:
+        kwargs["origin_run_id"] = origin_run_id
+    return save_profile(pid, **kwargs)

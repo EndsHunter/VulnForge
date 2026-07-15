@@ -234,6 +234,51 @@ def test_generate_hunt_skill_fake(profiles_root: Path):
     assert "jwt" in loaded["body_md"].lower()
 
 
+def test_save_generated_profile_stores_origin(profiles_root: Path):
+    skill = {
+        "id": "origin-skill",
+        "title": "Origin skill",
+        "description": "provenance test",
+        "body_md": VALID_BODY.replace("jwt-confusion", "origin-skill"),
+        "tags": ["test"],
+        "cwe": [],
+        "angle_ids": [],
+        "sink_families": [],
+    }
+    profile = save_generated_profile(
+        skill,
+        active=False,
+        origin_target_id="demo-target",
+        origin_run_id="run-003",
+    )
+    assert profile["id"] == "origin-skill"
+    assert profile["source"] == "generated"
+    assert profile["origin_target_id"] == "demo-target"
+    assert profile["origin_run_id"] == "run-003"
+    assert profile["created_at"]
+    loaded = get_profile("origin-skill", include_body=False)
+    assert loaded["origin_target_id"] == "demo-target"
+    assert loaded["origin_run_id"] == "run-003"
+    assert loaded["created_at"] == profile["created_at"]
+
+
+def test_origin_from_run_dir():
+    from vulnforge.hunt_profiles.generate import origin_from_run_dir
+
+    t, r = origin_from_run_dir("/tmp/runs/my-target/run-001")
+    assert t == "my-target"
+    assert r == "run-001"
+    t2, r2 = origin_from_run_dir("/tmp/runs/my-target/run-001/evidence")
+    assert t2 == "my-target"
+    assert r2 == "run-001"
+    # Fallback when no "runs" segment but last component looks like run-N
+    t3, r3 = origin_from_run_dir("/data/campaigns/acme/run-042")
+    assert t3 == "acme"
+    assert r3 == "run-042"
+    assert origin_from_run_dir("/tmp/not-a-run") == (None, None)
+    assert origin_from_run_dir(None) == (None, None)
+
+
 def test_generate_records_usage(tmp_path: Path, profiles_root: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()

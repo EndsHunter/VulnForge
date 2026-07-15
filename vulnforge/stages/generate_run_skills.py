@@ -14,6 +14,7 @@ from vulnforge.hunt_profiles.generate import (
     GenerateSkillError,
     clamp_skill_count,
     generate_hunt_skills_batch,
+    origin_from_run_dir,
     save_generated_profile,
 )
 from vulnforge.llm import InfraError
@@ -164,10 +165,16 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     profile_ids: list[str] = []
     hunt_task_ids: list[int] = []
     errors: list[str] = []
+    origin_target_id, origin_run_id = origin_from_run_dir(run_dir)
 
     for skill in skills:
         try:
-            profile = save_generated_profile(skill, active=activate)
+            profile = save_generated_profile(
+                skill,
+                active=activate,
+                origin_target_id=origin_target_id,
+                origin_run_id=origin_run_id,
+            )
         except Exception as e:
             errors.append(f"{skill.get('id')}: save_failed: {e}")
             continue

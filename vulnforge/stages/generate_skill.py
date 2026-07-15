@@ -12,6 +12,7 @@ from typing import Any
 from vulnforge.hunt_profiles.generate import (
     GenerateSkillError,
     generate_hunt_skill,
+    origin_from_run_dir,
     save_generated_profile,
 )
 from vulnforge.llm import InfraError, classify_llm_failure
@@ -87,8 +88,14 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     except OSError:
         pass
 
+    origin_target_id, origin_run_id = origin_from_run_dir(run_dir)
     try:
-        profile = save_generated_profile(skill, active=activate)
+        profile = save_generated_profile(
+            skill,
+            active=activate,
+            origin_target_id=origin_target_id,
+            origin_run_id=origin_run_id,
+        )
     except Exception as e:
         return {
             "status": "failed_task",

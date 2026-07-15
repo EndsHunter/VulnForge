@@ -309,6 +309,13 @@ def _coerce_tools(value: object) -> Optional[list[str]]:
     return out or None
 
 
+def _as_meta_str(raw: object, *, max_len: int = 256) -> str:
+    """Normalize optional provenance/meta strings for stable JSON."""
+    if raw is None:
+        return ""
+    return str(raw).strip()[:max_len]
+
+
 def _profile_public_fields(p: dict[str, Any]) -> dict[str, Any]:
     """Stable public profile dict for collection.json / API (no internal keys)."""
     pid = str(p.get("id") or "")
@@ -328,6 +335,10 @@ def _profile_public_fields(p: dict[str, Any]) -> dict[str, Any]:
         "specificity": meta["specificity"],
         "version": meta["version"],
         "tools": _coerce_tools(p.get("tools")),
+        # Provenance (always strings for stable collection.json / API)
+        "created_at": _as_meta_str(p.get("created_at"), max_len=64),
+        "origin_target_id": _as_meta_str(p.get("origin_target_id"), max_len=256),
+        "origin_run_id": _as_meta_str(p.get("origin_run_id"), max_len=128),
     }
 
 # Aliases for normalize_class (legacy recon stems).
@@ -717,6 +728,9 @@ def save_profile(
     version: Optional[int] = None,
     tools: Optional[list[str] | str] = None,
     clear_tools: bool = False,
+    created_at: Optional[str] = None,
+    origin_target_id: Optional[str] = None,
+    origin_run_id: Optional[str] = None,
     create: bool = False,
 ) -> dict[str, Any]:
     pid = _validate_id(profile_id)
@@ -780,6 +794,10 @@ def save_profile(
             )
         body = _check_body(body_md)
         desc = (description if description is not None else _description_from_body(body)).strip()[:500]
+        # Create: stamp created_at (now if missing); origin only when provided
+        ca = _as_meta_str(created_at, max_len=64) if created_at is not None else ""
+        if not ca:
+            ca = utc_now_iso()
         entry = {
             "id": pid,
             "title": (title or _title_from_body(body, pid)).strip()[:120],
@@ -795,6 +813,17 @@ def save_profile(
             "specificity": 0,
             "version": 1,
             "tools": None,
+            "created_at": ca,
+            "origin_target_id": (
+                _as_meta_str(origin_target_id, max_len=256)
+                if origin_target_id is not None
+                else ""
+            ),
+            "origin_run_id": (
+                _as_meta_str(origin_run_id, max_len=128)
+                if origin_run_id is not None
+                else ""
+            ),
         }
         _apply_meta(entry)
         profiles.append(_profile_public_fields(entry))
@@ -819,6 +848,13 @@ def save_profile(
         entry["active"] = bool(active)
     if source is not None:
         entry["source"] = str(source)[:32]
+    # Update: only touch provenance when explicitly passed (None preserves)
+    if created_at is not None:
+        entry["created_at"] = _as_meta_str(created_at, max_len=64)
+    if origin_target_id is not None:
+        entry["origin_target_id"] = _as_meta_str(origin_target_id, max_len=256)
+    if origin_run_id is not None:
+        entry["origin_run_id"] = _as_meta_str(origin_run_id, max_len=128)
     _apply_meta(entry)
     # Mark edits of seed profiles as custom unless source forced
     if body_md is not None and entry.get("source") == "seed" and source is None:

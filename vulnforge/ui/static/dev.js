@@ -8,6 +8,11 @@
   let profiles = [];
   let selectedId = null;
   let isNew = false;
+  /** @type {"library"|"custom"} */
+  let huntExplorer = "library";
+  let huntEditing = false;
+  /** Last profile payload shown in the editor (for view/edit toggles). */
+  let huntEditorProfile = null;
 
   let agents = [];
   let raSelectedId = null;
@@ -90,31 +95,99 @@
 
   /* ---------- Hunt profiles ---------- */
 
+  function isCustomSource(source) {
+    const s = String(source || "").toLowerCase();
+    return s === "custom" || s === "generated";
+  }
+
+  function visibleProfiles() {
+    return profiles.filter((p) =>
+      huntExplorer === "custom" ? isCustomSource(p.source) : !isCustomSource(p.source)
+    );
+  }
+
+  function syncExplorerToggle() {
+    $$("[data-hunt-explorer]").forEach((btn) => {
+      const on = btn.getAttribute("data-hunt-explorer") === huntExplorer;
+      btn.classList.toggle("is-selected", on);
+    });
+  }
+
+  function setHuntExplorer(mode) {
+    huntExplorer = mode === "custom" ? "custom" : "library";
+    syncExplorerToggle();
+    renderList();
+  }
+
+  function setHuntHash(id) {
+    const h = (location.hash || "").replace(/^#/, "");
+    if (h.startsWith("tools")) return;
+    const next = id ? `#hunt/${encodeURIComponent(id)}` : "#hunt";
+    if (location.hash !== next) {
+      history.replaceState(null, "", next);
+    }
+  }
+
+  function originRunHtml(p) {
+    const tid = String(p?.origin_target_id || "").trim();
+    const rid = String(p?.origin_run_id || "").trim();
+    if (!tid || !rid) return "—";
+    const href = `/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}`;
+    return `<a class="mono" href="${esc(href)}">${esc(tid)} / ${esc(rid)}</a>`;
+  }
+
   function renderList() {
     const body = $("#dev-profiles-body");
     const meta = $("#dev-meta");
+    const head = $("#dev-profiles-head");
+    const showOrigin = huntExplorer === "custom";
+    const colCount = showOrigin ? 5 : 4;
+    if (head) {
+      head.innerHTML = showOrigin
+        ? `<th>Active</th><th>Id</th><th>Title</th><th>Source</th><th>Origin run</th>`
+        : `<th>Active</th><th>Id</th><th>Title</th><th>Source</th>`;
+    }
+    syncExplorerToggle();
     if (!body) return;
-    if (!profiles.length) {
-      body.innerHTML = `<tr><td colspan="4" class="empty">No profiles</td></tr>`;
-      if (meta) meta.textContent = "";
+    const visible = visibleProfiles();
+    if (!visible.length) {
+      const emptyMsg = profiles.length
+        ? huntExplorer === "custom"
+          ? "No custom or generated profiles"
+          : "No library profiles"
+        : "No profiles";
+      body.innerHTML = `<tr><td colspan="${colCount}" class="empty">${emptyMsg}</td></tr>`;
+      if (meta) {
+        meta.textContent = profiles.length
+          ? `0 shown · ${profiles.length} total`
+          : "";
+      }
       return;
     }
-    const nActive = profiles.filter((p) => p.active).length;
-    if (meta) meta.textContent = `${profiles.length} profiles · ${nActive} active`;
-    body.innerHTML = profiles
+    const nActive = visible.filter((p) => p.active).length;
+    if (meta) {
+      meta.textContent = `${visible.length} profiles · ${nActive} active`;
+    }
+    body.innerHTML = visible
       .map((p) => {
         const sel = p.id === selectedId ? " is-selected" : "";
+        const srcLabel = p.source || (isCustomSource(p.source) ? "custom" : "seed");
+        const originCell = showOrigin
+          ? `<td>${originRunHtml(p)}</td>`
+          : "";
         return `<tr class="dev-row${sel}" data-id="${esc(p.id)}" style="cursor:pointer">
           <td><input type="checkbox" data-active-toggle value="${esc(p.id)}" ${p.active ? "checked" : ""} title="Active for bulk enqueue" /></td>
           <td class="mono">${esc(p.id)}</td>
           <td>${esc(p.title || p.id)}</td>
-          <td><span class="badge info">${esc(p.source || "custom")}</span></td>
+          <td><span class="badge info">${esc(srcLabel)}</span></td>
+          ${originCell}
         </tr>`;
       })
       .join("");
 
     body.querySelectorAll(".dev-row").forEach((row) => {
       row.addEventListener("click", (ev) => {
+        if (ev.target?.closest?.("a")) return;
         if (ev.target?.matches?.("[data-active-toggle]")) return;
         const id = row.getAttribute("data-id");
         if (id) selectProfile(id);
@@ -130,7 +203,15 @@
             body: JSON.stringify({ active: !!inp.checked }),
           });
           toast(inp.checked ? `Active: ${id}` : `Inactive: ${id}`);
-          await loadProfiles(selectedId);
+          await loadProfiles(selectedId, { skipSelect: true });
+          // refresh list checkbox state from server; keep editor as-is
+          const p = profiles.find((x) => x.id === id);
+          if (p) p.active = !!inp.checked;
+          renderList();
+          if (huntEditorProfile && huntEditorProfile.id === id && !huntEditing) {
+            $("#dev-active").checked = !!inp.checked;
+            huntEditorProfile.active = !!inp.checked;
+          }
         } catch (e) {
           toast(e.message || String(e), true);
           inp.checked = !inp.checked;
@@ -166,14 +247,16 @@
     box.dataset.ready = "1";
   }
 
-  function setHuntToolsUI(tools) {
+  function setHuntToolsUI(tools, { editable } = {}) {
     ensureHuntToolChecks();
     const unrestricted = $("#dev-tools-unrestricted");
     const hasList = Array.isArray(tools) && tools.length > 0;
     if (unrestricted) unrestricted.checked = !hasList;
+    const canEdit = editable !== false;
+    if (unrestricted) unrestricted.disabled = !canEdit;
     $$(".dev-tool-cb").forEach((cb) => {
       cb.checked = hasList ? tools.includes(cb.value) : false;
-      cb.disabled = !hasList;
+      cb.disabled = !canEdit || !hasList;
     });
   }
 
@@ -188,50 +271,147 @@
     return { clear_tools: false, tools: selected };
   }
 
-  function showEditor(profile, { create } = {}) {
+  function applyHuntEditorMode() {
+    const editing = !!huntEditing;
+    const idEl = $("#dev-id");
+    if (idEl) idEl.readOnly = !isNew;
+    ["#dev-title", "#dev-description"].forEach((sel) => {
+      const el = $(sel);
+      if (el) el.readOnly = !editing;
+    });
+    const active = $("#dev-active");
+    if (active) active.disabled = !editing;
+    const body = $("#dev-body");
+    const preview = $("#dev-body-preview");
+    if (body) {
+      body.hidden = !editing;
+      // Avoid native required validation while the field is hidden in view mode
+      if (editing) body.setAttribute("required", "");
+      else body.removeAttribute("required");
+    }
+    if (preview) {
+      preview.hidden = editing;
+      if (!editing) preview.textContent = body?.value || "";
+    }
+    setHuntToolsUI(huntEditorProfile?.tools, { editable: editing });
+    const saveBtn = $("#dev-save");
+    const editBtn = $("#dev-edit");
+    const cancelBtn = $("#dev-cancel");
+    const deleteBtn = $("#dev-delete");
+    if (saveBtn) {
+      saveBtn.hidden = !editing;
+      saveBtn.disabled = !editing;
+    }
+    if (editBtn) editBtn.hidden = editing || isNew;
+    if (cancelBtn) cancelBtn.hidden = !editing;
+    if (deleteBtn) deleteBtn.hidden = !!isNew;
+    const title = $("#dev-editor-title");
+    if (title) {
+      if (isNew) title.textContent = "New profile";
+      else if (editing) title.textContent = `Edit: ${huntEditorProfile?.id || selectedId || ""}`;
+      else title.textContent = `View: ${huntEditorProfile?.id || selectedId || ""}`;
+    }
+  }
+
+  function showEditor(profile, { create, editing } = {}) {
     isNew = !!create;
+    huntEditing = editing != null ? !!editing : !!create;
+    huntEditorProfile = profile || {};
     const form = $("#dev-editor-form");
     const hint = $("#dev-editor-hint");
-    const title = $("#dev-editor-title");
     if (!form) return;
     form.hidden = false;
     if (hint) hint.hidden = true;
-    if (title) title.textContent = create ? "New profile" : `Edit: ${profile.id}`;
     const idEl = $("#dev-id");
     idEl.value = profile.id || "";
-    idEl.readOnly = !create;
     $("#dev-title").value = profile.title || "";
     $("#dev-description").value = profile.description || "";
     $("#dev-active").checked = !!profile.active;
     $("#dev-body").value = profile.body_md || "";
-    $("#dev-delete").hidden = !!create;
-    setHuntToolsUI(profile.tools);
+    const preview = $("#dev-body-preview");
+    if (preview) preview.textContent = profile.body_md || "";
+    const origin = $("#dev-editor-origin");
+    if (origin) {
+      if (create) {
+        origin.hidden = true;
+        origin.innerHTML = "";
+      } else {
+        const src = profile.source || "seed";
+        const tid = String(profile.origin_target_id || "").trim();
+        const rid = String(profile.origin_run_id || "").trim();
+        let originBit = "—";
+        if (tid && rid) {
+          const href = `/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}`;
+          originBit = `<a class="mono" href="${esc(href)}">${esc(tid)} / ${esc(rid)}</a>`;
+        }
+        origin.innerHTML = `Source: <span class="badge info">${esc(src)}</span> · Origin run: ${originBit}`;
+        origin.hidden = false;
+      }
+    }
+    applyHuntEditorMode();
+  }
+
+  function enterHuntEdit() {
+    if (isNew) return;
+    huntEditing = true;
+    applyHuntEditorMode();
+  }
+
+  async function cancelHuntEdit() {
+    if (isNew) {
+      isNew = false;
+      huntEditing = false;
+      huntEditorProfile = null;
+      selectedId = null;
+      const form = $("#dev-editor-form");
+      if (form) form.hidden = true;
+      const hint = $("#dev-editor-hint");
+      if (hint) hint.hidden = false;
+      renderList();
+      return;
+    }
+    if (selectedId) {
+      await selectProfile(selectedId);
+    }
   }
 
   async function selectProfile(id) {
     selectedId = id;
     isNew = false;
-    renderList();
+    const listed = profiles.find((p) => p.id === id);
+    if (listed) {
+      setHuntExplorer(isCustomSource(listed.source) ? "custom" : "library");
+    } else {
+      renderList();
+    }
+    setHuntHash(id);
     try {
       const data = await api(`/api/hunt-profiles/${encodeURIComponent(id)}`);
-      showEditor(data.profile || {}, { create: false });
+      showEditor(data.profile || {}, { create: false, editing: false });
     } catch (e) {
       toast(e.message || String(e), true);
     }
   }
 
-  async function loadProfiles(keepId) {
+  async function loadProfiles(keepId, opts = {}) {
     const data = await api("/api/hunt-profiles?include_body=0");
     profiles = data.profiles || [];
     if (keepId && profiles.some((p) => p.id === keepId)) {
       selectedId = keepId;
     } else if (selectedId && !profiles.some((p) => p.id === selectedId)) {
-      selectedId = profiles[0]?.id || null;
-    } else if (!selectedId && profiles[0]) {
-      selectedId = profiles[0].id;
+      selectedId = null;
+    }
+    // Prefer first visible in current explorer; fall back to any
+    if (!selectedId && !opts.skipSelect) {
+      const vis = visibleProfiles();
+      selectedId = vis[0]?.id || profiles[0]?.id || null;
+      if (selectedId) {
+        const p = profiles.find((x) => x.id === selectedId);
+        if (p) setHuntExplorer(isCustomSource(p.source) ? "custom" : "library");
+      }
     }
     renderList();
-    if (selectedId && !isNew) {
+    if (!opts.skipSelect && selectedId && !isNew) {
       await selectProfile(selectedId);
     }
   }
@@ -239,6 +419,7 @@
   function openNew() {
     selectedId = null;
     isNew = true;
+    huntEditing = true;
     renderList();
     showEditor(
       {
@@ -249,7 +430,7 @@
         body_md:
           "# Hunt class: my-class\n\n**Mission:** (describe the attacker goal)\n\n## Focus\n\n- \n\n## Method\n\n1. \n\n## Submit\n\n- `submit_candidate` with weakness_class matching this id\n- or honest `submit_none`\n",
       },
-      { create: true }
+      { create: true, editing: true }
     );
     $("#dev-id")?.focus();
   }
@@ -298,9 +479,13 @@
       toast(`Deleted ${id}`);
       selectedId = null;
       isNew = false;
+      huntEditing = false;
+      huntEditorProfile = null;
       $("#dev-editor-form").hidden = true;
       $("#dev-editor-hint").hidden = false;
-      await loadProfiles();
+      setHuntHash("");
+      await loadProfiles(null, { skipSelect: true });
+      renderList();
     } catch (e) {
       toast(e.message || String(e), true);
     }
@@ -475,10 +660,13 @@
       if (r.saved && pid) {
         isNew = false;
         selectedId = pid;
+        // Generated profiles are custom explorer
+        setHuntExplorer("custom");
         await loadProfiles(pid);
       } else {
         selectedId = null;
         isNew = true;
+        setHuntExplorer("custom");
         renderList();
         showEditor(
           {
@@ -487,8 +675,9 @@
             description: skill.description || "",
             active: activate,
             body_md: skill.body_md || "",
+            source: "generated",
           },
-          { create: true }
+          { create: true, editing: true }
         );
       }
     } catch (e) {
@@ -511,6 +700,16 @@
   );
   $("#dev-editor-form")?.addEventListener("submit", saveForm);
   $("#dev-delete")?.addEventListener("click", deleteCurrent);
+  $("#dev-edit")?.addEventListener("click", enterHuntEdit);
+  $("#dev-cancel")?.addEventListener("click", () => {
+    cancelHuntEdit().catch((e) => toast(e.message || String(e), true));
+  });
+  $$("[data-hunt-explorer]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const mode = btn.getAttribute("data-hunt-explorer");
+      if (mode) setHuntExplorer(mode);
+    });
+  });
   $("#dev-import-cancel")?.addEventListener("click", closeImport);
   $("#dev-import-submit")?.addEventListener("click", submitImport);
   $("#dev-generate-cancel")?.addEventListener("click", closeGenerate);
@@ -1328,7 +1527,7 @@
     });
   });
 
-  // Hash deep-link: #tools or #tools/<draftId>
+  // Hash deep-link: #tools[/draftId] | #hunt[/{profileId}]
   async function handleHash() {
     const h = (location.hash || "").replace(/^#/, "");
     if (h.startsWith("tools")) {
@@ -1338,6 +1537,27 @@
       if (parts[1]) {
         await showDraftDetail(parts[1]);
         openToolgenWizard({ draftId: parts[1] });
+      }
+      return;
+    }
+    if (h.startsWith("hunt")) {
+      switchTab("hunt");
+      if (!profiles.length) {
+        await loadProfiles(null, { skipSelect: true }).catch(() => {});
+      }
+      const parts = h.split("/");
+      let id = "";
+      try {
+        id = parts[1] ? decodeURIComponent(parts[1]) : "";
+      } catch (_) {
+        id = parts[1] || "";
+      }
+      if (id) {
+        const p = profiles.find((x) => x.id === id);
+        if (p) {
+          setHuntExplorer(isCustomSource(p.source) ? "custom" : "library");
+        }
+        await selectProfile(id);
       }
     }
   }
@@ -1357,6 +1577,22 @@
     })
     .catch(() => {});
 
-  loadProfiles().catch((e) => toast(e.message || String(e), true));
-  handleHash().catch(() => {});
+  // Boot: load profiles then honor hash (avoids racing #hunt/{id} with auto-select)
+  (async () => {
+    const h = (location.hash || "").replace(/^#/, "");
+    try {
+      if (h.startsWith("hunt") && h.includes("/")) {
+        await loadProfiles(null, { skipSelect: true });
+        await handleHash();
+      } else if (h.startsWith("tools")) {
+        await loadProfiles(null, { skipSelect: true });
+        await handleHash();
+      } else {
+        await loadProfiles();
+        await handleHash();
+      }
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  })();
 })();
