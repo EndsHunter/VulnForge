@@ -94,4 +94,4 @@ def test_export_import(client: TestClient):
 def test_dev_page(client: TestClient):
     r = client.get("/dev")
     assert r.status_code == 200
-    assert "Hunt profiles" in r.text
+    assert "Hunt skills" in r.text
