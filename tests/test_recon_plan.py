@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from vulnforge.hunt_profiles import active_class_ids, all_class_ids
@@ -187,6 +188,62 @@ def test_recon_string_focus_integration(tmp_path: Path, toy_sqli: Path):
     assert result.get("hunt_plan_source") == "active_fallback"
     s = db.summary()
     assert s["tasks"].get("queued", 0) >= 1
+    db.close()
+
+
+def test_recon_salvages_json_architecture_after_no_submit(tmp_path: Path, toy_sqli: Path):
+    """no_submit with structured JSON content still stores arch + enqueues hunts."""
+    from vulnforge.db import Database
+    from vulnforge.stages import recon
+    from vulnforge.llm import FakeLLMClient, LLMResult, ResponseClass
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "evidence").mkdir()
+    db = Database.create(run_dir / "harness.db")
+    db.insert_run("r1", str(toy_sqli), "code_static", "pin", {})
+    tid = db.enqueue_task("recon", {})
+    task = db.lease_next_task("w", 60)
+
+    arch_json = json.dumps(
+        {
+            "summary": "Salvaged map of toy SQLi app",
+            "trust_boundaries": ["user input"],
+            "components": [{"name": "app", "path_hints": ["app.py"]}],
+            "input_surfaces": ["q"],
+            "hunt_focus": [],
+        }
+    )
+    # FakeLLM free-text exit: content only, no tool_calls → real client would
+    # mark no_submit; FakeLLM returns content as ok mid-loop. Use explicit
+    # failed LLMResult to exercise salvage branch.
+    cfg = {
+        "llm": {
+            "fake": True,
+            "fake_responses": [
+                LLMResult(
+                    ok=False,
+                    classification=ResponseClass.TRUNCATED,
+                    content=arch_json,
+                    tool_calls=[],
+                    raw=None,
+                    model_id="fake",
+                    error="no_submit",
+                )
+            ],
+            "max_tool_rounds": 4,
+        },
+        "run": {"ignore_globs": [], "max_tasks": 10, "max_recon_auto_retries": 0},
+        "packet": {},
+        "tools": {},
+    }
+    result = recon.run(task, db, run_dir, cfg)
+    assert result["status"] == "succeeded", result
+    assert result["hunt_enqueued"] >= len(_active())
+    arch = db.get_architecture()
+    assert arch and "Salvaged" in (arch.get("summary") or "")
+    agents = arch.get("recon_agents_run") or []
+    assert any(a.get("salvaged_from_content") for a in agents if isinstance(a, dict))
     db.close()
 
 

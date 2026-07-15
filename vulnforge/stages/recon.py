@@ -659,56 +659,80 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             except OSError:
                 pass
 
+            salvaged_from_content = False
             if not result.ok:
                 status = classify_llm_failure(result)
                 err = result.error or result.classification.value
-                if err in ("no_submit", "max_tool_rounds"):
-                    import logging
+                # Weak tool-use models often dump architecture as free text /
+                # JSON without calling submit_architecture. Salvage only when
+                # content actually parses to a non-empty summary — never invent.
+                salvage_errs = ("no_submit", "max_tool_rounds")
+                can_salvage = (
+                    status != "failed_infra"
+                    and err in salvage_errs
+                    and bool((result.content or "").strip())
+                )
+                if can_salvage:
+                    # Structured only: session submit args or JSON with summary.
+                    # Do not promote arbitrary free-text chatter into architecture.
+                    salvaged = parse_architecture(result, session)
+                    if salvaged.get("summary"):
+                        part = salvaged
+                        salvaged_from_content = True
+                        import logging
 
-                    logging.getLogger(__name__).warning(
-                        f"Recon task {task.id} agent {agent_id} failed with error: {err}. "
-                        f"This may indicate LLM non-compliance or max_tool_rounds exhaustion. "
-                        f"Check model settings and consider increasing rounds or using a more compliant model."
+                        logging.getLogger(__name__).warning(
+                            f"Recon task {task.id} agent {agent_id}: salvaged architecture "
+                            f"from content/session after {err} (model skipped submit_architecture)."
+                        )
+                if not salvaged_from_content:
+                    if err in salvage_errs:
+                        import logging
+
+                        logging.getLogger(__name__).warning(
+                            f"Recon task {task.id} agent {agent_id} failed with error: {err}. "
+                            f"This may indicate LLM non-compliance or max_tool_rounds exhaustion. "
+                            f"Check model settings and consider increasing rounds or using a more compliant model."
+                        )
+                    agents_run.append(
+                        {
+                            "id": agent_id,
+                            "ok": False,
+                            "error": err,
+                            "order": agent.get("order"),
+                        }
                     )
-                agents_run.append(
-                    {
-                        "id": agent_id,
-                        "ok": False,
-                        "error": err,
-                        "order": agent.get("order"),
+                    if status == "failed_infra":
+                        return {
+                            "status": status,
+                            "error": err,
+                            "model_id": model_id,
+                            "transcript": f"task-{task.id}",
+                            "recon_agents_run": agents_run,
+                            **usage_fields,
+                        }
+                    out_fail = _failed_task_result(
+                        task,
+                        db,
+                        cfg,
+                        run_dir,
+                        err,
+                        model_id=model_id,
+                        transcript=f"task-{task.id}",
+                        recon_agents_run=agents_run,
+                    )
+                    out_fail.update(usage_fields)
+                    return out_fail
+            else:
+                part = parse_architecture(result, session)
+                if not part.get("summary") and result.content:
+                    part = {
+                        "summary": result.content[:4000],
+                        "components": [],
+                        "trust_boundaries": [],
+                        "input_surfaces": [],
+                        "hunt_focus": [],
                     }
-                )
-                if status == "failed_infra":
-                    return {
-                        "status": status,
-                        "error": err,
-                        "model_id": model_id,
-                        "transcript": f"task-{task.id}",
-                        "recon_agents_run": agents_run,
-                        **usage_fields,
-                    }
-                out_fail = _failed_task_result(
-                    task,
-                    db,
-                    cfg,
-                    run_dir,
-                    err,
-                    model_id=model_id,
-                    transcript=f"task-{task.id}",
-                    recon_agents_run=agents_run,
-                )
-                out_fail.update(usage_fields)
-                return out_fail
-
-            part = parse_architecture(result, session)
-            if not part.get("summary") and result.content:
-                part = {
-                    "summary": result.content[:4000],
-                    "components": [],
-                    "trust_boundaries": [],
-                    "input_surfaces": [],
-                    "hunt_focus": [],
-                }
             if not part.get("summary"):
                 agents_run.append(
                     {
@@ -734,6 +758,11 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     "ok": True,
                     "order": agent.get("order"),
                     "title": agent.get("title") or agent_id,
+                    **(
+                        {"salvaged_from_content": True}
+                        if salvaged_from_content
+                        else {}
+                    ),
                 }
             )
             partial_archs.append(part)
@@ -1075,7 +1104,7 @@ def parse_architecture(llm_result, session: dict) -> dict:
 
 
 def _normalize_class(raw: object) -> str:
-    """Map recon class ids onto registered hunt profiles; unknown → wildcard."""
+    """Map recon class ids onto registered hunt skills; unknown → wildcard."""
     return normalize_class(raw)
 
 
@@ -1092,7 +1121,7 @@ def partition_by_top_dir(sample_paths: list[str], top_n: int = 12) -> list[dict]
 
 
 def _fallback_hunt_tasks(architecture: dict, inventory: dict) -> list[dict]:
-    """Active hunt profiles × areas when model focus is missing or unusable."""
+    """Active hunt skills × areas when model focus is missing or unusable."""
     components = architecture.get("components") or []
     if not isinstance(components, list):
         components = []
@@ -1218,7 +1247,7 @@ def plan_hunt_tasks(
         if tasks:
             source = "hunt_focus"
     if not tasks:
-        # No usable focus → active hunt profiles only (not full catalog).
+        # No usable focus → active hunt skills only (not full catalog).
         tasks = _fallback_hunt_tasks(architecture, inventory)
         source = "active_fallback"
     tasks = _apply_class_routing(tasks, inventory)

@@ -119,7 +119,7 @@ vf dashboard
 | One task only | `vf run-once --run-dir DIR` |
 | Status | `vf status --run-dir DIR` or Mission overview |
 | Steer | Explorer (enqueue hunts), Coverage (residual cells), Report (accept/reject) |
-| Dev tools | Home → **Dev** — hunt profiles + recon agents; generate custom skills |
+| Dev tools | Home → **Dev** — hunt skills + recon agents; generate custom skills |
 | Tool gaps | `vf tool-gaps --run-dir DIR` or Home **Tool gaps** |
 | Regenerate docs | `vf project --run-dir DIR` |
 
@@ -154,7 +154,7 @@ vf dashboard --host 127.0.0.1 --port 8787
 | **Coverage** | Residual matrix; re-queue cells |
 | **Explorer** | Browse target; enqueue class×path hunts |
 | **Report** | Findings review (accept / reject / develop PoC) |
-| **Dev** | Hunt profiles, recon agents, generate custom hunt skills |
+| **Dev** | Hunt skills, recon agents, generate custom hunt skills |
 
 Token usage (when the model returns `usage`, or estimated) appears on Home and Mission overview.
 

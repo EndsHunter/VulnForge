@@ -62,7 +62,7 @@ Follow `prompts/v1/PRINCIPLES.md` for the full exploitability bar, threat model,
 | Evidence | `write_evidence` → `evidence_id`, or `no_poc` + ≥20-char justification on apply |
 | Threat model | Non-vacuous who/boundary/impact on the candidate |
 | One class | One path+sink → one `weakness_class` (most specific profile) |
-| Class ids | Only registered hunt profile collection ids — do not invent |
+| Class ids | Only registered hunt skill collection ids — do not invent |
 
 ### Labels & review
 
@@ -115,13 +115,13 @@ See **PROTOCOL.md** for CLI contracts and **AGENT.md** for operator/agent roles 
 5. Regenerate human views with `vf project --run-dir <dir>` — do not hand-edit `project/` as truth.
 6. Check `vf status --run-dir <dir>` and `events.jsonl` when stuck (`failed_task` thrash vs `failed_infra` / `deadletter`).
 
-## Hunt profiles (skills)
+## Hunt skills
 
-- Operator collection: `config/hunt_profiles/` (bodies + `collection.json` metadata).
+- Operator collection: `config/hunt_profiles/` (bodies + `collection.json` metadata; path kept for compatibility).
 - Package seeds: `prompts/v1/hunt_classes/` (reseed replaces the collection).
 - Each skill body (Cloudflare-aligned): trigger-rich description, Mission/Principles, Rules quick reference, Anti-patterns table, Hunt workflow/Method, Scope, Submit checklist (+ focus, stack cues, evidence rails).
 - Metadata drives angles (`angle_ids`), sink routing (`sink_families`), and cross-class merge rank (`specificity`).
-- **Active** profiles bulk-enqueue when recon omits `hunt_focus`.
+- **Active** skills bulk-enqueue when recon omits `hunt_focus`.
 - Author prompt: `prompts/v1/generate_skill.md` (override: `config/prompts/generate_skill.md`).
 
 ## apply-candidate notes
@@ -145,13 +145,13 @@ See **PROTOCOL.md** for CLI contracts and **AGENT.md** for operator/agent roles 
 
 ## Scope
 
-This skill covers **operating VulnForge** as a coding-agent client: init/run, filing candidates, labels, hunt profiles, and protocol honesty.
+This skill covers **operating VulnForge** as a coding-agent client: init/run, filing candidates, labels, hunt skills, and protocol honesty.
 
 Related surfaces (not separate inventable class ids):
 
 - **PROTOCOL.md / AGENT.md** — CLI contracts and operator/agent roles
 - **prompts/v1/PRINCIPLES.md** — exploitability bar shared by all hunters
-- **Hunt class profiles** (`config/hunt_profiles/`, `prompts/v1/hunt_classes/`) — per-class Mission/Method; do not restate them here
+- **Hunt skills** (`config/hunt_profiles/`, `prompts/v1/hunt_classes/`) — per-class Mission/Method; do not restate them here
 - **Dev generate skill** — authors new profile bodies via `generate_skill.md`; still protocol-bound
 
 Out of scope: general product feature development, mutating targets for demo PoCs, or claiming production-ready exploit proof without human review.

@@ -1441,7 +1441,7 @@ function renderOverview(snap) {
       </div>
     </div>
     ${renderTargetInventoryCard(snap.target_inventory || snap.inventory_honesty, snap)}
-    ${renderArchitectureBriefCard(archText, archSum)}
+    ${renderArchitectureBriefCard(archText, archSum, snap)}
     ${renderLlmUsageCard(snap)}
     ${renderOperatorRerunCard(snap)}
     <div class="card" style="margin-top:1rem">
@@ -1471,12 +1471,34 @@ function renderOverview(snap) {
   });
 }
 
-function renderArchitectureBriefCard(archText, archSum) {
+function reconFailureHint(snap) {
+  const lr = snap?.target_inventory?.last_recon || snap?.inventory_honesty?.last_recon;
+  if (!lr || lr.state === "succeeded") return "";
+  const err = lr.error || lr.state || "failed";
+  const gen = lr.recon_generation != null ? ` (generation ${esc(String(lr.recon_generation))})` : "";
+  const retry = lr.recon_requeued
+    ? ` A follow-up recon was queued${lr.child_task_id != null ? ` as task ${esc(String(lr.child_task_id))}` : ""}.`
+    : " Auto-retries may be exhausted — check Tasks / transcript for submit_architecture.";
+  let tip = "";
+  if (err === "no_submit" || err === "max_tool_rounds") {
+    tip =
+      " The model never called submit_architecture (or exhausted tool rounds). Architecture is only stored after a non-empty summary.";
+  } else if (err === "no_architecture") {
+    tip = " Recon finished without a usable architecture summary.";
+  } else if (err === "no_hunt_tasks") {
+    tip =
+      " Architecture may exist, but hunt planning produced zero tasks (check run.max_tasks and active hunt skills).";
+  }
+  return `<p class="controls-hint" style="margin:0.5rem 0 0;color:var(--danger, #c44)"><strong>Last recon:</strong> <span class="mono">${esc(String(err))}</span>${gen}.${tip}${retry}</p>`;
+}
+
+function renderArchitectureBriefCard(archText, archSum, snap) {
   if (!archText && !(archSum && archSum.has_architecture)) {
     return `
     <div class="card" style="margin-top:1rem">
       <h2>Architecture</h2>
-      <p class="controls-hint" style="margin:0">No architecture yet — run recon (or use Operator re-run below). Map lives under Mission → Architecture after recon succeeds.</p>
+      <p class="controls-hint" style="margin:0">No architecture yet — run recon (or use Operator re-run below). Map lives under Mission → Architecture after recon succeeds. Architecture is stored in the run DB only (not under project/).</p>
+      ${reconFailureHint(snap)}
     </div>`;
   }
   const comps = Array.isArray(archSum?.components) ? archSum.components.length : 0;
@@ -1626,13 +1648,24 @@ function renderTargetInventoryCard(inv, snap) {
   } else if (hps === "active_fallback" || hps === "defaults_fallback") {
     planLabel = "active fallback";
     planHint =
-      "Recon did not yield usable hunt_focus — mechanical areas × active hunt profiles.";
+      "Recon did not yield usable hunt_focus — mechanical areas × active hunt skills.";
   } else if (hps) {
     planLabel = String(hps);
   }
   const enq =
     i.hunt_enqueued != null
       ? `<div class="k">Hunts from recon</div><div class="v">${esc(String(i.hunt_enqueued))}</div>`
+      : "";
+  const lr = i.last_recon;
+  const lastReconRow =
+    lr && lr.state && lr.state !== "succeeded"
+      ? `<div class="k">Last recon</div><div class="v mono" style="color:var(--danger, #c44)">${esc(
+          String(lr.error || lr.state)
+        )}${
+          lr.recon_generation != null
+            ? ` · gen ${esc(String(lr.recon_generation))}`
+            : ""
+        }${lr.recon_requeued ? " · retry queued" : ""}</div>`
       : "";
   const eps = Array.isArray(i.entrypoints) ? i.entrypoints : [];
   const epsRow = eps.length
@@ -1650,6 +1683,7 @@ function renderTargetInventoryCard(inv, snap) {
         <div class="k">Planning seed</div><div class="v">${seedLabel}</div>
         <div class="k">Hunt plan</div><div class="v mono" title="${esc(planHint)}">${esc(planLabel)}</div>
         ${enq}
+        ${lastReconRow}
         ${epsRow}
       </div>
       ${
@@ -2081,9 +2115,8 @@ function closeSettings() {
   $("#settings-modal")?.classList.remove("open");
 }
 
-async function saveSettings(ev) {
-  ev.preventDefault();
-  const body = {
+function settingsFormBody() {
+  return {
     host: $("#set-host").value.trim(),
     port: parseInt($("#set-port").value, 10),
     model: $("#set-model").value.trim(),
@@ -2096,6 +2129,107 @@ async function saveSettings(ev) {
     timeout_seconds: parseInt($("#set-timeout").value, 10),
     max_tasks: parseInt($("#set-maxtasks").value, 10),
   };
+}
+
+function applyRecommendedToSettingsForm(rec) {
+  if (!rec || typeof rec !== "object") return;
+  if (rec.host != null) $("#set-host").value = rec.host;
+  if (rec.port != null) $("#set-port").value = rec.port;
+  if (rec.model != null) $("#set-model").value = rec.model;
+  const apiModeEl = $("#set-api-mode");
+  if (apiModeEl && rec.api_mode) {
+    apiModeEl.value = rec.api_mode;
+    if (apiModeEl.value !== rec.api_mode) apiModeEl.value = "chat_completions";
+  }
+  if (rec.max_concurrent_agents != null) $("#set-workers").value = rec.max_concurrent_agents;
+  if (rec.context_tokens != null) $("#set-ctx").value = rec.context_tokens;
+  if (rec.max_context_fraction != null) $("#set-frac").value = rec.max_context_fraction;
+  if (rec.max_tokens != null) $("#set-maxtok").value = rec.max_tokens;
+  if (rec.max_tool_rounds != null) $("#set-rounds").value = rec.max_tool_rounds;
+  if (rec.timeout_seconds != null) $("#set-timeout").value = rec.timeout_seconds;
+  if (rec.max_tasks != null) $("#set-maxtasks").value = rec.max_tasks;
+}
+
+function formatOptimizeReport(data) {
+  const lines = [];
+  if (data.summary) lines.push(data.summary);
+  if (data.error) lines.push("Error: " + data.error);
+  const warns = data.warnings || [];
+  for (const w of warns) lines.push("⚠ " + w);
+  const changes = data.changes || {};
+  const keys = Object.keys(changes);
+  if (keys.length) {
+    lines.push("Changes:");
+    for (const k of keys) {
+      const c = changes[k];
+      lines.push(`  ${k}: ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`);
+    }
+  } else if (data.ok) {
+    lines.push("No field changes vs current saved settings.");
+  }
+  const tests = data.tests || [];
+  if (tests.length) {
+    lines.push("Tests:");
+    for (const t of tests) {
+      const mark = t.ok ? "✓" : "✗";
+      lines.push(`  ${mark} ${t.id}: ${t.detail || ""} (${t.seconds ?? "?"}s)`);
+    }
+  }
+  lines.push("Review values, then Save to persist.");
+  return lines.join("\n");
+}
+
+async function optimizeSettings() {
+  const btn = $("#settings-optimize");
+  const report = $("#settings-optimize-report");
+  const form = settingsFormBody();
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Optimizing…";
+  }
+  if (report) {
+    report.hidden = false;
+    report.textContent = "Probing endpoint (models, completion, tool-call, latency)…";
+  }
+  try {
+    const data = await api("/api/settings/optimize", {
+      method: "POST",
+      body: JSON.stringify({
+        host: form.host,
+        port: form.port,
+        model: form.model,
+        apply: false,
+      }),
+    });
+    if (data.recommended) applyRecommendedToSettingsForm(data.recommended);
+    if (report) report.textContent = formatOptimizeReport(data);
+    if (data.ok) {
+      toast(data.tool_calls_ok ? "Optimized — review & Save" : "Optimized with warnings — review & Save");
+      const eff = $("#settings-effective");
+      if (eff && data.recommended) {
+        const r = data.recommended;
+        eff.textContent =
+          `Recommended: http://${r.host}:${r.port}/v1 | model ${r.model} | api ${r.api_mode} | ` +
+          `agents ${r.max_concurrent_agents} | ctx ${r.context_tokens} × ${r.max_context_fraction} | ` +
+          `tools ${data.tool_calls_ok ? "ok" : "weak"}`;
+      }
+    } else {
+      toast(data.error || "Optimize failed", true);
+    }
+  } catch (e) {
+    if (report) report.textContent = String(e.message || e);
+    toast(e.message || String(e), true);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Optimize AI settings";
+    }
+  }
+}
+
+async function saveSettings(ev) {
+  ev.preventDefault();
+  const body = settingsFormBody();
   try {
     await api("/api/settings", { method: "PUT", body: JSON.stringify(body) });
     toast("Settings saved");
@@ -2311,7 +2445,7 @@ function inlineMd(s) {
 
 /* ---------- Architecture (summary only) ---------- */
 
-function renderArchitecture(arch, summary) {
+function renderArchitecture(arch, summary, snap) {
   const el = $("#arch-panel");
   if (!el) return;
   const s = summary || {};
@@ -2320,7 +2454,8 @@ function renderArchitecture(arch, summary) {
     el.innerHTML = `<div class="card">
       <div class="empty empty-cta">
         <p><strong>No architecture yet</strong></p>
-        <p class="controls-hint">Recon has not finished (or has not run). Map the target first, then hunt from Explorer or Coverage.</p>
+        <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored in the run DB after submit_architecture (or free-text salvage) — not under project/. Map the target first, then hunt from Explorer or Coverage.</p>
+        ${reconFailureHint(snap)}
         <div class="empty-cta-actions">
           <button type="button" class="btn btn-primary" id="arch-go-mission">Run recon with brief</button>
           <button type="button" class="btn" id="arch-go-explorer">Open Explorer</button>
@@ -2946,7 +3081,7 @@ async function loadRunFull() {
   renderRunner(snap.runner || {}, snap);
   renderOverview(snap);
   renderTasks(snap.tasks || []);
-  renderArchitecture(snap.architecture, snap.architecture_summary);
+  renderArchitecture(snap.architecture, snap.architecture_summary, snap);
   renderExplorer();
   renderEvidence(snap.evidence || []);
   window.__VF_cov_policy = snap.coverage_policy;
@@ -3301,6 +3436,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
   $("#btn-settings")?.addEventListener("click", openSettings);
   $("#settings-cancel")?.addEventListener("click", closeSettings);
+  $("#settings-optimize")?.addEventListener("click", () => optimizeSettings());
   $("#settings-form")?.addEventListener("submit", saveSettings);
   // Settings / New-run modals stay open until Cancel or Save/Create -
   // do not dismiss on backdrop click (unstable form entry).

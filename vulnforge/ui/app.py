@@ -127,6 +127,15 @@ class SettingsBody(BaseModel):
     max_tasks: Optional[int] = None
 
 
+class SettingsOptimizeBody(BaseModel):
+    """Probe live endpoint and recommend settings (optional form overrides)."""
+
+    host: Optional[str] = None
+    port: Optional[int] = None
+    model: Optional[str] = None
+    apply: bool = False
+
+
 class HuntProfileBody(BaseModel):
     """Create or update a hunt profile."""
 
@@ -1025,6 +1034,28 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         # refresh app config for init paths in this process
         app.state.config = load_config()
         return {"ok": True, "settings": saved}
+
+    @app.post("/api/settings/optimize")
+    def api_optimize_settings(body: SettingsOptimizeBody = Body(default_factory=SettingsOptimizeBody)):
+        """Probe the configured LLM and recommend (optionally apply) settings.
+
+        Runs connectivity, model-id resolution, API surface checks, a tool-call
+        compliance micro-probe, and latency heuristics. Does not touch targets.
+        """
+        from vulnforge.settings_probe import optimize_ui_settings
+
+        try:
+            result = optimize_ui_settings(
+                host=body.host,
+                port=body.port,
+                model=body.model,
+                apply=bool(body.apply),
+            )
+        except Exception as e:
+            raise HTTPException(500, f"optimize failed: {e}") from e
+        if result.get("applied"):
+            app.state.config = load_config()
+        return result
 
     # ---------- API: hunt profiles (Dev dashboard) ----------
 

@@ -1,4 +1,4 @@
-/* Dev dashboard: hunt profiles + recon agents editors */
+/* Dev dashboard: hunt skills + recon agents editors */
 (function () {
   if (document.body?.dataset?.page !== "dev") return;
 
@@ -93,7 +93,7 @@
     });
   });
 
-  /* ---------- Hunt profiles ---------- */
+  /* ---------- Hunt skills ---------- */
 
   function isCustomSource(source) {
     const s = String(source || "").toLowerCase();
@@ -153,9 +153,9 @@
     if (!visible.length) {
       const emptyMsg = profiles.length
         ? huntExplorer === "custom"
-          ? "No custom or generated profiles"
-          : "No library profiles"
-        : "No profiles";
+          ? "No custom or generated skills"
+          : "No library skills"
+        : "No skills";
       body.innerHTML = `<tr><td colspan="${colCount}" class="empty">${emptyMsg}</td></tr>`;
       if (meta) {
         meta.textContent = profiles.length
@@ -166,7 +166,7 @@
     }
     const nActive = visible.filter((p) => p.active).length;
     if (meta) {
-      meta.textContent = `${visible.length} profiles · ${nActive} active`;
+      meta.textContent = `${visible.length} skills · ${nActive} active`;
     }
     body.innerHTML = visible
       .map((p) => {
@@ -307,7 +307,7 @@
     if (deleteBtn) deleteBtn.hidden = !!isNew;
     const title = $("#dev-editor-title");
     if (title) {
-      if (isNew) title.textContent = "New profile";
+      if (isNew) title.textContent = "New skill";
       else if (editing) title.textContent = `Edit: ${huntEditorProfile?.id || selectedId || ""}`;
       else title.textContent = `View: ${huntEditorProfile?.id || selectedId || ""}`;
     }
@@ -473,7 +473,7 @@
   async function deleteCurrent() {
     const id = ($("#dev-id").value || "").trim();
     if (!id || isNew) return;
-    if (!confirm(`Delete hunt profile "${id}"? This cannot be undone.`)) return;
+    if (!confirm(`Delete hunt skill "${id}"? This cannot be undone.`)) return;
     try {
       await api(`/api/hunt-profiles/${encodeURIComponent(id)}`, { method: "DELETE" });
       toast(`Deleted ${id}`);
@@ -593,14 +593,14 @@
   async function reseed() {
     if (
       !confirm(
-        "Replace the entire hunt collection with the package seed library?\n\nUse Export setup first if you have custom profiles you care about."
+        "Replace the entire hunt collection with the package seed library?\n\nUse Export setup first if you have custom skills you care about."
       )
     ) {
       return;
     }
     try {
       const r = await api("/api/hunt-profiles/reseed", { method: "POST", body: "{}" });
-      toast(`Reseeded ${r.count || 0} profiles`);
+      toast(`Reseeded ${r.count || 0} skills`);
       selectedId = null;
       await loadProfiles();
     } catch (e) {

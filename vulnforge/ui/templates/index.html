@@ -55,7 +55,7 @@
           <div style="flex:1;min-width:12rem">
             <h2 style="margin:0">Dev dashboard</h2>
             <p class="controls-hint" style="margin:0.35rem 0 0">
-              Edit hunt profiles, recon agents, and tools. Export setup transfers your whole Dev pack to a fresh install.
+              Edit hunt skills, recon agents, and tools. Export setup transfers your whole Dev pack to a fresh install.
             </p>
           </div>
           <a class="btn btn-primary" href="/dev" id="btn-open-dev">Open Dev</a>
@@ -154,7 +154,7 @@
               <span>Generate custom hunt skills for this run</span>
             </label>
             <p class="controls-hint init-hint" style="margin:0.35rem 0 0.4rem">
-              After recon, author target-specific hunt profiles from architecture and inventory
+              After recon, author target-specific hunt skills from architecture and inventory
               (editable system prompt under Dev → Skill generator). Stock hunts still run; these are additive.
             </p>
             <div class="field" id="init-dynamic-skill-count-wrap" hidden>
@@ -410,8 +410,10 @@
           </div>
         </div>
         <div class="controls-hint" id="settings-effective" style="margin-top:0.5rem"></div>
+        <pre class="controls-hint mono" id="settings-optimize-report" hidden style="margin-top:0.65rem;max-height:12rem;overflow:auto;white-space:pre-wrap;padding:0.5rem;border:1px solid var(--border);border-radius:6px"></pre>
         <div class="modal-actions">
           <button type="button" class="btn" id="settings-cancel">Cancel</button>
+          <button type="button" class="btn" id="settings-optimize" title="Probe the endpoint/model and fill recommended values (does not save until you click Save)">Optimize AI settings</button>
           <button type="submit" class="btn btn-primary" id="settings-save">Save</button>
         </div>
       </form>

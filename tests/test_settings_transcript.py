@@ -51,6 +51,43 @@ def test_api_mode_aliases_and_default(tmp_path: Path, monkeypatch):
     assert cfg["llm"]["api_mode"] == "chat_completions"
 
 
+def test_model_candidates_resolve_prefix():
+    from vulnforge.settings_probe import _model_candidates
+
+    listed = ["ornith-1.0-35b", "gpt-oss-20b"]
+    c = _model_candidates("models/Ornith-1.0-35b", listed)
+    assert "ornith-1.0-35b" in c
+    assert c[0] == "models/Ornith-1.0-35b" or "ornith" in c[0].lower()
+
+
+def test_optimize_unreachable_endpoint(tmp_path: Path, monkeypatch):
+    from vulnforge import settings_probe
+
+    monkeypatch.setattr(
+        "vulnforge.settings_probe.load_ui_settings",
+        lambda: {
+            "host": "127.0.0.1",
+            "port": 1,
+            "model": "nope",
+            "api_mode": "chat_completions",
+            "max_concurrent_agents": 1,
+            "context_tokens": 8192,
+            "max_context_fraction": 0.25,
+            "max_tokens": 1024,
+            "max_tool_rounds": 8,
+            "timeout_seconds": 30,
+            "max_tasks": 10,
+        },
+    )
+    r = settings_probe.optimize_ui_settings(
+        host="127.0.0.1", port=1, model="nope", apply=False, timeout_seconds=2.0
+    )
+    assert r["ok"] is False
+    assert r.get("error")
+    assert r["applied"] is False
+    assert any(t.get("id") == "models" for t in r.get("tests") or [])
+
+
 def test_transcript_roundtrip(tmp_path: Path):
     run = tmp_path / "run"
     run.mkdir()

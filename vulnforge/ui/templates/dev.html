@@ -36,7 +36,7 @@
         </p>
       </div>
       <div class="toolbar" style="flex-wrap:wrap;gap:0.5rem;align-items:center">
-        <button type="button" class="btn btn-primary" id="btn-dev-setup-export" title="Download hunt profiles, recon agents, skill generator override, tool drafts, and UI settings">
+        <button type="button" class="btn btn-primary" id="btn-dev-setup-export" title="Download hunt skills, recon agents, skill generator override, tool drafts, and UI settings">
           Export setup
         </button>
         <button type="button" class="btn" id="btn-dev-setup-import" title="Restore a full setup pack on a fresh install">
@@ -46,33 +46,33 @@
     </div>
 
     <nav class="tabs" role="tablist" aria-label="Dev collections">
-      <button type="button" class="tab active" data-dev-tab="hunt" role="tab" aria-selected="true">Hunt profiles</button>
+      <button type="button" class="tab active" data-dev-tab="hunt" role="tab" aria-selected="true">Hunt skills</button>
       <button type="button" class="tab" data-dev-tab="skillgen" role="tab" aria-selected="false">Skill generator</button>
       <button type="button" class="tab" data-dev-tab="recon" role="tab" aria-selected="false">Recon agents</button>
       <button type="button" class="tab" data-dev-tab="tools" role="tab" aria-selected="false">Tools</button>
     </nav>
 
-    <!-- ========== Hunt profiles ========== -->
+    <!-- ========== Hunt skills ========== -->
     <section id="panel-hunt" class="tab-panel active" data-dev-panel="hunt" role="tabpanel">
       <div class="page-hero" style="padding-top:0.75rem">
         <div>
-          <h2 style="margin:0 0 0.35rem">Hunt profiles</h2>
+          <h2 style="margin:0 0 0.35rem">Hunt skills</h2>
           <p style="margin:0">
             Edit the operator hunt collection used by recon, Explorer, Coverage, and file-by-file.
-            <strong>Active</strong> profiles are bulk-enqueued when recon has no hunt_focus and for Coverage “all”.
+            <strong>Active</strong> skills are bulk-enqueued when recon has no hunt_focus and for Coverage “all”.
           </p>
         </div>
       </div>
 
       <div class="card dev-toolbar-card">
         <div class="toolbar" style="margin-bottom:0;flex-wrap:wrap;gap:0.5rem;align-items:center">
-          <button type="button" class="btn btn-primary" id="btn-dev-new">+ New profile</button>
+          <button type="button" class="btn btn-primary" id="btn-dev-new">+ New skill</button>
           <button type="button" class="btn btn-primary" id="btn-dev-generate" title="LLM-author a skill from a brief">Generate from description</button>
           <button type="button" class="btn" id="btn-dev-reseed" title="Replace collection with package seed">Reseed from package</button>
           <button type="button" class="btn" id="btn-dev-refresh">Refresh</button>
-          <div class="dev-seg" id="dev-explorer-toggle" role="group" aria-label="Profile explorer">
-            <button type="button" class="dev-seg-btn is-selected" data-hunt-explorer="library" title="Seed and imported profiles">Library</button>
-            <button type="button" class="dev-seg-btn" data-hunt-explorer="custom" title="Custom and generated profiles">Custom &amp; generated</button>
+          <div class="dev-seg" id="dev-explorer-toggle" role="group" aria-label="Skill explorer">
+            <button type="button" class="dev-seg-btn is-selected" data-hunt-explorer="library" title="Seed and imported skills">Library</button>
+            <button type="button" class="dev-seg-btn" data-hunt-explorer="custom" title="Custom and generated skills">Custom &amp; generated</button>
           </div>
           <span class="controls-hint" id="dev-meta" style="margin-left:auto"></span>
         </div>
@@ -100,11 +100,11 @@
 
         <div class="card dev-editor-card">
           <h2 style="margin-top:0" id="dev-editor-title">Editor</h2>
-          <p class="controls-hint" id="dev-editor-hint">Select a profile or create a new one.</p>
+          <p class="controls-hint" id="dev-editor-hint">Select a skill or create a new one.</p>
           <form id="dev-editor-form" class="dev-editor-form" hidden>
             <p class="controls-hint" id="dev-editor-origin" hidden></p>
             <div class="field">
-              <label class="field-label-text" for="dev-id">Profile id</label>
+              <label class="field-label-text" for="dev-id">Skill id (class)</label>
               <input id="dev-id" class="mono" autocomplete="off" spellcheck="false" pattern="[a-z][a-z0-9-]{0,63}" required />
               <p class="controls-hint">Lowercase slug: <code>injection</code>, <code>my-custom</code></p>
             </div>
@@ -503,7 +503,7 @@
         <h2 id="dev-generate-title">Generate hunt skill</h2>
         <p class="controls-hint">
           Describe the custom hunt. The model authors a skill body (Mission / Method / Submit).
-          Saved profiles get <code>source=generated</code> and stay inactive unless you activate them.
+          Saved skills get <code>source=generated</code> and stay inactive unless you activate them.
         </p>
       </header>
       <div class="field">
@@ -538,7 +538,7 @@
       <header>
         <h2 id="dev-import-title">Import Dev setup</h2>
         <p class="controls-hint">
-          Paste or upload a <code>vulnforge_dev_setup.json</code> export (hunt profiles, recon agents,
+          Paste or upload a <code>vulnforge_dev_setup.json</code> export (hunt skills, recon agents,
           skill generator override, tool drafts, UI settings). Legacy single-collection JSON
           (<code>hunt_collection</code>, <code>recon_collection</code>, tool drafts) still works.
         </p>

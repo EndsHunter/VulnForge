@@ -105,6 +105,38 @@ def test_inventory_honesty_hunt_focus(tmp_path: Path, toy_sqli: Path):
     assert ih["sample_truncated"] is False
     assert ih["hunt_plan_source"] == "hunt_focus"
     assert ih["hunt_enqueued"] == 3
+    assert ih.get("last_recon") is not None
+    assert ih["last_recon"]["state"] == "succeeded"
+
+
+def test_inventory_last_recon_failure(tmp_path: Path, toy_sqli: Path):
+    from vulnforge.db import Database
+
+    runs = tmp_path / "runs"
+    main(["init", "--target", str(toy_sqli), "--runs-root", str(runs)])
+    ref = store.discover_runs(runs)[0]
+    db = Database.open(ref.path / "harness.db")
+    try:
+        recon = next(t for t in db.list_tasks() if t.kind == "recon")
+        db.fail_task(
+            recon.id,
+            "failed_task",
+            "no_submit",
+            result_extra={
+                "recon_requeued": True,
+                "child_task_id": 99,
+            },
+        )
+    finally:
+        db.close()
+
+    ih = store.run_snapshot(ref)["inventory_honesty"]
+    assert ih["recon_done"] is False
+    lr = ih["last_recon"]
+    assert lr is not None
+    assert lr["state"] == "failed_task"
+    assert lr["error"] == "no_submit"
+    assert lr["recon_requeued"] is True
 
 
 @pytest.mark.parametrize(

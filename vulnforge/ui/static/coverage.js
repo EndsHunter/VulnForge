@@ -435,7 +435,7 @@
         badge: "all",
         title: "Bulk: all architecture areas",
         detail:
-          "Last action filled the queue with active hunt profiles × known areas (capped at 40). Ralph drains those hunts while it runs.",
+          "Last action filled the queue with active hunt skills × known areas (capped at 40). Ralph drains those hunts while it runs.",
       };
     }
     if (mode === "select") {
@@ -681,8 +681,8 @@
 
     const optionalList = classes.filter((c) => !activeClasses.includes(c));
     const classGroups =
-      classBlock("Active profiles", activeClasses) +
-      classBlock("Optional profiles", optionalList);
+      classBlock("Active skills", activeClasses) +
+      classBlock("Optional skills", optionalList);
 
     el.innerHTML = `
       <div class="cov-plan-card">
@@ -703,7 +703,7 @@
           </button>
           <button type="button" class="cov-plan-action ${mode === "all" && !selectFormOpen ? "is-current" : ""}" data-cov-mode="all" id="cov-plan-all">
             <span class="cov-plan-action-title">Cover all areas (active)</span>
-            <span class="cov-plan-action-desc">Queue about ${est.capped} hunt${est.capped === 1 ? "" : "s"}: ${est.nCore} active profiles × ${est.nAreas} area${est.nAreas === 1 ? "" : "s"}${est.raw > 40 ? " (capped at 40)" : ""}. Starts work immediately if Ralph is running.</span>
+            <span class="cov-plan-action-desc">Queue about ${est.capped} hunt${est.capped === 1 ? "" : "s"}: ${est.nCore} active skills × ${est.nAreas} area${est.nAreas === 1 ? "" : "s"}${est.raw > 40 ? " (capped at 40)" : ""}. Starts work immediately if Ralph is running.</span>
           </button>
           <button type="button" class="cov-plan-action ${selectFormOpen || mode === "select" ? "is-current" : ""}" data-cov-mode="select" id="cov-plan-custom">
             <span class="cov-plan-action-title">Custom areas &amp; classes…</span>

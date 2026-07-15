@@ -359,26 +359,53 @@ def _target_inventory(
     hunt_plan_source: str | None = None
     hunt_enqueued: int | None = None
     recon_done = False
+    last_recon: dict[str, Any] | None = None
+    terminal = frozenset(
+        {"succeeded", "failed_task", "failed_infra", "deadletter", "cancelled"}
+    )
     for t in reversed(tasks):
-        if t.get("kind") != "recon" or t.get("state") != "succeeded":
+        if t.get("kind") != "recon":
             continue
-        recon_done = True
-        res = t.get("result") or {}
-        if not isinstance(res, dict):
-            break
-        hps = res.get("hunt_plan_source")
-        if hps is not None:
-            hunt_plan_source = str(hps)
-        if res.get("hunt_enqueued") is not None:
-            try:
-                hunt_enqueued = int(res["hunt_enqueued"])
-            except (TypeError, ValueError):
-                hunt_enqueued = None
-        if file_count is None and res.get("file_count") is not None:
-            try:
-                file_count = int(res["file_count"])
-            except (TypeError, ValueError):
-                pass
+        st = str(t.get("state") or "").lower()
+        if st not in terminal:
+            continue
+        res = t.get("result") if isinstance(t.get("result"), dict) else {}
+        payload = t.get("payload") if isinstance(t.get("payload"), dict) else {}
+        err = None
+        if st != "succeeded":
+            err = (res or {}).get("error") or st
+        gen = payload.get("recon_generation")
+        try:
+            gen_i = int(gen) if gen is not None else 1
+        except (TypeError, ValueError):
+            gen_i = 1
+        last_recon = {
+            "task_id": t.get("id"),
+            "state": st,
+            "error": str(err)[:200] if err else None,
+            "hunt_enqueued": (res or {}).get("hunt_enqueued"),
+            "hunt_plan_source": (res or {}).get("hunt_plan_source"),
+            "recon_generation": gen_i,
+            "recon_requeued": bool((res or {}).get("recon_requeued")),
+            "child_task_id": (res or {}).get("child_task_id"),
+            "batch_finalized": (res or {}).get("batch_finalized"),
+            "enqueue_hunts": (res or {}).get("enqueue_hunts"),
+        }
+        if st == "succeeded":
+            recon_done = True
+            hps = (res or {}).get("hunt_plan_source")
+            if hps is not None:
+                hunt_plan_source = str(hps)
+            if (res or {}).get("hunt_enqueued") is not None:
+                try:
+                    hunt_enqueued = int(res["hunt_enqueued"])
+                except (TypeError, ValueError):
+                    hunt_enqueued = None
+            if file_count is None and (res or {}).get("file_count") is not None:
+                try:
+                    file_count = int(res["file_count"])
+                except (TypeError, ValueError):
+                    pass
         break
 
     seed_partial = file_count is not None and file_count > SAMPLE_PATHS_CAP
@@ -394,6 +421,7 @@ def _target_inventory(
         "hunt_plan_source": hunt_plan_source,
         "hunt_enqueued": hunt_enqueued,
         "recon_done": recon_done,
+        "last_recon": last_recon,
         "note": (
             "Planning seed is a packet budget only. Full file_count is inventoried; "
             "hunts can list/grep/read the whole tree. Ralph is not limited by the seed."

@@ -38,7 +38,7 @@ The dashboard is the main operator surface:
 | **Evidence** | On-disk evidence packs (browse / open from Report) |
 | **Tasks** | Task queue / transcripts, event timeline (mode id `audit`) |
 
-**Home** (`/`): all runs + **Tool gaps** (`/tool-gaps`) + **Dev dashboard** (`/dev`, hunt profiles).
+**Home** (`/`): all runs + **Tool gaps** (`/tool-gaps`) + **Dev dashboard** (`/dev`, hunt skills).
 
 ### Steer a live campaign
 
@@ -55,7 +55,7 @@ Keyboard: `e` focuses Explorer.
 vulnforge/
   control/       # exit codes, ops (coverage/selection hunt)
   findings/      # stable_key + near-dup merge (not a stage)
-  hunt_profiles/ # operator hunt collection (seed + CRUD + import/export)
+  hunt_profiles/ # operator hunt skills collection (seed + CRUD + import/export)
   stages/        # recon, hunt, validate_mech, render, …
   tools/         # FS jail, file_inventory, grep, evidence
   llm/           # (or llm.py) client + FakeLLM
@@ -66,9 +66,9 @@ vulnforge/
 
 ## Extending
 
-### New hunt class / profile
+### New hunt class / skill
 
-Hunt profiles live in the **operator collection** (`config/hunt_profiles/`), not hardcoded defaults.
+Hunt skills live in the **operator collection** (`config/hunt_profiles/`), not hardcoded defaults.
 
 1. Dashboard: **Home → Open Dev** (`/dev`)
 2. **+ New profile** (id slug + markdown body), or **Import** a collection JSON
@@ -85,7 +85,7 @@ Add check in `stages/validate_mech.py` `CHECKS` list; unit test in `tests/test_v
 
 **Full offline guide:** [`toolgen.md`](toolgen.md) — use when adding or extending agent tools with a local/offline model (or any agent). It is the checklist of record for wire-up, safety, tests, and a pasteable prompt.
 
-**Dev dashboard:** Home → **Open Dev** → **Tools** tab lists integrated tools (description + parameters), manages AI **drafts**, and walks gap → prompts → generate → `validate_tool` → integrate. Hunt profiles can set an optional **Approved tools** allowlist. Validation: `python scripts/validate_tool.py config/tool_drafts/<id>`.
+**Dev dashboard:** Home → **Open Dev** → **Tools** tab lists integrated tools (description + parameters), manages AI **drafts**, and walks gap → prompts → generate → `validate_tool` → integrate. Hunt skills can set an optional **Approved tools** allowlist. Validation: `python scripts/validate_tool.py config/tool_drafts/<id>`.
 
 **When to open it**
 
