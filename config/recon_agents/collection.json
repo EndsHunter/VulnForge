@@ -1,0 +1,63 @@
+{
+  "format": "vulnforge.recon_collection/v1",
+  "updated_at": "2026-07-14T12:00:00Z",
+  "seeded_from": "prompts/v1/recon_agents",
+  "agents": [
+    {
+      "id": "default-map",
+      "title": "Default map",
+      "description": "Primary architecture mapper and hunt_focus planner; evidence from inventory + tools over inventing topology.",
+      "active": true,
+      "order": 10,
+      "mode": "sequential",
+      "tools": null,
+      "temperature": null,
+      "max_tool_rounds": null,
+      "output": "architecture",
+      "body_file": "bodies/default-map.md",
+      "source": "custom"
+    },
+    {
+      "id": "surface-mapper",
+      "title": "Surface mapper",
+      "description": "Deepen path-backed input surfaces and entrypoints (HTTP, CLI, queues, webhooks, IPC); submit_architecture only.",
+      "active": false,
+      "order": 20,
+      "mode": "sequential",
+      "tools": null,
+      "temperature": null,
+      "max_tool_rounds": null,
+      "output": "architecture",
+      "body_file": "bodies/surface-mapper.md",
+      "source": "seed"
+    },
+    {
+      "id": "dependency-risk",
+      "title": "Dependency risk",
+      "description": "Map third-party deps, supply-chain trust, install/update and secrets/config surfaces — not a CVE dump.",
+      "active": false,
+      "order": 30,
+      "mode": "sequential",
+      "tools": null,
+      "temperature": null,
+      "max_tool_rounds": null,
+      "output": "architecture",
+      "body_file": "bodies/dependency-risk.md",
+      "source": "seed"
+    },
+    {
+      "id": "auth-model",
+      "title": "Auth model",
+      "description": "Map authentication, sessions/tokens, roles, and multi-tenant authorization boundaries with path evidence.",
+      "active": false,
+      "order": 40,
+      "mode": "sequential",
+      "tools": null,
+      "temperature": null,
+      "max_tool_rounds": null,
+      "output": "architecture",
+      "body_file": "bodies/auth-model.md",
+      "source": "seed"
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+﻿# vulnforge default config â€” local LM Studio / Ornith
+
+llm:
+  # OpenAI-compatible endpoint (LM Studio default local bind)
+  base_url: "http://127.0.0.1:1234/v1"
+  # Exact model id as exposed by your server (change to match)
+  model: "models/Ornith-1.0-35B@4bit"
+  display_name: "Ornith 1.0 35B 4bit"
+  api_key: "lm-studio"   # LM Studio often ignores this; required by some clients
+  # HTTP API surface: chat_completions | responses | messages
+  # chat_completions → POST /v1/chat/completions (OpenAI classic; LM Studio default)
+  # responses        → POST /v1/responses (OpenAI Responses API)
+  # messages         → POST /v1/messages (Anthropic-style Messages API)
+  api_mode: chat_completions
+  max_context_fraction: 0.25
+  max_tool_rounds: 12
+  temperature_hunt: 0.4
+  temperature_disprove: 0.1
+  temperature_recon: 0.3
+  timeout_seconds: 600
+  retry_infra: 3
+  # Ornith-class reasoning models need headroom beyond answer tokens
+  max_tokens: 4096
+  context_tokens: 32768
+
+run:
+  profile: code_static
+  max_tasks: 50
+  max_task_attempts: 3       # infra requeues until attempt >= this â†’ deadletter
+  max_split_depth: 2         # P1.5 auto-split ladder cap (L0â†’L2)
+  max_wall_hours: 8
+  max_leases_parallel: 1
+  lease_ttl_seconds: 1800
+  auto_tool_gaps: false       # on idle run-once after render, write tool gap reports
+  tool_gaps_mode: mechanical  # mechanical | llm | hybrid (Home "Analyze with AI" uses hybrid)
+  max_recon_auto_retries: 2   # child recon generations after recoverable failed_task
+  runs_root: "runs"          # relative to cwd or absolute
+  ignore_globs:
+    - ".git/**"
+    - "node_modules/**"
+    - "venv/**"
+    - ".venv/**"
+    - "dist/**"
+    - "build/**"
+    - "**/__pycache__/**"
+    - "runs/**"
+    # Large-tree / desktop hygiene (Desktop-scale targets)
+    - "**/.cache/**"
+    - "**/AppData/**"
+    - "**/.npm/**"
+    - "**/.cargo/**"
+    - "**/Library/**"
+    - "**/*.iso"
+    - "**/*.vmdk"
+    - "**/*.vhdx"
+    - "**/System Volume Information/**"
+    - "**/$RECYCLE.BIN/**"
+
+stages:
+  validate_llm: false
+  gapfill: false
+  dedup: false
+  feedback: false
+
+packet:
+  max_architecture_chars: 1800   # P1.2 slim hunt packet (area slice)
+  max_file_slice_chars: 4000
+  max_codemap_entries: 12
+  max_known_keys: 20
+  max_known_findings: 20
+  max_seed_sinks: 12
+  max_hunt_angles: 4
+
+tools:
+  max_read_bytes: 65536
+  max_grep_matches: 50
+  max_list_entries: 200
+  max_inventory_entries: 2000
+  max_inventory_depth: 10
+  max_evidence_bytes: 1048576
+  max_grep_pattern_len: 200
+  grep_timeout_seconds: 8
+  max_grep_files: 8000

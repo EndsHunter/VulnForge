@@ -1,0 +1,493 @@
+{
+  "format": "vulnforge.hunt_collection/v1",
+  "updated_at": "2026-07-15T03:27:13Z",
+  "seeded_from": "prompts/v1/hunt_classes",
+  "profiles": [
+    {
+      "id": "injection",
+      "title": "Injection",
+      "description": "Hunts untrusted data reaching SQL, command, code, template, path, or deserialize interpreters without safe APIs or context-correct encoding.",
+      "active": true,
+      "body_file": "bodies/injection.md",
+      "source": "seed",
+      "tags": [
+        "injection",
+        "sqli",
+        "rce",
+        "ssti",
+        "path-traversal"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-89",
+        "CWE-78",
+        "CWE-94",
+        "CWE-22",
+        "CWE-502"
+      ],
+      "angle_ids": [
+        1,
+        3,
+        6,
+        7
+      ],
+      "sink_families": [
+        "sql",
+        "exec",
+        "template",
+        "deserialize",
+        "path"
+      ],
+      "specificity": 20,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "access-control",
+      "title": "Access control",
+      "description": "Hunts IDOR/BOLA, missing authentication on mutators, mass assignment, and broken object/function-level authorization.",
+      "active": true,
+      "body_file": "bodies/access-control.md",
+      "source": "seed",
+      "tags": [
+        "authz",
+        "idor",
+        "bola",
+        "bfla",
+        "mass-assignment"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-639",
+        "CWE-862",
+        "CWE-863",
+        "CWE-284",
+        "CWE-915"
+      ],
+      "angle_ids": [
+        4,
+        5,
+        9,
+        12
+      ],
+      "sink_families": [
+        "auth",
+        "jwt"
+      ],
+      "specificity": 20,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "business-logic",
+      "title": "Business logic",
+      "description": "Hunts breaks of money, workflow, identity, and quota invariants via allowed APIs \u2014 no classic injection required.",
+      "active": true,
+      "body_file": "bodies/business-logic.md",
+      "source": "seed",
+      "tags": [
+        "logic",
+        "workflow",
+        "race",
+        "pricing",
+        "replay"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-840",
+        "CWE-841",
+        "CWE-367"
+      ],
+      "angle_ids": [
+        1,
+        4,
+        5,
+        9
+      ],
+      "sink_families": [],
+      "specificity": 15,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "cryptography",
+      "title": "Cryptography",
+      "description": "Hunts secret and crypto misuse that forges tokens, decrypts data, or breaks integrity/auth \u2014 not algorithm fashion.",
+      "active": true,
+      "body_file": "bodies/cryptography.md",
+      "source": "seed",
+      "tags": [
+        "crypto",
+        "secrets",
+        "jwt",
+        "tls",
+        "hashing"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-327",
+        "CWE-798",
+        "CWE-321",
+        "CWE-347",
+        "CWE-330"
+      ],
+      "angle_ids": [
+        6,
+        8,
+        11,
+        12
+      ],
+      "sink_families": [
+        "jwt"
+      ],
+      "specificity": 20,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "wildcard",
+      "title": "Wildcard",
+      "description": "Residual hunt for weird trust edges and creative cross-class bugs other packs under-weight \u2014 still requiring full exploitability.",
+      "active": true,
+      "body_file": "bodies/wildcard.md",
+      "source": "seed",
+      "tags": [
+        "wildcard",
+        "creative",
+        "residual"
+      ],
+      "languages": [],
+      "cwe": [],
+      "angle_ids": [
+        1,
+        3,
+        9,
+        12
+      ],
+      "sink_families": [],
+      "specificity": 1,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "ai-llm",
+      "title": "AI / LLM",
+      "description": "Hunts untrusted text reaching models/agents that drive privileged tools or sinks \u2014 confused-deputy paths (OWASP LLM / agentic risks).",
+      "active": false,
+      "body_file": "bodies/ai-llm.md",
+      "source": "seed",
+      "tags": [
+        "llm",
+        "prompt-injection",
+        "agents",
+        "rag",
+        "mcp"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-77",
+        "CWE-94",
+        "CWE-918"
+      ],
+      "angle_ids": [
+        3,
+        9,
+        11,
+        12
+      ],
+      "sink_families": [
+        "llm"
+      ],
+      "specificity": 30,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "chains",
+      "title": "Chains",
+      "description": "Hunts multi-hop combinations that cross trust boundaries where each hop alone is limited but the combination yields privilege or data gain.",
+      "active": false,
+      "body_file": "bodies/chains.md",
+      "source": "seed",
+      "tags": [
+        "chains",
+        "multi-step",
+        "second-order"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-269"
+      ],
+      "angle_ids": [
+        3,
+        4,
+        7,
+        9
+      ],
+      "sink_families": [],
+      "specificity": 10,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "client-side",
+      "title": "Client-side",
+      "description": "Hunts browser/webview trust bugs where a victim session or cross-origin data is hit via source\u2192DOM sink.",
+      "active": false,
+      "body_file": "bodies/client-side.md",
+      "source": "seed",
+      "tags": [
+        "xss",
+        "dom",
+        "cors",
+        "postmessage",
+        "browser"
+      ],
+      "languages": [
+        "js",
+        "ts",
+        "html"
+      ],
+      "cwe": [
+        "CWE-79",
+        "CWE-346",
+        "CWE-942",
+        "CWE-1321"
+      ],
+      "angle_ids": [
+        3,
+        6,
+        7,
+        10
+      ],
+      "sink_families": [
+        "template"
+      ],
+      "specificity": 15,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "feature-abuse",
+      "title": "Feature abuse",
+      "description": "Hunts abuse of legitimate features (export, search, webhooks, previews, import) for over-access, integrity break, or SSRF \u2014 design gaps, not only coding bugs.",
+      "active": false,
+      "body_file": "bodies/feature-abuse.md",
+      "source": "seed",
+      "tags": [
+        "feature-abuse",
+        "ssrf",
+        "export",
+        "webhooks"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-918",
+        "CWE-200",
+        "CWE-639"
+      ],
+      "angle_ids": [
+        8,
+        9,
+        11,
+        12
+      ],
+      "sink_families": [
+        "ssrf"
+      ],
+      "specificity": 12,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "graphql",
+      "title": "GraphQL",
+      "description": "Hunts GraphQL/BFF surfaces that break object-level authz, enable batch/alias abuse, or leak data via nested resolvers \u2014 not \u201cintrospection is on.\u201d",
+      "active": false,
+      "body_file": "bodies/graphql.md",
+      "source": "seed",
+      "tags": [
+        "graphql",
+        "bola",
+        "batching",
+        "resolvers"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-639",
+        "CWE-862",
+        "CWE-770"
+      ],
+      "angle_ids": [
+        3,
+        4,
+        9,
+        12
+      ],
+      "sink_families": [
+        "auth"
+      ],
+      "specificity": 18,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "memory-safety",
+      "title": "Memory safety",
+      "description": "Hunts spatial/temporal memory bugs and privileged native-interface flaws on attacker-controlled input in C/C++/ObjC, Rust unsafe, parsers, kernels, FFI, and JIT.",
+      "active": false,
+      "body_file": "bodies/memory-safety.md",
+      "source": "seed",
+      "tags": [
+        "memory",
+        "native",
+        "overflow",
+        "uaf",
+        "unsafe"
+      ],
+      "languages": [
+        "c",
+        "cpp",
+        "rust",
+        "objc"
+      ],
+      "cwe": [
+        "CWE-119",
+        "CWE-416",
+        "CWE-787",
+        "CWE-125"
+      ],
+      "angle_ids": [
+        1,
+        2,
+        6,
+        7
+      ],
+      "sink_families": [],
+      "specificity": 18,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "obvious",
+      "title": "Obvious",
+      "description": "Exhausts high-signal dumb checks others skip \u2014 committed secrets, debug routes, open redirects, sensitive cookie flags, verbose prod errors.",
+      "active": false,
+      "body_file": "bodies/obvious.md",
+      "source": "seed",
+      "tags": [
+        "obvious",
+        "secrets",
+        "debug",
+        "checklist"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-798",
+        "CWE-200",
+        "CWE-489",
+        "CWE-601"
+      ],
+      "angle_ids": [
+        1,
+        9,
+        10,
+        11
+      ],
+      "sink_families": [],
+      "specificity": 5,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "supply-chain",
+      "title": "Supply chain",
+      "description": "Hunts dependency, build, install, and update trust breaks with real attacker impact \u2014 install-time exec, poisoned artifacts, CI secrets, dependency confusion.",
+      "active": false,
+      "body_file": "bodies/supply-chain.md",
+      "source": "seed",
+      "tags": [
+        "supply-chain",
+        "ci",
+        "dependencies",
+        "install-scripts"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-829",
+        "CWE-494",
+        "CWE-506"
+      ],
+      "angle_ids": [
+        3,
+        8,
+        11,
+        12
+      ],
+      "sink_families": [],
+      "specificity": 14,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "web-protocol-auth",
+      "title": "Web protocol / auth",
+      "description": "Hunts HTTP framing, cache-key bugs, and identity-token machinery \u2014 JWT, OAuth, OIDC, SAML, sessions, password reset, Host/X-Forwarded trust.",
+      "active": false,
+      "body_file": "bodies/web-protocol-auth.md",
+      "source": "seed",
+      "tags": [
+        "http",
+        "oauth",
+        "jwt",
+        "session",
+        "smuggling"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-444",
+        "CWE-287",
+        "CWE-384",
+        "CWE-613"
+      ],
+      "angle_ids": [
+        2,
+        6,
+        9,
+        12
+      ],
+      "sink_families": [
+        "auth",
+        "jwt"
+      ],
+      "specificity": 18,
+      "version": 3,
+      "tools": null
+    },
+    {
+      "id": "empty-listener-stub",
+      "title": "Empty Listener Stub Audit",
+      "description": "Audits empty files named like network listeners to ensure they aren't being dynamically loaded or executed in deployment.",
+      "active": false,
+      "body_file": "bodies/empty-listener-stub.md",
+      "source": "generated",
+      "tags": [
+        "python",
+        "deployment",
+        "stubs"
+      ],
+      "languages": [],
+      "cwe": [
+        "CWE-000"
+      ],
+      "angle_ids": [
+        1,
+        5
+      ],
+      "sink_families": [],
+      "specificity": 0,
+      "version": 1,
+      "tools": null
+    }
+  ]
+}

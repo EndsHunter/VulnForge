@@ -1,0 +1,87 @@
+"""Hunt profile collection — runtime authority for hunt class ids and bodies.
+
+Package prompts under prompts/v1/hunt_classes/ are a seed library only.
+After first ensure_collection(), operators edit config/hunt_profiles/.
+"""
+
+from __future__ import annotations
+
+from vulnforge.hunt_profiles.author_prompt import (
+    AuthorPromptError,
+    get_author_prompt,
+    load_author_prompt,
+    reseed_author_prompt,
+    save_author_prompt,
+)
+from vulnforge.hunt_profiles.generate import (
+    GenerateSkillError,
+    allocate_free_id,
+    clamp_skill_count,
+    generate_hunt_skill,
+    generate_hunt_skills_batch,
+    save_generated_profile,
+)
+from vulnforge.hunt_profiles.store import (
+    COLLECTION_FORMAT,
+    PROFILE_ID_RE,
+    SEED_PROFILE_META,
+    HuntProfileError,
+    active_class_ids,
+    all_class_ids,
+    angle_ids_for_class,
+    catalog_for_ui,
+    class_sink_families_map,
+    collection_root,
+    delete_profile,
+    ensure_collection,
+    export_collection,
+    get_body,
+    get_profile,
+    import_collection,
+    list_profiles,
+    normalize_class,
+    reseed_from_package,
+    reset_collection_root_override,
+    save_profile,
+    set_collection_root,
+    sink_families_for_class,
+    specificity_for_class,
+)
+
+__all__ = [
+    "COLLECTION_FORMAT",
+    "PROFILE_ID_RE",
+    "SEED_PROFILE_META",
+    "AuthorPromptError",
+    "GenerateSkillError",
+    "HuntProfileError",
+    "active_class_ids",
+    "all_class_ids",
+    "allocate_free_id",
+    "angle_ids_for_class",
+    "catalog_for_ui",
+    "clamp_skill_count",
+    "class_sink_families_map",
+    "collection_root",
+    "delete_profile",
+    "ensure_collection",
+    "export_collection",
+    "generate_hunt_skill",
+    "generate_hunt_skills_batch",
+    "get_author_prompt",
+    "get_body",
+    "get_profile",
+    "import_collection",
+    "list_profiles",
+    "load_author_prompt",
+    "normalize_class",
+    "reseed_author_prompt",
+    "reseed_from_package",
+    "reset_collection_root_override",
+    "save_author_prompt",
+    "save_generated_profile",
+    "save_profile",
+    "set_collection_root",
+    "sink_families_for_class",
+    "specificity_for_class",
+]

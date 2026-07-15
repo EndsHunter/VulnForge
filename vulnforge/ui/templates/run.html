@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ target_id }}/{{ run_id }} | VulnForge</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="apple-touch-icon" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body data-page="run" data-run-key="{{ target_id }}/{{ run_id }}">
+  <header class="app-header mission-bar">
+    <div class="brand">
+      <a href="/" class="home-link" title="Home  -  all runs">
+        <img class="logo" src="/static/logo-128.png" width="32" height="32" alt="" />
+        <div>
+          VulnForge
+          <div class="sub" id="run-title">{{ target_id }} / {{ run_id }}</div>
+        </div>
+      </a>
+    </div>
+    <div class="header-actions">
+      <a class="btn btn-ghost home-btn" href="/" title="Home">Home</a>
+      <span class="live-cluster" title="Live updates">
+        <span class="live-dot" id="live-dot"></span>
+        <span id="live-label">...</span>
+      </span>
+      <span id="runner-status" class="runner-status"></span>
+      <!-- Primary runner control: one of Start / Pause / Resume shown by JS -->
+      <button class="btn btn-good" id="btn-start" type="button" title="Start Ralph outer loop">Start</button>
+      <button class="btn btn-warn" id="btn-pause" type="button" title="Pause after current task" hidden>Pause</button>
+      <button class="btn btn-primary" id="btn-resume" type="button" title="Resume Ralph" hidden>Resume</button>
+      <button class="btn" id="btn-refresh" type="button" title="Refresh snapshot">Refresh</button>
+      <button class="btn" id="btn-settings" type="button" title="LLM settings">Settings</button>
+      <details class="danger-menu">
+        <summary class="btn btn-ghost" title="More actions">··· More</summary>
+        <div class="danger-menu-body">
+          <button class="btn btn-bad" id="btn-stop" type="button" title="Kill Ralph process immediately">Hard stop</button>
+          <button class="btn btn-bad" id="btn-delete-run" type="button" title="Permanently delete this run">Delete run</button>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <main class="main">
+    <p id="run-subtitle" class="run-subtitle"></p>
+    <div id="main-progress" class="main-progress"></div>
+    <div class="stats" id="stats"></div>
+
+    <p class="trust-line" role="note" id="trust-line">
+      <strong>needs_human</strong> = mechanical gates passed.
+      <strong>confirmed</strong> = human accepted. Neither is exploit proof.
+    </p>
+
+    <!-- Primary modes (research cockpit) -->
+    <div class="mode-nav" role="tablist" aria-label="Workspace mode">
+      <button class="mode-tab active" data-mode="mission" type="button" role="tab" aria-selected="true">Mission</button>
+      <button class="mode-tab" data-mode="coverage" type="button" role="tab">Coverage</button>
+      <button class="mode-tab" data-mode="explorer" type="button" role="tab">Explorer</button>
+      <button class="mode-tab" data-mode="report" type="button" role="tab" aria-selected="false">Report</button>
+      <button class="mode-tab" data-mode="evidence" type="button" role="tab" aria-selected="false">Evidence</button>
+      <button class="mode-tab" data-mode="audit" type="button" role="tab" aria-selected="false">Tasks</button>
+    </div>
+
+    <!-- Mission -->
+    <div class="mode-panel active" data-mode-panel="mission">
+      <div class="sub-tabs" role="tablist">
+        <button class="tab active" data-tab="overview" type="button" role="tab">Overview</button>
+        <button class="tab" data-tab="arch" type="button" role="tab">Architecture</button>
+      </div>
+      <div class="tab-panel active" id="panel-overview">
+        <div id="overview-panel"></div>
+      </div>
+      <div class="tab-panel" id="panel-arch">
+        <div id="arch-panel"></div>
+      </div>
+    </div>
+
+    <!-- Explorer -->
+    <div class="mode-panel" data-mode-panel="explorer">
+      <div id="explorer-panel"></div>
+    </div>
+
+    <!-- Coverage -->
+    <div class="mode-panel" data-mode-panel="coverage">
+      <div class="coverage-shell">
+        <div class="coverage-header">
+          <div>
+            <h2 class="coverage-title">Coverage</h2>
+            <p class="controls-hint coverage-honesty">
+              Residual-risk map — <strong>shallow / none / aborted / empty</strong> are not safe.
+              Green means a finding was filed, not that the area is exhaustively proven.
+            </p>
+          </div>
+        </div>
+        <div id="coverage-summary" class="coverage-summary" role="group" aria-label="Filter coverage cells"></div>
+        <div id="coverage-legend" class="coverage-legend"></div>
+        <div id="coverage-mode-bar" class="coverage-mode-bar"></div>
+        <div id="coverage-actions" class="coverage-actions"></div>
+        <div class="coverage-body">
+          <div class="card coverage-matrix-card">
+            <div id="coverage-panel"></div>
+          </div>
+          <div id="coverage-detail" class="coverage-detail card" hidden></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Evidence packs (on-disk packs linked from Report findings) -->
+    <div class="mode-panel" data-mode-panel="evidence">
+      <div class="tab-panel active" id="panel-evidence">
+        <div class="card">
+          <div class="toolbar" style="margin-bottom:0.5rem">
+            <h2 style="margin:0;flex:1">Evidence packs</h2>
+          </div>
+          <p class="controls-hint">
+            Browse packs under <span class="mono">evidence/</span> (including orphans not linked to a finding).
+            Open a finding on <strong>Report</strong> to jump to its pack.
+          </p>
+          <div id="evidence-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Report (main mode): structured findings table + export -->
+    <div class="mode-panel" data-mode-panel="report">
+      <div class="tab-panel active" id="panel-report">
+        <div class="report-shell">
+          <div class="report-toolbar">
+            <div class="report-export-bar">
+              <label class="controls-hint report-export-poc-opt" title="Embed evidence pack files (PoC hub + scripts) into the download">
+                <input type="checkbox" id="report-export-include-poc" />
+                Include PoC / evidence
+              </label>
+              <button type="button" class="btn btn-primary" id="report-export-json" title="Download findings as JSON">Export JSON</button>
+              <button type="button" class="btn" id="report-export-md" title="Download findings as Markdown">Export MD</button>
+              <button type="button" class="btn" id="report-export-csv" title="Download findings as CSV">Export CSV</button>
+              <button type="button" class="btn" id="report-export-html" title="Download server HTML report">Export HTML</button>
+              <button type="button" class="btn" id="report-export-xlsx" title="Download Excel workbook (server)">Export XLSX</button>
+              <button type="button" class="btn" id="report-export-docx" title="Download Word document (server)">Export DOCX</button>
+            </div>
+          </div>
+          <div id="report-summary" role="group" aria-label="Filter findings by state"></div>
+          <div class="card report-table-card">
+            <div class="table-wrap">
+              <table class="data report-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Title</th>
+                    <th>Class</th>
+                    <th>Severity</th>
+                    <th>State</th>
+                    <th>Location</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="report-tbody">
+                  <tr><td colspan="7" class="empty">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div id="report-detail" class="report-detail" hidden></div>
+          </div>
+          <div class="card report-raw-card">
+            <h3 class="report-raw-title">Raw projections</h3>
+            <p class="controls-hint">Download generated STATE / CODEMAP / REPORT files from disk (projection only; table above is primary).</p>
+            <div id="report-raw-exports" class="report-raw-exports"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tasks mode (data-mode=audit; deep links #audit/tasks and #tasks/* still work) -->
+    <div class="mode-panel" data-mode-panel="audit">
+      <div class="sub-tabs" role="tablist">
+        <button class="tab active" data-tab="tasks" type="button" role="tab">Tasks</button>
+        <button class="tab" data-tab="timeline" type="button" role="tab">Timeline</button>
+      </div>
+      <div class="tab-panel active" id="panel-tasks">
+        <div class="card">
+          <div class="toolbar" style="margin-bottom:0.5rem;align-items:flex-start">
+            <div style="flex:1">
+              <h2 style="margin:0">Tasks</h2>
+              <p class="controls-hint" style="margin:0.35rem 0 0">
+                <strong>Active</strong> shows running tasks first, then the queue (lower priority number runs sooner).
+                Use <strong>Run next</strong> / priority buttons on <strong>queued</strong> rows.
+                Click a row with <strong>LLM log</strong> for the transcript.
+              </p>
+            </div>
+          </div>
+          <div class="filter-chips" id="tasks-filter" role="group" aria-label="Filter tasks" style="margin-bottom:0.65rem">
+            <button type="button" class="chip" data-tfilter="all">All</button>
+            <button type="button" class="chip active" data-tfilter="active">Active</button>
+            <button type="button" class="chip" data-tfilter="done">Done / failed</button>
+          </div>
+          <div class="table-wrap">
+            <table class="data tasks-table">
+              <thead>
+                <tr>
+                  <th title="Position among queued (1 = next up)">#</th>
+                  <th>ID</th>
+                  <th>Kind</th>
+                  <th>State</th>
+                  <th title="Operator tier → numeric priority (lower = sooner)">Priority</th>
+                  <th title="Lease = times this task row was leased (infra budget). Gen / parent = Ralph follow-up after failure or re-run.">Loop</th>
+                  <th>Payload</th>
+                  <th>Result</th>
+                  <th>LLM</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="tasks-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="tab-panel" id="panel-timeline">
+        <div class="card">
+          <div class="toolbar">
+            <h2 style="margin:0;flex:1">Event stream</h2>
+            <label class="controls-hint"><input type="checkbox" id="autoscroll" checked /> Autoscroll</label>
+          </div>
+          <div class="timeline" id="timeline" aria-live="polite"></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:0.75rem">
+        <p class="controls-hint" style="margin:0">
+          Tool capability gaps: open the <a href="/tool-gaps">Tool gaps</a> page (AI hybrid analysis across runs).
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <div class="modal-backdrop" id="transcript-modal">
+    <div class="modal modal-wide modal-tall">
+      <div class="toolbar">
+        <h2 style="margin:0;flex:1" id="transcript-title">Agent transcript</h2>
+        <button type="button" class="btn" id="transcript-close">Close</button>
+      </div>
+      <div class="controls-hint" id="transcript-meta"></div>
+      <div class="transcript-view" id="transcript-body"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="settings-modal">
+    <div class="modal modal-wide">
+      <h2>LLM &amp; agent settings</h2>
+      <form id="settings-form">
+        <div class="settings-sections">
+          <div class="settings-section">
+            <h3>Endpoint</h3>
+            <div class="grid-2">
+              <div class="field">
+                <label class="field-label" for="set-host"><span class="label-text">LM Studio host</span></label>
+                <input id="set-host" required autocomplete="off" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-port"><span class="label-text">Port</span></label>
+                <input id="set-port" type="number" required min="1" max="65535" />
+              </div>
+              <div class="field" style="grid-column:1/-1">
+                <label class="field-label" for="set-model"><span class="label-text">Model id</span></label>
+                <input id="set-model" required autocomplete="off" />
+              </div>
+              <div class="field" style="grid-column:1/-1">
+                <label class="field-label" for="set-api-mode"><span class="label-text">API mode</span></label>
+                <select id="set-api-mode" class="settings-select">
+                  <option value="chat_completions">chat-completions (/v1/chat/completions)</option>
+                  <option value="responses">responses (/v1/responses)</option>
+                  <option value="messages">messages (/v1/messages)</option>
+                </select>
+                <p class="controls-hint" style="margin:0.25rem 0 0">
+                  How the agent talks to the model server. Default is chat-completions (LM Studio).
+                </p>
+              </div>
+            </div>
+          </div>
+          <div class="settings-section">
+            <h3>Agent budget</h3>
+            <div class="grid-2">
+              <div class="field">
+                <label class="field-label" for="set-workers"><span class="label-text">Max concurrent agents</span></label>
+                <input id="set-workers" type="number" min="1" step="1" />
+                <p class="controls-hint" style="margin:0.25rem 0 0">
+                  Spawns N Ralph workers. With N&gt;1, leases run in parallel (SQLite multi-lease; requires LM Studio to handle concurrent requests).
+                </p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-ctx"><span class="label-text">Context window (tokens)</span></label>
+                <input id="set-ctx" type="number" min="1" step="1024" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-frac"><span class="label-text">Max context fraction</span></label>
+                <input id="set-frac" type="number" min="0.01" max="1" step="0.01" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-maxtok"><span class="label-text">Max completion tokens</span></label>
+                <input id="set-maxtok" type="number" min="1" step="256" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-rounds"><span class="label-text">Max tool rounds</span></label>
+                <input id="set-rounds" type="number" min="1" step="1" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-timeout"><span class="label-text">HTTP timeout (s)</span></label>
+                <input id="set-timeout" type="number" min="1" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-maxtasks"><span class="label-text">Default max tasks</span></label>
+                <input id="set-maxtasks" type="number" min="1" step="1" />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="controls-hint" id="settings-effective"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="settings-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="settings-save">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Develop POC workshop — opens only from Report → Develop POC (not a mode tab) -->
+  <div class="modal-backdrop" id="poc-modal" role="dialog" aria-modal="true" aria-labelledby="poc-title" hidden>
+    <div class="modal modal-tall poc-modal-dialog">
+      <div class="poc-shell">
+        <div id="poc-workshop" class="poc-workshop">
+          <div class="poc-workshop-card">
+            <div class="poc-workshop-head">
+              <div style="flex:1;min-width:0">
+                <p class="controls-hint" style="margin:0 0 0.25rem">Develop POC · working code workshop</p>
+                <h2 id="poc-title" style="margin:0;word-break:break-word">—</h2>
+                <div id="poc-badges" class="report-detail-badges" style="margin-top:0.4rem"></div>
+              </div>
+              <div class="poc-workshop-head-actions">
+                <button type="button" class="btn" id="poc-back-report" title="Close and return to Report">Close</button>
+              </div>
+            </div>
+            <p class="controls-hint" id="poc-path-hint" style="margin:0.65rem 0 0">
+              Pack: <span class="mono">evidence/…</span>
+            </p>
+            <p class="poc-goal-banner" role="note">
+              Goal: produce <strong>working, functional code</strong> a human can run.
+              Do not treat the hub as a rewrite of the finding. Agent does not execute the PoC;
+              saving never accepts / confirms the finding.
+            </p>
+
+            <section class="poc-artifacts-section" aria-labelledby="poc-artifacts-heading">
+              <div class="poc-section-head">
+                <h3 id="poc-artifacts-heading" class="poc-section-title">Code artifacts</h3>
+                <span class="controls-hint" id="poc-artifacts-meta"></span>
+              </div>
+              <div id="poc-artifacts" class="poc-artifacts">
+                <p class="controls-hint poc-artifacts-empty">No pack files yet — generate code or save the hub.</p>
+              </div>
+            </section>
+
+            <section class="poc-generate-section" aria-labelledby="poc-generate-heading">
+              <h3 id="poc-generate-heading" class="poc-section-title">Generate working code</h3>
+              <div class="poc-generate-row">
+                <label class="field-label poc-lang-label" for="poc-lang">
+                  <span class="label-text">Language</span>
+                </label>
+                <select id="poc-lang" class="poc-lang-select" title="Preferred PoC language for the agent">
+                  <option value="auto" selected>Auto (from target / finding)</option>
+                  <option value="python">Python (poc.py)</option>
+                  <option value="bash">Bash (poc.sh)</option>
+                  <option value="powershell">PowerShell (poc.ps1)</option>
+                  <option value="c">C (poc.c)</option>
+                </select>
+              </div>
+              <label class="field-label" for="poc-notes"><span class="label-text">Agent notes (optional)</span></label>
+              <textarea id="poc-notes" class="op-notes report-poc-notes" rows="2" placeholder="Target URL, host/port, auth cookies, env hints…"></textarea>
+              <div class="report-poc-actions">
+                <button type="button" class="btn btn-primary" id="poc-generate" title="Save hub and queue develop_poc agent">
+                  Write working PoC code
+                </button>
+                <button type="button" class="btn" id="poc-save" title="Save hub markdown only, no agent">Save hub only</button>
+                <button type="button" class="btn" id="poc-reload">Reload from disk</button>
+                <button type="button" class="btn" id="poc-open-ev">Open pack in Evidence</button>
+              </div>
+              <p class="controls-hint report-poc-status" id="poc-status" aria-live="polite"></p>
+            </section>
+
+            <section class="poc-hub-section" aria-labelledby="poc-hub-heading">
+              <h3 id="poc-hub-heading" class="poc-section-title">Run hub <span class="mono">poc_develop.md</span></h3>
+              <p class="controls-hint" style="margin:0 0 0.35rem">
+                Thin run instructions (how to run, expected signal, residual risk). Prefer real scripts in
+                <strong>Code artifacts</strong> over a long prose rewrite.
+              </p>
+              <label class="field-label visually-hidden" for="poc-editor"><span class="label-text">Hub markdown</span></label>
+              <textarea id="poc-editor" class="report-poc-editor mono" rows="12" placeholder="Loading hub…"></textarea>
+            </section>
+
+            <div id="poc-history" class="poc-history" hidden></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/explorer.js"></script>
+  <script src="/static/report.js"></script>
+  <script src="/static/coverage.js"></script>
+  <script src="/static/modes.js"></script>
+</body>
+</html>

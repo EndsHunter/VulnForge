@@ -1,0 +1,22 @@
+{
+  "title": "SQL injection in search_users via unsanitized q parameter",
+  "summary": "User-controlled HTTP query parameter is concatenated into a SQL string and executed, allowing arbitrary row read/modify.",
+  "weakness_class": "injection",
+  "threat_model": {
+    "attacker": "unauthenticated remote HTTP client",
+    "boundary": "HTTP GET /search?q= → SQL engine",
+    "impact": "read or modify arbitrary user rows in the application database"
+  },
+  "citations": [
+    {
+      "path": "app.py",
+      "start_line": 10,
+      "end_line": 18,
+      "symbol": "search_users"
+    }
+  ],
+  "evidence_id": "inbox-example-e1",
+  "poc_relpath": "notes.md",
+  "severity_claim": "HIGH",
+  "patch_sketch": "Use parameterized queries / bound parameters instead of string concatenation."
+}

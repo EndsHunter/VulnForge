@@ -1,0 +1,5 @@
+[project]
+name = "mono-synth"
+version = "0.0.1"
+description = "Synthetic monorepo seed for vuln-harness large-repo plan tests"
+requires-python = ">=3.11"

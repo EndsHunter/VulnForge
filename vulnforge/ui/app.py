@@ -1,0 +1,1803 @@
+"""
+FastAPI dashboard for vulnforge.
+
+  vf dashboard
+  # -> http://127.0.0.1:8787
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import Any, Optional
+
+from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+
+from vulnforge.cli import PROJECT_ROOT, load_config, resolve_runs_root
+from vulnforge.settings import load_ui_settings, save_ui_settings
+from vulnforge.transcript import list_transcript_ids, load_transcript
+from vulnforge.ui import ops as dashops
+from vulnforge.ui import runner as runctl
+from vulnforge.ui import store
+
+UI_DIR = Path(__file__).resolve().parent
+TEMPLATES = Jinja2Templates(directory=str(UI_DIR / "templates"))
+STATIC_DIR = UI_DIR / "static"
+
+# Runner states that mean the outer loop is still driving work.
+_RUNNER_ALIVE = frozenset({"running", "pausing", "busy"})
+
+
+def incomplete_from_flags(has_work: bool, runner_state: str | None) -> bool:
+    """True when residual queue work remains but the runner is not alive."""
+    rstate = runner_state or "idle"
+    return bool(has_work) and rstate not in _RUNNER_ALIVE
+
+
+def with_runner_flags(
+    card: dict[str, Any],
+    run_path: Path,
+    *,
+    cfg: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Attach runner status, incomplete flag, and stage footgun warnings."""
+    runner = runctl.runner_status(run_path)
+    card["runner"] = runner
+    rstate = (runner or {}).get("state") or "idle"
+    card["incomplete"] = incomplete_from_flags(bool(card.get("has_work")), rstate)
+    stages = (cfg or {}).get("stages") or {}
+    # Mech-pass always awaits human; optional validate_llm may auto-reject only.
+    card["validate_llm_on"] = bool(stages.get("validate_llm"))
+    card["validate_llm_suppresses_confirm"] = True  # confirmed is always human-gated
+    card["validate_llm_note"] = (
+        "mech-pass -> needs_human; optional disprove may reject_llm (never auto-confirm)"
+        if stages.get("validate_llm")
+        else "mech-pass -> needs_human; human confirms or rejects"
+    )
+    return card
+
+
+class InitBody(BaseModel):
+    target: str
+    profile: Optional[str] = None
+    start: bool = True
+    max_tasks: Optional[int] = 50
+    task_timeout: float = 900
+    # Run mode: discovery | file_by_file | recon_docs (backend may store on run config)
+    strategy: Optional[str] = "discovery"
+    docs_path: Optional[str] = None
+    # Optional recon agent subset + operator brief (discovery / recon_docs)
+    agent_ids: Optional[list[str]] = None
+    operator_notes: str = ""
+    # After recon, author N target-specific hunt skills for this run
+    dynamic_skills: bool = False
+    dynamic_skill_count: Optional[int] = 3
+
+
+class ControlBody(BaseModel):
+    # None -> control_start_kwargs falls back to UI settings, then 50
+    max_tasks: Optional[int] = Field(default=None)
+    task_timeout: float = 900
+    max_iterations: int = 200
+    max_wall_seconds: Optional[float] = None
+    workers: Optional[int] = None  # defaults from UI settings
+
+
+def control_start_kwargs(body: ControlBody, ui: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """Merge ControlBody with UI settings for start/resume.
+
+    Client contract (app.js controlBodyFromSettings): dashboard Start/Resume
+    should send max_tasks (and workers) from Settings. Empty body / null fields
+    fall back to UI settings, then max_tasks=50 / workers=1. task_timeout has no
+    Settings field yet (Ralph default 900; distinct from LLM timeout_seconds).
+    """
+    if ui is None:
+        ui = load_ui_settings()
+    workers = body.workers if body.workers is not None else int(
+        ui.get("max_concurrent_agents") or 1
+    )
+    max_tasks = body.max_tasks if body.max_tasks is not None else int(
+        ui.get("max_tasks") or 50
+    )
+    return {
+        "task_timeout": body.task_timeout,
+        "max_tasks": max_tasks,
+        "max_iterations": body.max_iterations,
+        "max_wall_seconds": body.max_wall_seconds,
+        "workers": workers,
+    }
+
+
+class SettingsBody(BaseModel):
+    host: Optional[str] = None
+    port: Optional[int] = None
+    model: Optional[str] = None
+    api_mode: Optional[str] = None  # chat_completions | responses | messages
+    max_concurrent_agents: Optional[int] = None
+    context_tokens: Optional[int] = None
+    max_context_fraction: Optional[float] = None
+    max_tokens: Optional[int] = None
+    max_tool_rounds: Optional[int] = None
+    timeout_seconds: Optional[int] = None
+    max_tasks: Optional[int] = None
+
+
+class HuntProfileBody(BaseModel):
+    """Create or update a hunt profile."""
+
+    id: Optional[str] = None
+    body_md: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    active: Optional[bool] = None
+    tags: Optional[list[str] | str] = None
+    languages: Optional[list[str] | str] = None
+    cwe: Optional[list[str] | str] = None
+    angle_ids: Optional[list[int] | list[str] | str] = None
+    sink_families: Optional[list[str] | str] = None
+    specificity: Optional[int] = None
+    version: Optional[int] = None
+    tools: Optional[list[str] | str] = None
+    clear_tools: Optional[bool] = None
+
+
+class ToolDraftCreateBody(BaseModel):
+    brief: str = ""
+    suggested_id: Optional[str] = None
+    source: str = "blank"  # blank | tool_gap | extend_existing
+    gap: Optional[Any] = None
+    stages: Optional[list[str]] = None
+    risk_class: str = "read_only"
+    prefer_extend: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    slots: Optional[dict[str, Any]] = None
+
+
+class ToolDraftUpdateBody(BaseModel):
+    brief: Optional[str] = None
+    slots: Optional[dict[str, Any]] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    stages: Optional[list[str]] = None
+    risk_class: Optional[str] = None
+    prefer_extend: Optional[str] = None
+    operator_notes: Optional[str] = None
+    spec_md: Optional[str] = None
+    impl_py: Optional[str] = None
+    tool_schema: Optional[dict[str, Any]] = Field(
+        default=None, alias="schema", description="OpenAI tool schema package"
+    )
+    wireup: Optional[dict[str, Any]] = None
+    handler_snippet: Optional[str] = None
+    test_stub: Optional[str] = None
+    status: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
+
+
+class ToolGenerateBody(BaseModel):
+    use_prompt_overrides: bool = True
+
+
+class ToolPromptPreviewBody(BaseModel):
+    stage: str = "spec"  # spec | impl | fix
+    use_prompt_overrides: bool = True
+
+
+class ToolPromptOverrideBody(BaseModel):
+    name: str
+    content: str
+
+
+class ToolIntegrateBody(BaseModel):
+    dry_run: bool = True
+    apply: bool = False
+    add_to_profiles: Optional[list[str]] = None
+
+
+class ToolRejectBody(BaseModel):
+    reason: str = ""
+
+
+class HuntGenerateBody(BaseModel):
+    """LLM-author a hunt skill from an operator brief."""
+
+    brief: str
+    suggested_id: Optional[str] = None
+    activate: bool = False
+    save: bool = True
+    signals: Optional[Any] = None
+
+
+class HuntImportBody(BaseModel):
+    data: Any
+    mode: str = "merge"
+
+
+class DevSetupImportBody(BaseModel):
+    """Import full Dev setup pack (or a legacy single-collection export)."""
+
+    data: Any
+    mode: str = "merge"
+    include: Optional[list[str]] = None
+
+
+class ReconAgentBody(BaseModel):
+    """Create or update a recon agent."""
+
+    id: Optional[str] = None
+    body_md: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    active: Optional[bool] = None
+    order: Optional[int] = None
+    mode: Optional[str] = None
+    tools: Optional[list[str]] = None
+    temperature: Optional[float] = None
+    max_tool_rounds: Optional[int] = None
+    output: Optional[str] = None
+
+
+class ReconAgentImportBody(BaseModel):
+    data: Any
+    mode: str = "merge"
+
+
+class CoverageRequeueBody(BaseModel):
+    area: str
+    attack_class: str = Field(alias="class")
+    path_hints: Optional[list[str]] = None
+    force_depth: bool = True
+    reason: str = "operator_requeue"
+    operator_notes: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
+class CoverageModeBody(BaseModel):
+    mode: str = "auto"  # auto | all | select
+    areas: Optional[list[str]] = None
+    classes: Optional[list[str]] = None
+    path_targets: Optional[list[dict]] = None  # [{path, is_dir}] from Coverage path picker
+    enqueue: bool = True
+
+
+class TaskPriorityBody(BaseModel):
+    """Operator queue reorder — tiers map to priority integers (lower = sooner)."""
+
+    tier: str  # run_next | high | normal | low
+
+
+class TaskCancelBody(BaseModel):
+    """Operator queue removal — only queued tasks."""
+
+    reason: str = "operator_cancel"
+
+
+class SelectionHuntBody(BaseModel):
+    path: str
+    start_line: Optional[int] = None
+    end_line: Optional[int] = None
+    attack_class: str = "wildcard"
+    area: Optional[str] = None
+    note: str = ""
+    operator_notes: str = ""
+
+
+class ReconRerunBody(BaseModel):
+    operator_notes: str = ""
+    focus_paths: Optional[list[str]] = None
+    include_prior_architecture: bool = True
+    enqueue_hunts: bool = True
+    reason: str = "operator_recon_rerun"
+    agent_ids: Optional[list[str]] = None
+
+
+class FindingReviewBody(BaseModel):
+    """Human accept / reject / reclassify a finding."""
+
+    action: str  # confirm | reject | needs_human
+    notes: str = ""
+    write_note_to_evidence: bool = True
+    operator: str = "operator"
+
+
+class FindingPocBody(BaseModel):
+    """Save PoC draft and optionally enqueue develop_poc agent task."""
+
+    content: Optional[str] = None
+    enqueue_agent: bool = False
+    operator_notes: str = ""
+    operator: str = "operator"
+
+
+def create_app(runs_root: Optional[Path] = None) -> FastAPI:
+    cfg = load_config()
+    root = Path(runs_root) if runs_root else resolve_runs_root(cfg)
+
+    app = FastAPI(title="vulnforge dashboard", version="0.1.0")
+    app.state.runs_root = root.resolve()
+    app.state.project_root = PROJECT_ROOT
+    app.state.config = cfg
+
+    if STATIC_DIR.is_dir():
+        app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    # ---------- pages ----------
+
+    @app.get("/", response_class=HTMLResponse)
+    def home(request: Request):
+        # Starlette 0.40+: TemplateResponse(request, name, context=...)
+        return TEMPLATES.TemplateResponse(
+            request,
+            "index.html",
+            {"runs_root": str(app.state.runs_root)},
+        )
+
+    @app.get("/runs/{target_id}/{run_id}", response_class=HTMLResponse)
+    def run_page(request: Request, target_id: str, run_id: str):
+        try:
+            store.resolve_run(app.state.runs_root, target_id, run_id)
+        except FileNotFoundError:
+            raise HTTPException(404, "run not found")
+        return TEMPLATES.TemplateResponse(
+            request,
+            "run.html",
+            {
+                "target_id": target_id,
+                "run_id": run_id,
+                "runs_root": str(app.state.runs_root),
+            },
+        )
+
+    @app.get("/tool-gaps", response_class=HTMLResponse)
+    def tool_gaps_page(request: Request):
+        """Dedicated AI tool-gaps roadmap page (opened from Home)."""
+        return TEMPLATES.TemplateResponse(
+            request,
+            "tool_gaps.html",
+            {"runs_root": str(app.state.runs_root)},
+        )
+
+    @app.get("/dev", response_class=HTMLResponse)
+    def dev_page(request: Request):
+        """Dev dashboard: hunt profile collection editor (opened from Home)."""
+        return TEMPLATES.TemplateResponse(
+            request,
+            "dev.html",
+            {"runs_root": str(app.state.runs_root)},
+        )
+
+    # ---------- API: inventory ----------
+
+    @app.get("/api/health")
+    def health():
+        return {
+            "ok": True,
+            "runs_root": str(app.state.runs_root),
+            "project_root": str(app.state.project_root),
+        }
+
+    @app.get("/api/fs/browse")
+    def api_fs_browse(
+        path: str = Query(""),
+        mode: str = Query("dirs", description="dirs | any"),
+    ):
+        """Host filesystem browser for New audit path pickers (local operator UI)."""
+        r = dashops.browse_host_fs(path, mode=mode)
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "browse failed")
+        return r
+
+    @app.get("/favicon.ico")
+    def favicon():
+        ico = STATIC_DIR / "favicon.ico"
+        if ico.is_file():
+            return FileResponse(ico, media_type="image/x-icon")
+        png = STATIC_DIR / "logo.png"
+        if png.is_file():
+            return FileResponse(png, media_type="image/png")
+        return Response(status_code=204)
+
+    @app.get("/api/runs")
+    def api_list_runs():
+        refs = store.discover_runs(app.state.runs_root)
+        cards = []
+        for r in refs:
+            try:
+                card = store.run_card(r)
+                cards.append(with_runner_flags(card, r.path, cfg=app.state.config))
+            except Exception as e:
+                cards.append(
+                    {
+                        "key": r.key,
+                        "target_id": r.target_id,
+                        "run_id": r.run_id,
+                        "path": str(r.path),
+                        "error": str(e),
+                    }
+                )
+        return {"runs": cards, "count": len(cards)}
+
+    # ---------- API: async init (MUST be registered before /api/runs/{target_id}/...) ----------
+    # Otherwise GET /api/runs/init-jobs/{id} matches target_id="init-jobs" → "run not found".
+
+    @app.get("/api/runs/init-jobs/{job_id}")
+    def api_init_job_status(job_id: str):
+        """Poll async init progress (inventory of large trees)."""
+        from vulnforge.init_progress import read_job
+
+        job = read_job(Path(app.state.project_root), job_id)
+        if not job:
+            raise HTTPException(404, f"unknown init job: {job_id}")
+        return job
+
+    @app.post("/api/runs/init")
+    def api_init(body: InitBody, background: bool = Query(True)):
+        """Create a new run (vf init) and optionally start Ralph.
+
+        By default runs in a background thread so the UI can poll
+        ``GET /api/runs/init-jobs/{job_id}`` for inventory status on large trees.
+        Pass ``?background=false`` for a blocking init (tests / simple clients).
+        """
+        from vulnforge.cli import cmd_init
+        from vulnforge.init_progress import (
+            make_progress_writer,
+            new_job_id,
+            write_job,
+        )
+
+        class Args:
+            pass
+
+        args = Args()
+        args.target = Path(body.target)
+        args.profile = body.profile
+        args.runs_root = app.state.runs_root
+        args.strategy = (body.strategy or "discovery").strip().lower()
+        args.docs_path = Path(body.docs_path) if body.docs_path else None
+        agents = [
+            str(a).strip().lower()
+            for a in (body.agent_ids or [])
+            if str(a).strip()
+        ][:32]
+        args.agent_ids = agents or None
+        args.operator_notes = (body.operator_notes or "").strip()[:6000]
+        args.dynamic_skills = bool(body.dynamic_skills)
+        try:
+            args.dynamic_skill_count = int(body.dynamic_skill_count or 3)
+        except (TypeError, ValueError):
+            args.dynamic_skill_count = 3
+        args.dynamic_skill_count = max(1, min(args.dynamic_skill_count, 10))
+
+        if not args.target.is_dir():
+            raise HTTPException(400, f"target not a directory: {body.target}")
+        if args.strategy == "recon_docs" and args.docs_path is None:
+            raise HTTPException(400, "recon_docs strategy requires docs_path")
+        if args.strategy == "recon_docs" and not args.docs_path.exists():
+            raise HTTPException(400, f"docs_path not found: {body.docs_path}")
+
+        project_root = Path(app.state.project_root)
+        job_id = new_job_id()
+        write_job(
+            project_root,
+            job_id,
+            {
+                "status": "running",
+                "phase": "queued",
+                "message": "Starting init...",
+                "percent": 0,
+                "target": str(args.target),
+                "strategy": args.strategy,
+            },
+        )
+
+        def _run_init() -> dict[str, Any]:
+            import io
+            from contextlib import redirect_stdout
+
+            progress = make_progress_writer(project_root, job_id, also_print=False)
+            args.progress = progress
+            args.job_id = job_id
+            buf = io.StringIO()
+            try:
+                with redirect_stdout(buf):
+                    code = cmd_init(args, app.state.config)
+                if code != 0:
+                    progress(
+                        {
+                            "status": "error",
+                            "phase": "failed",
+                            "message": f"init failed exit={code}: {buf.getvalue()}",
+                            "error": buf.getvalue() or f"exit={code}",
+                            "percent": 100,
+                        }
+                    )
+                    return {"ok": False, "code": code, "error": buf.getvalue()}
+                lines = [ln.strip() for ln in buf.getvalue().splitlines() if ln.strip()]
+                run_dir_s = lines[-1] if lines else ""
+                run_dir = Path(run_dir_s)
+                run_id = run_dir.name
+                target_id = run_dir.parent.name
+                result: dict[str, Any] = {
+                    "ok": True,
+                    "run_dir": str(run_dir),
+                    "target_id": target_id,
+                    "run_id": run_id,
+                    "key": f"{target_id}/{run_id}",
+                    "job_id": job_id,
+                }
+                if body.start:
+                    progress(
+                        {
+                            "status": "running",
+                            "phase": "ralph",
+                            "message": "Starting Ralph agents…",
+                            "percent": 95,
+                            "run_dir": result["run_dir"],
+                            "key": result["key"],
+                            "target_id": target_id,
+                            "run_id": run_id,
+                        }
+                    )
+                    try:
+                        started = runctl.start_run(
+                            run_dir,
+                            **control_start_kwargs(
+                                ControlBody(
+                                    max_tasks=body.max_tasks,
+                                    task_timeout=body.task_timeout,
+                                ),
+                                load_ui_settings(),
+                            ),
+                        )
+                        result["started"] = started
+                        n_workers = int((started or {}).get("workers") or 1)
+                        progress(
+                            {
+                                "status": "running",
+                                "phase": "ralph",
+                                "message": (
+                                    f"Ralph started ({n_workers} agent"
+                                    f"{'s' if n_workers != 1 else ''})"
+                                ),
+                                "percent": 98,
+                            }
+                        )
+                    except Exception as e:
+                        result["start_error"] = str(e)
+                progress(
+                    {
+                        "status": "done",
+                        "phase": "done",
+                        "message": f"Run ready: {result['key']}",
+                        "percent": 100,
+                        "run_dir": result["run_dir"],
+                        "key": result["key"],
+                        "target_id": target_id,
+                        "run_id": run_id,
+                    }
+                )
+                return result
+            except Exception as e:
+                progress(
+                    {
+                        "status": "error",
+                        "phase": "failed",
+                        "message": str(e),
+                        "error": str(e),
+                        "percent": 100,
+                    }
+                )
+                return {"ok": False, "error": str(e)}
+
+        if background:
+            import threading
+
+            threading.Thread(target=_run_init, name=f"init-{job_id}", daemon=True).start()
+            return {
+                "ok": True,
+                "async": True,
+                "job_id": job_id,
+                "status_url": f"/api/runs/init-jobs/{job_id}",
+            }
+
+        # Blocking path (tests / simple clients)
+        result = _run_init()
+        if not result.get("ok"):
+            status = 400 if result.get("code") == 30 else 500
+            raise HTTPException(status, result.get("error") or "init failed")
+        return result
+
+    def _get_run(target_id: str, run_id: str) -> store.RunRef:
+        try:
+            return store.resolve_run(app.state.runs_root, target_id, run_id)
+        except FileNotFoundError:
+            raise HTTPException(404, "run not found")
+        except PermissionError:
+            raise HTTPException(400, "invalid run path")
+
+    @app.get("/api/runs/{target_id}/{run_id}")
+    def api_run_detail(target_id: str, run_id: str):
+        run = _get_run(target_id, run_id)
+        snap = store.run_snapshot(run)
+        return with_runner_flags(snap, run.path, cfg=app.state.config)
+
+    @app.get("/api/runs/{target_id}/{run_id}/events")
+    def api_events(
+        target_id: str,
+        run_id: str,
+        after: int = Query(0, ge=0),
+        limit: int = Query(500, ge=1, le=5000),
+    ):
+        run = _get_run(target_id, run_id)
+        events, nxt = store.read_events(run, after=after, limit=limit)
+        return {"events": events, "next": nxt}
+
+    @app.get("/api/runs/{target_id}/{run_id}/project/{name}")
+    def api_project_file(target_id: str, run_id: str, name: str):
+        run = _get_run(target_id, run_id)
+        try:
+            text = store.read_project_file(run, name)
+        except FileNotFoundError:
+            raise HTTPException(404, "file not found")
+        return {"name": Path(name).name, "content": text}
+
+    @app.get("/api/runs/{target_id}/{run_id}/export")
+    def api_export_findings(
+        target_id: str,
+        run_id: str,
+        format: str = Query("json", alias="format"),
+        include_poc: bool = Query(
+            False,
+            description="Embed evidence pack / PoC file contents in the export",
+        ),
+    ):
+        """Download findings for a run (json|md|csv|html|xlsx|docx)."""
+        from vulnforge.db import Database
+        from vulnforge.export_findings import export_bytes, export_filename
+
+        run = _get_run(target_id, run_id)
+        db_path = run.path / "harness.db"
+        if not db_path.is_file():
+            raise HTTPException(404, "harness.db not found")
+        db = Database.open(db_path)
+        try:
+            try:
+                payload, ext, media = export_bytes(
+                    format, run.path, db, include_poc=include_poc
+                )
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            except ImportError as e:
+                raise HTTPException(501, str(e)) from e
+        finally:
+            db.close()
+        filename = export_filename(
+            target_id, run_id, ext, include_poc=include_poc
+        )
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        }
+        return Response(content=payload, media_type=media, headers=headers)
+
+    @app.get("/api/runs/{target_id}/{run_id}/evidence/{pack_id}/{relpath:path}")
+    def api_evidence_file(target_id: str, run_id: str, pack_id: str, relpath: str):
+        run = _get_run(target_id, run_id)
+        try:
+            text = store.read_evidence_file(run, pack_id, relpath)
+        except (FileNotFoundError, PermissionError, ValueError) as e:
+            raise HTTPException(400, str(e))
+        return {"pack_id": pack_id, "relpath": relpath, "content": text}
+
+    @app.get("/api/runs/{target_id}/{run_id}/tasks/{task_id}/transcript")
+    def api_task_transcript(target_id: str, run_id: str, task_id: int):
+        run = _get_run(target_id, run_id)
+        data = load_transcript(run.path, task_id)
+        if not data:
+            raise HTTPException(404, "no transcript for this task")
+        return data
+
+    @app.post("/api/runs/{target_id}/{run_id}/tasks/{task_id}/priority")
+    def api_task_priority(target_id: str, run_id: str, task_id: int, body: TaskPriorityBody):
+        """Reorder a queued task: run_next | high | normal | low."""
+        run = _get_run(target_id, run_id)
+        r = dashops.set_task_priority_tier(run.path, task_id, body.tier)
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "priority update failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/tasks/{task_id}/cancel")
+    def api_task_cancel(
+        target_id: str,
+        run_id: str,
+        task_id: int,
+        body: TaskCancelBody = Body(default_factory=TaskCancelBody),
+    ):
+        """Remove a queued task from the queue (marks cancelled; not leased)."""
+        run = _get_run(target_id, run_id)
+        r = dashops.cancel_queued_task(
+            run.path, task_id, reason=body.reason or "operator_cancel"
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "cancel failed")
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/transcripts")
+    def api_list_transcripts(target_id: str, run_id: str):
+        run = _get_run(target_id, run_id)
+        return {"task_ids": list_transcript_ids(run.path)}
+
+    @app.get("/api/runs/{target_id}/{run_id}/tool-gaps")
+    def api_tool_gaps_get(target_id: str, run_id: str, refresh: bool = Query(False)):
+        """Return tool-gap analysis (cached tool_gaps.json unless refresh)."""
+        from vulnforge.tool_gaps import load_or_analyze
+
+        run = _get_run(target_id, run_id)
+        try:
+            return load_or_analyze(run.path, force=refresh, cfg=cfg)
+        except Exception as e:
+            raise HTTPException(500, f"tool-gaps failed: {e}") from e
+
+    class ToolGapsBody(BaseModel):
+        mode: Optional[str] = None  # mechanical | llm | hybrid
+
+    @app.post("/api/runs/{target_id}/{run_id}/tool-gaps")
+    def api_tool_gaps_post(
+        target_id: str,
+        run_id: str,
+        body: Optional[ToolGapsBody] = None,
+    ):
+        """Re-run tool-gap analysis and write project projections."""
+        from vulnforge.tool_gaps import analyze_run_mode, write_reports
+
+        run = _get_run(target_id, run_id)
+        mode = (body.mode if body else None) or (cfg.get("run") or {}).get("tool_gaps_mode") or "hybrid"
+        try:
+            analysis = analyze_run_mode(run.path, str(mode), cfg)
+            paths = write_reports(run.path, analysis)
+        except Exception as e:
+            raise HTTPException(500, f"tool-gaps failed: {e}") from e
+        return {"ok": True, "written": paths, **analysis}
+
+    @app.get("/api/tool-gaps")
+    def api_tool_gaps_home(
+        analyze_missing: bool = Query(False),
+        mode: Optional[str] = Query(None),
+    ):
+        """Cross-run tool-gap rollup for the Home page."""
+        from vulnforge.tool_gaps import aggregate_tool_gaps
+
+        runs_root = resolve_runs_root(cfg, None)
+        m = mode or (cfg.get("run") or {}).get("tool_gaps_mode") or "hybrid"
+        try:
+            return aggregate_tool_gaps(
+                runs_root,
+                analyze_missing=analyze_missing,
+                mode=str(m),
+                cfg=cfg,
+            )
+        except Exception as e:
+            raise HTTPException(500, f"tool-gaps aggregate failed: {e}") from e
+
+    class ToolGapsHomeBody(BaseModel):
+        mode: Optional[str] = "hybrid"
+        all_runs: bool = True
+        target_id: Optional[str] = None
+        run_id: Optional[str] = None
+
+    @app.post("/api/tool-gaps/analyze")
+    def api_tool_gaps_home_analyze(body: Optional[ToolGapsHomeBody] = None):
+        """Analyze one or all runs (AI hybrid by default) and return Home rollup."""
+        from vulnforge.tool_gaps import (
+            aggregate_tool_gaps,
+            analyze_run_mode,
+            discover_run_dirs,
+            write_reports,
+        )
+
+        body = body or ToolGapsHomeBody()
+        runs_root = resolve_runs_root(cfg, None)
+        mode = body.mode or (cfg.get("run") or {}).get("tool_gaps_mode") or "hybrid"
+        written: list[str] = []
+        errors: list[dict[str, str]] = []
+
+        if body.target_id and body.run_id:
+            run = _get_run(body.target_id, body.run_id)
+            try:
+                analysis = analyze_run_mode(run.path, str(mode), cfg)
+                written.extend(write_reports(run.path, analysis))
+            except Exception as e:
+                raise HTTPException(500, f"tool-gaps failed: {e}") from e
+        else:
+            for rd in discover_run_dirs(runs_root):
+                try:
+                    analysis = analyze_run_mode(rd, str(mode), cfg)
+                    written.extend(write_reports(rd, analysis))
+                except Exception as e:
+                    errors.append({"run_dir": str(rd), "error": str(e)[:200]})
+
+        rollup = aggregate_tool_gaps(runs_root, analyze_missing=False, mode=str(mode), cfg=cfg)
+        return {
+            "ok": True,
+            "mode": mode,
+            "written_count": len(written),
+            "errors": errors,
+            **rollup,
+        }
+
+    # ---------- API: coverage ops / target browse / selection hunt ----------
+
+    @app.get("/api/runs/{target_id}/{run_id}/coverage/cell")
+    def api_coverage_cell(
+        target_id: str,
+        run_id: str,
+        area: str = Query(...),
+        attack_class: str = Query(..., alias="class"),
+    ):
+        run = _get_run(target_id, run_id)
+        return dashops.cell_detail(run.path, area, attack_class)
+
+    @app.post("/api/runs/{target_id}/{run_id}/coverage/requeue")
+    def api_coverage_requeue(target_id: str, run_id: str, body: CoverageRequeueBody):
+        run = _get_run(target_id, run_id)
+        r = dashops.requeue_hunt(
+            run.path,
+            area=body.area,
+            attack_class=body.attack_class,
+            path_hints=body.path_hints,
+            force_depth=body.force_depth,
+            reason=body.reason,
+            operator_notes=body.operator_notes or "",
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "requeue failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/recon/rerun")
+    def api_recon_rerun(target_id: str, run_id: str, body: ReconRerunBody):
+        run = _get_run(target_id, run_id)
+        r = dashops.requeue_recon(
+            run.path,
+            operator_notes=body.operator_notes or "",
+            focus_paths=body.focus_paths,
+            include_prior_architecture=body.include_prior_architecture,
+            enqueue_hunts=body.enqueue_hunts,
+            reason=body.reason,
+            agent_ids=body.agent_ids,
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "recon requeue failed")
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/coverage/policy")
+    def api_coverage_policy_get(target_id: str, run_id: str):
+        run = _get_run(target_id, run_id)
+        from vulnforge.db import Database
+
+        db = Database.open(run.path / "harness.db")
+        try:
+            cfg = dashops.get_run_config(db)
+            return {"policy": dashops.coverage_policy_from_config(cfg)}
+        finally:
+            db.close()
+
+    @app.post("/api/runs/{target_id}/{run_id}/coverage/mode")
+    def api_coverage_mode(target_id: str, run_id: str, body: CoverageModeBody):
+        run = _get_run(target_id, run_id)
+        r = dashops.apply_coverage_mode(
+            run.path,
+            mode=body.mode,
+            areas=body.areas,
+            classes=body.classes,
+            path_targets=body.path_targets,
+            enqueue=body.enqueue,
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "mode failed")
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/target/list")
+    def api_target_list(
+        target_id: str,
+        run_id: str,
+        path: str = Query("."),
+        max_entries: int = Query(200, ge=1, le=500),
+    ):
+        run = _get_run(target_id, run_id)
+        r = dashops.target_list(run.path, path=path, max_entries=max_entries)
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "list failed")
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/target/read")
+    def api_target_read(
+        target_id: str,
+        run_id: str,
+        path: str = Query(...),
+        start_line: Optional[int] = Query(None),
+        end_line: Optional[int] = Query(None),
+    ):
+        run = _get_run(target_id, run_id)
+        r = dashops.target_read(
+            run.path, path=path, start_line=start_line, end_line=end_line
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "read failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/hunts/from-selection")
+    def api_hunt_from_selection(target_id: str, run_id: str, body: SelectionHuntBody):
+        run = _get_run(target_id, run_id)
+        r = dashops.hunt_from_selection(
+            run.path,
+            path=body.path,
+            start_line=body.start_line,
+            end_line=body.end_line,
+            attack_class=body.attack_class,
+            area=body.area,
+            note=body.note,
+            operator_notes=body.operator_notes or body.note or "",
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "enqueue failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/findings/{finding_id}/review")
+    def api_finding_review(
+        target_id: str, run_id: str, finding_id: int, body: FindingReviewBody
+    ):
+        """Human confirm / reject / reclassify a finding; optional notes → evidence pack."""
+        run = _get_run(target_id, run_id)
+        r = dashops.review_finding(
+            run.path,
+            finding_id,
+            action=body.action,
+            notes=body.notes or "",
+            write_note_to_evidence=body.write_note_to_evidence,
+            operator=body.operator or "operator",
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "review failed")
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/findings/{finding_id}/poc")
+    def api_finding_poc_get(target_id: str, run_id: str, finding_id: int):
+        """Load current PoC draft or scaffold (no write)."""
+        run = _get_run(target_id, run_id)
+        r = dashops.get_finding_poc(run.path, finding_id)
+        if not r.get("ok"):
+            raise HTTPException(404 if r.get("error") == "finding_not_found" else 400, r.get("error") or "poc load failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/findings/{finding_id}/poc")
+    def api_finding_poc_save(
+        target_id: str, run_id: str, finding_id: int, body: FindingPocBody
+    ):
+        """Save PoC draft under evidence pack; optional develop_poc enqueue."""
+        run = _get_run(target_id, run_id)
+        r = dashops.save_finding_poc(
+            run.path,
+            finding_id,
+            content=body.content,
+            enqueue_agent=bool(body.enqueue_agent),
+            operator_notes=body.operator_notes or "",
+            operator=body.operator or "operator",
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "poc save failed")
+        return r
+
+    # ---------- API: global LLM / agent settings ----------
+
+    @app.get("/api/settings")
+    def api_get_settings():
+        ui = load_ui_settings()
+        # effective config after merge
+        eff = load_config()
+        llm = eff.get("llm") or {}
+        run = eff.get("run") or {}
+        return {
+            "settings": ui,
+            "effective": {
+                "base_url": llm.get("base_url"),
+                "model": llm.get("model"),
+                "api_mode": llm.get("api_mode") or "chat_completions",
+                "context_tokens": llm.get("context_tokens"),
+                "max_context_fraction": llm.get("max_context_fraction"),
+                "max_tokens": llm.get("max_tokens"),
+                "max_tool_rounds": llm.get("max_tool_rounds"),
+                "max_leases_parallel": run.get("max_leases_parallel"),
+                "max_tasks": run.get("max_tasks"),
+            },
+        }
+
+    @app.put("/api/settings")
+    def api_put_settings(body: SettingsBody):
+        updates = body.model_dump(exclude_none=True)
+        saved = save_ui_settings(updates)
+        # refresh app config for init paths in this process
+        app.state.config = load_config()
+        return {"ok": True, "settings": saved}
+
+    # ---------- API: hunt profiles (Dev dashboard) ----------
+
+    # ---------- API: full Dev setup pack (fresh-install transfer) ----------
+
+    @app.get("/api/dev-setup/export")
+    def api_dev_setup_export():
+        from vulnforge.dev_setup import DevSetupError, export_dev_setup
+
+        try:
+            data = export_dev_setup()
+            return JSONResponse(
+                content=data,
+                headers={
+                    "Content-Disposition": 'attachment; filename="vulnforge_dev_setup.json"'
+                },
+            )
+        except DevSetupError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(500, f"dev setup export failed: {e}") from e
+
+    @app.post("/api/dev-setup/import")
+    def api_dev_setup_import(body: DevSetupImportBody):
+        from vulnforge.dev_setup import DevSetupError, import_dev_setup
+
+        try:
+            return import_dev_setup(
+                body.data if isinstance(body.data, dict) else {},
+                mode=body.mode or "merge",
+                include=body.include,
+            )
+        except DevSetupError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(500, f"dev setup import failed: {e}") from e
+
+    @app.get("/api/hunt-profiles")
+    def api_hunt_profiles_list(include_body: bool = Query(False)):
+        from vulnforge.hunt_profiles import HuntProfileError, catalog_for_ui, list_profiles
+
+        try:
+            profiles = list_profiles(include_body=include_body)
+            return {
+                "ok": True,
+                "catalog": catalog_for_ui(),
+                "profiles": profiles,
+            }
+        except HuntProfileError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(500, f"hunt profiles failed: {e}") from e
+
+    @app.get("/api/hunt-profiles/export")
+    def api_hunt_profiles_export():
+        """Legacy: hunt-only export. Prefer GET /api/dev-setup/export for full setup."""
+        from vulnforge.hunt_profiles import HuntProfileError, export_collection
+
+        try:
+            data = export_collection()
+            return JSONResponse(
+                content=data,
+                headers={
+                    "Content-Disposition": 'attachment; filename="hunt_collection.json"'
+                },
+            )
+        except HuntProfileError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/hunt-profiles/import")
+    def api_hunt_profiles_import(body: HuntImportBody):
+        from vulnforge.hunt_profiles import HuntProfileError, import_collection
+
+        try:
+            result = import_collection(body.data, mode=body.mode or "merge")
+            return result
+        except HuntProfileError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/hunt-profiles/reseed")
+    def api_hunt_profiles_reseed():
+        from vulnforge.hunt_profiles import HuntProfileError, reseed_from_package
+
+        try:
+            return reseed_from_package(replace=True)
+        except HuntProfileError as e:
+            raise HTTPException(400, str(e)) from e
+
+    class SkillGeneratorBody(BaseModel):
+        body_md: str = ""
+
+    @app.get("/api/skill-generator")
+    def api_skill_generator_get():
+        """Editable skill-generator system prompt (package seed or operator override)."""
+        from vulnforge.hunt_profiles.author_prompt import get_author_prompt
+
+        data = get_author_prompt()
+        return {"ok": True, **data}
+
+    @app.put("/api/skill-generator")
+    def api_skill_generator_put(body: SkillGeneratorBody):
+        from vulnforge.hunt_profiles.author_prompt import (
+            AuthorPromptError,
+            save_author_prompt,
+        )
+
+        try:
+            data = save_author_prompt(body.body_md or "")
+        except AuthorPromptError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True, **data}
+
+    @app.post("/api/skill-generator/reseed")
+    def api_skill_generator_reseed():
+        from vulnforge.hunt_profiles.author_prompt import (
+            AuthorPromptError,
+            reseed_author_prompt,
+        )
+
+        try:
+            data = reseed_author_prompt()
+        except AuthorPromptError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True, **data}
+
+    @app.post("/api/hunt-profiles/generate")
+    def api_hunt_profiles_generate(body: HuntGenerateBody):
+        """Author a custom hunt skill via LLM; optionally save to the collection."""
+        from vulnforge.hunt_profiles.generate import (
+            GenerateSkillError,
+            generate_hunt_skill,
+            save_generated_profile,
+        )
+
+        brief = (body.brief or "").strip()
+        if not brief:
+            raise HTTPException(400, "brief is required")
+        cfg = getattr(app.state, "config", None) or load_config()
+        try:
+            skill = generate_hunt_skill(
+                cfg,
+                brief=brief,
+                signals=body.signals,
+                suggested_id=body.suggested_id,
+            )
+        except GenerateSkillError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(502, f"skill generation failed: {e}") from e
+
+        profile = None
+        if body.save:
+            try:
+                profile = save_generated_profile(skill, active=bool(body.activate))
+            except Exception as e:
+                raise HTTPException(400, f"save failed: {e}") from e
+
+        return {
+            "ok": True,
+            "saved": bool(body.save and profile is not None),
+            "skill": {
+                "id": skill.get("id"),
+                "title": skill.get("title"),
+                "description": skill.get("description"),
+                "body_md": skill.get("body_md"),
+                "tags": skill.get("tags") or [],
+                "cwe": skill.get("cwe") or [],
+                "angle_ids": skill.get("angle_ids") or [],
+                "sink_families": skill.get("sink_families") or [],
+            },
+            "profile": profile,
+        }
+
+    @app.get("/api/hunt-profiles/{profile_id}")
+    def api_hunt_profile_get(profile_id: str):
+        from vulnforge.hunt_profiles import HuntProfileError, get_profile
+
+        try:
+            return {"ok": True, "profile": get_profile(profile_id, include_body=True)}
+        except HuntProfileError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.post("/api/hunt-profiles")
+    def api_hunt_profile_create(body: HuntProfileBody):
+        from vulnforge.hunt_profiles import HuntProfileError, save_profile
+
+        pid = (body.id or "").strip()
+        if not pid:
+            raise HTTPException(400, "id is required")
+        try:
+            profile = save_profile(
+                pid,
+                body_md=body.body_md,
+                title=body.title,
+                description=body.description,
+                active=body.active if body.active is not None else False,
+                tags=body.tags,
+                languages=body.languages,
+                cwe=body.cwe,
+                angle_ids=body.angle_ids,
+                sink_families=body.sink_families,
+                specificity=body.specificity,
+                version=body.version,
+                tools=body.tools,
+                clear_tools=bool(body.clear_tools),
+                create=True,
+            )
+            return {"ok": True, "profile": profile}
+        except HuntProfileError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.put("/api/hunt-profiles/{profile_id}")
+    def api_hunt_profile_update(profile_id: str, body: HuntProfileBody):
+        from vulnforge.hunt_profiles import HuntProfileError, save_profile
+
+        try:
+            profile = save_profile(
+                profile_id,
+                body_md=body.body_md,
+                title=body.title,
+                description=body.description,
+                active=body.active,
+                tags=body.tags,
+                languages=body.languages,
+                cwe=body.cwe,
+                angle_ids=body.angle_ids,
+                sink_families=body.sink_families,
+                specificity=body.specificity,
+                version=body.version,
+                tools=body.tools,
+                clear_tools=bool(body.clear_tools),
+                create=False,
+            )
+            return {"ok": True, "profile": profile}
+        except HuntProfileError as e:
+            msg = str(e)
+            code = 404 if "unknown" in msg else 400
+            raise HTTPException(code, msg) from e
+
+    @app.delete("/api/hunt-profiles/{profile_id}")
+    def api_hunt_profile_delete(profile_id: str):
+        from vulnforge.hunt_profiles import HuntProfileError, delete_profile
+
+        try:
+            return delete_profile(profile_id)
+        except HuntProfileError as e:
+            msg = str(e)
+            code = 404 if "unknown" in msg else 400
+            raise HTTPException(code, msg) from e
+
+    # ---------- API: recon agents (Dev dashboard) ----------
+
+    @app.get("/api/recon-agents")
+    def api_recon_agents_list(include_body: bool = Query(False)):
+        from vulnforge.recon_agents import ReconAgentError, catalog_for_ui, list_agents
+
+        try:
+            agents = list_agents(include_body=include_body)
+            return {
+                "ok": True,
+                "catalog": catalog_for_ui(),
+                "agents": agents,
+            }
+        except ReconAgentError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(500, f"recon agents failed: {e}") from e
+
+    @app.get("/api/recon-agents/export")
+    def api_recon_agents_export():
+        from vulnforge.recon_agents import ReconAgentError, export_collection
+
+        try:
+            data = export_collection()
+            return JSONResponse(
+                content=data,
+                headers={
+                    "Content-Disposition": 'attachment; filename="recon_collection.json"'
+                },
+            )
+        except ReconAgentError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/recon-agents/import")
+    def api_recon_agents_import(body: ReconAgentImportBody):
+        from vulnforge.recon_agents import ReconAgentError, import_collection
+
+        try:
+            result = import_collection(body.data, mode=body.mode or "merge")
+            return result
+        except ReconAgentError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/recon-agents/reseed")
+    def api_recon_agents_reseed():
+        from vulnforge.recon_agents import ReconAgentError, reseed_from_package
+
+        try:
+            return reseed_from_package(replace=True)
+        except ReconAgentError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get("/api/recon-agents/{agent_id}")
+    def api_recon_agent_get(agent_id: str):
+        from vulnforge.recon_agents import ReconAgentError, get_agent
+
+        try:
+            return {"ok": True, "agent": get_agent(agent_id, include_body=True)}
+        except ReconAgentError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.post("/api/recon-agents")
+    def api_recon_agent_create(body: ReconAgentBody):
+        from vulnforge.recon_agents import ReconAgentError, save_agent
+
+        aid = (body.id or "").strip()
+        if not aid:
+            raise HTTPException(400, "id is required")
+        try:
+            agent = save_agent(
+                aid,
+                body_md=body.body_md,
+                title=body.title,
+                description=body.description,
+                active=body.active if body.active is not None else False,
+                order=body.order,
+                mode=body.mode,
+                tools=body.tools,
+                temperature=body.temperature,
+                max_tool_rounds=body.max_tool_rounds,
+                output=body.output,
+                create=True,
+            )
+            return {"ok": True, "agent": agent}
+        except ReconAgentError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.put("/api/recon-agents/{agent_id}")
+    def api_recon_agent_update(agent_id: str, body: ReconAgentBody):
+        from vulnforge.recon_agents import ReconAgentError, save_agent
+
+        try:
+            agent = save_agent(
+                agent_id,
+                body_md=body.body_md,
+                title=body.title,
+                description=body.description,
+                active=body.active,
+                order=body.order,
+                mode=body.mode,
+                tools=body.tools,
+                temperature=body.temperature,
+                max_tool_rounds=body.max_tool_rounds,
+                output=body.output,
+                create=False,
+            )
+            return {"ok": True, "agent": agent}
+        except ReconAgentError as e:
+            msg = str(e)
+            code = 404 if "unknown" in msg else 400
+            raise HTTPException(code, msg) from e
+
+    @app.delete("/api/recon-agents/{agent_id}")
+    def api_recon_agent_delete(agent_id: str):
+        from vulnforge.recon_agents import ReconAgentError, delete_agent
+
+        try:
+            return delete_agent(agent_id)
+        except ReconAgentError as e:
+            msg = str(e)
+            code = 404 if "unknown" in msg else 400
+            raise HTTPException(code, msg) from e
+
+    # ---------- API: tools catalog + tool drafts (Dev dashboard) ----------
+
+    @app.get("/api/tools")
+    def api_tools_list():
+        from vulnforge.toolgen.catalog import list_tools
+
+        tools = list_tools()
+        return {"ok": True, "tools": tools, "count": len(tools)}
+
+    @app.get("/api/tools/{name}")
+    def api_tools_get(name: str):
+        from vulnforge.toolgen.catalog import get_tool
+
+        tool = get_tool(name)
+        if not tool:
+            raise HTTPException(404, f"unknown tool: {name}")
+        return {"ok": True, "tool": tool}
+
+    @app.get("/api/tool-drafts")
+    def api_tool_drafts_list():
+        from vulnforge.toolgen.store import ToolDraftError, list_drafts
+
+        try:
+            return {"ok": True, "drafts": list_drafts()}
+        except ToolDraftError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/tool-drafts")
+    def api_tool_drafts_create(body: ToolDraftCreateBody):
+        from vulnforge.toolgen.store import ToolDraftError, create_draft
+
+        try:
+            draft = create_draft(
+                brief=body.brief,
+                suggested_id=body.suggested_id,
+                source=body.source,
+                source_gap=body.gap,
+                stages=body.stages,
+                risk_class=body.risk_class,
+                prefer_extend=body.prefer_extend,
+                title=body.title,
+                description=body.description,
+                slots=body.slots,
+            )
+            return {"ok": True, "draft": draft}
+        except ToolDraftError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/tool-drafts/from-gap")
+    def api_tool_drafts_from_gap(body: ToolDraftCreateBody):
+        from vulnforge.toolgen.store import ToolDraftError, create_draft
+
+        gap = body.gap if isinstance(body.gap, dict) else {}
+        cap = str(
+            (gap.get("tool_or_capability") if gap else None)
+            or body.suggested_id
+            or "new_tool"
+        )
+        brief = (body.brief or "").strip() or str(
+            gap.get("suggestion") or f"Implement capability {cap} from tool-gap analysis."
+        )
+        try:
+            draft = create_draft(
+                brief=brief,
+                suggested_id=body.suggested_id or cap,
+                source="tool_gap",
+                source_gap=gap or body.gap,
+                stages=body.stages or ["hunt"],
+                risk_class=body.risk_class or "read_only",
+                prefer_extend=body.prefer_extend,
+                title=body.title or cap,
+                description=body.description or brief[:500],
+                slots=body.slots,
+            )
+            return {"ok": True, "draft": draft}
+        except ToolDraftError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get("/api/tool-drafts/{draft_id}")
+    def api_tool_draft_get(draft_id: str):
+        from vulnforge.toolgen.store import ToolDraftError, get_draft
+
+        try:
+            return {"ok": True, "draft": get_draft(draft_id)}
+        except ToolDraftError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.put("/api/tool-drafts/{draft_id}")
+    def api_tool_draft_update(draft_id: str, body: ToolDraftUpdateBody):
+        from vulnforge.toolgen.store import ToolDraftError, update_draft
+
+        meta_updates: dict[str, Any] = {}
+        if body.title is not None:
+            meta_updates["title"] = body.title
+        if body.description is not None:
+            meta_updates["description"] = body.description
+        if body.stages is not None:
+            meta_updates["stages"] = body.stages
+        if body.risk_class is not None:
+            meta_updates["risk_class"] = body.risk_class
+        if body.prefer_extend is not None:
+            meta_updates["prefer_extend"] = body.prefer_extend
+        if body.operator_notes is not None:
+            meta_updates["operator_notes"] = body.operator_notes
+        try:
+            draft = update_draft(
+                draft_id,
+                brief=body.brief,
+                slots=body.slots,
+                meta_updates=meta_updates or None,
+                spec_md=body.spec_md,
+                impl_py=body.impl_py,
+                schema=body.tool_schema,
+                wireup=body.wireup,
+                handler_snippet=body.handler_snippet,
+                test_stub=body.test_stub,
+                status=body.status,
+            )
+            return {"ok": True, "draft": draft}
+        except ToolDraftError as e:
+            msg = str(e)
+            code = 404 if "unknown" in msg else 400
+            raise HTTPException(code, msg) from e
+
+    @app.delete("/api/tool-drafts/{draft_id}")
+    def api_tool_draft_delete(draft_id: str):
+        from vulnforge.toolgen.store import ToolDraftError, delete_draft
+
+        try:
+            return delete_draft(draft_id)
+        except ToolDraftError as e:
+            msg = str(e)
+            code = 404 if "unknown" in msg else 400
+            raise HTTPException(code, msg) from e
+
+    @app.post("/api/tool-drafts/{draft_id}/reject")
+    def api_tool_draft_reject(draft_id: str, body: Optional[ToolRejectBody] = None):
+        from vulnforge.toolgen.store import ToolDraftError, reject_draft
+
+        try:
+            return {
+                "ok": True,
+                "draft": reject_draft(draft_id, reason=(body.reason if body else "") or ""),
+            }
+        except ToolDraftError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.post("/api/tool-drafts/{draft_id}/prompts/preview")
+    def api_tool_draft_prompts_preview(draft_id: str, body: Optional[ToolPromptPreviewBody] = None):
+        from vulnforge.toolgen.generate import GenerateToolError, build_prompt_preview
+        from vulnforge.toolgen.store import ToolDraftError
+
+        stage = (body.stage if body else None) or "spec"
+        use_ov = body.use_prompt_overrides if body else True
+        try:
+            prompts = build_prompt_preview(draft_id, stage, use_overrides=use_ov)
+            return {"ok": True, **prompts}
+        except ToolDraftError as e:
+            raise HTTPException(404, str(e)) from e
+        except GenerateToolError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.put("/api/tool-drafts/{draft_id}/prompts")
+    def api_tool_draft_prompts_save(draft_id: str, body: ToolPromptOverrideBody):
+        from vulnforge.toolgen.store import ToolDraftError, save_prompt_override
+
+        try:
+            save_prompt_override(draft_id, body.name, body.content)
+            return {"ok": True}
+        except ToolDraftError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/tool-drafts/{draft_id}/generate/spec")
+    def api_tool_draft_generate_spec(draft_id: str, body: Optional[ToolGenerateBody] = None):
+        from vulnforge.toolgen.generate import GenerateToolError, generate_spec
+        from vulnforge.toolgen.store import ToolDraftError
+
+        cfg = load_config()
+        try:
+            return generate_spec(
+                cfg,
+                draft_id,
+                use_prompt_overrides=body.use_prompt_overrides if body else True,
+            )
+        except ToolDraftError as e:
+            raise HTTPException(404, str(e)) from e
+        except GenerateToolError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(502, f"LLM generate failed: {e}") from e
+
+    @app.post("/api/tool-drafts/{draft_id}/generate/impl")
+    def api_tool_draft_generate_impl(draft_id: str, body: Optional[ToolGenerateBody] = None):
+        from vulnforge.toolgen.generate import GenerateToolError, generate_impl
+        from vulnforge.toolgen.store import ToolDraftError
+
+        cfg = load_config()
+        try:
+            return generate_impl(
+                cfg,
+                draft_id,
+                use_prompt_overrides=body.use_prompt_overrides if body else True,
+            )
+        except ToolDraftError as e:
+            raise HTTPException(404, str(e)) from e
+        except GenerateToolError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(502, f"LLM generate failed: {e}") from e
+
+    @app.post("/api/tool-drafts/{draft_id}/generate/fix")
+    def api_tool_draft_generate_fix(draft_id: str, body: Optional[ToolGenerateBody] = None):
+        from vulnforge.toolgen.generate import GenerateToolError, generate_fix
+        from vulnforge.toolgen.store import ToolDraftError
+
+        cfg = load_config()
+        try:
+            return generate_fix(
+                cfg,
+                draft_id,
+                use_prompt_overrides=body.use_prompt_overrides if body else True,
+            )
+        except ToolDraftError as e:
+            raise HTTPException(404, str(e)) from e
+        except GenerateToolError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            raise HTTPException(502, f"LLM generate failed: {e}") from e
+
+    @app.post("/api/tool-drafts/{draft_id}/validate")
+    def api_tool_draft_validate(
+        draft_id: str,
+        for_integrate: bool = Query(False),
+    ):
+        from vulnforge.toolgen.store import ToolDraftError, get_draft
+        from vulnforge.toolgen.validate import validate_draft
+
+        try:
+            report = validate_draft(draft_id, for_integrate=for_integrate, persist=True)
+            return {
+                "ok": True,
+                "validation": report,
+                "draft": get_draft(draft_id, include_files=False),
+            }
+        except ToolDraftError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.post("/api/tool-drafts/{draft_id}/integrate")
+    def api_tool_draft_integrate(draft_id: str, body: Optional[ToolIntegrateBody] = None):
+        from vulnforge.toolgen.integrate import IntegrateToolError, integrate
+        from vulnforge.toolgen.store import ToolDraftError
+
+        dry = body.dry_run if body else True
+        apply = body.apply if body else False
+        add = body.add_to_profiles if body else None
+        try:
+            result = integrate(
+                draft_id,
+                dry_run=dry if not apply else False,
+                apply=apply,
+                add_to_profiles=add,
+            )
+            return {"ok": True, **result}
+        except ToolDraftError as e:
+            raise HTTPException(404, str(e)) from e
+        except IntegrateToolError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get("/api/tool-drafts/{draft_id}/export")
+    def api_tool_draft_export(draft_id: str):
+        from vulnforge.toolgen.store import ToolDraftError, export_draft
+
+        try:
+            return export_draft(draft_id)
+        except ToolDraftError as e:
+            raise HTTPException(404, str(e)) from e
+
+    # ---------- API: lifecycle (start/pause/resume/stop) ----------
+
+    @app.get("/api/runs/{target_id}/{run_id}/runner")
+    def api_runner_status(target_id: str, run_id: str):
+        run = _get_run(target_id, run_id)
+        return runctl.runner_status(run.path)
+
+    @app.post("/api/runs/{target_id}/{run_id}/start")
+    def api_start(target_id: str, run_id: str, body: ControlBody = Body(default_factory=ControlBody)):
+        run = _get_run(target_id, run_id)
+        r = runctl.start_run(run.path, **control_start_kwargs(body))
+        if not r.get("ok"):
+            raise HTTPException(409, r.get("error") or "start failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/pause")
+    def api_pause(target_id: str, run_id: str):
+        run = _get_run(target_id, run_id)
+        r = runctl.pause_run(run.path)
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "pause failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/resume")
+    def api_resume(target_id: str, run_id: str, body: ControlBody = Body(default_factory=ControlBody)):
+        run = _get_run(target_id, run_id)
+        r = runctl.resume_run(run.path, **control_start_kwargs(body))
+        if not r.get("ok"):
+            raise HTTPException(409, r.get("error") or "resume failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/stop")
+    def api_stop_hard(target_id: str, run_id: str):
+        run = _get_run(target_id, run_id)
+        return runctl.stop_run_hard(run.path)
+
+    @app.delete("/api/runs/{target_id}/{run_id}")
+    def api_delete_run(
+        target_id: str,
+        run_id: str,
+        force: bool = Query(
+            True,
+            description="Hard-stop runner if alive; also allow delete without harness.db",
+        ),
+    ):
+        """Permanently delete the run directory (DB, evidence, transcripts, project)."""
+        # Resolve without requiring harness.db when force (broken runs still deletable)
+        try:
+            run = store.resolve_run(app.state.runs_root, target_id, run_id)
+            tid, rid = run.target_id, run.run_id
+        except FileNotFoundError:
+            tid, rid = target_id, run_id
+        except PermissionError:
+            raise HTTPException(400, "invalid run path")
+        r = store.delete_run(
+            app.state.runs_root,
+            tid,
+            rid,
+            force=force,
+            stop_runner=True,
+            require_db=not force,
+        )
+        if not r.get("ok"):
+            err = r.get("error") or "delete failed"
+            if "not found" in err:
+                raise HTTPException(404, err)
+            if "alive" in err:
+                raise HTTPException(409, err)
+            raise HTTPException(400, err)
+        return r
+
+    # ---------- SSE live feed ----------
+
+    @app.get("/api/runs/{target_id}/{run_id}/stream")
+    async def api_stream(target_id: str, run_id: str, after: int = Query(0, ge=0)):
+        run = _get_run(target_id, run_id)
+
+        async def gen():
+            offset = after
+            while True:
+                try:
+                    events, nxt = store.read_events(run, after=offset, limit=200)
+                    # Same incomplete computation as list/detail APIs so the
+                    # live badge is not wiped by raw runner_status snapshots.
+                    card = with_runner_flags(
+                        store.run_card(run), run.path, cfg=app.state.config
+                    )
+                    snap = {
+                        "type": "snapshot",
+                        "card": card,
+                        "runner": card.get("runner") or runctl.runner_status(run.path),
+                    }
+                    # light task/finding counts only in card
+                    yield f"data: {json.dumps(snap)}\n\n"
+                    if events:
+                        payload = {"type": "events", "events": events, "next": nxt}
+                        yield f"data: {json.dumps(payload)}\n\n"
+                        offset = nxt
+                except Exception as e:
+                    yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+                await asyncio.sleep(1.5)
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    return app
+
+
+def run_dashboard(
+    host: str = "127.0.0.1",
+    port: int = 8787,
+    runs_root: Optional[Path] = None,
+) -> None:
+    import uvicorn
+
+    app = create_app(runs_root=runs_root)
+    print(f"vulnforge dashboard -> http://{host}:{port}")
+    print(f"runs root: {app.state.runs_root}")
+    uvicorn.run(app, host=host, port=port, log_level="info")

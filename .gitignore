@@ -1,0 +1,46 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.pytest_tmp/
+*.egg
+
+# Local runtime / data
+runs/
+models/
+temp/
+*.db
+*.sqlite
+config/ui_settings.json
+config/prompts/
+
+# Archives / unpack leftovers
+VulnForge-main/
+VulnForge-main.zip
+*.zip
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Unrelated siblings in this workspace (not part of VulnForge package)
+katie/
+ornith.py
+ornith_*.py
+ornith_*.sh
+grok-ornith.sh
+start_ornith_server.sh
+download_models.sh
+benchmark_ornith.py
+benchmark_results.json
+OPTIMIZATION_GUIDE.md
+README_SERVER.md
+requirements.txt

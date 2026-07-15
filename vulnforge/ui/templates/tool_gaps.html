@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tool gaps | VulnForge</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="apple-touch-icon" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body data-page="tool-gaps">
+  <header class="app-header">
+    <div class="brand">
+      <a href="/" class="home-link" title="Home - all runs">
+        <img class="logo" src="/static/logo-128.png" width="32" height="32" alt="" />
+        <div>
+          VulnForge
+          <div class="sub">Tool capability gaps</div>
+        </div>
+      </a>
+    </div>
+    <div class="header-actions">
+      <a class="btn btn-primary home-btn" href="/" title="Home">Home</a>
+      <span class="controls-hint mono">{{ runs_root }}</span>
+    </div>
+  </header>
+
+  <main class="main">
+    <div class="page-hero">
+      <div>
+        <h1>Tool capability gaps</h1>
+        <p>
+          Product roadmap: tools agents wanted but do not have.
+          AI hybrid analysis (mechanical signals + LLM synthesis). Review only - not proof.
+        </p>
+      </div>
+    </div>
+
+    <div class="card home-tool-gaps-card" id="home-tool-gaps">
+      <div class="toolbar" style="margin-bottom:0.5rem;flex-wrap:wrap;gap:0.5rem">
+        <h2 style="margin:0;flex:1">Capabilities</h2>
+        <button type="button" class="btn" id="btn-tool-gaps-refresh">Refresh</button>
+        <button type="button" class="btn btn-primary" id="btn-tool-gaps-analyze">Analyze with AI</button>
+      </div>
+      <div id="home-tool-gaps-meta" class="controls-hint" style="margin-bottom:0.65rem"></div>
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Capability</th>
+              <th>Runs</th>
+              <th>Count</th>
+              <th>Source</th>
+              <th>Suggestion</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="home-tool-gaps-body">
+            <tr><td colspan="7" class="empty">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:1rem">
+      <h2 style="margin-top:0">Per run</h2>
+      <p class="controls-hint">Open a run cockpit to dig into transcripts for that campaign.</p>
+      <div id="tool-gaps-per-run" class="tool-gaps-per-run">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

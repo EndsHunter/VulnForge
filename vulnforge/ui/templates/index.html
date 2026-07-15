@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VulnForge | Security Ops</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="apple-touch-icon" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body data-page="home">
+  <header class="app-header">
+    <div class="brand">
+      <a href="/" class="home-link" title="Home  -  all runs">
+        <img class="logo" src="/static/logo-128.png" width="32" height="32" alt="" />
+        <div>
+          VulnForge
+          <div class="sub">Vulnerability research cockpit</div>
+        </div>
+      </a>
+    </div>
+    <div class="header-actions">
+      <a class="btn btn-primary home-btn" href="/" title="Home">⌂ Home</a>
+      <button class="btn" id="btn-settings" type="button">⚙ Settings</button>
+      <span class="controls-hint mono">{{ runs_root }}</span>
+      <button class="btn btn-primary" id="btn-new-run" type="button">+ New audit</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <div class="page-hero">
+      <div>
+        <h1>Audit runs</h1>
+        <p>Durable recon - hunt - validate loops. Open a run for the research cockpit: Mission, Coverage, Explorer, Report, Evidence, and Tasks. Develop POC is a workshop modal from Report.</p>
+      </div>
+    </div>
+
+    <div class="stats" id="home-stats" style="display:none"></div>
+
+    <div class="home-cta-row">
+      <div class="card home-tool-gaps-card home-tool-gaps-cta" id="home-tool-gaps">
+        <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.5rem;align-items:center">
+          <div style="flex:1;min-width:12rem">
+            <h2 style="margin:0">Tool capability gaps</h2>
+            <p class="controls-hint" style="margin:0.35rem 0 0" id="home-tool-gaps-meta">
+              Missing tools agents wanted across campaigns (AI hybrid).
+            </p>
+          </div>
+          <a class="btn btn-primary" href="/tool-gaps" id="btn-open-tool-gaps">Open tool gaps</a>
+        </div>
+      </div>
+      <div class="card home-dev-card home-dev-cta" id="home-dev">
+        <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.5rem;align-items:center">
+          <div style="flex:1;min-width:12rem">
+            <h2 style="margin:0">Dev dashboard</h2>
+            <p class="controls-hint" style="margin:0.35rem 0 0">
+              Edit hunt profiles, recon agents, and tools. Export setup transfers your whole Dev pack to a fresh install.
+            </p>
+          </div>
+          <a class="btn btn-primary" href="/dev" id="btn-open-dev">Open Dev</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="home-toolbar">
+      <input type="search" id="home-search" placeholder="Search target, run id, path..." aria-label="Search runs" />
+      <div class="filter-chips" role="group" aria-label="Filter runs">
+        <button type="button" class="chip active" data-filter="all">All</button>
+        <button type="button" class="chip" data-filter="running">Running</button>
+        <button type="button" class="chip" data-filter="incomplete">Incomplete</button>
+        <button type="button" class="chip" data-filter="idle">Idle</button>
+      </div>
+    </div>
+
+    <div class="run-list" id="run-list">
+      <div class="empty">Loading...</div>
+    </div>
+  </main>
+
+  <div class="modal-backdrop" id="init-modal">
+    <div class="modal modal-init" role="dialog" aria-labelledby="init-modal-title" aria-modal="true">
+      <header class="modal-init-header">
+        <h2 id="init-modal-title">New audit</h2>
+        <p class="modal-init-sub">Point VulnForge at a code tree and choose how to start.</p>
+      </header>
+      <form id="init-form" class="init-form">
+        <div class="field">
+          <label class="field-label-text" for="init-target">Target directory</label>
+          <div class="path-input-row">
+            <input id="init-target" name="target" required placeholder="C:\path\to\repo" autocomplete="off" spellcheck="false" />
+            <button type="button" class="btn" id="btn-browse-target" title="Browse for folder">Browse...</button>
+          </div>
+        </div>
+
+        <fieldset class="init-fieldset">
+          <legend class="field-label-text">Strategy</legend>
+          <div class="strategy-list" role="radiogroup" aria-label="Run strategy">
+            <label class="strategy-option">
+              <input type="radio" name="init-strategy" value="discovery" checked />
+              <span class="strategy-option-main">
+                <span class="strategy-option-title">Discovery recon</span>
+                <span class="strategy-option-desc">Map architecture, then plan hunts. Best default.</span>
+              </span>
+            </label>
+            <label class="strategy-option">
+              <input type="radio" name="init-strategy" value="file_by_file" />
+              <span class="strategy-option-main">
+                <span class="strategy-option-title">File-by-file</span>
+                <span class="strategy-option-desc">One hunt queue per source file. Thorough, more tasks.</span>
+              </span>
+            </label>
+            <label class="strategy-option">
+              <input type="radio" name="init-strategy" value="recon_docs" />
+              <span class="strategy-option-main">
+                <span class="strategy-option-title">Recon with docs</span>
+                <span class="strategy-option-desc">Use design docs / ADRs to guide recon.</span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
+        <div class="field" id="init-docs-field" hidden>
+          <label class="field-label-text" for="init-docs-path">Docs path</label>
+          <div class="path-input-row">
+            <input id="init-docs-path" name="docs_path" placeholder="C:\path\to\docs" autocomplete="off" spellcheck="false" />
+            <button type="button" class="btn" id="btn-browse-docs" title="Browse for docs folder or file">Browse...</button>
+          </div>
+          <p class="controls-hint init-hint">Folder or file with design docs (md, html, docx, pdf, xlsx).</p>
+        </div>
+
+        <div id="init-recon-fields">
+          <div class="field">
+            <label class="field-label-text">Recon agents</label>
+            <p class="controls-hint init-hint" style="margin:0.15rem 0 0.4rem">
+              Select one or more recon profiles — each runs as its own Ralph task; maps merge when the batch finishes. Leave all unchecked to use the active set from Dev.
+            </p>
+            <div id="init-recon-agents" class="recon-agent-picker" role="group" aria-label="Recon agents">
+              <div class="controls-hint">Loading agents…</div>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label-text" for="init-recon-notes">Recon brief (optional)</label>
+            <textarea
+              id="init-recon-notes"
+              class="op-notes"
+              rows="3"
+              placeholder="Extra instructions for recon — what to map, fix, or deepen (e.g. focus on auth and payment entrypoints)."
+            ></textarea>
+          </div>
+          <div class="field" id="init-dynamic-skills-field">
+            <label class="init-check">
+              <input type="checkbox" id="init-dynamic-skills" />
+              <span>Generate custom hunt skills for this run</span>
+            </label>
+            <p class="controls-hint init-hint" style="margin:0.35rem 0 0.4rem">
+              After recon, author target-specific hunt profiles from architecture and inventory
+              (editable system prompt under Dev → Skill generator). Stock hunts still run; these are additive.
+            </p>
+            <div class="field" id="init-dynamic-skill-count-wrap" hidden>
+              <label class="field-label-text" for="init-dynamic-skill-count">Number of custom skills</label>
+              <input id="init-dynamic-skill-count" type="number" value="3" min="1" max="10" step="1" />
+            </div>
+          </div>
+        </div>
+
+        <div class="init-row-2">
+          <div class="field">
+            <label class="field-label-text" for="init-max-tasks">Max tasks</label>
+            <input id="init-max-tasks" type="number" value="50" min="1" step="1" />
+          </div>
+          <div class="field init-start-field">
+            <label class="init-check">
+              <input type="checkbox" id="init-start" checked />
+              <span>Start Ralph after create</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn" id="init-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="init-submit">Create run</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Creating run: live progress popup then navigate to cockpit -->
+  <div class="modal-backdrop" id="init-loading-modal">
+    <div class="modal modal-init-loading" role="dialog" aria-labelledby="init-loading-title" aria-modal="true" aria-busy="true">
+      <div class="init-loading-visual" aria-hidden="true">
+        <div class="init-loading-icon"></div>
+        <div class="init-loading-pulse"></div>
+      </div>
+      <h2 id="init-loading-title">Creating audit run</h2>
+      <p class="controls-hint init-loading-sub" id="init-loading-target"></p>
+      <ol class="init-phase-steps" id="init-phase-steps" aria-label="Init phases">
+        <li data-phase="queued" class="active">Queue</li>
+        <li data-phase="inventory">Scan</li>
+        <li data-phase="database">Database</li>
+        <li data-phase="ralph">Ralph</li>
+        <li data-phase="done">Open</li>
+      </ol>
+      <div class="init-status init-status-loading">
+        <div class="init-status-row">
+          <div class="init-status-label" id="init-status-text">Starting...</div>
+          <div class="init-status-meta" id="init-status-meta"></div>
+        </div>
+        <div class="init-status-track is-indeterminate" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="init-status-text">
+          <div class="init-status-bar" id="init-status-bar" style="width:8%"></div>
+        </div>
+        <div class="init-metrics" id="init-metrics" hidden>
+          <span class="init-metric"><span class="init-metric-n" id="init-metric-files">0</span> files</span>
+          <span class="init-metric"><span class="init-metric-n" id="init-metric-elapsed">0s</span> elapsed</span>
+        </div>
+        <p class="controls-hint init-hint" id="init-loading-hint">Inventorying the target tree. Large folders take longer.</p>
+      </div>
+      <div class="modal-actions init-loading-actions" id="init-loading-actions" hidden>
+        <button type="button" class="btn" id="init-loading-dismiss">Back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Host path picker (target folder / docs file or folder) -->
+  <div class="modal-backdrop" id="path-picker-modal">
+    <div class="modal modal-path-picker" role="dialog" aria-labelledby="path-picker-title" aria-modal="true">
+      <header class="path-picker-header">
+        <h2 id="path-picker-title">Select path</h2>
+        <p class="controls-hint" id="path-picker-hint">Choose a folder on this machine.</p>
+      </header>
+      <div class="path-picker-bar">
+        <button type="button" class="btn" id="path-picker-up" title="Parent folder">Up</button>
+        <input type="text" id="path-picker-path" class="path-picker-path" spellcheck="false" autocomplete="off" placeholder="Path or leave empty for drives" />
+        <button type="button" class="btn" id="path-picker-go">Go</button>
+      </div>
+      <div id="path-picker-list" class="path-picker-list" role="listbox" aria-label="Directory entries"></div>
+      <div id="path-picker-status" class="controls-hint path-picker-status"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="path-picker-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="path-picker-select">Select this folder</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="settings-modal">
+    <div class="modal modal-wide">
+      <h2>LLM &amp; agent settings</h2>
+      <p class="controls-hint" style="margin-top:-0.4rem;margin-bottom:0.85rem">
+        Saved to <code>config/ui_settings.json</code>. Applied to new work via load_config.
+      </p>
+      <form id="settings-form">
+        <div class="settings-sections">
+          <div class="settings-section">
+            <h3>Endpoint</h3>
+            <div class="grid-2">
+              <div class="field">
+                <label class="field-label" for="set-host">
+                  <span class="label-text">LM Studio host</span>
+                  <button type="button" class="info-tip" aria-label="Help: LM Studio host" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      Hostname or IP of the machine running LM Studio’s OpenAI-compatible server.
+                      <span class="impact-up">Up Remote host: run the model on another PC (e.g. 10.0.0.232).</span>
+                      <span class="impact-down">↓ Localhost (127.0.0.1): model must run on this same machine.</span>
+                    </span>
+                  </button>
+                </label>
+                <input id="set-host" required placeholder="10.0.0.232" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-port">
+                  <span class="label-text">Port</span>
+                  <button type="button" class="info-tip" aria-label="Help: Port" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      TCP port for LM Studio’s API (usually 1234).
+                      <span class="impact-up">Up Use whatever port LM Studio shows if you changed the default.</span>
+                      <span class="impact-down">↓ Wrong port -> connection errors / failed_infra on every task.</span>
+                    </span>
+                  </button>
+                </label>
+                <input id="set-port" type="number" required min="1" max="65535" />
+              </div>
+              <div class="field" style="grid-column:1/-1">
+                <label class="field-label" for="set-model">
+                  <span class="label-text">Model id</span>
+                  <button type="button" class="info-tip" aria-label="Help: Model id" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      Exact model name LM Studio exposes. Must match /v1/models.
+                      <span class="impact-up">Up Larger models: better hunts, slower and more VRAM.</span>
+                      <span class="impact-down">↓ Smaller models: quicker loops, more missed bugs.</span>
+                    </span>
+                  </button>
+                </label>
+                <input id="set-model" required placeholder="models/Ornith-1.0-35B@4bit" />
+              </div>
+              <div class="field" style="grid-column:1/-1">
+                <label class="field-label" for="set-api-mode">
+                  <span class="label-text">API mode</span>
+                  <button type="button" class="info-tip" aria-label="Help: API mode" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      Which HTTP API surface VulnForge uses for tool-calling turns.
+                      <span class="impact-up"><strong>chat-completions</strong> — POST /v1/chat/completions (OpenAI classic; default for LM Studio).</span>
+                      <span class="impact-up"><strong>responses</strong> — POST /v1/responses (OpenAI Responses API).</span>
+                      <span class="impact-up"><strong>messages</strong> — POST /v1/messages (Anthropic-style Messages API).</span>
+                      <span class="impact-down">↓ Wrong mode for your server → empty/error responses or failed_infra.</span>
+                    </span>
+                  </button>
+                </label>
+                <select id="set-api-mode" class="settings-select">
+                  <option value="chat_completions">chat-completions (/v1/chat/completions)</option>
+                  <option value="responses">responses (/v1/responses)</option>
+                  <option value="messages">messages (/v1/messages)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="settings-section">
+            <h3>Agent budget</h3>
+            <div class="grid-2">
+              <div class="field">
+                <label class="field-label" for="set-workers">
+                  <span class="label-text">Max concurrent agents</span>
+                  <button type="button" class="info-tip" aria-label="Help: Max concurrent agents" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      How many Ralph/worker processes to start. LLM work still serializes on run.lock today.
+                      <span class="impact-down">↓ 1 (recommended) for a single local GPU.</span>
+                    </span>
+                  </button>
+                </label>
+                <input id="set-workers" type="number" min="1" step="1" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-maxtasks">
+                  <span class="label-text">Default max tasks / run</span>
+                  <button type="button" class="info-tip" aria-label="Help: Default max tasks" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      Ralph budget and hunt enqueue planning cap (operator-chosen; no hard product ceiling).
+                    </span>
+                  </button>
+                </label>
+                <input id="set-maxtasks" type="number" min="1" step="1" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-ctx">
+                  <span class="label-text">Context window (tokens)</span>
+                  <button type="button" class="info-tip" aria-label="Help: Context window" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      Assumed model context size for packet budgeting.
+                    </span>
+                  </button>
+                </label>
+                <input id="set-ctx" type="number" min="1" step="1024" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-frac">
+                  <span class="label-text">Max context fraction</span>
+                  <button type="button" class="info-tip" aria-label="Help: Max context fraction" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      Share of context used for the prompt packet (0–1).
+                      <span class="impact-down">↓ 0.15–0.25 is typical for long local sessions; higher uses more context.</span>
+                    </span>
+                  </button>
+                </label>
+                <input id="set-frac" type="number" min="0.01" max="1" step="0.01" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-maxtok">
+                  <span class="label-text">Max completion tokens</span>
+                  <button type="button" class="info-tip" aria-label="Help: Max completion tokens" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      Cap on tokens per chat turn. Reasoning models need headroom.
+                    </span>
+                  </button>
+                </label>
+                <input id="set-maxtok" type="number" min="1" step="256" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-rounds">
+                  <span class="label-text">Max tool rounds / agent</span>
+                  <button type="button" class="info-tip" aria-label="Help: Max tool rounds" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      Max model↔tool iterations per recon/hunt task. Set as high as you want; no artificial ceiling.
+                    </span>
+                  </button>
+                </label>
+                <input id="set-rounds" type="number" min="1" step="1" />
+              </div>
+              <div class="field">
+                <label class="field-label" for="set-timeout">
+                  <span class="label-text">HTTP timeout (seconds)</span>
+                  <button type="button" class="info-tip" aria-label="Help: HTTP timeout" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      Wait for one chat/completions call before infra failure.
+                    </span>
+                  </button>
+                </label>
+                <input id="set-timeout" type="number" min="1" />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="controls-hint" id="settings-effective" style="margin-top:0.5rem"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="settings-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="settings-save">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
