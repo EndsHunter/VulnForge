@@ -542,6 +542,17 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         except (TypeError, ValueError):
             max_task_attempts = 3
 
+    # Operator enqueue/plan ceiling (same source as control/ops coverage mode).
+    # UI Coverage estimates must use this — never a stale hard-coded 40.
+    max_tasks = 50
+    try:
+        max_tasks = max(1, int((run_cfg.get("run") or {}).get("max_tasks", 50)))
+    except (TypeError, ValueError):
+        try:
+            max_tasks = max(1, int(run_cfg.get("max_tasks", 50)))
+        except (TypeError, ValueError):
+            max_tasks = 50
+
     target_inv = _target_inventory(run, arch, tasks)
     # Preserve card-level counter maps before overwriting with full lists.
     # Live SSE compares these shapes; UI uses tasks[] / findings[] for tables.
@@ -569,6 +580,12 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         "inventory_honesty": target_inv,  # legacy alias
         "config": run_cfg,
         "max_task_attempts": max_task_attempts,
+        "max_tasks": max_tasks,
+        # Nested for clients that prefer snap.run.max_tasks (matches cfg.run.*)
+        "run": {
+            "max_tasks": max_tasks,
+            "max_task_attempts": max_task_attempts,
+        },
         "strategy": run_cfg.get("strategy"),
         "docs_path": run_cfg.get("docs_path"),
         "disclaimer": (

@@ -428,14 +428,28 @@
     return knownClasses();
   }
 
+  /** Operator run.max_tasks ceiling (Coverage estimates / confirm dialogs). */
+  function maxTasksCap() {
+    const snap = window.__VF_last_snap;
+    const n = Number(
+      window.__VF_max_tasks ??
+        snap?.run?.max_tasks ??
+        snap?.max_tasks ??
+        snap?.config?.run?.max_tasks ??
+        50
+    );
+    return Math.max(1, Number.isFinite(n) && n > 0 ? n : 50);
+  }
+
   function modeStatusCopy(mode, policy) {
     const p = policy || {};
+    const cap = maxTasksCap();
     if (mode === "all") {
       return {
         badge: "all",
         title: "Bulk: all architecture areas",
         detail:
-          "Last action filled the queue with active hunt skills × known areas (capped at 40). Ralph drains those hunts while it runs.",
+          `Last action filled the queue with active hunt skills × known areas (capped at ${cap}). Ralph drains those hunts while it runs.`,
       };
     }
     if (mode === "select") {
@@ -465,7 +479,8 @@
     const nAreas = Math.max(knownAreas().length, 1);
     const nCore = activeClassesList().length || 5;
     const raw = nAreas * nCore;
-    return { raw, capped: Math.min(raw, 40), nAreas, nCore };
+    const cap = maxTasksCap();
+    return { raw, capped: Math.min(raw, cap), nAreas, nCore, cap };
   }
 
   function joinPath(base, name) {
@@ -621,12 +636,13 @@
     const nA = countSelectAreas(form.closest(".cov-plan-card") || document);
     const nC = form.querySelectorAll("[data-cov-class]:checked").length || 0;
     const raw = nA * nC;
-    const capped = Math.min(raw, 40);
+    const cap = maxTasksCap();
+    const capped = Math.min(raw, cap);
     const pathN = customPathTargets.length;
     estEl.textContent = nC
       ? `About ${capped} hunt${capped === 1 ? "" : "s"} will be queued` +
         (pathN ? ` (${pathN} path target${pathN === 1 ? "" : "s"})` : "") +
-        (raw > 40 ? " (capped at 40)" : "") +
+        (raw > cap ? ` (capped at ${cap})` : "") +
         "."
       : "Select at least one hunt class.";
   }
@@ -703,7 +719,7 @@
           </button>
           <button type="button" class="cov-plan-action ${mode === "all" && !selectFormOpen ? "is-current" : ""}" data-cov-mode="all" id="cov-plan-all">
             <span class="cov-plan-action-title">Cover all areas (active)</span>
-            <span class="cov-plan-action-desc">Queue about ${est.capped} hunt${est.capped === 1 ? "" : "s"}: ${est.nCore} active skills × ${est.nAreas} area${est.nAreas === 1 ? "" : "s"}${est.raw > 40 ? " (capped at 40)" : ""}. Starts work immediately if Ralph is running.</span>
+            <span class="cov-plan-action-desc">Queue about ${est.capped} hunt${est.capped === 1 ? "" : "s"}: ${est.nCore} active skills × ${est.nAreas} area${est.nAreas === 1 ? "" : "s"}${est.raw > est.cap ? ` (capped at ${est.cap})` : ""}. Starts work immediately if Ralph is running.</span>
           </button>
           <button type="button" class="cov-plan-action ${selectFormOpen || mode === "select" ? "is-current" : ""}" data-cov-mode="select" id="cov-plan-custom">
             <span class="cov-plan-action-title">Custom areas &amp; classes…</span>
@@ -717,7 +733,7 @@
                 <div class="cov-select-form-title">Custom hunt queue</div>
                 <p class="controls-hint" style="margin:0 0 0.65rem">
                   Combine architecture areas and <strong>path targets</strong> (folder or file) with hunt classes.
-                  Path targets seed path hints from that location. Cap is 40 hunts per batch.
+                  Path targets seed path hints from that location. Cap is ${maxTasksCap()} hunts per batch (run.max_tasks).
                 </p>
 
                 <div class="cov-select-heading">Path targets (from target tree)</div>
@@ -785,7 +801,7 @@
             !window.confirm(
               `Queue about ${e.capped} hunt(s)?\n\n` +
                 `${e.nCore} core classes × ${e.nAreas} areas` +
-                (e.raw > 40 ? " (capped at 40)" : "") +
+                (e.raw > e.cap ? ` (capped at ${e.cap})` : "") +
                 ".\n\nRalph must be running to work the queue."
             )
           ) {
@@ -867,14 +883,15 @@
         knownAreas().length ||
         1;
       const raw = nA * pickedClasses.length;
-      const capped = Math.min(raw, 40);
+      const cap = maxTasksCap();
+      const capped = Math.min(raw, cap);
       const pathNote = pathTargets.length
         ? `\nPath targets: ${pathTargets.map((t) => t.path).join(", ")}`
         : "";
       if (
         !window.confirm(
           `Queue about ${capped} hunt(s) for your selection?` +
-            (raw > 40 ? " (capped at 40)" : "") +
+            (raw > cap ? ` (capped at ${cap})` : "") +
             pathNote
         )
       ) {
@@ -1217,6 +1234,13 @@
     if (!$("#coverage-panel") && !$("#coverage-summary")) return;
     window.__VF_cov_policy = snap?.coverage_policy || window.__VF_cov_policy;
     window.__VF_hunt_classes = snap?.hunt_classes || window.__VF_hunt_classes;
+    const mt =
+      snap?.max_tasks ??
+      snap?.run?.max_tasks ??
+      (snap?.config && snap.config.run && snap.config.run.max_tasks);
+    if (mt != null && Number(mt) > 0) {
+      window.__VF_max_tasks = Math.max(1, Number(mt));
+    }
     covCache = enrichCoverageAxes(snap?.coverage || covCache, snap);
 
     renderLegend();
