@@ -158,6 +158,17 @@ class HuntProfileBody(BaseModel):
     clear_tools: Optional[bool] = None
 
 
+class ToolsDefaultsBody(BaseModel):
+    """Global default tools per stage (null = built-in packet surface)."""
+
+    recon: Optional[list[str]] = None
+    hunt: Optional[list[str]] = None
+    develop_poc: Optional[list[str]] = None
+    clear_recon: bool = False
+    clear_hunt: bool = False
+    clear_develop_poc: bool = False
+
+
 class ToolDraftCreateBody(BaseModel):
     brief: str = ""
     suggested_id: Optional[str] = None
@@ -1614,6 +1625,31 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             code = 404 if "unknown" in msg else 400
             raise HTTPException(code, msg) from e
 
+    @app.post("/api/hunt-profiles/{profile_id}/restore-seed")
+    def api_hunt_profile_restore_seed(profile_id: str):
+        """Restore body from package prompts/v1/hunt_classes/{id}.md; set source=seed."""
+        from vulnforge.hunt_profiles import HuntProfileError, restore_seed_body
+
+        try:
+            profile = restore_seed_body(profile_id)
+            return {"ok": True, "profile": profile}
+        except HuntProfileError as e:
+            msg = str(e)
+            code = 404 if "unknown" in msg or "no package seed" in msg else 400
+            raise HTTPException(code, msg) from e
+
+    @app.get("/api/hunt-profiles/{profile_id}/seed-diff")
+    def api_hunt_profile_seed_diff(profile_id: str):
+        """Compare current body to package seed markdown."""
+        from vulnforge.hunt_profiles import HuntProfileError, seed_diff
+
+        try:
+            return {"ok": True, **seed_diff(profile_id)}
+        except HuntProfileError as e:
+            msg = str(e)
+            code = 404 if "unknown" in msg else 400
+            raise HTTPException(code, msg) from e
+
     # ---------- API: recon agents (Dev dashboard) ----------
 
     @app.get("/api/recon-agents")
@@ -1745,6 +1781,52 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
         tools = list_tools()
         return {"ok": True, "tools": tools, "count": len(tools)}
+
+    @app.get("/api/tools/defaults")
+    def api_tools_defaults_get():
+        """Global default tools per stage (null = built-in packet surface)."""
+        from vulnforge.tools.default_tools import defaults_for_api
+
+        return defaults_for_api()
+
+    @app.put("/api/tools/defaults")
+    def api_tools_defaults_put(payload_body: ToolsDefaultsBody):
+        """Save global default tools. Only catalog/profile-safe names; no shell.
+
+        Omitted stages keep prior values. Explicit null (or clear_*) resets a stage
+        to built-in defaults. A non-null list narrows that stage.
+        """
+        from vulnforge.tools.default_tools import (
+            DefaultToolsError,
+            load_default_tools,
+            save_default_tools,
+        )
+
+        current = load_default_tools()
+        payload: dict = dict(current)
+        if hasattr(payload_body, "model_dump"):
+            data = payload_body.model_dump(exclude_unset=True)
+        else:
+            data = payload_body.dict(exclude_unset=True)  # type: ignore[call-arg]
+        for stage, clear_key in (
+            ("recon", "clear_recon"),
+            ("hunt", "clear_hunt"),
+            ("develop_poc", "clear_develop_poc"),
+        ):
+            if data.get(clear_key):
+                payload[stage] = None
+            elif stage in data:
+                # Explicit null → built-in; list → narrow
+                payload[stage] = data[stage]
+        try:
+            saved = save_default_tools(payload)
+        except DefaultToolsError as e:
+            raise HTTPException(400, str(e)) from e
+        from vulnforge.tools.default_tools import defaults_for_api
+
+        out = defaults_for_api()
+        out["defaults"] = saved
+        return out
 
     @app.get("/api/tools/{name}")
     def api_tools_get(name: str):

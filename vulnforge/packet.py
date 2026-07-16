@@ -217,8 +217,18 @@ def _principles_without_hunt_tools(prompts_root: Path) -> str:
     return full[:cut_at].rstrip() + "\n"
 
 
-def tool_schemas_for(profile: str, stage: str) -> list[dict]:
-    """OpenAI-style tool schemas for code_static stages."""
+def tool_schemas_for(
+    profile: str,
+    stage: str,
+    *,
+    apply_defaults: bool = True,
+) -> list[dict]:
+    """OpenAI-style tool schemas for code_static stages.
+
+    When apply_defaults is True (runtime packets), operator global defaults from
+    config/default_tools.json may narrow the set. Catalog / Dev UI should pass
+    apply_defaults=False to list the full integrated surface.
+    """
 
     def fn(name: str, description: str, properties: dict, required: list[str] | None = None):
         return {
@@ -233,6 +243,32 @@ def tool_schemas_for(profile: str, stage: str) -> list[dict]:
                 },
             },
         }
+
+    def _finish(tools: list[dict]) -> list[dict]:
+        if not apply_defaults or stage not in ("recon", "hunt", "develop_poc"):
+            return tools
+        try:
+            from vulnforge.tools.default_tools import resolve_stage_tools
+
+            names: list[str] = []
+            for t in tools:
+                fn_obj = (t.get("function") or {}) if isinstance(t, dict) else {}
+                n = fn_obj.get("name") if isinstance(fn_obj, dict) else None
+                if n:
+                    names.append(str(n))
+            resolved = resolve_stage_tools(stage, names)
+            if list(resolved) == names:
+                return tools
+            always = (
+                HUNT_ALWAYS_KEEP_TOOLS
+                if stage == "hunt"
+                else RECON_ALWAYS_KEEP_TOOLS
+                if stage == "recon"
+                else frozenset({"write_evidence"})
+            )
+            return _filter_tools_by_allowlist(tools, resolved, always_keep=always)
+        except Exception:
+            return tools
 
     # Read-only target inspection (shared). Hunt-only tools added per stage.
     ro = [
@@ -370,7 +406,7 @@ def tool_schemas_for(profile: str, stage: str) -> list[dict]:
                 ["summary"],
             )
         )
-        return ro
+        return _finish(ro)
     if stage == "hunt":
         ro.extend(
             [
@@ -467,7 +503,7 @@ def tool_schemas_for(profile: str, stage: str) -> list[dict]:
                 ),
             ]
         )
-        return ro
+        return _finish(ro)
     if stage == "develop_poc":
         # Read tools already in ro; add write_evidence only (no submit_*).
         ro.append(
@@ -488,7 +524,7 @@ def tool_schemas_for(profile: str, stage: str) -> list[dict]:
                 ["relpath", "content"],
             )
         )
-        return ro
+        return _finish(ro)
     if stage == "disprove":
         return []  # text-only
 
@@ -516,7 +552,7 @@ def tool_schemas_for(profile: str, stage: str) -> list[dict]:
             )
     except Exception:
         pass
-    return ro
+    return _finish(ro)
 
 
 def _filter_tools_by_allowlist(

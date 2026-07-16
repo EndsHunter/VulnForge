@@ -655,6 +655,144 @@ def ensure_collection(root: Optional[Path] = None) -> dict[str, Any]:
     return _write_collection(coll, bodies=bodies, root=root)
 
 
+def seed_body_path(profile_id: str) -> Optional[Path]:
+    """Return package seed markdown path for profile_id if it exists."""
+    try:
+        pid = _validate_id(profile_id)
+    except HuntProfileError:
+        return None
+    path = (SEED_PROMPTS_DIR / f"{pid}.md").resolve()
+    seed_root = SEED_PROMPTS_DIR.resolve()
+    if seed_root not in path.parents and path != seed_root:
+        return None
+    if path.name != f"{pid}.md":
+        return None
+    if path.is_file():
+        return path
+    return None
+
+
+def _read_seed_body(profile_id: str) -> Optional[str]:
+    path = seed_body_path(profile_id)
+    if path is None:
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def seed_status(profile_id: str) -> str:
+    """Provenance relative to package seed library.
+
+    - seed: package file exists and body matches
+    - modified_seed: package file exists but body differs (even if source=custom)
+    - else: use stored source field (custom | generated | import | seed | …)
+    """
+    pid = _validate_id(profile_id)
+    seed_body = _read_seed_body(pid)
+    current: Optional[str] = None
+    try:
+        ensure_collection()
+        path = _body_path(pid)
+        if path.is_file():
+            current = path.read_text(encoding="utf-8")
+    except HuntProfileError:
+        current = None
+
+    if seed_body is not None:
+        if current is not None and current == seed_body:
+            return "seed"
+        return "modified_seed"
+
+    # No package seed file — fall back to stored source.
+    source = "custom"
+    try:
+        coll = ensure_collection()
+        for p in coll["profiles"]:
+            if p["id"] == pid:
+                source = str(p.get("source") or "custom")[:32]
+                break
+    except HuntProfileError:
+        pass
+    if source in ("seed", "modified_seed"):
+        # Orphan source=seed without package file → treat as custom
+        return "custom"
+    return source or "custom"
+
+
+def restore_seed_body(profile_id: str) -> dict[str, Any]:
+    """Copy package seed body into the collection and set source=seed."""
+    pid = _validate_id(profile_id)
+    seed_body = _read_seed_body(pid)
+    if seed_body is None:
+        raise HuntProfileError(f"no package seed body for profile: {pid}")
+    # Ensure profile exists (create from seed if missing).
+    coll = ensure_collection()
+    exists = any(p["id"] == pid for p in coll["profiles"])
+    if not exists:
+        seed_meta = dict(SEED_PROFILE_META.get(pid, _default_meta()))
+        return save_profile(
+            pid,
+            body_md=seed_body,
+            title=_title_from_body(seed_body, pid),
+            description=str(seed_meta.get("description") or _description_from_body(seed_body)),
+            active=pid in SEED_ACTIVE_IDS,
+            source="seed",
+            tags=seed_meta.get("tags"),
+            languages=seed_meta.get("languages"),
+            cwe=seed_meta.get("cwe"),
+            angle_ids=seed_meta.get("angle_ids"),
+            sink_families=seed_meta.get("sink_families"),
+            specificity=seed_meta.get("specificity"),
+            version=seed_meta.get("version"),
+            create=True,
+        )
+    return save_profile(
+        pid,
+        body_md=seed_body,
+        source="seed",
+        create=False,
+    )
+
+
+def seed_diff(profile_id: str) -> dict[str, Any]:
+    """Compare current body to package seed (if any)."""
+    pid = _validate_id(profile_id)
+    seed_path = seed_body_path(pid)
+    seed_body = _read_seed_body(pid)
+    try:
+        current = get_body(pid)
+    except HuntProfileError:
+        current = ""
+    has_seed = seed_body is not None
+    return {
+        "id": pid,
+        "has_seed": has_seed,
+        "seed_path": str(seed_path) if seed_path else None,
+        "seed_status": seed_status(pid),
+        "identical": bool(has_seed and current == seed_body),
+        "current_body": current,
+        "seed_body": seed_body if has_seed else None,
+    }
+
+
+def _enrich_seed_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Attach live seed_status / has_seed (not persisted in collection.json)."""
+    pid = str(row.get("id") or "")
+    if not pid:
+        row["seed_status"] = "custom"
+        row["has_seed"] = False
+        return row
+    try:
+        row["seed_status"] = seed_status(pid)
+        row["has_seed"] = seed_body_path(pid) is not None
+    except HuntProfileError:
+        row["seed_status"] = str(row.get("source") or "custom")[:32]
+        row["has_seed"] = False
+    return row
+
+
 def list_profiles(*, include_body: bool = False) -> list[dict[str, Any]]:
     coll = ensure_collection()
     out: list[dict[str, Any]] = []
@@ -665,7 +803,7 @@ def list_profiles(*, include_body: bool = False) -> list[dict[str, Any]]:
                 row["body_md"] = get_body(p["id"])
             except HuntProfileError:
                 row["body_md"] = ""
-        out.append(row)
+        out.append(_enrich_seed_fields(row))
     return out
 
 
@@ -677,7 +815,7 @@ def get_profile(profile_id: str, *, include_body: bool = True) -> dict[str, Any]
             row = dict(p)
             if include_body:
                 row["body_md"] = get_body(pid)
-            return row
+            return _enrich_seed_fields(row)
     raise HuntProfileError(f"unknown hunt profile: {pid}")
 
 

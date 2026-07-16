@@ -136,6 +136,20 @@
     return `<a class="mono" href="${esc(href)}">${esc(tid)} / ${esc(rid)}</a>`;
   }
 
+  function seedStatusLabel(p) {
+    const st = String(p?.seed_status || p?.source || "custom").toLowerCase();
+    if (st === "modified_seed") return "modified seed";
+    return st || "custom";
+  }
+
+  function seedBadgeClass(st) {
+    const s = String(st || "").toLowerCase();
+    if (s === "seed") return "info";
+    if (s === "modified_seed") return "warn";
+    if (s === "generated") return "info";
+    return "info";
+  }
+
   function renderList() {
     const body = $("#dev-profiles-body");
     const meta = $("#dev-meta");
@@ -144,8 +158,8 @@
     const colCount = showOrigin ? 5 : 4;
     if (head) {
       head.innerHTML = showOrigin
-        ? `<th>Active</th><th>Id</th><th>Title</th><th>Source</th><th>Origin run</th>`
-        : `<th>Active</th><th>Id</th><th>Title</th><th>Source</th>`;
+        ? `<th>Active</th><th>Id</th><th>Title</th><th>Seed</th><th>Origin run</th>`
+        : `<th>Active</th><th>Id</th><th>Title</th><th>Seed</th>`;
     }
     syncExplorerToggle();
     if (!body) return;
@@ -171,7 +185,8 @@
     body.innerHTML = visible
       .map((p) => {
         const sel = p.id === selectedId ? " is-selected" : "";
-        const srcLabel = p.source || (isCustomSource(p.source) ? "custom" : "seed");
+        const st = p.seed_status || p.source || "custom";
+        const srcLabel = seedStatusLabel(p);
         const originCell = showOrigin
           ? `<td>${originRunHtml(p)}</td>`
           : "";
@@ -179,7 +194,7 @@
           <td><input type="checkbox" data-active-toggle value="${esc(p.id)}" ${p.active ? "checked" : ""} title="Active for bulk enqueue" /></td>
           <td class="mono">${esc(p.id)}</td>
           <td>${esc(p.title || p.id)}</td>
-          <td><span class="badge info">${esc(srcLabel)}</span></td>
+          <td><span class="badge ${seedBadgeClass(st)}">${esc(srcLabel)}</span></td>
           ${originCell}
         </tr>`;
       })
@@ -313,6 +328,35 @@
     }
   }
 
+  function updateSeedActions(profile, { create } = {}) {
+    const bar = $("#dev-seed-actions");
+    const badge = $("#dev-seed-badge");
+    const diffBtn = $("#dev-seed-diff");
+    const restoreBtn = $("#dev-seed-restore");
+    if (!bar) return;
+    if (create || !profile?.id) {
+      bar.hidden = true;
+      return;
+    }
+    const st = profile.seed_status || profile.source || "custom";
+    const hasSeed = !!profile.has_seed || st === "seed" || st === "modified_seed";
+    bar.hidden = false;
+    if (badge) {
+      badge.textContent = seedStatusLabel(profile);
+      badge.className = `badge ${seedBadgeClass(st)}`;
+      badge.title = `seed_status=${st}` + (profile.source ? ` · source=${profile.source}` : "");
+    }
+    if (diffBtn) {
+      diffBtn.hidden = !hasSeed;
+      diffBtn.disabled = !hasSeed;
+    }
+    if (restoreBtn) {
+      // Show restore when package seed exists (modified or even matching, for re-pull).
+      restoreBtn.hidden = !hasSeed;
+      restoreBtn.disabled = !hasSeed;
+    }
+  }
+
   function showEditor(profile, { create, editing } = {}) {
     isNew = !!create;
     huntEditing = editing != null ? !!editing : !!create;
@@ -337,6 +381,7 @@
         origin.innerHTML = "";
       } else {
         const src = profile.source || "seed";
+        const st = profile.seed_status || src;
         const tid = String(profile.origin_target_id || "").trim();
         const rid = String(profile.origin_run_id || "").trim();
         let originBit = "—";
@@ -344,10 +389,13 @@
           const href = `/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}`;
           originBit = `<a class="mono" href="${esc(href)}">${esc(tid)} / ${esc(rid)}</a>`;
         }
-        origin.innerHTML = `Source: <span class="badge info">${esc(src)}</span> · Origin run: ${originBit}`;
+        origin.innerHTML =
+          `Provenance: <span class="badge ${seedBadgeClass(st)}">${esc(seedStatusLabel(profile))}</span>` +
+          ` · source=<span class="mono">${esc(src)}</span> · Origin run: ${originBit}`;
         origin.hidden = false;
       }
     }
+    updateSeedActions(profile, { create });
     applyHuntEditorMode();
   }
 
@@ -590,6 +638,57 @@
     }
   }
 
+  async function openSeedDiff() {
+    const id = ($("#dev-id").value || "").trim() || selectedId;
+    if (!id) return;
+    try {
+      const data = await api(`/api/hunt-profiles/${encodeURIComponent(id)}/seed-diff`);
+      const meta = $("#dev-seed-diff-meta");
+      if (meta) {
+        meta.textContent = data.has_seed
+          ? `${id} · ${data.identical ? "identical to package seed" : "differs from package seed"} · status=${data.seed_status || "?"}`
+          : `${id} · no package seed file`;
+      }
+      const cur = $("#dev-seed-diff-current");
+      const seed = $("#dev-seed-diff-seed");
+      if (cur) cur.textContent = data.current_body || "(empty)";
+      if (seed) seed.textContent = data.seed_body != null ? data.seed_body : "(no package seed)";
+      $("#dev-seed-diff-modal")?.classList.add("open");
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  function closeSeedDiff() {
+    $("#dev-seed-diff-modal")?.classList.remove("open");
+  }
+
+  async function restoreSeedBody() {
+    const id = ($("#dev-id").value || "").trim() || selectedId;
+    if (!id) return;
+    if (
+      !confirm(
+        `Restore "${id}" body from the package seed library?\n\nUnsaved editor changes will be lost.`
+      )
+    ) {
+      return;
+    }
+    try {
+      const r = await api(`/api/hunt-profiles/${encodeURIComponent(id)}/restore-seed`, {
+        method: "POST",
+        body: "{}",
+      });
+      toast(`Restored seed body: ${id}`);
+      selectedId = id;
+      await loadProfiles(id);
+      if (r.profile) {
+        showEditor(r.profile, { create: false, editing: false });
+      }
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
   async function reseed() {
     if (
       !confirm(
@@ -703,6 +802,16 @@
   $("#dev-edit")?.addEventListener("click", enterHuntEdit);
   $("#dev-cancel")?.addEventListener("click", () => {
     cancelHuntEdit().catch((e) => toast(e.message || String(e), true));
+  });
+  $("#dev-seed-diff")?.addEventListener("click", () => {
+    openSeedDiff().catch((e) => toast(e.message || String(e), true));
+  });
+  $("#dev-seed-restore")?.addEventListener("click", () => {
+    restoreSeedBody().catch((e) => toast(e.message || String(e), true));
+  });
+  $("#dev-seed-diff-close")?.addEventListener("click", closeSeedDiff);
+  $("#dev-seed-diff-modal")?.addEventListener("click", (ev) => {
+    if (ev.target === $("#dev-seed-diff-modal")) closeSeedDiff();
   });
   $$("[data-hunt-explorer]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1136,6 +1245,152 @@
     }
   }
 
+  const DEFAULT_TOOL_STAGES = ["recon", "hunt", "develop_poc"];
+  let stageDefaults = { recon: null, hunt: null, develop_poc: null };
+  let stageBuiltin = { recon: [], hunt: [], develop_poc: [] };
+
+  function toolNamesForStage(stage) {
+    const fromBuiltin = stageBuiltin[stage] || [];
+    if (fromBuiltin.length) return fromBuiltin;
+    // Fallback: catalog tools that list this stage
+    return (catalogTools || [])
+      .filter((t) => (t.stages || []).includes(stage))
+      .map((t) => t.name)
+      .filter((n) => !String(n).startsWith("submit_") || stage === "hunt" || stage === "recon");
+  }
+
+  function renderStageDefaultChecks(stage) {
+    const box = $(`#tg-def-${stage}-checks`);
+    const builtinCb = $(`#tg-def-${stage}-builtin`);
+    if (!box) return;
+    const names = toolNamesForStage(stage).filter(
+      (n) => !String(n).startsWith("submit_") || ["submit_architecture", "submit_candidate", "submit_none"].includes(n)
+    );
+    // Prefer non-submit for UI (critical always kept server-side); keep write_evidence
+    const pick = names.filter((n) => !String(n).startsWith("submit_"));
+    const selected = Array.isArray(stageDefaults[stage]) ? stageDefaults[stage] : [];
+    const useBuiltin = stageDefaults[stage] == null;
+    if (builtinCb) builtinCb.checked = useBuiltin;
+    box.innerHTML = pick
+      .map(
+        (n) =>
+          `<label class="init-check"><input type="checkbox" class="tg-def-cb" data-stage="${esc(stage)}" value="${esc(n)}" ${
+            !useBuiltin && selected.includes(n) ? "checked" : ""
+          } ${useBuiltin ? "disabled" : ""} /> <span class="mono">${esc(n)}</span></label>`
+      )
+      .join("");
+  }
+
+  function renderAllStageDefaults() {
+    DEFAULT_TOOL_STAGES.forEach(renderStageDefaultChecks);
+    const meta = $("#tg-defaults-meta");
+    if (meta) {
+      const bits = DEFAULT_TOOL_STAGES.map((s) =>
+        stageDefaults[s] == null ? `${s}=built-in` : `${s}=${stageDefaults[s].length}`
+      );
+      meta.textContent = bits.join(" · ");
+    }
+  }
+
+  function bindStageBuiltinToggles() {
+    DEFAULT_TOOL_STAGES.forEach((stage) => {
+      const cb = $(`#tg-def-${stage}-builtin`);
+      if (!cb || cb.dataset.bound === "1") return;
+      cb.dataset.bound = "1";
+      cb.addEventListener("change", () => {
+        if (cb.checked) {
+          stageDefaults[stage] = null;
+        } else {
+          // Start from full stage surface (non-submit names checked)
+          const names = toolNamesForStage(stage).filter((n) => !String(n).startsWith("submit_"));
+          stageDefaults[stage] = names.slice();
+        }
+        renderStageDefaultChecks(stage);
+      });
+    });
+  }
+
+  function collectStageDefaultsPayload() {
+    const payload = {};
+    DEFAULT_TOOL_STAGES.forEach((stage) => {
+      const builtinCb = $(`#tg-def-${stage}-builtin`);
+      if (builtinCb?.checked) {
+        payload[stage] = null;
+        return;
+      }
+      const selected = $$(`.tg-def-cb[data-stage="${stage}"]`)
+        .filter((c) => c.checked)
+        .map((c) => c.value);
+      payload[stage] = selected;
+    });
+    return payload;
+  }
+
+  async function loadStageDefaults() {
+    try {
+      const data = await api("/api/tools/defaults");
+      stageDefaults = {
+        recon: data.defaults?.recon ?? null,
+        hunt: data.defaults?.hunt ?? null,
+        develop_poc: data.defaults?.develop_poc ?? null,
+      };
+      stageBuiltin = {
+        recon: data.builtin?.recon || [],
+        hunt: data.builtin?.hunt || [],
+        develop_poc: data.builtin?.develop_poc || [],
+      };
+      bindStageBuiltinToggles();
+      renderAllStageDefaults();
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async function saveStageDefaults() {
+    try {
+      const payload = collectStageDefaultsPayload();
+      const r = await api("/api/tools/defaults", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      stageDefaults = {
+        recon: r.defaults?.recon ?? null,
+        hunt: r.defaults?.hunt ?? null,
+        develop_poc: r.defaults?.develop_poc ?? null,
+      };
+      if (r.builtin) {
+        stageBuiltin = {
+          recon: r.builtin.recon || [],
+          hunt: r.builtin.hunt || [],
+          develop_poc: r.builtin.develop_poc || [],
+        };
+      }
+      renderAllStageDefaults();
+      toast("Default tools saved");
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async function resetStageDefaults() {
+    if (!confirm("Reset recon, hunt, and develop_poc default tools to built-in?")) return;
+    try {
+      const r = await api("/api/tools/defaults", {
+        method: "PUT",
+        body: JSON.stringify({ recon: null, hunt: null, develop_poc: null }),
+      });
+      stageDefaults = {
+        recon: r.defaults?.recon ?? null,
+        hunt: r.defaults?.hunt ?? null,
+        develop_poc: r.defaults?.develop_poc ?? null,
+      };
+      renderAllStageDefaults();
+      toast("Defaults reset to built-in");
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
   async function loadToolsPanel() {
     const [t, d] = await Promise.all([
       api("/api/tools"),
@@ -1153,6 +1408,7 @@
     }
     renderToolsList();
     renderDraftsList();
+    await loadStageDefaults();
   }
 
   function setWizardStep(n) {
@@ -1303,6 +1559,12 @@
   $("#btn-tg-refresh")?.addEventListener("click", () =>
     loadToolsPanel().catch((e) => toast(e.message, true))
   );
+  $("#btn-tg-save-defaults")?.addEventListener("click", () => {
+    saveStageDefaults().catch((e) => toast(e.message || String(e), true));
+  });
+  $("#btn-tg-reset-defaults")?.addEventListener("click", () => {
+    resetStageDefaults().catch((e) => toast(e.message || String(e), true));
+  });
   $("#btn-tg-open-wizard")?.addEventListener("click", () => {
     if (selectedDraftId) openToolgenWizard({ draftId: selectedDraftId });
     else openToolgenWizard();

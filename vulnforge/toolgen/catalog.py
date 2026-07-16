@@ -51,8 +51,9 @@ def list_tools(*, profile: str = "code_static") -> list[dict[str, Any]]:
     by_name: dict[str, dict[str, Any]] = {}
 
     # Seed from schemas so description/params are authoritative for LLM surface.
+    # apply_defaults=False: catalog shows full integrated surface, not operator defaults.
     for stage in STAGES:
-        for entry in tool_schemas_for(profile, stage):
+        for entry in tool_schemas_for(profile, stage, apply_defaults=False):
             fn = _schema_fn(entry)
             name = str(fn.get("name") or "").strip()
             if not name:

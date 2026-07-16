@@ -103,6 +103,11 @@
           <p class="controls-hint" id="dev-editor-hint">Select a skill or create a new one.</p>
           <form id="dev-editor-form" class="dev-editor-form" hidden>
             <p class="controls-hint" id="dev-editor-origin" hidden></p>
+            <div class="toolbar" id="dev-seed-actions" style="margin:0 0 0.75rem;flex-wrap:wrap;gap:0.5rem;align-items:center" hidden>
+              <span class="badge info" id="dev-seed-badge" title="Seed provenance">seed</span>
+              <button type="button" class="btn" id="dev-seed-diff" title="Compare body to package seed">Diff seed</button>
+              <button type="button" class="btn" id="dev-seed-restore" title="Restore markdown body from package seed">Restore seed body</button>
+            </div>
             <div class="field">
               <label class="field-label-text" for="dev-id">Skill id (class)</label>
               <input id="dev-id" class="mono" autocomplete="off" spellcheck="false" pattern="[a-z][a-z0-9-]{0,63}" required />
@@ -313,6 +318,47 @@
           <button type="button" class="btn" id="btn-tg-refresh">Refresh</button>
           <a class="btn" href="/tool-gaps">Open tool gaps</a>
           <span class="controls-hint" id="tg-meta" style="margin-left:auto"></span>
+        </div>
+      </div>
+
+      <div class="card" id="tg-defaults-card" style="margin-top:0.75rem">
+        <h2 style="margin-top:0">Global default tools</h2>
+        <p class="controls-hint" style="margin:0 0 0.75rem">
+          Narrow the tools offered to recon / hunt / develop_poc by default.
+          <strong>Use built-in</strong> = full packet surface for that stage.
+          Per-skill allowlists can still narrow further. Critical submit tools are always kept.
+          Unrestricted shell is never enabled on code_static.
+        </p>
+        <div class="init-row-2" style="align-items:flex-start;gap:1rem">
+          <div class="field" style="flex:1;min-width:12rem">
+            <label class="field-label-text">Recon</label>
+            <label class="init-check" style="margin:0.25rem 0">
+              <input type="checkbox" id="tg-def-recon-builtin" checked />
+              <span>Use built-in defaults</span>
+            </label>
+            <div id="tg-def-recon-checks" class="dev-tools-checks" style="display:flex;flex-wrap:wrap;gap:0.35rem 0.75rem;max-height:10rem;overflow:auto;padding:0.35rem 0"></div>
+          </div>
+          <div class="field" style="flex:1;min-width:12rem">
+            <label class="field-label-text">Hunt</label>
+            <label class="init-check" style="margin:0.25rem 0">
+              <input type="checkbox" id="tg-def-hunt-builtin" checked />
+              <span>Use built-in defaults</span>
+            </label>
+            <div id="tg-def-hunt-checks" class="dev-tools-checks" style="display:flex;flex-wrap:wrap;gap:0.35rem 0.75rem;max-height:10rem;overflow:auto;padding:0.35rem 0"></div>
+          </div>
+          <div class="field" style="flex:1;min-width:12rem">
+            <label class="field-label-text">Develop PoC</label>
+            <label class="init-check" style="margin:0.25rem 0">
+              <input type="checkbox" id="tg-def-develop_poc-builtin" checked />
+              <span>Use built-in defaults</span>
+            </label>
+            <div id="tg-def-develop_poc-checks" class="dev-tools-checks" style="display:flex;flex-wrap:wrap;gap:0.35rem 0.75rem;max-height:10rem;overflow:auto;padding:0.35rem 0"></div>
+          </div>
+        </div>
+        <div class="modal-actions" style="justify-content:flex-start;gap:0.5rem;margin-top:0.5rem">
+          <button type="button" class="btn btn-primary" id="btn-tg-save-defaults">Save defaults</button>
+          <button type="button" class="btn" id="btn-tg-reset-defaults" title="Reset all stages to built-in">Reset all to built-in</button>
+          <span class="controls-hint" id="tg-defaults-meta"></span>
         </div>
       </div>
 
@@ -529,6 +575,28 @@
       <div class="modal-actions">
         <button type="button" class="btn" id="dev-generate-cancel">Cancel</button>
         <button type="button" class="btn btn-primary" id="dev-generate-submit">Generate</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="dev-seed-diff-modal">
+    <div class="modal modal-wide" role="dialog" aria-labelledby="dev-seed-diff-title" aria-modal="true" style="max-width:min(96vw,56rem)">
+      <header>
+        <h2 id="dev-seed-diff-title">Seed diff</h2>
+        <p class="controls-hint" id="dev-seed-diff-meta" style="margin:0"></p>
+      </header>
+      <div class="init-row-2" style="align-items:stretch;gap:0.75rem">
+        <div class="field" style="flex:1;min-width:12rem">
+          <label class="field-label-text">Current body</label>
+          <pre id="dev-seed-diff-current" class="dev-body-preview mono" style="max-height:28rem;overflow:auto;margin:0;white-space:pre-wrap"></pre>
+        </div>
+        <div class="field" style="flex:1;min-width:12rem">
+          <label class="field-label-text">Package seed</label>
+          <pre id="dev-seed-diff-seed" class="dev-body-preview mono" style="max-height:28rem;overflow:auto;margin:0;white-space:pre-wrap"></pre>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="dev-seed-diff-close">Close</button>
       </div>
     </div>
   </div>
