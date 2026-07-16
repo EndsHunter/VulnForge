@@ -711,15 +711,23 @@ def apply_coverage_mode(
         available = set(all_class_ids())
         cfg_now = get_run_config(db)
         skill_mode, skill_ids = skill_policy_from_run_cfg(cfg_now)
-        # Run-scoped allowlist (all_active ≈ active_class_ids; other modes filter)
+        # Run-scoped allowlist (all_active ≈ active_class_ids; other modes filter).
+        # Empty is intentional (e.g. custom_only with no customs) — never re-expand
+        # to the global active set (that would reintroduce seed skills).
         run_allowed = list(resolve_run_class_ids(skill_mode, skill_ids))
-        active = list(run_allowed) if run_allowed else list(active_class_ids())
+        run_allowed_set = set(run_allowed)
+        active = list(run_allowed)
         sel_areas = [str(a).strip() for a in (areas or []) if str(a).strip()]
         sel_classes = [
             _normalize_class(c) for c in (classes or []) if str(c).strip()
         ]
         # validate classes against registered profiles
         sel_classes = [c for c in sel_classes if c in available]
+        # Restricted run modes: only allow classes inside the run allowlist
+        if skill_mode not in ("", "all_active") and run_allowed_set:
+            sel_classes = [c for c in sel_classes if c in run_allowed_set]
+        elif skill_mode not in ("", "all_active") and not run_allowed_set:
+            sel_classes = []
         if not sel_classes and mode_n != "auto":
             sel_classes = list(active)
 
