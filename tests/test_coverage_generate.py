@@ -132,6 +132,37 @@ def test_max_hunt_scope_paths(tmp_path: Path, toy_sqli: Path):
         db.close()
 
 
+def test_max_hunt_scope_paths_folder(tmp_path: Path, toy_sqli: Path):
+    """Folder path targets expand to source files under that prefix."""
+    # Build a mini multi-file tree so folder expansion is meaningful
+    target = tmp_path / "tgt"
+    (target / "pkg").mkdir(parents=True)
+    (target / "pkg" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (target / "pkg" / "b.py").write_text("y = 2\n", encoding="utf-8")
+    (target / "other.py").write_text("z = 3\n", encoding="utf-8")
+    run = _init_run(tmp_path, target)
+    prev = dashops.preview_max_hunt(
+        run,
+        scope="paths",
+        path_targets=[{"path": "pkg", "is_dir": True}],
+        max_files=20,
+    )
+    assert prev["ok"] is True
+    files = set(prev.get("files") or [])
+    assert "pkg/a.py" in files
+    assert "pkg/b.py" in files
+    assert "other.py" not in files
+    r = dashops.enqueue_max_hunt(
+        run,
+        scope="paths",
+        path_targets=[{"path": "pkg", "is_dir": True}],
+        max_files=20,
+        dry_run=False,
+    )
+    assert r["ok"] is True
+    assert r["enqueued_generate"] == 2
+
+
 def test_generate_skill_multi_path_hunts(tmp_path: Path, toy_sqli: Path):
     """Stage enqueue: multiple path_hints → multiple hunts with override."""
     from vulnforge.stages import generate_skill as gen_stage

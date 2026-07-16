@@ -1148,6 +1148,12 @@ def _max_hunt_file_list(
             for pt in norm:
                 p = pt["path"]
                 if pt.get("is_dir"):
+                    # Target root: all source files
+                    if p in (".", ""):
+                        for f in all_src:
+                            if f not in picked:
+                                picked.append(f)
+                        continue
                     prefix = p.rstrip("/") + "/"
                     for f in all_src:
                         if f == p or f.startswith(prefix):

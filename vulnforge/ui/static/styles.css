@@ -2215,6 +2215,12 @@ button.cov-plan-action.is-current {
 .cov-max-hunt-form .cov-path-picker {
   margin-top: 0.35rem;
 }
+.cov-max-hunt-form .cov-path-picker-list {
+  max-height: 16rem;
+}
+.cov-max-hunt-form .cov-path-targets {
+  min-height: 2rem;
+}
 .coverage-class-caption {
   margin: 0 0 0.5rem;
   line-height: 1.55;

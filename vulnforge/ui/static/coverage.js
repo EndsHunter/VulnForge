@@ -11,7 +11,18 @@
   let maxHuntFormOpen = false;
   /** @type {{path: string, is_dir: boolean}[]} */
   let customPathTargets = [];
+  /** Path targets for MAX Hunt (separate from custom queue picker). */
+  /** @type {{path: string, is_dir: boolean}[]} */
+  let maxHuntPathTargets = [];
   let pathPickerBrowse = ".";
+  let maxPathPickerBrowse = ".";
+  /** Draft fields preserved across MAX Hunt form re-renders / browse. */
+  let maxHuntFormState = {
+    scope: "all",
+    maxFiles: null,
+    activate: false,
+    notes: "",
+  };
   /** @type {object|null} last MAX Hunt dry-run preview */
   let maxHuntPreview = null;
 
@@ -568,31 +579,54 @@
     return html;
   }
 
-  function addPathTarget(path, isDir) {
+  /**
+   * @param {{path: string, is_dir: boolean}[]} targets
+   * @param {string} path
+   * @param {boolean} isDir
+   * @returns {boolean} true if newly added
+   */
+  function pushPathTarget(targets, path, isDir) {
     const rel = String(path || "").replace(/\\/g, "/").replace(/^\//, "");
     if (!rel || rel === ".") {
-      // Allow targeting root as a folder
-      if (!customPathTargets.some((t) => t.path === "." && t.is_dir)) {
-        customPathTargets.push({ path: ".", is_dir: true });
+      if (!targets.some((t) => t.path === "." && t.is_dir)) {
+        targets.push({ path: ".", is_dir: true });
+        return true;
       }
-      return;
+      return false;
     }
-    if (customPathTargets.some((t) => t.path === rel)) return;
-    customPathTargets.push({ path: rel, is_dir: !!isDir });
+    if (targets.some((t) => t.path === rel)) return false;
+    targets.push({ path: rel, is_dir: !!isDir });
+    return true;
+  }
+
+  function addPathTarget(path, isDir) {
+    pushPathTarget(customPathTargets, path, isDir);
   }
 
   function removePathTarget(path) {
     customPathTargets = customPathTargets.filter((t) => t.path !== path);
   }
 
-  function renderPathTargetChips() {
-    const box = $("#cov-path-targets");
+  /**
+   * @param {object} [opts]
+   * @param {string} [opts.boxSel]
+   * @param {{path: string, is_dir: boolean}[]} [opts.targets]
+   * @param {(path: string) => void} [opts.onRemove]
+   * @param {string} [opts.emptyMsg]
+   */
+  function renderPathTargetChips(opts = {}) {
+    const boxSel = opts.boxSel || "#cov-path-targets";
+    const box = $(boxSel);
     if (!box) return;
-    if (!customPathTargets.length) {
-      box.innerHTML = `<span class="controls-hint">No path targets yet — browse below and click <strong>Add folder</strong> or <strong>Add file</strong>.</span>`;
+    const targets = opts.targets || customPathTargets;
+    const emptyMsg =
+      opts.emptyMsg ||
+      `No path targets yet — browse below and click <strong>Add folder</strong> or <strong>Add file</strong>.`;
+    if (!targets.length) {
+      box.innerHTML = `<span class="controls-hint">${emptyMsg}</span>`;
       return;
     }
-    box.innerHTML = customPathTargets
+    box.innerHTML = targets
       .map(
         (t) =>
           `<span class="cov-path-chip-item" title="${esc(t.is_dir ? "Folder" : "File")}: ${esc(t.path)}">
@@ -604,22 +638,76 @@
       .join("");
     box.querySelectorAll(".cov-path-remove").forEach((btn) => {
       btn.addEventListener("click", () => {
-        removePathTarget(btn.getAttribute("data-rm-path"));
-        renderPathTargetChips();
-        updateSelectEstimate();
+        const rm = btn.getAttribute("data-rm-path");
+        if (typeof opts.onRemove === "function") {
+          opts.onRemove(rm);
+        } else {
+          removePathTarget(rm);
+          renderPathTargetChips(opts);
+          updateSelectEstimate();
+        }
       });
     });
   }
 
-  async function loadPathPicker(el) {
-    const list = $("#cov-path-picker-list");
-    const crumb = $("#cov-path-picker-bc");
+  function renderMaxPathTargetChips() {
+    renderPathTargetChips({
+      boxSel: "#cov-max-path-targets",
+      targets: maxHuntPathTargets,
+      emptyMsg:
+        "No path targets yet — browse the tree and <strong>Add folder</strong> / <strong>Add file</strong>. Required when scope is <em>Path targets only</em>.",
+      onRemove: (path) => {
+        maxHuntPathTargets = maxHuntPathTargets.filter((t) => t.path !== path);
+        renderMaxPathTargetChips();
+        maxHuntPreview = null;
+        const est = $("#cov-max-estimate");
+        if (est) est.textContent = "Path list changed — click Preview to refresh estimate.";
+      },
+    });
+  }
+
+  /**
+   * Browse target tree into a path-picker panel (custom queue or MAX Hunt).
+   * @param {object} [opts]
+   * @param {string} [opts.listSel]
+   * @param {string} [opts.crumbSel]
+   * @param {() => string} [opts.getBrowse]
+   * @param {(p: string) => void} [opts.setBrowse]
+   * @param {(path: string, isDir: boolean) => void} [opts.onAdd]
+   */
+  async function loadPathPicker(opts = {}) {
+    const listSel = opts.listSel || "#cov-path-picker-list";
+    const crumbSel = opts.crumbSel || "#cov-path-picker-bc";
+    const list = $(listSel);
+    const crumb = $(crumbSel);
     if (!list) return;
-    if (crumb) crumb.innerHTML = pathPickerBreadcrumb(pathPickerBrowse);
+
+    const getBrowse =
+      typeof opts.getBrowse === "function"
+        ? opts.getBrowse
+        : () => pathPickerBrowse;
+    const setBrowse =
+      typeof opts.setBrowse === "function"
+        ? opts.setBrowse
+        : (p) => {
+            pathPickerBrowse = p;
+          };
+    const onAdd =
+      typeof opts.onAdd === "function"
+        ? opts.onAdd
+        : (path, isDir) => {
+            addPathTarget(path, isDir);
+            renderPathTargetChips();
+            updateSelectEstimate();
+            toast(`Added ${path}`);
+          };
+
+    const browse = getBrowse() || ".";
+    if (crumb) crumb.innerHTML = pathPickerBreadcrumb(browse);
     list.innerHTML = `<div class="controls-hint" style="padding:0.4rem">Loading…</div>`;
     try {
       const data = await api(
-        `${runApiBase()}/target/list?path=${encodeURIComponent(pathPickerBrowse || ".")}&max_entries=200`
+        `${runApiBase()}/target/list?path=${encodeURIComponent(browse)}&max_entries=200`
       );
       if (!data.ok) {
         list.innerHTML = `<div class="empty" style="color:var(--bad)">${esc(data.error || "list failed")}</div>`;
@@ -631,7 +719,7 @@
       } else {
         list.innerHTML = entries
           .map((e) => {
-            const full = joinPath(pathPickerBrowse, e.name);
+            const full = joinPath(browse, e.name);
             const isDir = !!e.is_dir;
             return `<div class="cov-picker-row">
               <button type="button" class="cov-picker-name mono ${isDir ? "is-dir" : "is-file"}" data-open-path="${esc(full)}" data-is-dir="${isDir ? "1" : "0"}" title="${esc(full)}">
@@ -644,35 +732,90 @@
           })
           .join("");
       }
-      // Bind once on container via event delegation if needed — rebind after each load
       list.querySelectorAll("[data-open-path]").forEach((btn) => {
         btn.addEventListener("click", () => {
           if (btn.getAttribute("data-is-dir") === "1") {
-            pathPickerBrowse = btn.getAttribute("data-open-path") || ".";
-            loadPathPicker(el);
+            setBrowse(btn.getAttribute("data-open-path") || ".");
+            loadPathPicker(opts);
           }
         });
       });
       list.querySelectorAll("[data-add-path]").forEach((btn) => {
         btn.addEventListener("click", () => {
-          addPathTarget(
+          onAdd(
             btn.getAttribute("data-add-path"),
             btn.getAttribute("data-is-dir") === "1"
           );
-          renderPathTargetChips();
-          updateSelectEstimate();
-          toast(`Added ${btn.getAttribute("data-add-path")}`);
         });
       });
       crumb?.querySelectorAll(".cov-picker-bc").forEach((btn) => {
         btn.addEventListener("click", () => {
-          pathPickerBrowse = btn.getAttribute("data-ppath") || ".";
-          loadPathPicker(el);
+          setBrowse(btn.getAttribute("data-ppath") || ".");
+          loadPathPicker(opts);
         });
       });
     } catch (e) {
       list.innerHTML = `<div class="empty" style="color:var(--bad)">${esc(e.message || e)}</div>`;
     }
+  }
+
+  function maxPathPickerOpts() {
+    return {
+      listSel: "#cov-max-path-picker-list",
+      crumbSel: "#cov-max-path-picker-bc",
+      getBrowse: () => maxPathPickerBrowse,
+      setBrowse: (p) => {
+        maxPathPickerBrowse = p;
+      },
+      onAdd: (path, isDir) => {
+        const added = pushPathTarget(maxHuntPathTargets, path, isDir);
+        if (!added) {
+          toast(`Already added: ${path}`);
+          return;
+        }
+        // Selecting files/folders implies path scope
+        maxHuntFormState.scope = "paths";
+        const pathsRadio = document.querySelector(
+          'input[name="cov-max-scope"][value="paths"]'
+        );
+        if (pathsRadio) pathsRadio.checked = true;
+        renderMaxPathTargetChips();
+        maxHuntPreview = null;
+        const est = $("#cov-max-estimate");
+        if (est) {
+          est.textContent = `Added ${isDir ? "folder" : "file"} ${path === "." ? "target root" : path}. Click Preview to estimate.`;
+        }
+        toast(`Added ${isDir ? "folder" : "file"} ${path === "." ? "target root" : path}`);
+      },
+    };
+  }
+
+  function captureMaxHuntFormState() {
+    const scope =
+      document.querySelector('input[name="cov-max-scope"]:checked')?.value ||
+      maxHuntFormState.scope ||
+      "all";
+    let maxFiles = parseInt($("#cov-max-files")?.value || "", 10);
+    if (!Number.isFinite(maxFiles)) maxFiles = maxHuntFormState.maxFiles;
+    maxHuntFormState = {
+      scope: scope === "paths" ? "paths" : "all",
+      maxFiles: Number.isFinite(maxFiles) ? maxFiles : maxHuntFormState.maxFiles,
+      activate: !!$("#cov-max-activate")?.checked,
+      notes: $("#cov-max-notes")?.value ?? maxHuntFormState.notes ?? "",
+    };
+  }
+
+  function bindMaxHuntFormFieldCapture() {
+    document.querySelectorAll('input[name="cov-max-scope"]').forEach((inp) => {
+      inp.addEventListener("change", () => {
+        captureMaxHuntFormState();
+        maxHuntPreview = null;
+      });
+    });
+    $("#cov-max-files")?.addEventListener("change", captureMaxHuntFormState);
+    $("#cov-max-files")?.addEventListener("input", captureMaxHuntFormState);
+    $("#cov-max-activate")?.addEventListener("change", captureMaxHuntFormState);
+    $("#cov-max-notes")?.addEventListener("input", captureMaxHuntFormState);
   }
 
   function countSelectAreas(el) {
@@ -809,13 +952,27 @@
           </button>
           <button type="button" class="cov-plan-action ${maxHuntFormOpen ? "is-current" : ""}" data-cov-mode="max_hunt" id="cov-plan-max">
             <span class="cov-plan-action-title">MAX Hunt…</span>
-            <span class="cov-plan-action-desc">Per source file: generate a custom skill + queue a hunt (capped; costly LLM work). Research throughput only — not proof.</span>
+            <span class="cov-plan-action-desc">Per source file: generate a custom skill + queue a hunt. Scope to all files or pick folders/files in the explorer. Capped; costly LLM work — research only, not proof.</span>
           </button>
         </div>
 
         ${
           maxHuntFormOpen
-            ? `<div class="cov-select-form cov-max-hunt-form" id="cov-max-hunt-form">
+            ? (() => {
+                const mhScope =
+                  maxHuntFormState.scope === "paths" ? "paths" : "all";
+                const mhMaxFiles = Math.max(
+                  1,
+                  Math.min(
+                    200,
+                    Number.isFinite(maxHuntFormState.maxFiles)
+                      ? maxHuntFormState.maxFiles
+                      : Math.min(50, maxTasksCap())
+                  )
+                );
+                const mhNotes = maxHuntFormState.notes || "";
+                const mhAct = !!maxHuntFormState.activate;
+                return `<div class="cov-select-form cov-max-hunt-form" id="cov-max-hunt-form">
                 <div class="cov-select-form-title">MAX Hunt</div>
                 <p class="controls-hint" style="margin:0 0 0.65rem">
                   Enqueues one <strong>generate_skill</strong> Ralph task per source file (each then queues one hunt).
@@ -824,17 +981,21 @@
                 </p>
                 <div class="cov-select-heading">Scope</div>
                 <div class="strategy-list" role="radiogroup" aria-label="MAX Hunt scope">
-                  <label class="cov-check"><input type="radio" name="cov-max-scope" value="all" checked /> All source files (priority-sorted)</label>
-                  <label class="cov-check"><input type="radio" name="cov-max-scope" value="paths" /> Path targets only (use custom form paths / picker below)</label>
+                  <label class="cov-check"><input type="radio" name="cov-max-scope" value="all" ${mhScope === "all" ? "checked" : ""} /> All source files (priority-sorted)</label>
+                  <label class="cov-check"><input type="radio" name="cov-max-scope" value="paths" ${mhScope === "paths" ? "checked" : ""} /> Path targets only (files/folders from the explorer below)</label>
                 </div>
-                <div class="cov-select-heading" style="margin-top:0.65rem">Path targets (when scope = paths)</div>
+                <div class="cov-select-heading" style="margin-top:0.65rem">Path targets</div>
+                <p class="controls-hint" style="margin:0 0 0.4rem">
+                  Same tree browser as Custom areas &amp; skills. Click a folder name to open it; use <strong>Add folder</strong> / <strong>Add file</strong> to include it.
+                  Folders expand to all source files under them. Used when scope is <em>Path targets only</em>.
+                </p>
                 <div id="cov-max-path-targets" class="cov-path-targets"></div>
                 <div class="cov-path-picker" id="cov-max-path-picker">
                   <div class="cov-path-picker-toolbar">
                     <div id="cov-max-path-picker-bc" class="cov-path-picker-bc"></div>
                     <div class="cov-path-picker-btns">
                       <button type="button" class="btn btn-ghost btn-sm" id="cov-max-picker-up">Up</button>
-                      <button type="button" class="btn btn-sm" id="cov-max-picker-add-cwd">Add this folder</button>
+                      <button type="button" class="btn btn-sm" id="cov-max-picker-add-cwd" title="Add the folder you are browsing">Add this folder</button>
                     </div>
                   </div>
                   <div id="cov-max-path-picker-list" class="cov-path-picker-list"></div>
@@ -842,17 +1003,17 @@
                 <div class="init-row-2" style="margin-top:0.75rem">
                   <div class="field">
                     <label class="field-label" for="cov-max-files"><span class="label-text">Max files</span></label>
-                    <input type="number" id="cov-max-files" class="cov-text-input" value="${Math.min(50, maxTasksCap())}" min="1" max="200" step="1" />
+                    <input type="number" id="cov-max-files" class="cov-text-input" value="${mhMaxFiles}" min="1" max="200" step="1" />
                   </div>
                   <div class="field" style="display:flex;align-items:flex-end">
                     <label class="cov-check" style="margin:0 0 0.4rem">
-                      <input type="checkbox" id="cov-max-activate" /> Activate generated skills (not recommended)
+                      <input type="checkbox" id="cov-max-activate" ${mhAct ? "checked" : ""} /> Activate generated skills (not recommended)
                     </label>
                   </div>
                 </div>
                 <div class="field">
                   <label class="field-label" for="cov-max-notes"><span class="label-text">Operator notes (optional)</span></label>
-                  <textarea id="cov-max-notes" class="cov-text-input op-notes" rows="2" placeholder="Extra guidance appended to every per-file skill brief…"></textarea>
+                  <textarea id="cov-max-notes" class="cov-text-input op-notes" rows="2" placeholder="Extra guidance appended to every per-file skill brief…">${esc(mhNotes)}</textarea>
                 </div>
                 <p class="controls-hint" id="cov-max-estimate">Click Preview to estimate file count and cost.</p>
                 <div class="cov-select-actions">
@@ -860,7 +1021,8 @@
                   <button type="button" class="btn btn-primary" id="cov-max-start">Start MAX Hunt</button>
                   <button type="button" class="btn" id="cov-max-cancel">Close</button>
                 </div>
-              </div>`
+              </div>`;
+              })()
             : ""
         }
 
@@ -1070,10 +1232,10 @@
 
     if (selectFormOpen) {
       renderPathTargetChips();
-      loadPathPicker(el);
+      loadPathPicker();
       $("#cov-picker-up")?.addEventListener("click", () => {
         pathPickerBrowse = parentPath(pathPickerBrowse);
-        loadPathPicker(el);
+        loadPathPicker();
       });
       $("#cov-picker-add-cwd")?.addEventListener("click", () => {
         addPathTarget(pathPickerBrowse || ".", true);
@@ -1087,108 +1249,74 @@
     }
 
     if (maxHuntFormOpen) {
-      // Reuse same customPathTargets chips + picker under max ids
-      const chipBox = $("#cov-max-path-targets");
-      if (chipBox) {
-        // Temporarily render chips into max box
-        const prev = $("#cov-path-targets");
-        renderPathTargetChips();
-        if (prev && chipBox !== prev) {
-          chipBox.innerHTML = prev.innerHTML || chipBox.innerHTML;
-          // re-bind remove on max box
-          chipBox.querySelectorAll("[data-rm-path]").forEach((btn) => {
-            btn.addEventListener("click", () => {
-              const pathRm = btn.getAttribute("data-rm-path");
-              customPathTargets = customPathTargets.filter((t) => t.path !== pathRm);
-              renderModeBar(window.__VF_cov_policy || p);
-            });
-          });
-        }
-      }
-      // Mirror path picker into max picker containers by aliasing ids for loadPathPicker
-      // loadPathPicker uses cov-path-picker-* — also wire max-* clones
-      const maxList = $("#cov-max-path-picker-list");
-      const maxBc = $("#cov-max-path-picker-bc");
-      if (maxList && maxBc) {
-        // Simple: call loadPathPicker then copy HTML
-        loadPathPicker(el);
-        const srcList = $("#cov-path-picker-list");
-        const srcBc = $("#cov-path-picker-bc");
-        if (srcList) maxList.innerHTML = srcList.innerHTML;
-        if (srcBc) maxBc.innerHTML = srcBc.innerHTML;
-        maxList.querySelectorAll("[data-open-path]").forEach((btn) => {
-          btn.addEventListener("click", () => {
-            if (btn.getAttribute("data-is-dir") === "1") {
-              pathPickerBrowse = btn.getAttribute("data-open-path") || ".";
-              renderModeBar(p);
-            }
-          });
-        });
-        maxList.querySelectorAll("[data-add-path]").forEach((btn) => {
-          btn.addEventListener("click", () => {
-            const full = btn.getAttribute("data-add-path");
-            const isDir = btn.getAttribute("data-is-dir") === "1";
-            if (full) {
-              addPathTarget(full, isDir);
-              renderModeBar(p);
-              toast(`Added ${isDir ? "folder" : "file"} ${full}`);
-            }
-          });
-        });
-        maxBc.querySelectorAll("[data-ppath]").forEach((btn) => {
-          btn.addEventListener("click", () => {
-            pathPickerBrowse = btn.getAttribute("data-ppath") || ".";
-            renderModeBar(p);
-          });
-        });
-      }
+      bindMaxHuntFormFieldCapture();
+      renderMaxPathTargetChips();
+      loadPathPicker(maxPathPickerOpts());
       $("#cov-max-picker-up")?.addEventListener("click", () => {
-        pathPickerBrowse = parentPath(pathPickerBrowse);
-        renderModeBar(p);
+        maxPathPickerBrowse = parentPath(maxPathPickerBrowse);
+        loadPathPicker(maxPathPickerOpts());
       });
       $("#cov-max-picker-add-cwd")?.addEventListener("click", () => {
-        addPathTarget(pathPickerBrowse || ".", true);
-        renderModeBar(p);
-        toast(`Added folder ${pathPickerBrowse === "." ? "target root" : pathPickerBrowse}`);
+        maxPathPickerOpts().onAdd(maxPathPickerBrowse || ".", true);
       });
       if (maxHuntPreview) {
         const est = $("#cov-max-estimate");
         if (est) {
-          const n = maxHuntPreview.estimated_generate_tasks ?? maxHuntPreview.files?.length ?? 0;
+          const n =
+            maxHuntPreview.estimated_generate_tasks ??
+            maxHuntPreview.files?.length ??
+            0;
           const total = maxHuntPreview.file_count ?? n;
           const cap = maxHuntPreview.capped_to ?? n;
           est.textContent =
             `About ${n} generate_skill task(s) (~${n} hunts). ` +
             `Matched ${total} source file(s); capped to ${cap}` +
             (maxHuntPreview.truncated ? " (truncated)." : ".") +
+            (maxHuntPreview.files_sample?.length
+              ? ` Sample: ${maxHuntPreview.files_sample.slice(0, 5).join(", ")}`
+              : "") +
             " Start Ralph to run.";
         }
       }
     }
 
-    async function runMaxHuntPreview() {
+    function collectMaxHuntBody(dryRun) {
+      captureMaxHuntFormState();
       const scope =
-        el.querySelector('input[name="cov-max-scope"]:checked')?.value || "all";
+        maxHuntFormState.scope === "paths" ? "paths" : "all";
       let maxFiles = parseInt($("#cov-max-files")?.value || "50", 10);
-      if (!Number.isFinite(maxFiles)) maxFiles = 50;
+      if (!Number.isFinite(maxFiles)) {
+        maxFiles = Number.isFinite(maxHuntFormState.maxFiles)
+          ? maxHuntFormState.maxFiles
+          : 50;
+      }
       maxFiles = Math.max(1, Math.min(200, maxFiles));
       const body = {
         scope,
         max_files: maxFiles,
-        dry_run: true,
-        activate: !!$("#cov-max-activate")?.checked,
-        operator_notes: ($("#cov-max-notes")?.value || "").trim(),
+        dry_run: !!dryRun,
+        activate: !!maxHuntFormState.activate,
+        operator_notes: (maxHuntFormState.notes || "").trim(),
       };
       if (scope === "paths") {
-        body.path_targets = customPathTargets.map((t) => ({
+        body.path_targets = maxHuntPathTargets.map((t) => ({
           path: t.path,
           is_dir: !!t.is_dir,
         }));
         if (!body.path_targets.length) {
-          toast("Add path targets for scope=paths (or choose All source files)", true);
+          toast(
+            "Add path targets (files or folders) for Path targets only — or choose All source files",
+            true
+          );
           return null;
         }
       }
+      return body;
+    }
+
+    async function runMaxHuntPreview() {
+      const body = collectMaxHuntBody(true);
+      if (!body) return null;
       try {
         const r = await api(`${runApiBase()}/coverage/max-hunt`, {
           method: "POST",
@@ -1230,35 +1358,24 @@
         n > 10
           ? `\n\nThis will run ~${n} LLM skill authorings (then ~${n} hunts). Confirm you accept the cost.`
           : "";
+      const scopeHint =
+        prev.scope === "paths"
+          ? `\nScope: path targets (${maxHuntPathTargets.length} selected).`
+          : "\nScope: all source files.";
       if (
         !window.confirm(
           `Start MAX Hunt?\n\n` +
             `Enqueue ${n} generate_skill task(s) (≈ ${n} hunts after). ` +
             `Cap ${prev.capped_to}; matched ${prev.file_count}.` +
+            scopeHint +
             costNote +
             `\n\nSkills default inactive. Not exploit proof. Ralph must be running.`
         )
       ) {
         return;
       }
-      const scope =
-        el.querySelector('input[name="cov-max-scope"]:checked')?.value || "all";
-      let maxFiles = parseInt($("#cov-max-files")?.value || "50", 10);
-      if (!Number.isFinite(maxFiles)) maxFiles = 50;
-      maxFiles = Math.max(1, Math.min(200, maxFiles));
-      const body = {
-        scope,
-        max_files: maxFiles,
-        dry_run: false,
-        activate: !!$("#cov-max-activate")?.checked,
-        operator_notes: ($("#cov-max-notes")?.value || "").trim(),
-      };
-      if (scope === "paths") {
-        body.path_targets = customPathTargets.map((t) => ({
-          path: t.path,
-          is_dir: !!t.is_dir,
-        }));
-      }
+      const body = collectMaxHuntBody(false);
+      if (!body) return;
       try {
         const r = await api(`${runApiBase()}/coverage/max-hunt`, {
           method: "POST",
