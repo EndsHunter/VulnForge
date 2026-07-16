@@ -14,6 +14,8 @@ from vulnforge.hunt_profiles import (
     get_profile,
     list_profiles,
     normalize_class,
+    resolve_run_class_ids,
+    skill_policy_from_run_cfg,
 )
 from vulnforge.util import normalize_relpath
 
@@ -230,6 +232,29 @@ def request_hunt(
     spawned: list = session.setdefault("spawned_hunts", [])
     cfg = ctx.get("cfg") if isinstance(ctx.get("cfg"), dict) else {}
     run_cfg = cfg.get("run") if isinstance(cfg.get("run"), dict) else {}
+
+    # Run-scoped hunt skill allowlist: hard deny outside allowlist when mode set
+    mode_raw = run_cfg.get("hunt_skill_mode")
+    if mode_raw is not None and str(mode_raw).strip() != "":
+        mode_s, skill_ids = skill_policy_from_run_cfg(cfg)
+        allowed = set(resolve_run_class_ids(mode_s, skill_ids))
+        if profile_id not in allowed:
+            listed = list_hunt_profiles(ctx)
+            return {
+                "ok": False,
+                "error": (
+                    f"hunt profile {profile_id!r} is outside this run's hunt skill "
+                    f"allowlist (mode={mode_s}). Pick an allowed profile or change "
+                    f"the run skill mode."
+                ),
+                "code": "outside_run_allowlist",
+                "requested": profile_id,
+                "hunt_skill_mode": mode_s,
+                "allowed_profiles": sorted(allowed)[:40],
+                "available_profiles": [
+                    p.get("id") for p in (listed.get("profiles") or []) if p.get("id")
+                ],
+            }
     try:
         max_per_task = max(
             0, int(run_cfg.get("max_spawn_hunts_per_task", DEFAULT_MAX_SPAWN_PER_TASK))

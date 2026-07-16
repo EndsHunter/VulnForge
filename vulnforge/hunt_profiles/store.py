@@ -702,6 +702,147 @@ def active_class_ids() -> list[str]:
     return all_class_ids()
 
 
+# Run-scoped hunt skill policy (PR-B). Stored under runs.config_json run.* and
+# optional recon task payload; does not mutate the global Dev active set.
+HUNT_SKILL_MODES = frozenset(
+    {"all_active", "seed_active", "custom_only", "explicit"}
+)
+# Profiles authored outside the package seed library.
+CUSTOM_PROFILE_SOURCES = frozenset({"custom", "generated", "import"})
+
+
+def _normalize_skill_mode(mode: object) -> str:
+    m = str(mode or "all_active").strip().lower().replace("-", "_")
+    if m not in HUNT_SKILL_MODES:
+        return "all_active"
+    return m
+
+
+def _normalize_skill_ids(skill_ids: list[str] | None) -> list[str]:
+    if not skill_ids:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in skill_ids:
+        s = str(raw or "").strip().lower().replace("_", "-").replace(" ", "-")
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out[:64]
+
+
+def resolve_run_class_ids(
+    mode: str = "all_active",
+    skill_ids: list[str] | None = None,
+    *,
+    prefer_active: bool = True,
+) -> list[str]:
+    """Resolve hunt class ids for a run under the given skill mode.
+
+    Modes:
+    - all_active: same as active_class_ids() (empty active → all registered)
+    - seed_active: active (or all if not prefer_active) profiles with source==seed;
+      empty when none match — never silently expands to non-seed profiles
+    - custom_only: active (or all) with source in {custom, generated, import};
+      empty when none — never reintroduces seed profiles
+    - explicit: only skill_ids that exist in the collection (order preserved)
+
+    prefer_active: when True (default), seed_active / custom_only require active=True.
+    Empty results are intentional (recon may enqueue zero hunts).
+    """
+    mode_n = _normalize_skill_mode(mode)
+    coll = ensure_collection()
+    profiles = list(coll.get("profiles") or [])
+
+    if mode_n == "all_active":
+        return list(active_class_ids())
+
+    if mode_n == "explicit":
+        available = {str(p.get("id") or "") for p in profiles if p.get("id")}
+        out: list[str] = []
+        for sid in _normalize_skill_ids(skill_ids):
+            # Accept registered ids only. Apply CLASS_ALIASES for known short
+            # names (sqli→injection) but never silent fallback to wildcard.
+            candidate = CLASS_ALIASES.get(sid, sid)
+            if candidate in available and candidate not in out:
+                out.append(candidate)
+        return out
+
+    if mode_n == "seed_active":
+        want_sources = {"seed"}
+    else:  # custom_only
+        want_sources = set(CUSTOM_PROFILE_SOURCES)
+
+    out = []
+    for p in profiles:
+        pid = str(p.get("id") or "").strip()
+        if not pid:
+            continue
+        src = str(p.get("source") or "custom").strip().lower()
+        if src not in want_sources:
+            continue
+        if prefer_active and not p.get("active"):
+            continue
+        out.append(pid)
+    # No silent fallback to seeds/all when filters yield empty.
+    return out
+
+
+def skill_policy_from_run_cfg(
+    cfg: Optional[dict[str, Any]] = None,
+    *,
+    payload: Optional[dict[str, Any]] = None,
+) -> tuple[str, list[str] | None]:
+    """Read hunt_skill_mode / hunt_skill_ids from run config and optional payload.
+
+    Payload values override config when present (operator re-run / recon task).
+    """
+    run = {}
+    if isinstance(cfg, dict):
+        r = cfg.get("run")
+        if isinstance(r, dict):
+            run = r
+    mode = run.get("hunt_skill_mode")
+    ids = run.get("hunt_skill_ids")
+    if isinstance(payload, dict):
+        if payload.get("hunt_skill_mode") is not None:
+            mode = payload.get("hunt_skill_mode")
+        if "hunt_skill_ids" in payload:
+            ids = payload.get("hunt_skill_ids")
+    mode_n = _normalize_skill_mode(mode)
+    skill_ids: list[str] | None
+    if ids is None:
+        skill_ids = None
+    elif isinstance(ids, list):
+        skill_ids = _normalize_skill_ids(ids)
+    else:
+        skill_ids = None
+    return mode_n, skill_ids
+
+
+def filter_profiles_for_run(
+    mode: str = "all_active",
+    skill_ids: list[str] | None = None,
+    *,
+    prefer_active: bool = True,
+    include_body: bool = False,
+) -> list[dict[str, Any]]:
+    """Filter the hunt profile catalog to ids allowed for a run (recon packet)."""
+    mode_n = _normalize_skill_mode(mode)
+    allowed = set(
+        resolve_run_class_ids(mode_n, skill_ids, prefer_active=prefer_active)
+    )
+    try:
+        rows = list_profiles(include_body=include_body)
+    except HuntProfileError:
+        return []
+    if mode_n == "all_active":
+        # Full catalog (active + optional inactive) for default mode.
+        return list(rows)
+    return [p for p in rows if p.get("id") in allowed]
+
+
 def catalog_for_ui() -> dict[str, list[str]]:
     coll = ensure_collection()
     all_ids = [p["id"] for p in coll["profiles"]]

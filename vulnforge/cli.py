@@ -129,6 +129,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=3,
         help="Number of custom hunt skills to generate (1–10; default 3)",
     )
+    init_p.add_argument(
+        "--hunt-skill-mode",
+        dest="hunt_skill_mode",
+        choices=["all_active", "seed_active", "custom_only", "explicit"],
+        default=None,
+        help=(
+            "Run-scoped hunt skills: all_active (default), seed_active, "
+            "custom_only, or explicit (with --hunt-skill)"
+        ),
+    )
+    init_p.add_argument(
+        "--hunt-skill",
+        dest="hunt_skill_ids",
+        action="append",
+        default=None,
+        help="Hunt skill id when --hunt-skill-mode=explicit (repeatable)",
+    )
 
     once = sub.add_parser("run-once", help="Lease and execute one task")
     once.add_argument("--run-dir", type=Path, default=None)
@@ -421,6 +438,20 @@ def cmd_init(args, cfg: dict) -> int:
     if strategy == STRATEGY_FILE_BY_FILE:
         init_dynamic_skills = False
 
+    # Run-scoped hunt skill policy (does not mutate global Dev active toggles)
+    from vulnforge.hunt_profiles import HUNT_SKILL_MODES
+
+    init_hunt_mode = str(
+        getattr(args, "hunt_skill_mode", None) or "all_active"
+    ).strip().lower().replace("-", "_")
+    if init_hunt_mode not in HUNT_SKILL_MODES:
+        init_hunt_mode = "all_active"
+    init_hunt_ids = [
+        str(x).strip().lower().replace("_", "-")
+        for x in (getattr(args, "hunt_skill_ids", None) or [])
+        if str(x).strip()
+    ][:64]
+
     cfg_store = {
         "llm": cfg.get("llm", {}),
         "run": {
@@ -432,6 +463,8 @@ def cmd_init(args, cfg: dict) -> int:
             "max_tasks": max_tasks,
             "dynamic_skills": init_dynamic_skills,
             "dynamic_skill_count": init_dynamic_skill_count if init_dynamic_skills else 0,
+            "hunt_skill_mode": init_hunt_mode,
+            "hunt_skill_ids": init_hunt_ids,
         },
         "stages": cfg.get("stages", {}),
         "packet": cfg.get("packet", {}),
@@ -458,6 +491,10 @@ def cmd_init(args, cfg: dict) -> int:
             recon_pl["dynamic_skills"] = True
             recon_pl["dynamic_skill_count"] = init_dynamic_skill_count
 
+    def _attach_hunt_skill_policy(recon_pl: dict[str, Any]) -> None:
+        recon_pl["hunt_skill_mode"] = init_hunt_mode
+        recon_pl["hunt_skill_ids"] = list(init_hunt_ids)
+
     from vulnforge.stages.recon import enqueue_recon_agent_tasks, resolve_recon_agent_ids
 
     try:
@@ -474,6 +511,8 @@ def cmd_init(args, cfg: dict) -> int:
             ignore=ignore,
             max_tasks=max_tasks,
             classes=None,
+            hunt_skill_mode=init_hunt_mode,
+            hunt_skill_ids=init_hunt_ids or None,
         )
         for pl in payloads:
             db.enqueue_task("hunt", pl, priority=50)
@@ -504,6 +543,7 @@ def cmd_init(args, cfg: dict) -> int:
             "recon_generation": 1,
         }
         _attach_dynamic_skills(recon_payload)
+        _attach_hunt_skill_policy(recon_payload)
         # One Ralph task per recon agent; architecture merges when batch completes.
         recon_task_ids = enqueue_recon_agent_tasks(
             db,
@@ -522,6 +562,7 @@ def cmd_init(args, cfg: dict) -> int:
             recon_payload["operator_notes"] = init_operator_notes
             recon_payload["operator_brief"] = init_operator_notes
         _attach_dynamic_skills(recon_payload)
+        _attach_hunt_skill_policy(recon_payload)
         recon_task_ids = enqueue_recon_agent_tasks(
             db,
             recon_payload,

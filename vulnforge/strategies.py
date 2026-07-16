@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from vulnforge.hunt_profiles import active_class_ids
+from vulnforge.hunt_profiles import resolve_run_class_ids
 from vulnforge.tools.grep_index import build_file_index
 from vulnforge.util import normalize_relpath
 
@@ -245,19 +245,31 @@ def plan_file_by_file_hunts(
     ignore: Optional[Iterable[str]] = None,
     max_tasks: int = 50,
     classes: Optional[list[str]] = None,
+    *,
+    hunt_skill_mode: Optional[str] = None,
+    hunt_skill_ids: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """
     Plan hunt task payloads: each source file x class, capped by max_tasks.
 
     Priority order (entrypoints / shallow first). Skips huge and binary-ish files.
     Area is the top-level directory (or 'app' for root files).
+
+    When ``classes`` is omitted, resolve from ``hunt_skill_mode`` /
+    ``hunt_skill_ids`` (default ``all_active``). Empty allowlist → no hunts.
     """
     target = Path(target).resolve()
-    use_classes = list(classes) if classes else list(active_class_ids())
-    if not use_classes:
-        use_classes = list(active_class_ids())
+    if classes is not None:
+        use_classes = list(classes)
+    else:
+        use_classes = list(
+            resolve_run_class_ids(
+                hunt_skill_mode or "all_active",
+                hunt_skill_ids,
+            )
+        )
     max_tasks = max(0, int(max_tasks))
-    if max_tasks == 0:
+    if max_tasks == 0 or not use_classes:
         return []
 
     files = list_source_files(target, ignore)

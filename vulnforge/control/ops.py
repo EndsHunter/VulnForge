@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from vulnforge.db import Database
-from vulnforge.hunt_profiles import active_class_ids, all_class_ids
+from vulnforge.hunt_profiles import (
+    HUNT_SKILL_MODES,
+    active_class_ids,
+    all_class_ids,
+    resolve_run_class_ids,
+    skill_policy_from_run_cfg,
+)
 from vulnforge.stages.recon import _normalize_class
 from vulnforge.tools.fs_read import list_dir as tool_list_dir, read_file as tool_read_file, resolve_target_path
 from vulnforge.util import append_event, normalize_relpath
@@ -462,6 +468,8 @@ def requeue_recon(
     enqueue_hunts: bool = True,
     reason: str = "operator_recon_rerun",
     agent_ids: Optional[list[str]] = None,
+    hunt_skill_mode: Optional[str] = None,
+    hunt_skill_ids: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """
     Enqueue recon task(s) with optional operator brief.
@@ -470,6 +478,10 @@ def requeue_recon(
     when multiple). Prior architecture is included by default so the model can
     refine rather than start from zero. Results merge into one architecture map;
     hunts enqueue once when the batch completes.
+
+    Optional ``hunt_skill_mode`` / ``hunt_skill_ids`` are stored on the recon
+    payload and merged into run config so plan_hunt_tasks / request_hunt honor
+    the operator selection for this re-run.
     """
     from vulnforge.stages.recon import (
         enqueue_recon_agent_tasks,
@@ -518,6 +530,32 @@ def requeue_recon(
             payload["operator_notes"] = notes[:6000]
         if paths:
             payload["focus_paths"] = paths
+
+        # Hunt skill mode: persist on payload + run config when operator sets it
+        mode_in = hunt_skill_mode
+        ids_in = hunt_skill_ids
+        if mode_in is not None or ids_in is not None:
+            mode_s = str(mode_in or "all_active").strip().lower().replace("-", "_")
+            if mode_s not in HUNT_SKILL_MODES:
+                return {"ok": False, "error": f"invalid hunt_skill_mode: {mode_in}"}
+            ids_list: list[str] = []
+            if isinstance(ids_in, list):
+                ids_list = [
+                    str(x).strip().lower().replace("_", "-")
+                    for x in ids_in
+                    if str(x).strip()
+                ][:64]
+            payload["hunt_skill_mode"] = mode_s
+            payload["hunt_skill_ids"] = ids_list
+            try:
+                cfg_now = get_run_config(db)
+                run_sec = dict(cfg_now.get("run") or {})
+                run_sec["hunt_skill_mode"] = mode_s
+                run_sec["hunt_skill_ids"] = ids_list
+                patch_run_config(db, {"run": run_sec})
+            except Exception:
+                pass
+
         # Priority 5: ahead of default recon (10) and hunts (40-50)
         task_ids = enqueue_recon_agent_tasks(
             db, payload, resolved, base_priority=5
@@ -538,6 +576,8 @@ def requeue_recon(
                     "enqueue_hunts": bool(enqueue_hunts),
                     "agent_ids": resolved[:10],
                     "recon_agent_count": len(resolved),
+                    "hunt_skill_mode": payload.get("hunt_skill_mode"),
+                    "hunt_skill_ids": (payload.get("hunt_skill_ids") or [])[:20],
                 },
             )
         except OSError:
@@ -669,7 +709,11 @@ def apply_coverage_mode(
     db = _open_db(run_dir)
     try:
         available = set(all_class_ids())
-        active = list(active_class_ids())
+        cfg_now = get_run_config(db)
+        skill_mode, skill_ids = skill_policy_from_run_cfg(cfg_now)
+        # Run-scoped allowlist (all_active ≈ active_class_ids; other modes filter)
+        run_allowed = list(resolve_run_class_ids(skill_mode, skill_ids))
+        active = list(run_allowed) if run_allowed else list(active_class_ids())
         sel_areas = [str(a).strip() for a in (areas or []) if str(a).strip()]
         sel_classes = [
             _normalize_class(c) for c in (classes or []) if str(c).strip()
@@ -704,7 +748,7 @@ def apply_coverage_mode(
         policy = {
             "mode": mode_n,
             "areas": sel_areas + [a for a in path_area_names if a not in sel_areas],
-            # select: operator picks any registered class; all/auto use active set
+            # select: operator picks any registered class; all/auto use run allowlist
             "classes": (
                 sel_classes if mode_n == "select" else list(active)
             ),
@@ -721,7 +765,8 @@ def apply_coverage_mode(
         if enqueue and mode_n in ("all", "select"):
             if mode_n == "all":
                 use_areas = _areas_from_architecture(db)
-                use_classes = list(active)
+                # Respect run hunt_skill_mode (empty → no bulk enqueue)
+                use_classes = list(run_allowed)
                 for area in use_areas:
                     units.append((area, _path_hints_for_area(db, area)))
             else:

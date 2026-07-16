@@ -77,6 +77,9 @@ class InitBody(BaseModel):
     # After recon, author N target-specific hunt skills for this run
     dynamic_skills: bool = False
     dynamic_skill_count: Optional[int] = 3
+    # Run-scoped hunt skill policy (does not change global Dev active toggles)
+    hunt_skill_mode: Optional[str] = "all_active"
+    hunt_skill_ids: Optional[list[str]] = None
 
 
 class ControlBody(BaseModel):
@@ -306,6 +309,8 @@ class ReconRerunBody(BaseModel):
     enqueue_hunts: bool = True
     reason: str = "operator_recon_rerun"
     agent_ids: Optional[list[str]] = None
+    hunt_skill_mode: Optional[str] = None
+    hunt_skill_ids: Optional[list[str]] = None
 
 
 class FindingReviewBody(BaseModel):
@@ -484,6 +489,16 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         except (TypeError, ValueError):
             args.dynamic_skill_count = 3
         args.dynamic_skill_count = max(1, min(args.dynamic_skill_count, 10))
+        mode = str(body.hunt_skill_mode or "all_active").strip().lower().replace("-", "_")
+        if mode not in ("all_active", "seed_active", "custom_only", "explicit"):
+            mode = "all_active"
+        args.hunt_skill_mode = mode
+        skill_ids = [
+            str(x).strip().lower()
+            for x in (body.hunt_skill_ids or [])
+            if str(x).strip()
+        ][:64]
+        args.hunt_skill_ids = skill_ids or None
 
         if not args.target.is_dir():
             raise HTTPException(400, f"target not a directory: {body.target}")
@@ -880,6 +895,8 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             enqueue_hunts=body.enqueue_hunts,
             reason=body.reason,
             agent_ids=body.agent_ids,
+            hunt_skill_mode=body.hunt_skill_mode,
+            hunt_skill_ids=body.hunt_skill_ids,
         )
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "recon requeue failed")

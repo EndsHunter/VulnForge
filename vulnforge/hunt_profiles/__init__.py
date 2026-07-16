@@ -23,6 +23,8 @@ from vulnforge.hunt_profiles.generate import (
 )
 from vulnforge.hunt_profiles.store import (
     COLLECTION_FORMAT,
+    CUSTOM_PROFILE_SOURCES,
+    HUNT_SKILL_MODES,
     PROFILE_ID_RE,
     SEED_PROFILE_META,
     HuntProfileError,
@@ -35,6 +37,7 @@ from vulnforge.hunt_profiles.store import (
     delete_profile,
     ensure_collection,
     export_collection,
+    filter_profiles_for_run,
     get_body,
     get_profile,
     import_collection,
@@ -42,14 +45,18 @@ from vulnforge.hunt_profiles.store import (
     normalize_class,
     reseed_from_package,
     reset_collection_root_override,
+    resolve_run_class_ids,
     save_profile,
     set_collection_root,
     sink_families_for_class,
+    skill_policy_from_run_cfg,
     specificity_for_class,
 )
 
 __all__ = [
     "COLLECTION_FORMAT",
+    "CUSTOM_PROFILE_SOURCES",
+    "HUNT_SKILL_MODES",
     "PROFILE_ID_RE",
     "SEED_PROFILE_META",
     "AuthorPromptError",
@@ -66,6 +73,7 @@ __all__ = [
     "delete_profile",
     "ensure_collection",
     "export_collection",
+    "filter_profiles_for_run",
     "generate_hunt_skill",
     "generate_hunt_skills_batch",
     "get_author_prompt",
@@ -78,10 +86,12 @@ __all__ = [
     "reseed_author_prompt",
     "reseed_from_package",
     "reset_collection_root_override",
+    "resolve_run_class_ids",
     "save_author_prompt",
     "save_generated_profile",
     "save_profile",
     "set_collection_root",
     "sink_families_for_class",
+    "skill_policy_from_run_cfg",
     "specificity_for_class",
 ]

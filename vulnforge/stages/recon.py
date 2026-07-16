@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from vulnforge.hunt_profiles import (
-    active_class_ids,
     all_class_ids,
     catalog_for_ui,
     normalize_class,
+    resolve_run_class_ids,
+    skill_policy_from_run_cfg,
 )
 from vulnforge.llm import InfraError, classify_llm_failure, make_client
 from vulnforge.packet import pack_recon_agent
@@ -63,6 +64,23 @@ def hunt_class_catalog() -> dict[str, list[str]]:
     - all: every registered profile in the operator collection
     """
     return catalog_for_ui()
+
+
+def merge_skill_policy_into_cfg(
+    cfg: dict,
+    payload: Optional[dict] = None,
+) -> dict:
+    """Overlay task-payload hunt skill policy onto a shallow copy of cfg.run."""
+    mode, skill_ids = skill_policy_from_run_cfg(cfg, payload=payload)
+    base = dict(cfg) if isinstance(cfg, dict) else {}
+    run = dict(base.get("run") or {})
+    run["hunt_skill_mode"] = mode
+    if skill_ids is not None:
+        run["hunt_skill_ids"] = list(skill_ids)
+    elif "hunt_skill_ids" not in run:
+        run["hunt_skill_ids"] = []
+    base["run"] = run
+    return base
 
 
 def _recon_generation(payload: dict[str, Any]) -> int:
@@ -514,6 +532,9 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     focus_paths = payload.get("focus_paths") or payload.get("path_hints") or []
     if not isinstance(focus_paths, list):
         focus_paths = []
+
+    # Run-scoped hunt skill mode (config + optional recon payload override).
+    cfg = merge_skill_policy_into_cfg(cfg, payload)
 
     # Active recon agents (optional payload.agent_ids filter for operator re-runs).
     # Multi-agent selection is fanned out into one Ralph task per agent (recon batch).
@@ -1120,8 +1141,16 @@ def partition_by_top_dir(sample_paths: list[str], top_n: int = 12) -> list[dict]
     return [{"dir": d, "file_count": n} for d, n in ranked]
 
 
-def _fallback_hunt_tasks(architecture: dict, inventory: dict) -> list[dict]:
-    """Active hunt skills × areas when model focus is missing or unusable."""
+def _fallback_hunt_tasks(
+    architecture: dict,
+    inventory: dict,
+    cfg: Optional[dict] = None,
+) -> list[dict]:
+    """Allowed hunt skills × areas when model focus is missing or unusable.
+
+    Class set comes from run hunt_skill_mode (default all_active). Empty
+    allowlist yields zero tasks (custom_only with no customs is OK).
+    """
     components = architecture.get("components") or []
     if not isinstance(components, list):
         components = []
@@ -1145,7 +1174,10 @@ def _fallback_hunt_tasks(architecture: dict, inventory: dict) -> list[dict]:
             areas = ["app"]
 
     default_hints = inventory.get("entrypoints") or inventory.get("sample_paths", [])[:10]
-    use_classes = active_class_ids()
+    mode, skill_ids = skill_policy_from_run_cfg(cfg or {})
+    use_classes = resolve_run_class_ids(mode, skill_ids)
+    if not use_classes:
+        return []
     tasks: list[dict] = []
     # Cap areas for monorepos (H3b: tests/test_mono_synth_plan.py)
     max_areas = 6 if (inventory.get("file_count") or 0) > 200 else 8
@@ -1226,29 +1258,61 @@ def plan_hunt_tasks(
     Returns (tasks, hunt_plan_source) where source is ``hunt_focus`` or
     ``active_fallback``. Non-list / garbage focus never blocks active-set
     fallback (local models often string-encode nested arrays).
+
+    Run ``hunt_skill_mode`` / ``hunt_skill_ids`` (cfg.run) restrict allowed
+    class ids. hunt_focus entries outside the allowlist are dropped; empty
+    allowlist yields zero tasks (including fallback).
     """
     max_tasks = int((cfg.get("run") or {}).get("max_tasks", 50))
+    mode, skill_ids = skill_policy_from_run_cfg(cfg)
+    # Fallback / bulk set (active under all_active; filtered for other modes).
+    allowed = resolve_run_class_ids(mode, skill_ids)
+    # hunt_focus allowlist: default mode may include inactive registered classes
+    # (optional packs in the registry). Restricted modes use the same resolve set.
+    if mode == "all_active":
+        focus_allow = set(all_class_ids())
+    else:
+        focus_allow = set(allowed)
     raw_focus = architecture.get("hunt_focus")
     # Only a real list can enter the focus branch (truthy strings must not).
     focus = raw_focus if isinstance(raw_focus, list) else []
     tasks: list[dict] = []
     source = "active_fallback"
-    if focus:
+    if focus and (focus_allow or mode == "all_active"):
         for f in focus:
             if not isinstance(f, dict):
+                continue
+            raw_cls = f.get("class")
+            # Map aliases onto registered ids, then enforce allowlist.
+            # Unknown ids must not slip in via normalize→wildcard unless wildcard
+            # is itself allowed for this run.
+            cls = _normalize_class(raw_cls)
+            if focus_allow and cls not in focus_allow:
+                # Retry: if raw maps via alias to an allowed id without
+                # wildcard fallback, keep it.
+                from vulnforge.hunt_profiles.store import CLASS_ALIASES
+
+                raw_s = str(raw_cls or "").strip().lower().replace("_", "-").replace(" ", "-")
+                alt = CLASS_ALIASES.get(raw_s, raw_s)
+                if alt in focus_allow:
+                    cls = alt
+                else:
+                    continue
+            if not focus_allow and mode != "all_active":
                 continue
             tasks.append(
                 {
                     "area": f.get("area") or "app",
-                    "class": _normalize_class(f.get("class")),
+                    "class": cls,
                     "path_hints": _normalize_path_hints(f.get("path_hints"), inventory),
                 }
             )
         if tasks:
             source = "hunt_focus"
     if not tasks:
-        # No usable focus → active hunt skills only (not full catalog).
-        tasks = _fallback_hunt_tasks(architecture, inventory)
+        # No usable focus → allowed hunt skills only (not full catalog).
+        # Empty allowlist → zero tasks.
+        tasks = _fallback_hunt_tasks(architecture, inventory, cfg)
         source = "active_fallback"
     tasks = _apply_class_routing(tasks, inventory)
     # Honor operator run.max_tasks only (no monorepo hard-cap override).

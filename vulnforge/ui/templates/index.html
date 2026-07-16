@@ -164,6 +164,50 @@
           </div>
         </div>
 
+        <div class="field" id="init-hunt-skill-mode-field">
+          <label class="field-label-text">Hunt skills for this run</label>
+          <p class="controls-hint init-hint" style="margin:0.15rem 0 0.4rem">
+            Run-scoped only — does not change global Dev active toggles.
+            Empty custom-only sets enqueue zero hunts after recon (OK).
+          </p>
+          <div class="strategy-list hunt-skill-mode-list" role="radiogroup" aria-label="Hunt skill mode">
+            <label class="strategy-option">
+              <input type="radio" name="init-hunt-skill-mode" value="all_active" checked />
+              <span class="strategy-option-main">
+                <span class="strategy-option-title">Default active</span>
+                <span class="strategy-option-desc">All currently active hunt skills (Dev collection).</span>
+              </span>
+            </label>
+            <label class="strategy-option">
+              <input type="radio" name="init-hunt-skill-mode" value="seed_active" />
+              <span class="strategy-option-main">
+                <span class="strategy-option-title">Seed only</span>
+                <span class="strategy-option-desc">Active package-seed skills only (source=seed).</span>
+              </span>
+            </label>
+            <label class="strategy-option">
+              <input type="radio" name="init-hunt-skill-mode" value="custom_only" />
+              <span class="strategy-option-main">
+                <span class="strategy-option-title">Custom only</span>
+                <span class="strategy-option-desc">Active custom / generated / import skills — no seeds.</span>
+              </span>
+            </label>
+            <label class="strategy-option">
+              <input type="radio" name="init-hunt-skill-mode" value="explicit" />
+              <span class="strategy-option-main">
+                <span class="strategy-option-title">Pick skills</span>
+                <span class="strategy-option-desc">Choose exact skill ids for this run.</span>
+              </span>
+            </label>
+          </div>
+          <div id="init-hunt-skill-picker" class="hunt-skill-picker" hidden>
+            <p class="controls-hint" style="margin:0.4rem 0">Select one or more hunt skills:</p>
+            <div id="init-hunt-skills" class="recon-agent-picker" role="group" aria-label="Hunt skills">
+              <div class="controls-hint">Loading skills…</div>
+            </div>
+          </div>
+        </div>
+
         <div class="init-row-2">
           <div class="field">
             <label class="field-label-text" for="init-max-tasks">Max tasks</label>

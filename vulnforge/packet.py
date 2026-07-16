@@ -60,54 +60,122 @@ def _load_hunt_class_body(cls: str) -> str:
     )
 
 
-def format_hunt_class_registry_section() -> str:
-    """Dynamic class list for recon packets (active vs optional)."""
-    from vulnforge.hunt_profiles import list_profiles
+def format_hunt_class_registry_section(
+    allowed_ids: list[str] | None = None,
+    *,
+    mode: str | None = None,
+    skill_ids: list[str] | None = None,
+) -> str:
+    """Dynamic class list for recon packets (active vs optional).
 
-    try:
-        profiles = list_profiles(include_body=False)
-    except Exception:
+    When ``mode`` / ``skill_ids`` or ``allowed_ids`` restrict the run, only list
+    those class ids (operator run policy — not the full Dev catalog).
+    """
+    from vulnforge.hunt_profiles import (
+        filter_profiles_for_run,
+        list_profiles,
+        resolve_run_class_ids,
+    )
+
+    restricted = False
+    if allowed_ids is not None:
+        allowed_set = set(allowed_ids)
+        restricted = True
+        try:
+            profiles = [
+                p for p in list_profiles(include_body=False) if p.get("id") in allowed_set
+            ]
+            # Preserve allowlist order when possible
+            by_id = {p["id"]: p for p in profiles}
+            profiles = [by_id[i] for i in allowed_ids if i in by_id]
+        except Exception:
+            profiles = []
+    elif mode is not None or skill_ids is not None:
+        mode_n = mode or "all_active"
+        restricted = str(mode_n).strip().lower().replace("-", "_") != "all_active"
+        try:
+            if restricted:
+                allowed = resolve_run_class_ids(mode_n, skill_ids)
+                profiles = filter_profiles_for_run(mode_n, skill_ids)
+                by_id = {p["id"]: p for p in profiles}
+                profiles = [by_id[i] for i in allowed if i in by_id]
+            else:
+                profiles = list_profiles(include_body=False)
+        except Exception:
+            profiles = []
+    else:
+        try:
+            profiles = list_profiles(include_body=False)
+        except Exception:
+            return (
+                "\n## Registered hunt classes\n"
+                "(collection unavailable — use only well-known short class ids)\n"
+            )
+
+    if not profiles and restricted:
         return (
-            "\n## Registered hunt classes\n"
-            "(collection unavailable — use only well-known short class ids)\n"
+            "\n## Registered hunt classes (use only these ids in hunt_focus)\n"
+            "\n(none allowed for this run's hunt skill mode — leave hunt_focus "
+            "empty or the planner will enqueue zero hunts)\n"
         )
     if not profiles:
         return "\n## Registered hunt classes\n(none registered)\n"
     lines = [
         "\n## Registered hunt classes (use only these ids in hunt_focus)",
         "",
-        "Prefer a **small** set. **Active** profiles are used when you omit hunt_focus.",
+        "Prefer a **small** set. **Active** profiles are used when you omit hunt_focus."
+        if not restricted
+        else "This run restricts hunt classes to the list below. Do not invent others.",
         "",
-        "### Active (bulk / fallback enqueue)",
-        "",
-        "| class id | title |",
-        "|----------|-------|",
     ]
-    active = [p for p in profiles if p.get("active")]
-    inactive = [p for p in profiles if not p.get("active")]
-    if not active:
-        active = list(profiles)
-        inactive = []
-    for p in active:
-        title = (p.get("title") or p["id"]).replace("|", "/")
-        desc = (p.get("description") or "").replace("|", "/")
-        label = f"{title}" + (f" — {desc}" if desc else "")
-        lines.append(f"| `{p['id']}` | {label} |")
-    if inactive:
+    if restricted:
         lines.extend(
             [
-                "",
-                "### Optional (include only when inventory warrants)",
+                "### Allowed for this run",
                 "",
                 "| class id | title |",
                 "|----------|-------|",
             ]
         )
-        for p in inactive:
+        for p in profiles:
             title = (p.get("title") or p["id"]).replace("|", "/")
             desc = (p.get("description") or "").replace("|", "/")
             label = f"{title}" + (f" — {desc}" if desc else "")
             lines.append(f"| `{p['id']}` | {label} |")
+    else:
+        lines.extend(
+            [
+                "### Active (bulk / fallback enqueue)",
+                "",
+                "| class id | title |",
+                "|----------|-------|",
+            ]
+        )
+        active = [p for p in profiles if p.get("active")]
+        inactive = [p for p in profiles if not p.get("active")]
+        if not active:
+            active = list(profiles)
+            inactive = []
+        for p in active:
+            title = (p.get("title") or p["id"]).replace("|", "/")
+            desc = (p.get("description") or "").replace("|", "/")
+            label = f"{title}" + (f" — {desc}" if desc else "")
+            lines.append(f"| `{p['id']}` | {label} |")
+        if inactive:
+            lines.extend(
+                [
+                    "",
+                    "### Optional (include only when inventory warrants)",
+                    "",
+                    "| class id | title |",
+                    "|----------|-------|",
+                ]
+            )
+            for p in inactive:
+                title = (p.get("title") or p["id"]).replace("|", "/")
+                desc = (p.get("description") or "").replace("|", "/")
+                label = f"{title}" + (f" — {desc}" if desc else "")
+                lines.append(f"| `{p['id']}` | {label} |")
     lines.append("")
     lines.append(
         "Never invent class ids outside this list. "
@@ -541,7 +609,16 @@ def pack_recon_agent(
         + "Do not call submit_candidate or submit_none. Finish with submit_architecture.\n"
     )
     recon = (agent_body or "").strip() + "\n"
-    registry_section = format_hunt_class_registry_section()
+    run_cfg = cfg.get("run") if isinstance(cfg.get("run"), dict) else {}
+    skill_mode = run_cfg.get("hunt_skill_mode")
+    skill_ids = run_cfg.get("hunt_skill_ids")
+    if skill_mode is not None or skill_ids is not None:
+        registry_section = format_hunt_class_registry_section(
+            mode=str(skill_mode or "all_active"),
+            skill_ids=skill_ids if isinstance(skill_ids, list) else None,
+        )
+    else:
+        registry_section = format_hunt_class_registry_section()
     inv = {
         "file_count": inventory.get("file_count"),
         "extensions": inventory.get("extensions"),

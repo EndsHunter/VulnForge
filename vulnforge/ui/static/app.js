@@ -466,6 +466,122 @@ function selectedReconAgentIds(root) {
     .filter(Boolean);
 }
 
+/* ---------- Hunt skill mode (init + operator re-run) ---------- */
+
+let huntProfilesCache = null;
+let huntProfilesCacheAt = 0;
+const HUNT_PROFILES_TTL_MS = 60_000;
+
+async function fetchHuntProfiles({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && huntProfilesCache && now - huntProfilesCacheAt < HUNT_PROFILES_TTL_MS) {
+    return huntProfilesCache;
+  }
+  const data = await api("/api/hunt-profiles?include_body=0");
+  const profiles = Array.isArray(data?.profiles) ? data.profiles : [];
+  profiles.sort((a, b) => String(a.id || "").localeCompare(String(b.id || "")));
+  huntProfilesCache = profiles;
+  huntProfilesCacheAt = now;
+  return profiles;
+}
+
+function selectedHuntSkillMode(name) {
+  const el = document.querySelector(`input[name="${name}"]:checked`);
+  return (el && el.value) || "all_active";
+}
+
+function selectedHuntSkillIds(root) {
+  const scope = root || document;
+  return Array.from(scope.querySelectorAll("input[data-hunt-skill-id]:checked"))
+    .map((el) => (el.getAttribute("data-hunt-skill-id") || el.value || "").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Multi-select hunt skill checkboxes (for mode=explicit).
+ */
+function renderHuntSkillPicker(container, opts = {}) {
+  if (!container) return;
+  const namePrefix = opts.namePrefix || "hunt-skill";
+  const profiles = opts.profiles || [];
+  if (!profiles.length) {
+    container.innerHTML = `<div class="controls-hint">No hunt skills in collection. Open Dev → Hunt skills to seed or create some.</div>`;
+    return;
+  }
+  const selected = opts.selectedIds
+    ? new Set(opts.selectedIds.map((x) => String(x).toLowerCase()))
+    : null;
+  const precheckActive = opts.precheckActive === true;
+  container.innerHTML = profiles
+    .map((p) => {
+      const id = String(p.id || "");
+      const title = p.title || id;
+      const desc = p.description || "";
+      const active = !!p.active;
+      const source = p.source || "";
+      let checked = false;
+      if (selected) {
+        checked = selected.has(id.toLowerCase());
+      } else if (precheckActive) {
+        checked = active;
+      }
+      const badges = [];
+      if (active) badges.push(`<span class="recon-agent-active-badge" title="Active">active</span>`);
+      if (source) {
+        badges.push(
+          `<span class="recon-agent-active-badge" style="opacity:0.75" title="source">${esc(source)}</span>`
+        );
+      }
+      return `
+        <label class="recon-agent-option" title="${esc(desc || title)}">
+          <input type="checkbox" data-hunt-skill-id="${esc(id)}" name="${esc(namePrefix)}" value="${esc(id)}" ${checked ? "checked" : ""} />
+          <span class="recon-agent-option-main">
+            <span class="recon-agent-option-title mono">${esc(id)}</span>
+            ${badges.join(" ")}
+            <span class="recon-agent-option-desc">${esc(title)}${desc ? " — " + esc(desc) : ""}</span>
+          </span>
+        </label>`;
+    })
+    .join("");
+}
+
+function syncHuntSkillPickerVisibility(modeName, pickerId) {
+  const mode = selectedHuntSkillMode(modeName);
+  const picker = document.getElementById(pickerId);
+  if (picker) picker.hidden = mode !== "explicit";
+}
+
+function wireHuntSkillModeRadios(modeName, pickerId) {
+  document.querySelectorAll(`input[name="${modeName}"]`).forEach((el) => {
+    el.addEventListener("change", () => syncHuntSkillPickerVisibility(modeName, pickerId));
+  });
+  syncHuntSkillPickerVisibility(modeName, pickerId);
+}
+
+async function loadInitHuntSkills() {
+  const box = $("#init-hunt-skills");
+  if (!box) return;
+  try {
+    const profiles = await fetchHuntProfiles();
+    renderHuntSkillPicker(box, {
+      namePrefix: "init-hunt-skill",
+      profiles,
+      precheckActive: false,
+    });
+  } catch (e) {
+    box.innerHTML = `<div class="controls-hint" style="color:var(--bad)">Failed to load hunt skills: ${esc(e.message)}</div>`;
+  }
+}
+
+function collectHuntSkillPolicy(modeName, pickerRoot) {
+  const mode = selectedHuntSkillMode(modeName);
+  const out = { hunt_skill_mode: mode };
+  if (mode === "explicit") {
+    out.hunt_skill_ids = selectedHuntSkillIds(pickerRoot);
+  }
+  return out;
+}
+
 async function loadInitReconAgents() {
   const box = $("#init-recon-agents");
   if (!box) return;
@@ -491,9 +607,16 @@ function openInitModal() {
   if (dyn) dyn.checked = false;
   const dynCount = $("#init-dynamic-skill-count");
   if (dynCount) dynCount.value = "3";
+  const modeDefault = document.querySelector(
+    'input[name="init-hunt-skill-mode"][value="all_active"]'
+  );
+  if (modeDefault) modeDefault.checked = true;
   syncInitDocsField();
   syncInitReconFields();
   loadInitReconAgents();
+  loadInitHuntSkills();
+  wireHuntSkillModeRadios("init-hunt-skill-mode", "init-hunt-skill-picker");
+  syncHuntSkillPickerVisibility("init-hunt-skill-mode", "init-hunt-skill-picker");
 }
 function closeInitModal() {
   $("#init-modal")?.classList.remove("open");
@@ -921,6 +1044,18 @@ async function submitInit(ev) {
       let n = parseInt($("#init-dynamic-skill-count")?.value || "3", 10);
       if (!Number.isFinite(n)) n = 3;
       body.dynamic_skill_count = Math.max(1, Math.min(10, n));
+    }
+  }
+  const skillPolicy = collectHuntSkillPolicy("init-hunt-skill-mode", $("#init-hunt-skills"));
+  body.hunt_skill_mode = skillPolicy.hunt_skill_mode;
+  if (skillPolicy.hunt_skill_mode === "explicit") {
+    body.hunt_skill_ids = skillPolicy.hunt_skill_ids || [];
+    if (!body.hunt_skill_ids.length) {
+      toast("Pick at least one hunt skill, or choose another skill mode", true);
+      if (btn) btn.disabled = false;
+      closeInitLoading();
+      $("#init-modal")?.classList.add("open");
+      return;
     }
   }
   try {
@@ -1529,6 +1664,15 @@ function renderArchitectureBriefCard(archText, archSum, snap) {
 
 function renderOperatorRerunCard(snap) {
   const hasArch = !!(snap.architecture || snap.architecture_summary?.has_architecture);
+  const rawMode =
+    (snap.config && snap.config.run && snap.config.run.hunt_skill_mode) ||
+    (snap.run_config && snap.run_config.hunt_skill_mode) ||
+    "all_active";
+  const runMode = ["all_active", "seed_active", "custom_only", "explicit"].includes(
+    String(rawMode)
+  )
+    ? String(rawMode)
+    : "all_active";
   return `
     <div class="card operator-rerun-card" style="margin-top:1rem">
       <h2>Operator re-run</h2>
@@ -1552,6 +1696,48 @@ function renderOperatorRerunCard(snap) {
       <div class="field">
         <label for="op-recon-paths">Focus paths (optional, comma-separated)</label>
         <input id="op-recon-paths" type="text" placeholder="vh/stages/hunt.py, vh/db.py" />
+      </div>
+      <div class="field" id="op-hunt-skill-mode-field">
+        <label>Hunt skills for re-run</label>
+        <p class="controls-hint" style="margin:0.15rem 0 0.4rem">
+          Run-scoped policy for hunts enqueued after this recon (does not change Dev active toggles).
+        </p>
+        <div class="strategy-list hunt-skill-mode-list" role="radiogroup" aria-label="Hunt skill mode for re-run">
+          <label class="strategy-option">
+            <input type="radio" name="op-hunt-skill-mode" value="all_active" ${runMode === "all_active" ? "checked" : ""} />
+            <span class="strategy-option-main">
+              <span class="strategy-option-title">Default active</span>
+              <span class="strategy-option-desc">Active hunt skills from Dev.</span>
+            </span>
+          </label>
+          <label class="strategy-option">
+            <input type="radio" name="op-hunt-skill-mode" value="seed_active" ${runMode === "seed_active" ? "checked" : ""} />
+            <span class="strategy-option-main">
+              <span class="strategy-option-title">Seed only</span>
+              <span class="strategy-option-desc">Active seed skills only.</span>
+            </span>
+          </label>
+          <label class="strategy-option">
+            <input type="radio" name="op-hunt-skill-mode" value="custom_only" ${runMode === "custom_only" ? "checked" : ""} />
+            <span class="strategy-option-main">
+              <span class="strategy-option-title">Custom only</span>
+              <span class="strategy-option-desc">Active custom/generated/import — no seeds.</span>
+            </span>
+          </label>
+          <label class="strategy-option">
+            <input type="radio" name="op-hunt-skill-mode" value="explicit" ${runMode === "explicit" ? "checked" : ""} />
+            <span class="strategy-option-main">
+              <span class="strategy-option-title">Pick skills</span>
+              <span class="strategy-option-desc">Choose exact skill ids.</span>
+            </span>
+          </label>
+        </div>
+        <div id="op-hunt-skill-picker" class="hunt-skill-picker" hidden>
+          <p class="controls-hint" style="margin:0.4rem 0">Select one or more hunt skills:</p>
+          <div id="op-hunt-skills" class="recon-agent-picker" role="group" aria-label="Hunt skills for re-run">
+            <div class="controls-hint">Loading skills…</div>
+          </div>
+        </div>
       </div>
       <div class="op-rerun-options">
         <label class="controls-hint"><input type="checkbox" id="op-recon-prior" checked /> Include prior architecture (refine)</label>
@@ -1585,6 +1771,23 @@ function bindOperatorRerunHandlers() {
         agentsBox.innerHTML = `<div class="controls-hint" style="color:var(--bad)">Failed to load recon agents: ${esc(e.message)}</div>`;
       });
   }
+  const skillsBox = $("#op-hunt-skills");
+  if (skillsBox) {
+    fetchHuntProfiles()
+      .then((profiles) => {
+        renderHuntSkillPicker(skillsBox, {
+          namePrefix: "op-hunt-skill",
+          profiles,
+          precheckActive: false,
+        });
+      })
+      .catch((e) => {
+        skillsBox.innerHTML = `<div class="controls-hint" style="color:var(--bad)">Failed to load hunt skills: ${esc(e.message)}</div>`;
+      });
+  }
+  wireHuntSkillModeRadios("op-hunt-skill-mode", "op-hunt-skill-picker");
+  syncHuntSkillPickerVisibility("op-hunt-skill-mode", "op-hunt-skill-picker");
+
   const submit = async (enqueueHunts) => {
     const notes = ($("#op-recon-notes")?.value || "").trim();
     const pathsRaw = ($("#op-recon-paths")?.value || "").trim();
@@ -1593,13 +1796,25 @@ function bindOperatorRerunHandlers() {
       : null;
     const include_prior = !!$("#op-recon-prior")?.checked;
     const agent_ids = selectedReconAgentIds($("#op-recon-agents"));
+    const skillPolicy = collectHuntSkillPolicy("op-hunt-skill-mode", $("#op-hunt-skills"));
+    if (
+      skillPolicy.hunt_skill_mode === "explicit" &&
+      !(skillPolicy.hunt_skill_ids || []).length
+    ) {
+      toast("Pick at least one hunt skill, or choose another skill mode", true);
+      return;
+    }
     const body = {
       operator_notes: notes,
       focus_paths,
       include_prior_architecture: include_prior,
       enqueue_hunts: enqueueHunts,
       reason: enqueueHunts ? "operator_recon_rerun" : "operator_recon_arch_only",
+      hunt_skill_mode: skillPolicy.hunt_skill_mode,
     };
+    if (skillPolicy.hunt_skill_mode === "explicit") {
+      body.hunt_skill_ids = skillPolicy.hunt_skill_ids || [];
+    }
     if (agent_ids.length) body.agent_ids = agent_ids;
     try {
       const r = await api(`${runApiBase()}/recon/rerun`, {
