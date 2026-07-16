@@ -255,7 +255,7 @@ def parse_skill_response(content: Optional[str]) -> dict[str, Any]:
 
 def parse_skills_response(content: Optional[str], *, count: int) -> list[dict[str, Any]]:
     """Parse multi-skill JSON into up to ``count`` validated skill dicts."""
-    n = max(1, min(int(count), 10))
+    n = clamp_skill_count(count)
     data = _parse_json_object(content)
     raw_list: list[Any]
     if isinstance(data.get("skills"), list):
@@ -352,7 +352,7 @@ def _build_batch_user_message(
     operator_brief: str = "",
     existing_class_ids: Optional[list[str]] = None,
 ) -> str:
-    n = max(1, min(int(count), 10))
+    n = clamp_skill_count(count)
     parts = [
         f"Produce exactly {n} distinct custom hunt skills tailored to this target.",
         "Each skill must be a focused hunt class (not a generic restatement of stock classes).",
@@ -398,12 +398,12 @@ def _build_batch_user_message(
 
 
 def clamp_skill_count(raw: Any, *, default: int = 3) -> int:
-    """Clamp dynamic skill count to 1..10."""
+    """Normalize dynamic skill count to at least 1 (no upper cap)."""
     try:
         n = int(raw)
     except (TypeError, ValueError):
         n = default
-    return max(1, min(n, 10))
+    return max(1, n)
 
 
 def generate_hunt_skill(

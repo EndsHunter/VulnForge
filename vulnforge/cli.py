@@ -127,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dynamic-skill-count",
         type=int,
         default=3,
-        help="Number of custom hunt skills to generate (1–10; default 3)",
+        help="Number of custom hunt skills to generate (min 1; default 3)",
     )
     init_p.add_argument(
         "--hunt-skill-mode",
@@ -445,7 +445,9 @@ def cmd_init(args, cfg: dict) -> int:
         init_dynamic_skill_count = int(getattr(args, "dynamic_skill_count", 3) or 3)
     except (TypeError, ValueError):
         init_dynamic_skill_count = 3
-    init_dynamic_skill_count = max(1, min(init_dynamic_skill_count, 10))
+    from vulnforge.hunt_profiles.generate import clamp_skill_count
+
+    init_dynamic_skill_count = clamp_skill_count(init_dynamic_skill_count)
     if strategy == STRATEGY_FILE_BY_FILE:
         init_dynamic_skills = False
 

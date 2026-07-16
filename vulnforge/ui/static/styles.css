@@ -928,6 +928,20 @@ button.cov-plan-action.is-current {
 }
 
 /* Architecture summary (full-width, no explorer) */
+.arch-rev-link {
+  color: var(--link, var(--accent, #6af));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.arch-rev-link:hover {
+  filter: brightness(1.1);
+}
+.arch-history-detail {
+  max-height: min(70vh, 720px);
+  overflow: auto;
+}
 .arch-summary-card {
   width: 100%;
 }

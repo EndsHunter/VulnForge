@@ -8,8 +8,13 @@ from pathlib import Path
 import pytest
 
 from vulnforge.db import ARCHITECTURE_REVISION_CAP, Database
+from vulnforge.llm import FakeLLMClient, LLMResult, ResponseClass
 from vulnforge.stages.hunt import _architecture_slice
-from vulnforge.stages.recon import merge_architectures, store_merged_architecture
+from vulnforge.stages.recon import (
+    merge_architectures,
+    parse_architecture_merge_content,
+    store_merged_architecture,
+)
 
 
 def _run_db(tmp_path: Path) -> Database:
@@ -122,6 +127,7 @@ def test_store_merged_architecture_source_tags(tmp_path: Path):
         seed_sinks=[],
         merge_with_existing=True,
         recon_generation=2,
+        cfg={"run": {"architecture_llm_merge": False}},
     )
     revs = db.list_architecture_revisions()
     assert len(revs) == 1
@@ -133,7 +139,180 @@ def test_store_merged_architecture_source_tags(tmp_path: Path):
     api = next(c for c in arch["components"] if c.get("name") == "api")
     assert api.get("role") == "http"
     assert "api/" in (api.get("path_hints") or [])
+    assert arch.get("merge_method") == "mechanical"
     db.close()
+
+
+def test_store_always_merges_when_prior_exists_even_without_flag(tmp_path: Path):
+    """Recon batch index 0 / solo re-run must not blank-overwrite prior map."""
+    db = _run_db(tmp_path)
+    store_merged_architecture(
+        db,
+        part={
+            "summary": "prior map about auth",
+            "components": [{"name": "auth", "role": "jwt"}],
+            "trust_boundaries": ["public/private"],
+            "input_surfaces": [],
+            "hunt_focus": [],
+        },
+        agents_run=[{"id": "default-map", "ok": True}],
+        inventory={"file_count": 3},
+        seed_sinks=[],
+        recon_generation=1,
+    )
+    # merge_with_existing=False (historical first-agent payload) — still merge
+    store_merged_architecture(
+        db,
+        part={
+            "summary": "only api this pass",
+            "components": [{"name": "api"}],
+            "trust_boundaries": [],
+            "input_surfaces": ["REST"],
+            "hunt_focus": [],
+        },
+        agents_run=[{"id": "surface-mapper", "ok": True}],
+        inventory={"file_count": 3},
+        seed_sinks=[],
+        merge_with_existing=False,
+        recon_generation=2,
+        cfg={"run": {"architecture_llm_merge": False}},
+    )
+    arch = db.get_architecture()
+    assert "prior map" in arch["summary"]
+    assert "only api" in arch["summary"]
+    names = {c.get("name") for c in arch["components"] if isinstance(c, dict)}
+    assert "auth" in names and "api" in names
+    assert "public/private" in arch["trust_boundaries"]
+    assert "REST" in arch["input_surfaces"]
+    db.close()
+
+
+def test_store_llm_merge_uses_model_result(tmp_path: Path):
+    db = _run_db(tmp_path)
+    store_merged_architecture(
+        db,
+        part={
+            "summary": "prior only",
+            "components": [{"name": "db"}],
+            "trust_boundaries": [],
+            "input_surfaces": [],
+            "hunt_focus": [],
+        },
+        agents_run=[{"id": "a", "ok": True}],
+        inventory={"file_count": 1},
+        seed_sinks=[],
+    )
+    merged_json = json.dumps(
+        {
+            "summary": "cohesive merged summary",
+            "components": [
+                {"name": "db", "role": "postgres"},
+                {"name": "api", "role": "http"},
+            ],
+            "trust_boundaries": ["edge"],
+            "input_surfaces": ["HTTP"],
+            "hunt_focus": [{"area": "api", "class": "injection"}],
+        }
+    )
+    client = FakeLLMClient(
+        responses=[
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content=merged_json,
+                tool_calls=[],
+                raw=None,
+                model_id="fake-model",
+            )
+        ]
+    )
+    store_merged_architecture(
+        db,
+        part={
+            "summary": "incoming api",
+            "components": [{"name": "api"}],
+            "trust_boundaries": [],
+            "input_surfaces": [],
+            "hunt_focus": [],
+        },
+        agents_run=[{"id": "b", "ok": True}],
+        inventory={"file_count": 2},
+        seed_sinks=[],
+        merge_with_existing=True,
+        client=client,
+        cfg={"run": {"architecture_llm_merge": True}},
+        run_dir=tmp_path,
+        task_id=1,
+    )
+    arch = db.get_architecture()
+    assert arch["summary"] == "cohesive merged summary"
+    assert arch.get("merge_method") == "llm"
+    names = {c.get("name") for c in arch["components"] if isinstance(c, dict)}
+    assert names == {"db", "api"}
+    db.close()
+
+
+def test_store_llm_merge_fallback_on_bad_json(tmp_path: Path):
+    db = _run_db(tmp_path)
+    store_merged_architecture(
+        db,
+        part={
+            "summary": "alpha prior",
+            "components": [{"name": "core"}],
+            "trust_boundaries": [],
+            "input_surfaces": [],
+            "hunt_focus": [],
+        },
+        agents_run=[{"id": "a", "ok": True}],
+        inventory={},
+        seed_sinks=[],
+    )
+    client = FakeLLMClient(
+        responses=[
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="sorry I cannot produce JSON",
+                tool_calls=[],
+                raw=None,
+                model_id="fake-model",
+            )
+        ]
+    )
+    store_merged_architecture(
+        db,
+        part={
+            "summary": "beta incoming",
+            "components": [{"name": "edge"}],
+            "trust_boundaries": [],
+            "input_surfaces": [],
+            "hunt_focus": [],
+        },
+        agents_run=[{"id": "b", "ok": True}],
+        inventory={},
+        seed_sinks=[],
+        client=client,
+        cfg={"run": {"architecture_llm_merge": True}},
+    )
+    arch = db.get_architecture()
+    assert arch.get("merge_method") == "mechanical"
+    assert "alpha prior" in arch["summary"] and "beta incoming" in arch["summary"]
+    names = {c.get("name") for c in arch["components"] if isinstance(c, dict)}
+    assert "core" in names and "edge" in names
+    db.close()
+
+
+def test_parse_architecture_merge_content_fenced():
+    raw = """```json
+{"summary": "ok map", "components": [{"name": "x"}], "trust_boundaries": [],
+ "input_surfaces": [], "hunt_focus": []}
+```"""
+    p = parse_architecture_merge_content(raw)
+    assert p is not None
+    assert p["summary"] == "ok map"
+    assert p["components"][0]["name"] == "x"
+    assert parse_architecture_merge_content("") is None
+    assert parse_architecture_merge_content('{"summary": ""}') is None
 
 
 def test_merge_architectures_summary_concat_and_dedupe():

@@ -146,7 +146,9 @@ def expand_recon_agent_tasks(
         if i == 0:
             if include_prior is not None:
                 pl["include_prior_architecture"] = bool(include_prior)
-            pl["merge_with_existing"] = False
+            # First agent may seed an empty map; store_merged_architecture still
+            # merges with any prior DB architecture (no blanket overwrite).
+            pl["merge_with_existing"] = bool(include_prior) if include_prior is not None else False
         else:
             pl["include_prior_architecture"] = True
             pl["merge_with_existing"] = True
@@ -218,6 +220,154 @@ def _arch_structure_part(arch: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _arch_json_for_merge(arch: dict[str, Any] | None) -> dict[str, Any]:
+    """Slim architecture payload for LLM merge (structure only)."""
+    p = _arch_structure_part(arch)
+    return {
+        "summary": p.get("summary") or "",
+        "components": p.get("components") or [],
+        "trust_boundaries": p.get("trust_boundaries") or [],
+        "input_surfaces": p.get("input_surfaces") or [],
+        "hunt_focus": p.get("hunt_focus") or [],
+    }
+
+
+def parse_architecture_merge_content(content: str | None) -> dict[str, Any] | None:
+    """Parse LLM merge reply into a structured architecture dict, or None."""
+    if not content or not str(content).strip():
+        return None
+    text = str(content).strip()
+    # Strip common markdown fences
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    data = None
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                data = json.loads(text[start : end + 1])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return None
+        else:
+            return None
+    if not isinstance(data, dict):
+        return None
+    summary = str(data.get("summary") or "").strip()
+    if not summary:
+        return None
+    return {
+        "summary": summary,
+        "trust_boundaries": _coerce_list_field(data.get("trust_boundaries")),
+        "components": _coerce_list_field(data.get("components")),
+        "input_surfaces": _coerce_list_field(data.get("input_surfaces")),
+        "hunt_focus": _coerce_list_field(data.get("hunt_focus")),
+    }
+
+
+def llm_merge_architectures(
+    client: Any,
+    cfg: dict,
+    prior: dict[str, Any],
+    incoming: dict[str, Any],
+    *,
+    operator_brief: str = "",
+    prompts_root: Path | None = None,
+) -> tuple[dict[str, Any] | None, Any]:
+    """Ask the model to merge prior + incoming architecture maps.
+
+    Returns (merged_structure_or_None, LLMResult_or_None).
+    On failure returns (None, result_or_None); caller should fall back mechanically.
+    """
+    root = prompts_root or (PROJECT_ROOT / "prompts" / "v1")
+    try:
+        prompt_body = (root / "architecture_merge.md").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        prompt_body = (
+            "Merge prior and incoming architecture JSON into one map. "
+            "Keep solid prior detail; union lists; cohesive summary. "
+            "Reply with JSON only: summary, components, trust_boundaries, "
+            "input_surfaces, hunt_focus.\n"
+        )
+    prior_j = _arch_json_for_merge(prior)
+    inc_j = _arch_json_for_merge(incoming)
+    # Bound size so local models stay within context
+    try:
+        max_chars = int((cfg.get("packet") or {}).get("max_architecture_merge_chars", 6000))
+    except (TypeError, ValueError):
+        max_chars = 6000
+    max_chars = max(2000, min(max_chars, 20000))
+    half = max(800, max_chars // 2)
+
+    def _dump(obj: dict) -> str:
+        s = json.dumps(obj, indent=2, default=str)
+        if len(s) > half:
+            # Prefer keeping summary + truncated lists
+            slim = {
+                "summary": str(obj.get("summary") or "")[:1200],
+                "components": (obj.get("components") or [])[:40],
+                "trust_boundaries": (obj.get("trust_boundaries") or [])[:40],
+                "input_surfaces": (obj.get("input_surfaces") or [])[:40],
+                "hunt_focus": (obj.get("hunt_focus") or [])[:40],
+            }
+            s = json.dumps(slim, indent=2, default=str)
+            if len(s) > half:
+                s = s[: half - 20] + "\n...[truncated]...\n"
+        return s
+
+    user = (
+        "## Prior architecture (baseline — do not drop solid detail)\n```json\n"
+        + _dump(prior_j)
+        + "\n```\n\n## Incoming recon architecture (merge in)\n```json\n"
+        + _dump(inc_j)
+        + "\n```\n"
+    )
+    brief = (operator_brief or "").strip()
+    if brief:
+        user += (
+            "\n## Operator brief (guidance for this merge)\n"
+            + brief[:2000]
+            + "\n"
+        )
+    user += "\nRespond with the merged architecture JSON object only.\n"
+    messages = [
+        {"role": "system", "content": prompt_body.strip()},
+        {"role": "user", "content": user},
+    ]
+    llm_cfg = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+    try:
+        temp = float(llm_cfg.get("temperature_recon", 0.2))
+    except (TypeError, ValueError):
+        temp = 0.2
+    # Slightly cooler than exploratory recon for structured merge
+    temp = min(temp, 0.25)
+    try:
+        max_tokens = int(llm_cfg.get("max_tokens") or 4096)
+    except (TypeError, ValueError):
+        max_tokens = 4096
+    try:
+        result = client.chat(
+            messages, tools=None, temperature=temp, max_tokens=max_tokens
+        )
+    except Exception:
+        return None, None
+    if not getattr(result, "ok", False):
+        return None, result
+    parsed = parse_architecture_merge_content(getattr(result, "content", None))
+    if not parsed:
+        return None, result
+    return parsed, result
+
+
 def store_merged_architecture(
     db,
     *,
@@ -228,15 +378,107 @@ def store_merged_architecture(
     operator_brief: str = "",
     merge_with_existing: bool = False,
     recon_generation: int | None = None,
+    client: Any = None,
+    cfg: dict | None = None,
+    run_dir: Path | None = None,
+    task_id: int | None = None,
+    force_replace: bool = False,
 ) -> dict[str, Any]:
-    """Write architecture, optionally merging with the map already in the DB."""
-    existing = db.get_architecture() if merge_with_existing else None
-    if merge_with_existing and existing:
+    """Write architecture, merging with the map already in the DB when present.
+
+    Never blank-overwrites a non-empty prior map unless ``force_replace`` is True.
+    When prior exists and an LLM client+cfg are provided (and not disabled),
+    the model is tasked with the merge; mechanical merge is the fallback.
+    """
+    cfg = cfg if isinstance(cfg, dict) else {}
+    existing = None if force_replace else db.get_architecture()
+    # Always preserve prior when present (batch index 0 re-runs, solo re-runs, etc.)
+    should_merge = bool(existing) and not force_replace
+    if merge_with_existing and not existing:
+        should_merge = False
+
+    merge_method = "none"
+    note = ""
+
+    if should_merge and existing:
         agents = _merge_agents_run(existing.get("recon_agents_run"), agents_run)
-        arch = merge_architectures(
-            [_arch_structure_part(existing), part],
-            agents_run=agents,
-        )
+        llm_enabled = True
+        run_cfg = cfg.get("run") if isinstance(cfg.get("run"), dict) else {}
+        if run_cfg.get("architecture_llm_merge") is False:
+            llm_enabled = False
+        stages_cfg = cfg.get("stages") if isinstance(cfg.get("stages"), dict) else {}
+        if stages_cfg.get("architecture_llm_merge") is False:
+            llm_enabled = False
+
+        llm_part: dict[str, Any] | None = None
+        if llm_enabled and client is not None:
+            llm_part, llm_result = llm_merge_architectures(
+                client,
+                cfg,
+                existing,
+                part,
+                operator_brief=operator_brief,
+            )
+            if run_dir is not None and llm_result is not None:
+                try:
+                    pass_usage = record_llm_result(
+                        run_dir,
+                        task_id=task_id or 0,
+                        kind="architecture_merge",
+                        model_id=getattr(llm_result, "model_id", None),
+                        result=llm_result,
+                    )
+                except Exception:
+                    pass_usage = {}
+                try:
+                    save_transcript(
+                        run_dir,
+                        task_id or 0,
+                        kind="architecture_merge",
+                        model_id=getattr(llm_result, "model_id", None),
+                        messages=[],
+                        result={
+                            "ok": bool(getattr(llm_result, "ok", False)),
+                            "classification": getattr(
+                                getattr(llm_result, "classification", None),
+                                "value",
+                                None,
+                            ),
+                            "error": getattr(llm_result, "error", None),
+                            "content": getattr(llm_result, "content", None),
+                            "merged": bool(llm_part),
+                            **(pass_usage if isinstance(pass_usage, dict) else {}),
+                        },
+                        meta={"merge": "llm" if llm_part else "llm_failed_fallback"},
+                    )
+                except OSError:
+                    pass
+                try:
+                    append_event(
+                        run_dir,
+                        {
+                            "source": "vf",
+                            "event": "architecture_merge",
+                            "task_id": task_id,
+                            "method": "llm" if llm_part else "mechanical_fallback",
+                            "ok": bool(llm_part),
+                        },
+                    )
+                except OSError:
+                    pass
+
+        if llm_part:
+            arch = merge_architectures([llm_part], agents_run=agents)
+            merge_method = "llm"
+            note = "llm_merge"
+        else:
+            arch = merge_architectures(
+                [_arch_structure_part(existing), part],
+                agents_run=agents,
+            )
+            merge_method = "mechanical"
+            note = "mechanical_merge" if not (llm_enabled and client) else "mechanical_fallback"
+
         # Prefer newest inventory; keep older if this pass lacks counts
         prev_inv = existing.get("inventory") if isinstance(existing.get("inventory"), dict) else {}
         inv = dict(prev_inv)
@@ -248,11 +490,13 @@ def store_merged_architecture(
         if isinstance(existing.get("recon_batch_finalize"), dict):
             arch["recon_batch_finalize"] = dict(existing["recon_batch_finalize"])
         source = "merge"
+        arch["merge_method"] = merge_method
     else:
         arch = merge_architectures([part], agents_run=agents_run)
         arch["inventory"] = inventory
         arch["recon_agents_run"] = list(agents_run)
         source = "recon"
+        merge_method = "none"
 
     arch["seed_sinks"] = seed_sinks[:200]
     if operator_brief:
@@ -270,7 +514,7 @@ def store_merged_architecture(
     db.set_architecture(
         arch,
         source=source,
-        note="",
+        note=note,
         agent_ids=agent_ids or None,
         recon_generation=arch.get("recon_generation"),
     )
@@ -495,16 +739,20 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     handler = build_tool_handler(ctx)
     prompts_root = PROJECT_ROOT / "prompts" / "v1"
     payload = task.payload if isinstance(getattr(task, "payload", None), dict) else {}
-    # Operator re-run: optional prior architecture + brief + focus paths.
-    # First-pass recon (no operator_requested) does not inject prior arch.
+    # Prior architecture: operator re-run, batch siblings, or any existing map.
+    # Always inject when DB already has architecture so agents refine (not replace-all).
     include_prior = payload.get("include_prior_architecture")
     if include_prior is None:
         include_prior = bool(payload.get("operator_requested"))
     architecture_so_far = ""
+    existing_arch = db.get_architecture()
+    if existing_arch and include_prior is not False:
+        # Non-empty prior map → refine mode unless explicitly disabled.
+        include_prior = True
     if include_prior or payload.get("architecture_so_far"):
         prior = payload.get("architecture_so_far")
         if not prior:
-            existing = db.get_architecture()
+            existing = existing_arch or db.get_architecture()
             if existing:
                 prior = json.dumps(
                     {
@@ -851,6 +1099,10 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             operator_brief=operator_brief,
             merge_with_existing=merge_with_existing,
             recon_generation=_recon_generation(payload),
+            client=client,
+            cfg=cfg,
+            run_dir=run_dir,
+            task_id=getattr(task, "id", None),
         )
 
         # Hunts / dynamic skills: single-task or last-completed batch member only.

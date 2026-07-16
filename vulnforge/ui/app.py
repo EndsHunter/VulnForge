@@ -601,7 +601,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             args.dynamic_skill_count = int(body.dynamic_skill_count or 3)
         except (TypeError, ValueError):
             args.dynamic_skill_count = 3
-        args.dynamic_skill_count = max(1, min(args.dynamic_skill_count, 10))
+        from vulnforge.hunt_profiles.generate import clamp_skill_count
+
+        args.dynamic_skill_count = clamp_skill_count(args.dynamic_skill_count)
         mode = str(body.hunt_skill_mode or "all_active").strip().lower().replace("-", "_")
         if mode not in ("all_active", "seed_active", "custom_only", "explicit"):
             mode = "all_active"

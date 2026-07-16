@@ -5,7 +5,7 @@
 **VulnForge** runs a durable security-audit loop against a **read-only target tree**:
 
 1. **init** — snapshot inventory, create `harness.db`, enqueue `recon`
-2. **recon** (LLM) — map architecture; enqueue **hunt** tasks
+2. **recon** (LLM) — map architecture; enqueue **hunt** tasks. When a map already exists, each recon **merges** (LLM merge with mechanical fallback) instead of blank-overwriting; Mission **History** can view/restore prior revisions.
 3. **hunt** (LLM) — one area × weakness class; candidate or `submit_none`
 4. **validate_mech** (no LLM) — mechanical gates → `needs_human` or `rejected_mech`
 5. **human review** (dashboard Report) — accept → `confirmed`, reject → `rejected_human`, optional notes/docs

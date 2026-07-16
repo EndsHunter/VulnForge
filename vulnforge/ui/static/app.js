@@ -1162,7 +1162,7 @@ async function submitInit(ev) {
       body.dynamic_skills = true;
       let n = parseInt($("#init-dynamic-skill-count")?.value || "3", 10);
       if (!Number.isFinite(n)) n = 3;
-      body.dynamic_skill_count = Math.max(1, Math.min(10, n));
+      body.dynamic_skill_count = Math.max(1, n);
     }
   }
   const skillPolicy = collectHuntSkillPolicy("init-hunt-skill-mode", $("#init-hunt-skills"));
@@ -2880,8 +2880,9 @@ function renderArchitecture(arch, summary, snap) {
       </details>
       <div id="arch-history-panel" class="arch-history-panel" style="display:none;margin-top:1rem;padding-top:0.85rem;border-top:1px solid var(--border)">
         <h3 style="margin:0 0 0.4rem">Architecture history</h3>
-        <p class="controls-hint">Prior maps (last 50). Restore replaces the current map and archives it.</p>
+        <p class="controls-hint">Prior maps (last 50). Click a revision to view that version. Restore replaces the current map and archives it.</p>
         <div id="arch-history-list" class="controls-hint">Loading…</div>
+        <div id="arch-history-detail" class="arch-history-detail" style="display:none;margin-top:0.85rem;padding:0.75rem;border:1px solid var(--border);border-radius:6px;background:var(--surface-2, transparent)"></div>
       </div>
       <div id="arch-edit-panel" class="arch-edit-panel" style="display:none;margin-top:1rem;padding-top:0.85rem;border-top:1px solid var(--border)">
         <h3 style="margin:0 0 0.4rem">Edit architecture</h3>
@@ -2942,6 +2943,11 @@ async function toggleArchHistory() {
   panel.style.display = show ? "block" : "none";
   if (!show) return;
   const list = $("#arch-history-list");
+  const detail = $("#arch-history-detail");
+  if (detail) {
+    detail.style.display = "none";
+    detail.innerHTML = "";
+  }
   if (!list) return;
   list.innerHTML = "Loading…";
   try {
@@ -2965,14 +2971,22 @@ async function toggleArchHistory() {
           ? ` · agents: <span class="mono">${esc(rev.agent_ids.join(", "))}</span>`
           : "";
         return `<li style="display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center;margin:0.35rem 0;padding:0.35rem 0;border-bottom:1px solid var(--border)">
-          <span class="mono">#${esc(String(id))}</span>
+          <a href="#arch-rev-${esc(String(id))}" class="mono arch-rev-link" data-rev-id="${esc(String(id))}" title="View this revision">#${esc(String(id))}</a>
           <span class="badge">${src}</span>
           <span class="controls-hint">${when}${gen}${agents}</span>
           ${note ? `<span class="controls-hint">— ${note}</span>` : ""}
+          <button type="button" class="btn btn-sm arch-view-btn" data-rev-id="${esc(String(id))}">View</button>
           <button type="button" class="btn btn-sm arch-restore-btn" data-rev-id="${esc(String(id))}">Restore</button>
         </li>`;
       })
       .join("")}</ul>`;
+    list.querySelectorAll(".arch-rev-link, .arch-view-btn").forEach((el) => {
+      el.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        const revId = el.getAttribute("data-rev-id");
+        if (revId) await showArchRevision(revId);
+      });
+    });
     list.querySelectorAll(".arch-restore-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const revId = btn.getAttribute("data-rev-id");
@@ -2994,6 +3008,97 @@ async function toggleArchHistory() {
     });
   } catch (e) {
     list.innerHTML = `<p class="controls-hint" style="color:var(--danger,#c44)">${esc(e.message)}</p>`;
+  }
+}
+
+function renderArchSnapshotHtml(snap, title) {
+  const s = snap && typeof snap === "object" ? snap : {};
+  const comps = (s.components || [])
+    .map((c) => {
+      if (typeof c === "string") return `<li>${esc(c)}</li>`;
+      const name = esc(c?.name || "?");
+      const role = c?.role ? ` — ${esc(c.role)}` : "";
+      const paths =
+        Array.isArray(c?.path_hints) && c.path_hints.length
+          ? ` <span class="mono controls-hint">${esc(c.path_hints.slice(0, 4).join(", "))}</span>`
+          : "";
+      return `<li><strong>${name}</strong>${role}${paths}</li>`;
+    })
+    .join("");
+  const surfaces = (s.input_surfaces || [])
+    .map((x) => `<li>${esc(typeof x === "string" ? x : JSON.stringify(x))}</li>`)
+    .join("");
+  const bounds = (s.trust_boundaries || [])
+    .map((x) => `<li>${esc(typeof x === "string" ? x : JSON.stringify(x))}</li>`)
+    .join("");
+  const focus = (s.hunt_focus || [])
+    .map((x) => {
+      if (typeof x === "string") return `<li>${esc(x)}</li>`;
+      const area = esc(x?.area || "?");
+      const cls = x?.class ? ` / ${esc(x.class)}` : "";
+      return `<li><span class="mono">${area}${cls}</span></li>`;
+    })
+    .join("");
+  const summaryHtml = renderMarkdown(s.summary || "(no summary)");
+  return `
+    <div class="toolbar" style="margin:0 0 0.5rem;flex-wrap:wrap;gap:0.4rem">
+      <h4 style="margin:0;flex:1">${title}</h4>
+      <button type="button" class="btn btn-sm" id="arch-history-detail-close">Close</button>
+    </div>
+    <div class="arch-summary-text md-prose">${summaryHtml}</div>
+    <div class="arch-meta-grid" style="margin-top:0.65rem">
+      <div>
+        <h3>Components</h3>
+        <ul class="arch-list">${comps || "<li class='controls-hint'>—</li>"}</ul>
+      </div>
+      <div>
+        <h3>Input surfaces</h3>
+        <ul class="arch-list">${surfaces || "<li class='controls-hint'>—</li>"}</ul>
+      </div>
+      <div>
+        <h3>Trust boundaries</h3>
+        <ul class="arch-list">${bounds || "<li class='controls-hint'>—</li>"}</ul>
+      </div>
+      <div>
+        <h3>Hunt focus</h3>
+        <ul class="arch-list">${focus || "<li class='controls-hint'>—</li>"}</ul>
+      </div>
+    </div>
+    <details class="arch-raw" style="margin-top:0.65rem">
+      <summary>Raw revision JSON</summary>
+      <pre class="arch-box">${esc(JSON.stringify(s, null, 2))}</pre>
+    </details>`;
+}
+
+async function showArchRevision(revId) {
+  const detail = $("#arch-history-detail");
+  if (!detail) return;
+  detail.style.display = "block";
+  detail.innerHTML = `<p class="controls-hint" style="margin:0">Loading revision #${esc(String(revId))}…</p>`;
+  try {
+    const rev = await api(`${runApiBase()}/architecture/history/${encodeURIComponent(revId)}`);
+    const snap = rev.snapshot && typeof rev.snapshot === "object" ? rev.snapshot : {};
+    const src = esc(rev.source || "—");
+    const when = esc(rev.created_at || "");
+    const note = rev.note ? ` — ${esc(String(rev.note).slice(0, 200))}` : "";
+    const gen =
+      rev.recon_generation != null
+        ? ` · gen ${esc(String(rev.recon_generation))}`
+        : "";
+    const title = `Revision <span class="mono">#${esc(String(rev.id ?? revId))}</span> <span class="badge">${src}</span> <span class="controls-hint">${when}${gen}${note}</span>`;
+    detail.innerHTML = renderArchSnapshotHtml(snap, title);
+    detail.id = "arch-history-detail";
+    // Ensure the detail node stays addressable if innerHTML replaced id on a child only
+    $("#arch-history-detail-close")?.addEventListener("click", () => {
+      const d = $("#arch-history-detail");
+      if (d) {
+        d.style.display = "none";
+        d.innerHTML = "";
+      }
+    });
+    detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) {
+    detail.innerHTML = `<p class="controls-hint" style="color:var(--danger,#c44);margin:0">${esc(e.message)}</p>`;
   }
 }
 
