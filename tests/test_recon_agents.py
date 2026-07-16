@@ -136,7 +136,9 @@ def test_merge_architectures_lists_and_summary():
         ],
     }
     m = merge_architectures([a1, a2], agents_run=[{"id": "default-map", "ok": True}])
-    assert m["summary"] == "Auth refined"
+    # Summaries concatenate unique paragraphs (not pure last-wins)
+    assert "First map" in m["summary"]
+    assert "Auth refined" in m["summary"]
     assert "public/private" in m["trust_boundaries"]
     assert "user/admin" in m["trust_boundaries"]
     names = {c["name"] for c in m["components"] if isinstance(c, dict)}
@@ -146,7 +148,7 @@ def test_merge_architectures_lists_and_summary():
     assert len(m["hunt_focus"]) == 2
     assert m["recon_agents_run"][0]["id"] == "default-map"
 
-    # Last non-empty summary wins; empty does not clobber
+    # Empty summary does not clobber prior paragraphs
     m2 = merge_architectures(
         [a2, {"summary": "", "components": [], "trust_boundaries": [], "input_surfaces": [], "hunt_focus": []}]
     )

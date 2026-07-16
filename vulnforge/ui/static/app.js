@@ -2726,7 +2726,11 @@ function renderArchitecture(arch, summary, snap) {
 
   el.innerHTML = `
     <div class="card arch-summary-card">
-      <h2>Architecture</h2>
+      <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.4rem">
+        <h2 style="margin:0;flex:1">Architecture</h2>
+        <button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit architecture</button>
+        <button type="button" class="btn btn-sm" id="arch-history-toggle">History</button>
+      </div>
       <div class="arch-summary-text md-prose">${summaryHtml}</div>
       ${
         agentsHtml
@@ -2751,6 +2755,31 @@ function renderArchitecture(arch, summary, snap) {
         <summary>Raw architecture JSON</summary>
         <pre class="arch-box">${esc(JSON.stringify(arch || s, null, 2))}</pre>
       </details>
+      <div id="arch-history-panel" class="arch-history-panel" style="display:none;margin-top:1rem;padding-top:0.85rem;border-top:1px solid var(--border)">
+        <h3 style="margin:0 0 0.4rem">Architecture history</h3>
+        <p class="controls-hint">Prior maps (last 50). Restore replaces the current map and archives it.</p>
+        <div id="arch-history-list" class="controls-hint">Loading…</div>
+      </div>
+      <div id="arch-edit-panel" class="arch-edit-panel" style="display:none;margin-top:1rem;padding-top:0.85rem;border-top:1px solid var(--border)">
+        <h3 style="margin:0 0 0.4rem">Edit architecture</h3>
+        <p class="controls-hint">Edit summary and/or full JSON. Saved as source <span class="mono">manual</span> (DB only).</p>
+        <div class="field">
+          <label for="arch-edit-summary">Summary</label>
+          <textarea id="arch-edit-summary" class="op-notes" rows="4" placeholder="Architecture summary…"></textarea>
+        </div>
+        <div class="field" style="margin-top:0.5rem">
+          <label for="arch-edit-json">Full architecture JSON</label>
+          <textarea id="arch-edit-json" class="op-notes mono" rows="12" spellcheck="false"></textarea>
+        </div>
+        <div class="field" style="margin-top:0.5rem">
+          <label for="arch-edit-note">Note (optional)</label>
+          <input type="text" id="arch-edit-note" class="op-notes" placeholder="Why this edit?" style="width:100%" />
+        </div>
+        <div class="toolbar" style="gap:0.5rem;margin-top:0.5rem">
+          <button type="button" class="btn btn-primary" id="arch-edit-save">Save</button>
+          <button type="button" class="btn" id="arch-edit-cancel">Cancel</button>
+        </div>
+      </div>
       <div class="arch-refine" style="margin-top:1rem;padding-top:0.85rem;border-top:1px solid var(--border)">
         <h3 style="margin:0 0 0.4rem">Refine recon</h3>
         <p class="controls-hint">Re-run recon with guidance. Prior architecture is included so the model can correct and deepen the map.</p>
@@ -2770,6 +2799,132 @@ function renderArchitecture(arch, summary, snap) {
   $("#arch-recon-only")?.addEventListener("click", () =>
     submitArchRecon(false)
   );
+  $("#arch-history-toggle")?.addEventListener("click", () =>
+    toggleArchHistory()
+  );
+  $("#arch-edit-toggle")?.addEventListener("click", () =>
+    toggleArchEdit(arch || s)
+  );
+  $("#arch-edit-cancel")?.addEventListener("click", () => {
+    const p = $("#arch-edit-panel");
+    if (p) p.style.display = "none";
+  });
+  $("#arch-edit-save")?.addEventListener("click", () => saveArchEdit());
+}
+
+async function toggleArchHistory() {
+  const panel = $("#arch-history-panel");
+  if (!panel) return;
+  const show = panel.style.display === "none";
+  panel.style.display = show ? "block" : "none";
+  if (!show) return;
+  const list = $("#arch-history-list");
+  if (!list) return;
+  list.innerHTML = "Loading…";
+  try {
+    const r = await api(`${runApiBase()}/architecture/history?limit=50`);
+    const revs = Array.isArray(r.revisions) ? r.revisions : [];
+    if (!revs.length) {
+      list.innerHTML = "<p class='controls-hint' style='margin:0'>No prior revisions yet.</p>";
+      return;
+    }
+    list.innerHTML = `<ul class="arch-list" style="list-style:none;padding:0;margin:0">${revs
+      .map((rev) => {
+        const id = rev.id;
+        const src = esc(rev.source || "—");
+        const when = esc(rev.created_at || "");
+        const note = rev.note ? esc(String(rev.note).slice(0, 120)) : "";
+        const gen =
+          rev.recon_generation != null
+            ? ` · gen ${esc(String(rev.recon_generation))}`
+            : "";
+        const agents = Array.isArray(rev.agent_ids) && rev.agent_ids.length
+          ? ` · agents: <span class="mono">${esc(rev.agent_ids.join(", "))}</span>`
+          : "";
+        return `<li style="display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center;margin:0.35rem 0;padding:0.35rem 0;border-bottom:1px solid var(--border)">
+          <span class="mono">#${esc(String(id))}</span>
+          <span class="badge">${src}</span>
+          <span class="controls-hint">${when}${gen}${agents}</span>
+          ${note ? `<span class="controls-hint">— ${note}</span>` : ""}
+          <button type="button" class="btn btn-sm arch-restore-btn" data-rev-id="${esc(String(id))}">Restore</button>
+        </li>`;
+      })
+      .join("")}</ul>`;
+    list.querySelectorAll(".arch-restore-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const revId = btn.getAttribute("data-rev-id");
+        if (!revId) return;
+        if (!confirm(`Restore architecture revision #${revId}? Current map will be archived.`)) {
+          return;
+        }
+        try {
+          await api(`${runApiBase()}/architecture/restore/${revId}`, {
+            method: "POST",
+            body: JSON.stringify({ note: `restored from #${revId}` }),
+          });
+          toast(`Restored architecture #${revId}`);
+          await loadRunFull();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      });
+    });
+  } catch (e) {
+    list.innerHTML = `<p class="controls-hint" style="color:var(--danger,#c44)">${esc(e.message)}</p>`;
+  }
+}
+
+function toggleArchEdit(arch) {
+  const panel = $("#arch-edit-panel");
+  if (!panel) return;
+  const show = panel.style.display === "none";
+  panel.style.display = show ? "block" : "none";
+  if (!show) return;
+  const base = arch && typeof arch === "object" ? arch : {};
+  const sumEl = $("#arch-edit-summary");
+  const jsonEl = $("#arch-edit-json");
+  if (sumEl) sumEl.value = String(base.summary || "");
+  if (jsonEl) {
+    try {
+      jsonEl.value = JSON.stringify(base, null, 2);
+    } catch {
+      jsonEl.value = "{}";
+    }
+  }
+}
+
+async function saveArchEdit() {
+  const jsonEl = $("#arch-edit-json");
+  const sumEl = $("#arch-edit-summary");
+  const noteEl = $("#arch-edit-note");
+  let arch;
+  try {
+    arch = JSON.parse((jsonEl?.value || "{}").trim() || "{}");
+  } catch (e) {
+    toast("Invalid JSON: " + e.message, true);
+    return;
+  }
+  if (!arch || typeof arch !== "object" || Array.isArray(arch)) {
+    toast("Architecture must be a JSON object", true);
+    return;
+  }
+  // Prefer summary textarea if the operator edited it
+  if (sumEl) {
+    arch.summary = sumEl.value;
+  }
+  try {
+    await api(`${runApiBase()}/architecture`, {
+      method: "PUT",
+      body: JSON.stringify({
+        architecture: arch,
+        note: (noteEl?.value || "").trim(),
+      }),
+    });
+    toast("Architecture saved");
+    await loadRunFull();
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 async function submitArchRecon(enqueueHunts) {

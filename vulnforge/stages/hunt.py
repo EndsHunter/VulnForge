@@ -361,26 +361,91 @@ def _diagnose_no_submit(result: LLMResult, session: dict) -> dict[str, Any]:
 
 
 def _architecture_slice(arch: dict, payload: dict) -> str:
-    """Compact architecture for hunt packet â€” not the full recon dump."""
-    area = payload.get("area") or "app"
+    """Compact architecture for hunt packet — not the full recon dump.
+
+    When architecture is missing/empty, still returns compact JSON so hunt works.
+    """
+    if not isinstance(arch, dict):
+        arch = {}
+    area = str(payload.get("area") or "app")
+    path_hints = [
+        normalize_relpath(str(h))
+        for h in (payload.get("path_hints") or [])
+        if h
+    ]
+    path_hint_set = {h.lower() for h in path_hints if h}
     components = arch.get("components") or []
-    matched = []
+    matched: list[dict] = []
     if isinstance(components, list):
         for c in components:
             if not isinstance(c, dict):
                 continue
             name = str(c.get("name") or "")
-            if name == area or area in name or name in area:
+            if name == area or area in name or (name and name in area):
                 matched.append(c)
+                continue
+            # Match path_hints from payload against component paths / path_hints
+            c_paths: list[str] = []
+            for ph in c.get("path_hints") or []:
+                if ph:
+                    c_paths.append(normalize_relpath(str(ph)).lower())
+            if c.get("path"):
+                c_paths.append(normalize_relpath(str(c.get("path"))).lower())
+            if path_hint_set and c_paths:
+                for hint in path_hint_set:
+                    for cp in c_paths:
+                        if hint == cp or hint in cp or cp in hint:
+                            matched.append(c)
+                            break
+                    else:
+                        continue
+                    break
+        # Dedupe while preserving order
+        seen_names: set[str] = set()
+        deduped: list[dict] = []
+        for c in matched:
+            key = str(c.get("name") or id(c))
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+            deduped.append(c)
+        matched = deduped
         if not matched:
             matched = [c for c in components if isinstance(c, dict)][:3]
-    slim = {
+
+    # hunt_focus items matching area (cap 5)
+    focus_matched: list = []
+    raw_focus = arch.get("hunt_focus") or []
+    if isinstance(raw_focus, list):
+        for item in raw_focus:
+            if isinstance(item, dict):
+                fa = str(item.get("area") or "")
+                if fa == area or area in fa or (fa and fa in area):
+                    focus_matched.append(item)
+            elif isinstance(item, str):
+                if area in item or item in area:
+                    focus_matched.append(item)
+            if len(focus_matched) >= 5:
+                break
+
+    slim: dict[str, Any] = {
         "summary": (arch.get("summary") or "")[:800],
         "area": area,
         "components": matched[:5],
-        "trust_boundaries": (arch.get("trust_boundaries") or [])[:8],
-        "input_surfaces": (arch.get("input_surfaces") or [])[:8],
+        "trust_boundaries": (arch.get("trust_boundaries") or [])[:8]
+        if isinstance(arch.get("trust_boundaries"), list)
+        else [],
+        "input_surfaces": (arch.get("input_surfaces") or [])[:8]
+        if isinstance(arch.get("input_surfaces"), list)
+        else [],
     }
+    if focus_matched:
+        slim["hunt_focus"] = focus_matched[:5]
+    if arch.get("recon_generation") is not None:
+        try:
+            slim["recon_generation"] = int(arch["recon_generation"])
+        except (TypeError, ValueError):
+            pass
     return json.dumps(slim, indent=2)
 
 

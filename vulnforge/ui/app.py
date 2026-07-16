@@ -365,6 +365,50 @@ class ChainFromFindingsBody(BaseModel):
     operator: str = "operator"
 
 
+class ArchitectureEditBody(BaseModel):
+    """Manual architecture edit — full architecture dict + optional note."""
+
+    architecture: dict[str, Any]
+    note: str = ""
+
+
+class ArchitectureRestoreBody(BaseModel):
+    """Optional note when restoring a revision."""
+
+    note: str = ""
+
+
+def _validate_architecture_body(arch: Any) -> Optional[str]:
+    """Basic structure check for manual architecture PUT. Returns error string or None."""
+    if not isinstance(arch, dict):
+        return "architecture must be an object"
+    if not arch:
+        return "architecture must not be empty"
+    if "summary" in arch and arch["summary"] is not None and not isinstance(
+        arch["summary"], str
+    ):
+        return "summary must be a string when present"
+    for list_key in (
+        "components",
+        "trust_boundaries",
+        "input_surfaces",
+        "hunt_focus",
+    ):
+        if list_key in arch and arch[list_key] is not None:
+            if not isinstance(arch[list_key], list):
+                return f"{list_key} must be a list when present"
+    if "components" in arch and isinstance(arch["components"], list):
+        for i, c in enumerate(arch["components"][:200]):
+            if c is None:
+                continue
+            if not isinstance(c, (dict, str)):
+                return f"components[{i}] must be an object or string"
+            if isinstance(c, dict) and "path_hints" in c and c["path_hints"] is not None:
+                if not isinstance(c["path_hints"], list):
+                    return f"components[{i}].path_hints must be a list"
+    return None
+
+
 def create_app(runs_root: Optional[Path] = None) -> FastAPI:
     cfg = load_config()
     root = Path(runs_root) if runs_root else resolve_runs_root(cfg)
@@ -935,6 +979,119 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "recon requeue failed")
         return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/architecture")
+    def api_architecture_get(target_id: str, run_id: str):
+        """Current architecture map (DB only; not under project/)."""
+        from vulnforge.db import Database
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            arch = db.get_architecture()
+            return {
+                "architecture": arch,
+                "has_architecture": bool(arch),
+            }
+        finally:
+            db.close()
+
+    @app.get("/api/runs/{target_id}/{run_id}/architecture/history")
+    def api_architecture_history(
+        target_id: str,
+        run_id: str,
+        limit: int = Query(50, ge=1, le=50),
+    ):
+        from vulnforge.db import Database
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            revs = db.list_architecture_revisions(limit=limit)
+            return {"revisions": revs, "count": len(revs)}
+        finally:
+            db.close()
+
+    @app.get("/api/runs/{target_id}/{run_id}/architecture/history/{rev_id}")
+    def api_architecture_revision_get(target_id: str, run_id: str, rev_id: int):
+        from vulnforge.db import Database
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            rev = db.get_architecture_revision(rev_id)
+            if not rev:
+                raise HTTPException(404, "revision not found")
+            return rev
+        finally:
+            db.close()
+
+    @app.post("/api/runs/{target_id}/{run_id}/architecture/restore/{rev_id}")
+    def api_architecture_restore(
+        target_id: str,
+        run_id: str,
+        rev_id: int,
+        body: ArchitectureRestoreBody = ArchitectureRestoreBody(),
+    ):
+        from vulnforge.db import Database
+
+        run = _get_run(target_id, run_id)
+        note = body.note or ""
+        db = Database.open(run.path / "harness.db")
+        try:
+            snap = db.restore_architecture_revision(rev_id, note=note)
+            if snap is None:
+                raise HTTPException(404, "revision not found or empty")
+            return {
+                "ok": True,
+                "restored_id": rev_id,
+                "architecture": snap,
+            }
+        finally:
+            db.close()
+
+    @app.put("/api/runs/{target_id}/{run_id}/architecture")
+    def api_architecture_put(target_id: str, run_id: str, body: ArchitectureEditBody):
+        """Manual architecture edit — validates basic structure, DB only."""
+        from vulnforge.db import Database
+
+        run = _get_run(target_id, run_id)
+        arch = body.architecture
+        err = _validate_architecture_body(arch)
+        if err:
+            raise HTTPException(400, err)
+        db = Database.open(run.path / "harness.db")
+        try:
+            # Overlay operator fields onto existing so inventory / batch markers stay.
+            existing = db.get_architecture() or {}
+            merged = dict(existing)
+            for key, val in arch.items():
+                merged[key] = val
+            # Never silently drop multi-agent batch finalize markers.
+            if (
+                "recon_batch_finalize" not in arch
+                and isinstance(existing.get("recon_batch_finalize"), dict)
+            ):
+                merged["recon_batch_finalize"] = existing["recon_batch_finalize"]
+            # Normalize list fields that were omitted as empty only when present
+            for list_key in (
+                "components",
+                "trust_boundaries",
+                "input_surfaces",
+                "hunt_focus",
+            ):
+                if list_key in merged and merged[list_key] is None:
+                    merged[list_key] = []
+            if "summary" not in merged:
+                merged["summary"] = str(existing.get("summary") or "")
+            db.set_architecture(
+                merged,
+                source="manual",
+                note=str(body.note or "")[:2000],
+            )
+            return {"ok": True, "architecture": db.get_architecture()}
+        finally:
+            db.close()
 
     @app.get("/api/runs/{target_id}/{run_id}/coverage/policy")
     def api_coverage_policy_get(target_id: str, run_id: str):

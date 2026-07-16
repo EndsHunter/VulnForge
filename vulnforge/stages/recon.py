@@ -226,6 +226,7 @@ def store_merged_architecture(
     seed_sinks: list,
     operator_brief: str = "",
     merge_with_existing: bool = False,
+    recon_generation: int | None = None,
 ) -> dict[str, Any]:
     """Write architecture, optionally merging with the map already in the DB."""
     existing = db.get_architecture() if merge_with_existing else None
@@ -245,15 +246,33 @@ def store_merged_architecture(
         # Preserve batch finalize markers across merges
         if isinstance(existing.get("recon_batch_finalize"), dict):
             arch["recon_batch_finalize"] = dict(existing["recon_batch_finalize"])
+        source = "merge"
     else:
         arch = merge_architectures([part], agents_run=agents_run)
         arch["inventory"] = inventory
         arch["recon_agents_run"] = list(agents_run)
+        source = "recon"
 
     arch["seed_sinks"] = seed_sinks[:200]
     if operator_brief:
         arch["operator_notes_applied"] = operator_brief[:2000]
-    db.set_architecture(arch)
+    if recon_generation is not None:
+        try:
+            arch["recon_generation"] = int(recon_generation)
+        except (TypeError, ValueError):
+            pass
+    agent_ids = [
+        a.get("id") if isinstance(a, dict) else a
+        for a in (agents_run or [])
+        if a
+    ]
+    db.set_architecture(
+        arch,
+        source=source,
+        note="",
+        agent_ids=agent_ids or None,
+        recon_generation=arch.get("recon_generation"),
+    )
     return arch
 
 
@@ -300,7 +319,8 @@ def _claim_batch_finalize(db, batch_id: str) -> bool:
         return False
     fin[batch_id] = {"done": True}
     arch["recon_batch_finalize"] = fin
-    db.set_architecture(arch)
+    # Marker-only flip — do not snapshot a full architecture revision.
+    db.set_architecture(arch, source="batch_finalize", record_history=False)
     return True
 
 
@@ -829,6 +849,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             seed_sinks=seed_sinks,
             operator_brief=operator_brief,
             merge_with_existing=merge_with_existing,
+            recon_generation=_recon_generation(payload),
         )
 
         # Hunts / dynamic skills: single-task or last-completed batch member only.
@@ -990,6 +1011,95 @@ def _merge_usage_fields(acc: dict[str, Any], more: dict[str, Any]) -> dict[str, 
     return out
 
 
+_SUMMARY_MERGE_CAP = 2000
+
+
+def _normalize_summary_para(s: str) -> str:
+    return " ".join(str(s).split()).strip().lower()
+
+
+def _merge_summary_paragraphs(parts: list[dict[str, Any]], *, cap: int = _SUMMARY_MERGE_CAP) -> str:
+    """Concatenate unique non-empty summary paragraphs (normalized dedupe), up to cap chars."""
+    seen: set[str] = set()
+    chunks: list[str] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        s = str(part.get("summary") or "").strip()
+        if not s:
+            continue
+        # Split on blank lines into paragraphs; also accept single-block summaries.
+        paras = [p.strip() for p in s.split("\n\n") if p.strip()]
+        if not paras:
+            paras = [s]
+        for p in paras:
+            key = _normalize_summary_para(p)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            chunks.append(p)
+    if not chunks:
+        return ""
+    out = "\n\n".join(chunks)
+    if len(out) > cap:
+        out = out[: cap - 1].rstrip() + "…"
+    return out
+
+
+def _merge_dict_items(prev: dict[str, Any], newer: dict[str, Any]) -> dict[str, Any]:
+    """Merge two architecture list-items with the same key.
+
+    - List fields: union (unique by arch item key / string identity)
+    - String summary-like fields: prefer longer non-empty
+    - Other scalars: prefer newer non-empty
+    - Nested dicts: shallow key-union preferring newer non-empty
+    """
+    out = dict(prev)
+    for k, v in newer.items():
+        if v is None:
+            continue
+        if k not in out or out[k] in (None, "", [], {}):
+            out[k] = v
+            continue
+        old = out[k]
+        if isinstance(old, list) and isinstance(v, list):
+            seen_keys: set[str] = set()
+            merged: list = []
+            for item in list(old) + list(v):
+                key = _arch_item_key(item)
+                if key in seen_keys:
+                    # For dict items with same key, merge fields
+                    if isinstance(item, dict):
+                        for i, existing in enumerate(merged):
+                            if _arch_item_key(existing) == key:
+                                if isinstance(existing, dict):
+                                    merged[i] = _merge_dict_items(existing, item)
+                                else:
+                                    merged[i] = item
+                                break
+                    continue
+                seen_keys.add(key)
+                merged.append(item)
+            out[k] = merged
+        elif isinstance(old, str) and isinstance(v, str):
+            # Prefer longer non-empty strings (summaries, roles, path labels)
+            so, sn = old.strip(), v.strip()
+            if not so:
+                out[k] = v
+            elif not sn:
+                pass
+            elif len(sn) > len(so):
+                out[k] = v
+            # else keep longer-or-equal old
+        elif isinstance(old, dict) and isinstance(v, dict):
+            out[k] = _merge_dict_items(old, v)
+        else:
+            # Prefer newer non-empty scalar / type-mismatched value
+            if v not in ("", [], {}):
+                out[k] = v
+    return out
+
+
 def merge_architectures(
     parts: list[dict[str, Any]],
     *,
@@ -997,8 +1107,9 @@ def merge_architectures(
 ) -> dict[str, Any]:
     """Merge sequential recon agent architecture dicts.
 
-    - List fields: deep-merge (append unique items; dict items by stable key).
-    - summary: last non-empty wins.
+    - List fields: deep-merge (append unique items; dict items by stable key,
+      field-merge when same key).
+    - summary: concatenate unique non-empty paragraphs (dedupe normalized), ~2000 cap.
     - recon_agents_run metadata attached when provided.
     """
     list_fields = (
@@ -1007,16 +1118,13 @@ def merge_architectures(
         "input_surfaces",
         "hunt_focus",
     )
-    summary = ""
+    summary = _merge_summary_paragraphs(parts)
     merged_lists: dict[str, list] = {f: [] for f in list_fields}
     seen: dict[str, set[str]] = {f: set() for f in list_fields}
 
     for part in parts:
         if not isinstance(part, dict):
             continue
-        s = str(part.get("summary") or "").strip()
-        if s:
-            summary = s
         for f in list_fields:
             items = part.get(f)
             if not isinstance(items, list):
@@ -1024,11 +1132,13 @@ def merge_architectures(
             for item in items:
                 key = _arch_item_key(item)
                 if key in seen[f]:
-                    # Prefer later dict over earlier for same key
                     if isinstance(item, dict):
                         for i, prev in enumerate(merged_lists[f]):
                             if _arch_item_key(prev) == key:
-                                merged_lists[f][i] = item
+                                if isinstance(prev, dict):
+                                    merged_lists[f][i] = _merge_dict_items(prev, item)
+                                else:
+                                    merged_lists[f][i] = item
                                 break
                     continue
                 seen[f].add(key)

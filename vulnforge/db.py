@@ -22,6 +22,9 @@ from vulnforge.util import normalize_relpath, utc_now_iso
 
 SCHEMA_VERSION = 1
 
+# Cap architecture revision history to avoid harness.db bloat.
+ARCHITECTURE_REVISION_CAP = 50
+
 
 def _sort_coverage_classes(classes: set[str] | Iterable[str]) -> list[str]:
     """Stable column order: active first, then rest of registry, then unknowns."""
@@ -85,6 +88,8 @@ class Database:
             self.migrate()
         else:
             self._check_schema()
+            # Soft-migrate additive tables without bumping schema_version.
+            self._ensure_architecture_revisions()
 
     @classmethod
     def create(cls, path: Path) -> "Database":
@@ -177,6 +182,16 @@ class Database:
               task_id INTEGER,
               created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS architecture_revisions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              source TEXT,
+              note TEXT,
+              agent_ids_json TEXT,
+              recon_generation INTEGER,
+              snapshot_json TEXT NOT NULL
+            );
             """
         )
         c.execute(
@@ -184,6 +199,23 @@ class Database:
             (str(SCHEMA_VERSION),),
         )
         c.commit()
+
+    def _ensure_architecture_revisions(self) -> None:
+        """Create architecture_revisions if missing (open path for older DBs)."""
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS architecture_revisions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              source TEXT,
+              note TEXT,
+              agent_ids_json TEXT,
+              recon_generation INTEGER,
+              snapshot_json TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.commit()
 
     def insert_run(
         self,
@@ -215,10 +247,57 @@ class Database:
             "SELECT * FROM runs ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
 
-    def set_architecture(self, architecture: dict) -> None:
+    def set_architecture(
+        self,
+        architecture: dict,
+        *,
+        source: str = "recon",
+        note: str = "",
+        agent_ids: Optional[list] = None,
+        recon_generation: Optional[int] = None,
+        record_history: bool = True,
+    ) -> None:
+        """Overwrite current architecture; snapshot prior non-empty map as a revision."""
         row = self.get_run()
         if not row:
             raise RuntimeError("no run row")
+        if record_history:
+            prev_raw = row["architecture_json"]
+            if prev_raw:
+                try:
+                    prev = json.loads(prev_raw)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    prev = None
+                if isinstance(prev, dict) and prev:
+                    # Tag revision from the outgoing snapshot + why it was superseded.
+                    prev_agents: Optional[list] = None
+                    raw_agents = prev.get("recon_agents_run")
+                    if isinstance(raw_agents, list):
+                        prev_agents = [
+                            a.get("id") if isinstance(a, dict) else a
+                            for a in raw_agents
+                            if a
+                        ]
+                    elif agent_ids is not None:
+                        prev_agents = list(agent_ids)
+                    prev_gen: Optional[int] = None
+                    if prev.get("recon_generation") is not None:
+                        try:
+                            prev_gen = int(prev["recon_generation"])
+                        except (TypeError, ValueError):
+                            prev_gen = None
+                    if prev_gen is None and recon_generation is not None:
+                        try:
+                            prev_gen = int(recon_generation)
+                        except (TypeError, ValueError):
+                            prev_gen = None
+                    self.append_architecture_revision(
+                        prev,
+                        source=source or "recon",
+                        note=note or "",
+                        agent_ids=prev_agents,
+                        recon_generation=prev_gen,
+                    )
         self.conn.execute(
             "UPDATE runs SET architecture_json=? WHERE id=?",
             (json.dumps(architecture), row["id"]),
@@ -230,6 +309,161 @@ class Database:
         if not row or not row["architecture_json"]:
             return None
         return json.loads(row["architecture_json"])
+
+    def append_architecture_revision(
+        self,
+        snapshot: dict,
+        *,
+        source: str = "recon",
+        note: str = "",
+        agent_ids: Optional[list] = None,
+        recon_generation: Optional[int] = None,
+    ) -> int:
+        """Append a full architecture snapshot to history; keep last ARCHITECTURE_REVISION_CAP."""
+        if not isinstance(snapshot, dict):
+            raise TypeError("snapshot must be a dict")
+        self._ensure_architecture_revisions()
+        now = utc_now_iso()
+        agents_json = None
+        if agent_ids is not None:
+            agents_json = json.dumps(list(agent_ids))
+        gen_val: Optional[int] = None
+        if recon_generation is not None:
+            try:
+                gen_val = int(recon_generation)
+            except (TypeError, ValueError):
+                gen_val = None
+        cur = self.conn.execute(
+            """
+            INSERT INTO architecture_revisions(
+              created_at, source, note, agent_ids_json, recon_generation, snapshot_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                str(source or "recon")[:64],
+                str(note or "")[:2000],
+                agents_json,
+                gen_val,
+                json.dumps(snapshot),
+            ),
+        )
+        rev_id = int(cur.lastrowid)
+        # Cap: delete oldest beyond keep window
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM architecture_revisions"
+        ).fetchone()
+        n = int(row["n"] if row else 0)
+        if n > ARCHITECTURE_REVISION_CAP:
+            excess = n - ARCHITECTURE_REVISION_CAP
+            self.conn.execute(
+                """
+                DELETE FROM architecture_revisions
+                WHERE id IN (
+                  SELECT id FROM architecture_revisions
+                  ORDER BY id ASC
+                  LIMIT ?
+                )
+                """,
+                (excess,),
+            )
+        self.conn.commit()
+        return rev_id
+
+    def list_architecture_revisions(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Newest-first revision metadata (no full snapshot in list for size)."""
+        self._ensure_architecture_revisions()
+        lim = max(1, min(int(limit or 50), ARCHITECTURE_REVISION_CAP))
+        rows = self.conn.execute(
+            """
+            SELECT id, created_at, source, note, agent_ids_json, recon_generation,
+                   length(snapshot_json) AS snapshot_bytes
+            FROM architecture_revisions
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (lim,),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            agents = None
+            if r["agent_ids_json"]:
+                try:
+                    agents = json.loads(r["agent_ids_json"])
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    agents = None
+            out.append(
+                {
+                    "id": int(r["id"]),
+                    "created_at": r["created_at"],
+                    "source": r["source"],
+                    "note": r["note"] or "",
+                    "agent_ids": agents if isinstance(agents, list) else agents,
+                    "recon_generation": r["recon_generation"],
+                    "snapshot_bytes": int(r["snapshot_bytes"] or 0),
+                }
+            )
+        return out
+
+    def get_architecture_revision(self, rev_id: int) -> Optional[dict[str, Any]]:
+        """Full revision including snapshot_json parsed as snapshot."""
+        self._ensure_architecture_revisions()
+        row = self.conn.execute(
+            """
+            SELECT id, created_at, source, note, agent_ids_json, recon_generation,
+                   snapshot_json
+            FROM architecture_revisions
+            WHERE id=?
+            """,
+            (int(rev_id),),
+        ).fetchone()
+        if not row:
+            return None
+        agents = None
+        if row["agent_ids_json"]:
+            try:
+                agents = json.loads(row["agent_ids_json"])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                agents = None
+        try:
+            snap = json.loads(row["snapshot_json"])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            snap = {}
+        return {
+            "id": int(row["id"]),
+            "created_at": row["created_at"],
+            "source": row["source"],
+            "note": row["note"] or "",
+            "agent_ids": agents if isinstance(agents, list) else agents,
+            "recon_generation": row["recon_generation"],
+            "snapshot": snap if isinstance(snap, dict) else {},
+        }
+
+    def restore_architecture_revision(
+        self,
+        rev_id: int,
+        *,
+        note: str = "",
+    ) -> Optional[dict]:
+        """Restore a revision as current architecture; current becomes history."""
+        rev = self.get_architecture_revision(rev_id)
+        if not rev:
+            return None
+        snap = rev.get("snapshot")
+        if not isinstance(snap, dict) or not snap:
+            return None
+        restore_note = note or f"restored from revision {rev_id}"
+        self.set_architecture(
+            snap,
+            source="restore",
+            note=restore_note,
+            agent_ids=rev.get("agent_ids")
+            if isinstance(rev.get("agent_ids"), list)
+            else None,
+            recon_generation=rev.get("recon_generation"),
+        )
+        return snap
 
     def enqueue_task(
         self,
