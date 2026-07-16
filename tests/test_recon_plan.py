@@ -252,9 +252,11 @@ def test_hunt_class_catalog_from_registry():
     prompts = Path(__file__).resolve().parents[1] / "prompts" / "v1" / "hunt_classes"
     on_disk = {p.stem for p in prompts.glob("*.md")}
     cat = hunt_class_catalog()
-    assert set(cat.keys()) == {"all", "active"}
+    assert {"all", "active"}.issubset(set(cat.keys()))
     assert set(cat["all"]) == set(all_class_ids())
     assert set(cat["active"]) == set(active_class_ids())
+    # Coverage grouping extras (custom/generated skills)
+    assert "by_source" in cat and "profiles" in cat
     # Seeded collection includes every package seed file
     assert on_disk.issubset(set(cat["all"]))
     for cls in (

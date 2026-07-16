@@ -33,17 +33,47 @@ Checklist of record for humans and local/offline models. Linked from `AGENT.md`.
 | Docs | `PROTOCOL.md` tool list |
 | Tests | `tests/test_tools.py` or `tests/test_tool_<id>.py` |
 
+## Local Ornith (recommended for AI generate)
+
+Primary surface for VulnForge: **LM Studio** (or compatible) OpenAI chat API on `http://127.0.0.1:1234/v1`.
+
+1. Load Ornith (listed id is usually `ornith-1.0-35b@4bit` — match **`GET /v1/models`**).
+2. Dashboard **Settings → Optimize AI settings → Save** so host/model/`max_tokens` match the server.
+   - Reasoning models need **high** `max_tokens` (often ≥ 4096–8192). Low budgets yield empty `content` and only `reasoning_content`.
+3. Optional config keys in `config/default.yaml` → `llm.toolgen_max_tokens` (default 8192) and `llm.temperature_code` (≈0.15).
+4. Env overrides: `VF_BASE_URL`, `VF_MODEL`, or `VF_HOST`+`VF_PORT`.
+
+**Toolgen vs recon/hunt:** generate stages are **text JSON only** (no `tool_calls`). A green toolgen smoke does **not** prove recon/hunt tool-use works — use Settings Optimize’s tool probe for that.
+
+**Alternate mlx server** (`./start_ornith_server.sh`, often `:8080`): tuned for Grok CLI. If you point VulnForge at it, raise server `ORNITH_MAX_TOKENS` well above 512 and set Settings host/port/model to match. Default 512-token server caps will truncate toolgen JSON even when the client requests 8192.
+
+**AI fix** is **single-shot per click** in the Dev wizard — re-run validate / AI fix until hard checks pass. Do not weaken safety to pass.
+
+**Integrate apply** writes package source (`vulnforge/tools/<id>.py`, `extra_registry.py`). Always dry-run first; review `impl.py` before Apply.
+
+### Live smoke (not FakeLLM)
+
+```bash
+# Offline unit path (FakeLLM / hand-seeded drafts)
+pytest tests/test_toolgen_validate.py tests/test_toolgen_integrate.py tests/test_toolgen_generate.py -q
+
+# Live Ornith (opt-in)
+VF_LIVE=1 pytest tests/test_live_ornith.py tests/test_live_toolgen.py -v -s
+python scripts/live_toolgen_smoke.py   # dry-run integrate only
+```
+
 ## Dev workflow (AI-assisted)
 
 1. **Tool gaps** (`/tool-gaps`) or Dev **Tools** → note a capability.
-2. **Create draft** — brief, stages, risk class, prompt slots (problem / non-goals / I/O / safety).
-3. **Preview prompts** — see exactly what the model will be told.
-4. **Generate spec** → review `spec.md`.
-5. **Generate impl** → review `impl.py` + `schema.json` + tests.
-6. **Validate** — `python scripts/validate_tool.py config/tool_drafts/<id>`
-7. Optional **AI fix** loop (capped) using the validation report.
-8. **Integrate** (dry-run then apply) — writes module + `extra_registry`.
-9. **Select** on hunt profiles (optional tools allowlist) or recon agents.
+2. Confirm Ornith settings (section above).
+3. **Create draft** — brief, stages, risk class, prompt slots (problem / non-goals / I/O / safety). Prefer a **small** first tool.
+4. **Preview prompts** — see exactly what the model will be told.
+5. **Generate spec** → review `spec.md`.
+6. **Generate impl** → review `impl.py` + `schema.json` + tests.
+7. **Validate** — `python scripts/validate_tool.py config/tool_drafts/<id>`
+8. Optional **AI fix** (click again if still failing) using the validation report.
+9. **Integrate** (dry-run then apply) — writes module + `extra_registry`.
+10. **Select** on hunt profiles (optional tools allowlist) or recon agents.
 
 Drafts live in `config/tool_drafts/<id>/` and are **never** imported by the agent until Integrate.
 
@@ -122,6 +152,7 @@ When set, `pack_hunt` filters schemas; `submit_candidate` and `submit_none` alwa
 ## Verify
 
 ```bash
-python -m pytest tests/test_tools.py tests/test_tool_gaps.py tests/test_toolgen_validate.py -q
+python -m pytest tests/test_tools.py tests/test_tool_gaps.py tests/test_toolgen_validate.py tests/test_toolgen_generate.py -q
 python scripts/validate_tool.py config/tool_drafts/<id> --integrate
+# Live (optional): VF_LIVE=1 pytest tests/test_live_toolgen.py -v -s
 ```

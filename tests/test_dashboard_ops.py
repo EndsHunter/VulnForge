@@ -118,6 +118,57 @@ def test_coverage_mode_select_path_targets(tmp_path: Path, toy_sqli: Path):
         db.close()
 
 
+def test_coverage_select_path_like_areas_and_generated_skill(
+    tmp_path: Path, toy_sqli: Path
+):
+    """Custom select: path-like areas become path targets; generated skills are queueable."""
+    from vulnforge.hunt_profiles import (
+        reset_collection_root_override,
+        save_profile,
+        set_collection_root,
+    )
+
+    coll = tmp_path / "hunt_coll"
+    set_collection_root(coll)
+    try:
+        save_profile(
+            "gen-foo",
+            body_md="# Generated\n\nLook for foo.\n",
+            title="Generated",
+            active=False,
+            source="generated",
+            create=True,
+        )
+        run = _init_run(tmp_path, toy_sqli)
+        r = dashops.apply_coverage_mode(
+            run,
+            mode="select",
+            areas=["app.py", "worker"],  # file path + abstract name
+            classes=["gen-foo"],
+            enqueue=True,
+        )
+        assert r["ok"] is True
+        assert r["enqueued_count"] >= 1
+        paths = {t.get("path") for t in (r.get("path_targets") or [])}
+        assert "app.py" in paths
+        db = Database.open(run / "harness.db")
+        try:
+            hunts = [
+                t
+                for t in db.list_tasks()
+                if t.kind == "hunt"
+                and t.state == "queued"
+                and t.payload.get("class") == "gen-foo"
+            ]
+            assert hunts, "generated skill should enqueue under select"
+            areas = {t.payload.get("area") for t in hunts}
+            assert "app.py" in areas or "worker" in areas
+        finally:
+            db.close()
+    finally:
+        reset_collection_root_override()
+
+
 def test_coverage_mode_all_enqueues(tmp_path: Path, toy_sqli: Path):
     run = _init_run(tmp_path, toy_sqli)
     r = dashops.apply_coverage_mode(run, mode="all", enqueue=True)

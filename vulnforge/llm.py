@@ -261,13 +261,12 @@ class LLMClient:
             ids = [m.get("id") for m in (data.get("data") or []) if m.get("id")]
         except Exception as e:
             raise InfraError(f"models list failed: {e}") from e
-        if self.model and self.model in ids:
-            self._resolved_model = self.model
-            return self.model
-        if self.model and ids:
-            # configured id not listed — still try configured (LM Studio naming quirks)
-            self._resolved_model = self.model
-            return self.model
+        from vulnforge.settings_probe import resolve_listed_model
+
+        resolved = resolve_listed_model(self.model or "", ids)
+        if resolved:
+            self._resolved_model = resolved
+            return resolved
         if ids:
             self._resolved_model = ids[0]
             return ids[0]

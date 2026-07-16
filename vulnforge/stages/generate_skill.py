@@ -106,23 +106,75 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         }
 
     hunt_task_ids: list[int] = []
+    reason = str(payload.get("reason") or "generate_skill").strip() or "generate_skill"
     if enqueue_hunts:
-        hunt_payload = {
-            "area": area,
-            "class": profile["id"],
-            "path_hints": path_hints,
-            "operator_notes": brief[:2500],
-            "reason": "generate_skill",
-        }
-        # Inline body so hunt works even if collection root differs across workers
-        if skill.get("body_md"):
-            hunt_payload["class_body_override"] = skill["body_md"]
-        tid = db.enqueue_task("hunt", hunt_payload, priority=40)
-        hunt_task_ids.append(int(tid))
+        # Build hunt units: one per path_hint when multiple, else single area unit.
+        # Optional path_targets: [{path, is_dir}] expand to path_hints-style units.
+        units: list[tuple[str, list[str]]] = []
+        raw_targets = payload.get("path_targets")
+        if isinstance(raw_targets, list) and raw_targets:
+            for pt in raw_targets:
+                if isinstance(pt, dict):
+                    p = str(pt.get("path") or "").strip()
+                else:
+                    p = str(pt or "").strip()
+                if not p:
+                    continue
+                units.append((p, [p]))
+        if not units and path_hints:
+            # One hunt per distinct path hint when multi-path Coverage generate
+            for p in path_hints:
+                ps = str(p).strip()
+                if ps:
+                    units.append((ps, [ps]))
+        if not units:
+            units = [(area, list(path_hints))]
+
+        max_hunts = 50
         try:
-            db.upsert_coverage_fact(area, profile["id"], visit_delta=0, last_depth="planned")
-        except Exception:
+            cfg_run = (cfg or {}).get("run") if isinstance(cfg, dict) else {}
+            max_hunts = max(1, int((cfg_run or {}).get("max_tasks") or 50))
+        except (TypeError, ValueError):
+            max_hunts = 50
+        try:
+            if payload.get("max_hunts") is not None:
+                max_hunts = max(1, min(max_hunts, int(payload.get("max_hunts"))))
+        except (TypeError, ValueError):
             pass
+
+        seen: set[tuple[str, str]] = set()
+        for unit_area, unit_hints in units:
+            if len(hunt_task_ids) >= max_hunts:
+                break
+            ua = str(unit_area or area).strip() or area
+            uh = [str(h) for h in (unit_hints or []) if str(h).strip()][:15]
+            key = (ua, profile["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            hunt_payload = {
+                "area": ua,
+                "class": profile["id"],
+                "path_hints": uh,
+                "operator_notes": brief[:2500],
+                "reason": reason,
+                "operator_requested": True,
+            }
+            # Inline body so hunt works even if collection root differs across workers
+            if skill.get("body_md"):
+                hunt_payload["class_body_override"] = skill["body_md"]
+            tid = db.enqueue_task("hunt", hunt_payload, priority=40)
+            hunt_task_ids.append(int(tid))
+            try:
+                db.upsert_coverage_fact(
+                    ua,
+                    profile["id"],
+                    path=(uh[0] if uh else ""),
+                    visit_delta=0,
+                    last_depth="planned",
+                )
+            except Exception:
+                pass
 
     return {
         "status": "succeeded",
@@ -136,6 +188,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         "hunt_enqueued": len(hunt_task_ids),
         "area": area,
         "path_hints": path_hints,
+        "reason": reason,
         "model_id": model_id,
         "tags": skill.get("tags") or [],
         "cwe": skill.get("cwe") or [],

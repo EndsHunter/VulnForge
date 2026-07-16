@@ -57,11 +57,19 @@ def test_seed_once_creates_active_and_all(hunt_root: Path):
 
 def test_catalog_for_ui_shape(hunt_root: Path):
     cat = catalog_for_ui()
-    assert set(cat.keys()) == {"all", "active"}
+    assert {"all", "active"}.issubset(set(cat.keys()))
     assert "default" not in cat
     assert "domain" not in cat
     assert set(cat["active"]).issubset(set(cat["all"]))
     assert cat["active"]
+    # Coverage custom picker grouping (custom/generated skills + paths)
+    assert "by_source" in cat
+    assert "profiles" in cat
+    assert isinstance(cat["by_source"], dict)
+    assert isinstance(cat["profiles"], list)
+    if cat["profiles"]:
+        row = cat["profiles"][0]
+        assert "id" in row and "source" in row
 
 
 def test_save_create_update_delete(hunt_root: Path):

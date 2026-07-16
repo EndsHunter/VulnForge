@@ -1,6 +1,6 @@
 {
   "format": "vulnforge.hunt_collection/v1",
-  "updated_at": "2026-07-15T03:27:13Z",
+  "updated_at": "2026-07-16T02:16:09Z",
   "seeded_from": "prompts/v1/hunt_classes",
   "profiles": [
     {
@@ -40,7 +40,10 @@
       ],
       "specificity": 20,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "access-control",
@@ -76,7 +79,10 @@
       ],
       "specificity": 20,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "business-logic",
@@ -107,7 +113,10 @@
       "sink_families": [],
       "specificity": 15,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "cryptography",
@@ -142,7 +151,10 @@
       ],
       "specificity": 20,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "wildcard",
@@ -167,7 +179,10 @@
       "sink_families": [],
       "specificity": 1,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "ai-llm",
@@ -200,7 +215,10 @@
       ],
       "specificity": 30,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "chains",
@@ -227,7 +245,10 @@
       "sink_families": [],
       "specificity": 10,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "client-side",
@@ -265,7 +286,10 @@
       ],
       "specificity": 15,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "feature-abuse",
@@ -297,7 +321,10 @@
       ],
       "specificity": 12,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "graphql",
@@ -329,7 +356,10 @@
       ],
       "specificity": 18,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "memory-safety",
@@ -366,7 +396,10 @@
       "sink_families": [],
       "specificity": 18,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "obvious",
@@ -397,7 +430,10 @@
       "sink_families": [],
       "specificity": 5,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "supply-chain",
@@ -427,7 +463,10 @@
       "sink_families": [],
       "specificity": 14,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "web-protocol-auth",
@@ -462,7 +501,10 @@
       ],
       "specificity": 18,
       "version": 3,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
     },
     {
       "id": "empty-listener-stub",
@@ -487,7 +529,36 @@
       "sink_families": [],
       "specificity": 0,
       "version": 1,
-      "tools": null
+      "tools": null,
+      "created_at": "",
+      "origin_target_id": "",
+      "origin_run_id": ""
+    },
+    {
+      "id": "drone-py",
+      "title": "Empty Stub Verification",
+      "description": "Use when hunting a single file that appears empty, contains only stubs/placeholders, or is explicitly documented as part of an uninitialized/empty repository. Also when the operator needs to verify no hidden functionality, dynamic imports, or side-effect loading exists in a minimal codebase. Prefer this skill when the architecture context confirms zero functional code, sinks, or trust boundaries. Do not use when the file contains actual implementation, data handling, network calls, or user input",
+      "active": false,
+      "body_file": "bodies/drone-py.md",
+      "source": "generated",
+      "tags": [
+        "stub",
+        "verification",
+        "empty"
+      ],
+      "languages": [],
+      "cwe": [],
+      "angle_ids": [
+        1,
+        2
+      ],
+      "sink_families": [],
+      "specificity": 0,
+      "version": 1,
+      "tools": null,
+      "created_at": "2026-07-16T02:16:09Z",
+      "origin_target_id": "Drones-724d685b",
+      "origin_run_id": "run-001"
     }
   ]
 }

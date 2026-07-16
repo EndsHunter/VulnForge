@@ -8,9 +8,12 @@
   let covSelected = null; // { area, class }
   let covCache = null;
   let selectFormOpen = false;
+  let maxHuntFormOpen = false;
   /** @type {{path: string, is_dir: boolean}[]} */
   let customPathTargets = [];
   let pathPickerBrowse = ".";
+  /** @type {object|null} last MAX Hunt dry-run preview */
+  let maxHuntPreview = null;
 
   const RESIDUAL_DEPTHS = new Set(["", "planned", "shallow", "none", "aborted"]);
   const FINDING_DEPTHS = new Set(["candidate", "confirmed", "needs_human"]);
@@ -170,7 +173,7 @@
   }
 
   /**
-   * Ensure matrix axes include every hunt class/area actually used in this run
+   * Ensure matrix axes include every hunt skill/area actually used in this run
    * (task payloads), not only what coverage_facts rolled up — domain packs etc.
    */
   function enrichCoverageAxes(cov, snap) {
@@ -410,15 +413,23 @@
   }
 
   function knownClasses() {
+    // Full hunt skill catalog (all registered — seed, custom, generated, import)
     const catalog = window.__VF_hunt_classes || {};
     const fromCat = [
       ...(catalog.active || []),
       ...(catalog.all || []),
       ...(catalog.default || []),
     ];
+    const fromProfiles = Array.isArray(catalog.profiles)
+      ? catalog.profiles.map((p) => (p && p.id) || "").filter(Boolean)
+      : [];
     const fromCov = covCache?.classes || [];
     const pol = window.__VF_cov_policy?.classes || [];
-    return [...new Set([...fromCat, ...fromCov, ...pol].map(String).filter(Boolean))];
+    return [
+      ...new Set(
+        [...fromCat, ...fromProfiles, ...fromCov, ...pol].map(String).filter(Boolean)
+      ),
+    ];
   }
 
   function activeClassesList() {
@@ -426,6 +437,53 @@
     if (Array.isArray(cat.active) && cat.active.length) return cat.active.map(String);
     if (Array.isArray(cat.default) && cat.default.length) return cat.default.map(String);
     return knownClasses();
+  }
+
+  /** Group skill ids by provenance for Coverage custom picker. */
+  function skillGroupsForPicker() {
+    const cat = window.__VF_hunt_classes || {};
+    const all = knownClasses();
+    const active = new Set(activeClassesList());
+    const bySource = cat.by_source || {};
+    const generated = new Set(
+      [...(bySource.generated || []), ...(bySource.custom || []), ...(bySource.import || [])].map(
+        String
+      )
+    );
+    // Prefer profiles[] when present (richer than by_source alone)
+    if (Array.isArray(cat.profiles) && cat.profiles.length) {
+      for (const p of cat.profiles) {
+        if (!p || !p.id) continue;
+        const src = String(p.source || "").toLowerCase();
+        if (src === "generated" || src === "custom" || src === "import") {
+          generated.add(String(p.id));
+        }
+      }
+    }
+    const activeList = all.filter((id) => active.has(id));
+    const customGen = all.filter((id) => generated.has(id));
+    const optionalSeed = all.filter((id) => !active.has(id) && !generated.has(id));
+    return {
+      active: activeList,
+      allCustomGenerated: customGen,
+      optionalSeed,
+      all,
+    };
+  }
+
+  /** True if operator free-text looks like a target path (file or folder). */
+  function looksLikePath(s) {
+    const t = String(s || "")
+      .replace(/\\/g, "/")
+      .trim();
+    if (!t || t === "." || t === ".." || t.split("/").includes("..")) return false;
+    if (t.includes("/")) return true;
+    const base = t.split("/").pop() || t;
+    if (base.includes(".") && !base.startsWith(".")) {
+      const ext = base.split(".").pop() || "";
+      if (ext.length >= 1 && ext.length <= 12 && /^[a-zA-Z0-9]+$/.test(ext)) return true;
+    }
+    return false;
   }
 
   /** Operator run.max_tasks ceiling (Coverage estimates / confirm dialogs). */
@@ -458,13 +516,13 @@
       const areaHint = nA
         ? `${nA} area${nA === 1 ? "" : "s"}`
         : "architecture areas";
-      const classHint = nC
-        ? `${nC} class${nC === 1 ? "" : "es"}`
-        : "active classes";
+      const skillHint = nC
+        ? `${nC} skill${nC === 1 ? "" : "s"}`
+        : "active skills";
       return {
         badge: "custom",
         title: "Custom enqueue",
-        detail: `Last custom queue used ${areaHint} × ${classHint}. Open the builder below to queue another batch.`,
+        detail: `Last custom queue used ${areaHint} × ${skillHint}. Open the builder below to queue another batch.`,
       };
     }
     return {
@@ -634,17 +692,26 @@
     const form = $("#cov-select-form");
     if (!estEl || !form) return;
     const nA = countSelectAreas(form.closest(".cov-plan-card") || document);
-    const nC = form.querySelectorAll("[data-cov-class]:checked").length || 0;
+    const checked = form.querySelectorAll("[data-cov-class]:checked").length || 0;
+    const extraSkills = ($("#cov-extra-skills")?.value || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean).length;
+    const nC = checked + extraSkills;
     const raw = nA * nC;
     const cap = maxTasksCap();
     const capped = Math.min(raw, cap);
-    const pathN = customPathTargets.length;
+    const extraPaths = ($("#cov-extra-areas")?.value || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s && looksLikePath(s)).length;
+    const pathN = customPathTargets.length + extraPaths;
     estEl.textContent = nC
       ? `About ${capped} hunt${capped === 1 ? "" : "s"} will be queued` +
         (pathN ? ` (${pathN} path target${pathN === 1 ? "" : "s"})` : "") +
         (raw > cap ? ` (capped at ${cap})` : "") +
         "."
-      : "Select at least one hunt class.";
+      : "Select at least one hunt skill.";
   }
 
   function renderModeBar(policy) {
@@ -663,11 +730,11 @@
     }
 
     const areas = knownAreas();
-    const classes = knownClasses();
     const activeClasses = activeClassesList();
+    const groups = skillGroupsForPicker();
     const pathSet = new Set(customPathTargets.map((t) => t.path));
     const selAreas = new Set(
-      (p.areas || []).map(String).filter((a) => !pathSet.has(a))
+      (p.areas || []).map(String).filter((a) => !pathSet.has(a) && !looksLikePath(a))
     );
     const selClasses = new Set((p.classes || []).map(String));
     if (!selClasses.size && activeClasses.length) {
@@ -682,23 +749,38 @@
               `<label class="cov-check"><input type="checkbox" data-cov-area value="${esc(a)}" ${selAreas.has(a) ? "checked" : ""}/> <span class="mono">${esc(a)}</span></label>`
           )
           .join("")
-      : `<span class="controls-hint">No architecture areas yet — use the path picker or type names.</span>`;
+      : `<span class="controls-hint">No architecture areas yet — use the path picker or type paths/names below.</span>`;
 
-    const classBlock = (title, list) => {
+    const skillBlock = (title, list, hint) => {
       if (!list.length) return "";
       const checks = list
-        .map(
-          (c) =>
-            `<label class="cov-check"><input type="checkbox" data-cov-class value="${esc(c)}" ${selClasses.has(c) ? "checked" : ""}/> <span class="mono">${esc(c)}</span></label>`
-        )
+        .map((c) => {
+          const isGen = groups.allCustomGenerated.includes(c);
+          const badge = isGen
+            ? ` <span class="cov-skill-src" title="Custom or generated skill">custom</span>`
+            : "";
+          return `<label class="cov-check"><input type="checkbox" data-cov-class value="${esc(c)}" ${selClasses.has(c) ? "checked" : ""}/> <span class="mono">${esc(c)}</span>${badge}</label>`;
+        })
         .join("");
-      return `<div class="cov-class-group"><div class="cov-select-subhead">${esc(title)}</div><div class="cov-check-grid cov-check-grid-sm">${checks}</div></div>`;
+      return `<div class="cov-class-group"><div class="cov-select-subhead">${esc(title)}${hint ? ` <span class="controls-hint">${esc(hint)}</span>` : ""}</div><div class="cov-check-grid cov-check-grid-sm">${checks}</div></div>`;
     };
 
-    const optionalList = classes.filter((c) => !activeClasses.includes(c));
-    const classGroups =
-      classBlock("Active skills", activeClasses) +
-      classBlock("Optional skills", optionalList);
+    const inactiveCustom = groups.allCustomGenerated.filter(
+      (id) => !groups.active.includes(id)
+    );
+    const skillGroupsFinal =
+      skillBlock("Active skills", groups.active) +
+      skillBlock(
+        "Custom & generated",
+        inactiveCustom,
+        inactiveCustom.length ? "not in active set — still queueable" : ""
+      ) +
+      (inactiveCustom.length
+        ? ""
+        : groups.allCustomGenerated.length
+          ? `<div class="controls-hint cov-skill-note">Custom/generated skills appear under Active (marked custom).</div>`
+          : `<div class="controls-hint cov-skill-note">No custom/generated skills yet — create or generate under Dev → Hunt skills.</div>`) +
+      skillBlock("Optional seed skills", groups.optionalSeed);
 
     el.innerHTML = `
       <div class="cov-plan-card">
@@ -713,27 +795,83 @@
         </div>
 
         <div class="cov-plan-actions" role="group" aria-label="Queue more hunts">
-          <button type="button" class="cov-plan-action ${mode === "auto" && !selectFormOpen ? "is-current" : ""}" data-cov-mode="auto" id="cov-plan-auto">
+          <button type="button" class="cov-plan-action ${mode === "auto" && !selectFormOpen && !maxHuntFormOpen ? "is-current" : ""}" data-cov-mode="auto" id="cov-plan-auto">
             <span class="cov-plan-action-title">Follow recon only</span>
             <span class="cov-plan-action-desc">Clear bulk override. Do not enqueue a new batch — leave planning to recon and cell re-queues.</span>
           </button>
-          <button type="button" class="cov-plan-action ${mode === "all" && !selectFormOpen ? "is-current" : ""}" data-cov-mode="all" id="cov-plan-all">
+          <button type="button" class="cov-plan-action ${mode === "all" && !selectFormOpen && !maxHuntFormOpen ? "is-current" : ""}" data-cov-mode="all" id="cov-plan-all">
             <span class="cov-plan-action-title">Cover all areas (active)</span>
             <span class="cov-plan-action-desc">Queue about ${est.capped} hunt${est.capped === 1 ? "" : "s"}: ${est.nCore} active skills × ${est.nAreas} area${est.nAreas === 1 ? "" : "s"}${est.raw > est.cap ? ` (capped at ${est.cap})` : ""}. Starts work immediately if Ralph is running.</span>
           </button>
           <button type="button" class="cov-plan-action ${selectFormOpen || mode === "select" ? "is-current" : ""}" data-cov-mode="select" id="cov-plan-custom">
-            <span class="cov-plan-action-title">Custom areas &amp; classes…</span>
-            <span class="cov-plan-action-desc">Pick architecture areas and/or folders/files from the target tree, then choose hunt classes.</span>
+            <span class="cov-plan-action-title">Custom areas &amp; skills…</span>
+            <span class="cov-plan-action-desc">Pick areas/paths and skills — or generate a new custom skill and queue it.</span>
+          </button>
+          <button type="button" class="cov-plan-action ${maxHuntFormOpen ? "is-current" : ""}" data-cov-mode="max_hunt" id="cov-plan-max">
+            <span class="cov-plan-action-title">MAX Hunt…</span>
+            <span class="cov-plan-action-desc">Per source file: generate a custom skill + queue a hunt (capped; costly LLM work). Research throughput only — not proof.</span>
           </button>
         </div>
+
+        ${
+          maxHuntFormOpen
+            ? `<div class="cov-select-form cov-max-hunt-form" id="cov-max-hunt-form">
+                <div class="cov-select-form-title">MAX Hunt</div>
+                <p class="controls-hint" style="margin:0 0 0.65rem">
+                  Enqueues one <strong>generate_skill</strong> Ralph task per source file (each then queues one hunt).
+                  Skills are saved as <strong>generated / inactive</strong> in Dev. Cap uses max files, run.max_tasks, and a hard ceiling of 200.
+                  <strong>Not exploit proof</strong> — operator research only. Ralph must be Start/Resume.
+                </p>
+                <div class="cov-select-heading">Scope</div>
+                <div class="strategy-list" role="radiogroup" aria-label="MAX Hunt scope">
+                  <label class="cov-check"><input type="radio" name="cov-max-scope" value="all" checked /> All source files (priority-sorted)</label>
+                  <label class="cov-check"><input type="radio" name="cov-max-scope" value="paths" /> Path targets only (use custom form paths / picker below)</label>
+                </div>
+                <div class="cov-select-heading" style="margin-top:0.65rem">Path targets (when scope = paths)</div>
+                <div id="cov-max-path-targets" class="cov-path-targets"></div>
+                <div class="cov-path-picker" id="cov-max-path-picker">
+                  <div class="cov-path-picker-toolbar">
+                    <div id="cov-max-path-picker-bc" class="cov-path-picker-bc"></div>
+                    <div class="cov-path-picker-btns">
+                      <button type="button" class="btn btn-ghost btn-sm" id="cov-max-picker-up">Up</button>
+                      <button type="button" class="btn btn-sm" id="cov-max-picker-add-cwd">Add this folder</button>
+                    </div>
+                  </div>
+                  <div id="cov-max-path-picker-list" class="cov-path-picker-list"></div>
+                </div>
+                <div class="init-row-2" style="margin-top:0.75rem">
+                  <div class="field">
+                    <label class="field-label" for="cov-max-files"><span class="label-text">Max files</span></label>
+                    <input type="number" id="cov-max-files" class="cov-text-input" value="${Math.min(50, maxTasksCap())}" min="1" max="200" step="1" />
+                  </div>
+                  <div class="field" style="display:flex;align-items:flex-end">
+                    <label class="cov-check" style="margin:0 0 0.4rem">
+                      <input type="checkbox" id="cov-max-activate" /> Activate generated skills (not recommended)
+                    </label>
+                  </div>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="cov-max-notes"><span class="label-text">Operator notes (optional)</span></label>
+                  <textarea id="cov-max-notes" class="cov-text-input op-notes" rows="2" placeholder="Extra guidance appended to every per-file skill brief…"></textarea>
+                </div>
+                <p class="controls-hint" id="cov-max-estimate">Click Preview to estimate file count and cost.</p>
+                <div class="cov-select-actions">
+                  <button type="button" class="btn" id="cov-max-preview">Preview</button>
+                  <button type="button" class="btn btn-primary" id="cov-max-start">Start MAX Hunt</button>
+                  <button type="button" class="btn" id="cov-max-cancel">Close</button>
+                </div>
+              </div>`
+            : ""
+        }
 
         ${
           selectFormOpen
             ? `<div class="cov-select-form" id="cov-select-form">
                 <div class="cov-select-form-title">Custom hunt queue</div>
                 <p class="controls-hint" style="margin:0 0 0.65rem">
-                  Combine architecture areas and <strong>path targets</strong> (folder or file) with hunt classes.
-                  Path targets seed path hints from that location. Cap is ${maxTasksCap()} hunts per batch (run.max_tasks).
+                  Combine architecture areas and <strong>path targets</strong> (folder or file) with hunt <strong>skills</strong>
+                  (seed, custom, or dynamically generated). Paths may also be typed under areas.
+                  Cap is ${maxTasksCap()} hunts per batch (run.max_tasks).
                 </p>
 
                 <div class="cov-select-heading">Path targets (from target tree)</div>
@@ -753,23 +891,51 @@
                   <div>
                     <div class="cov-select-heading">Architecture areas</div>
                     <div class="cov-check-grid">${areaChecks}</div>
-                    <label class="field-label" style="margin-top:0.5rem"><span class="label-text">Extra named areas (comma-separated)</span></label>
-                    <input type="text" id="cov-extra-areas" class="cov-text-input" placeholder="e.g. api, worker" />
+                    <label class="field-label" style="margin-top:0.5rem"><span class="label-text">Extra areas or paths (comma-separated)</span></label>
+                    <input type="text" id="cov-extra-areas" class="cov-text-input" placeholder="e.g. api, worker, src/auth.py, packages/api/" />
+                    <p class="controls-hint init-hint" style="margin-top:0.25rem">File or folder paths become path targets with path hints.</p>
                     <div class="cov-select-quick">
                       <button type="button" class="btn btn-ghost btn-sm" id="cov-areas-all">Select all areas</button>
                       <button type="button" class="btn btn-ghost btn-sm" id="cov-areas-none">Clear areas</button>
                     </div>
                   </div>
                   <div>
-                    <div class="cov-select-heading">Hunt classes</div>
-                    ${classGroups || `<span class="controls-hint">No catalog</span>`}
+                    <div class="cov-select-heading">Hunt skills</div>
+                    ${skillGroupsFinal || `<span class="controls-hint">No catalog</span>`}
+                    <label class="field-label" style="margin-top:0.5rem"><span class="label-text">Extra skill ids (comma-separated)</span></label>
+                    <input type="text" id="cov-extra-skills" class="cov-text-input" placeholder="e.g. my-generated-skill" />
                     <div class="cov-select-quick">
                       <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-core">Active only</button>
-                      <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-all">All classes</button>
+                      <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-custom" title="Select all custom and generated skills">Custom &amp; generated</button>
+                      <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-all">All skills</button>
                       <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-none">Clear</button>
                     </div>
                   </div>
                 </div>
+
+                <div class="cov-generate-block" id="cov-generate-block">
+                  <div class="cov-select-heading">Generate new skill</div>
+                  <p class="controls-hint" style="margin:0 0 0.45rem">
+                    Queues a Ralph <span class="mono">generate_skill</span> task (async LLM). Uses path targets / areas above as hunt focus when queue is on.
+                  </p>
+                  <div class="field">
+                    <label class="field-label" for="cov-gen-brief"><span class="label-text">Brief (required)</span></label>
+                    <textarea id="cov-gen-brief" class="cov-text-input op-notes" rows="3" placeholder="e.g. Hunt for IDOR in packages/api auth handlers; focus on tenant isolation."></textarea>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="cov-gen-id"><span class="label-text">Suggested skill id (optional)</span></label>
+                    <input type="text" id="cov-gen-id" class="cov-text-input" placeholder="e.g. api-tenant-idor" />
+                  </div>
+                  <div class="cov-gen-opts">
+                    <label class="cov-check"><input type="checkbox" id="cov-gen-queue" checked /> Queue hunt(s) after generate</label>
+                    <label class="cov-check"><input type="checkbox" id="cov-gen-activate" /> Activate skill in Dev</label>
+                  </div>
+                  <div class="cov-select-actions" style="margin-top:0.5rem">
+                    <button type="button" class="btn btn-primary" id="cov-gen-submit">Generate &amp; queue</button>
+                    <span class="controls-hint">Requires Ralph running</span>
+                  </div>
+                </div>
+
                 <div class="cov-select-actions">
                   <button type="button" class="btn btn-primary" id="cov-select-enqueue">Queue selected hunts</button>
                   <button type="button" class="btn" id="cov-select-cancel">Close</button>
@@ -792,6 +958,14 @@
         const m = btn.getAttribute("data-cov-mode");
         if (m === "select") {
           selectFormOpen = true;
+          maxHuntFormOpen = false;
+          renderModeBar(p);
+          return;
+        }
+        if (m === "max_hunt") {
+          maxHuntFormOpen = true;
+          selectFormOpen = false;
+          maxHuntPreview = null;
           renderModeBar(p);
           return;
         }
@@ -800,7 +974,7 @@
           if (
             !window.confirm(
               `Queue about ${e.capped} hunt(s)?\n\n` +
-                `${e.nCore} core classes × ${e.nAreas} areas` +
+                `${e.nCore} active skills × ${e.nAreas} areas` +
                 (e.raw > e.cap ? ` (capped at ${e.cap})` : "") +
                 ".\n\nRalph must be running to work the queue."
             )
@@ -818,12 +992,18 @@
           }
         }
         selectFormOpen = false;
+        maxHuntFormOpen = false;
         applyCoverageMode(m);
       });
     });
 
     $("#cov-select-cancel")?.addEventListener("click", () => {
       selectFormOpen = false;
+      renderModeBar(p);
+    });
+    $("#cov-max-cancel")?.addEventListener("click", () => {
+      maxHuntFormOpen = false;
+      maxHuntPreview = null;
       renderModeBar(p);
     });
     $("#cov-areas-all")?.addEventListener("click", () => setChecks("[data-cov-area]", true));
@@ -834,12 +1014,59 @@
       });
       updateSelectEstimate();
     });
+    $("#cov-classes-custom")?.addEventListener("click", () => {
+      const customSet = new Set(groups.allCustomGenerated);
+      el.querySelectorAll("[data-cov-class]").forEach((inp) => {
+        inp.checked = customSet.has(inp.value);
+      });
+      updateSelectEstimate();
+    });
     $("#cov-classes-all")?.addEventListener("click", () => setChecks("[data-cov-class]", true));
     $("#cov-classes-none")?.addEventListener("click", () => setChecks("[data-cov-class]", false));
     el.querySelectorAll("[data-cov-area], [data-cov-class]").forEach((inp) => {
       inp.addEventListener("change", updateSelectEstimate);
     });
     $("#cov-extra-areas")?.addEventListener("input", updateSelectEstimate);
+    $("#cov-extra-skills")?.addEventListener("input", updateSelectEstimate);
+
+    function collectCustomSelection() {
+      const pickedAreas = [...el.querySelectorAll("[data-cov-area]:checked")].map(
+        (i) => i.value
+      );
+      const extraRaw = ($("#cov-extra-areas")?.value || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const extraAreas = [];
+      const typedPaths = [];
+      for (const x of extraRaw) {
+        if (looksLikePath(x))
+          typedPaths.push(x.replace(/\\/g, "/").replace(/\/+$/, "") || x);
+        else extraAreas.push(x);
+      }
+      const pathTargets = [
+        ...customPathTargets.map((t) => ({
+          path: t.path,
+          is_dir: !!t.is_dir,
+        })),
+        ...typedPaths.map((p) => ({
+          path: p,
+          is_dir: !/\.[a-zA-Z0-9]{1,12}$/.test(p.split("/").pop() || ""),
+        })),
+      ];
+      const seenP = new Set();
+      const pathTargetsDedup = [];
+      for (const t of pathTargets) {
+        if (seenP.has(t.path)) continue;
+        seenP.add(t.path);
+        pathTargetsDedup.push(t);
+      }
+      return {
+        areas: [...new Set([...pickedAreas, ...extraAreas])],
+        pathTargets: pathTargetsDedup,
+        typedPaths,
+      };
+    }
 
     if (selectFormOpen) {
       renderPathTargetChips();
@@ -859,34 +1086,254 @@
       updateSelectEstimate();
     }
 
+    if (maxHuntFormOpen) {
+      // Reuse same customPathTargets chips + picker under max ids
+      const chipBox = $("#cov-max-path-targets");
+      if (chipBox) {
+        // Temporarily render chips into max box
+        const prev = $("#cov-path-targets");
+        renderPathTargetChips();
+        if (prev && chipBox !== prev) {
+          chipBox.innerHTML = prev.innerHTML || chipBox.innerHTML;
+          // re-bind remove on max box
+          chipBox.querySelectorAll("[data-rm-path]").forEach((btn) => {
+            btn.addEventListener("click", () => {
+              const pathRm = btn.getAttribute("data-rm-path");
+              customPathTargets = customPathTargets.filter((t) => t.path !== pathRm);
+              renderModeBar(window.__VF_cov_policy || p);
+            });
+          });
+        }
+      }
+      // Mirror path picker into max picker containers by aliasing ids for loadPathPicker
+      // loadPathPicker uses cov-path-picker-* — also wire max-* clones
+      const maxList = $("#cov-max-path-picker-list");
+      const maxBc = $("#cov-max-path-picker-bc");
+      if (maxList && maxBc) {
+        // Simple: call loadPathPicker then copy HTML
+        loadPathPicker(el);
+        const srcList = $("#cov-path-picker-list");
+        const srcBc = $("#cov-path-picker-bc");
+        if (srcList) maxList.innerHTML = srcList.innerHTML;
+        if (srcBc) maxBc.innerHTML = srcBc.innerHTML;
+        maxList.querySelectorAll("[data-open-path]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            if (btn.getAttribute("data-is-dir") === "1") {
+              pathPickerBrowse = btn.getAttribute("data-open-path") || ".";
+              renderModeBar(p);
+            }
+          });
+        });
+        maxList.querySelectorAll("[data-add-path]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const full = btn.getAttribute("data-add-path");
+            const isDir = btn.getAttribute("data-is-dir") === "1";
+            if (full) {
+              addPathTarget(full, isDir);
+              renderModeBar(p);
+              toast(`Added ${isDir ? "folder" : "file"} ${full}`);
+            }
+          });
+        });
+        maxBc.querySelectorAll("[data-ppath]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            pathPickerBrowse = btn.getAttribute("data-ppath") || ".";
+            renderModeBar(p);
+          });
+        });
+      }
+      $("#cov-max-picker-up")?.addEventListener("click", () => {
+        pathPickerBrowse = parentPath(pathPickerBrowse);
+        renderModeBar(p);
+      });
+      $("#cov-max-picker-add-cwd")?.addEventListener("click", () => {
+        addPathTarget(pathPickerBrowse || ".", true);
+        renderModeBar(p);
+        toast(`Added folder ${pathPickerBrowse === "." ? "target root" : pathPickerBrowse}`);
+      });
+      if (maxHuntPreview) {
+        const est = $("#cov-max-estimate");
+        if (est) {
+          const n = maxHuntPreview.estimated_generate_tasks ?? maxHuntPreview.files?.length ?? 0;
+          const total = maxHuntPreview.file_count ?? n;
+          const cap = maxHuntPreview.capped_to ?? n;
+          est.textContent =
+            `About ${n} generate_skill task(s) (~${n} hunts). ` +
+            `Matched ${total} source file(s); capped to ${cap}` +
+            (maxHuntPreview.truncated ? " (truncated)." : ".") +
+            " Start Ralph to run.";
+        }
+      }
+    }
+
+    async function runMaxHuntPreview() {
+      const scope =
+        el.querySelector('input[name="cov-max-scope"]:checked')?.value || "all";
+      let maxFiles = parseInt($("#cov-max-files")?.value || "50", 10);
+      if (!Number.isFinite(maxFiles)) maxFiles = 50;
+      maxFiles = Math.max(1, Math.min(200, maxFiles));
+      const body = {
+        scope,
+        max_files: maxFiles,
+        dry_run: true,
+        activate: !!$("#cov-max-activate")?.checked,
+        operator_notes: ($("#cov-max-notes")?.value || "").trim(),
+      };
+      if (scope === "paths") {
+        body.path_targets = customPathTargets.map((t) => ({
+          path: t.path,
+          is_dir: !!t.is_dir,
+        }));
+        if (!body.path_targets.length) {
+          toast("Add path targets for scope=paths (or choose All source files)", true);
+          return null;
+        }
+      }
+      try {
+        const r = await api(`${runApiBase()}/coverage/max-hunt`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        maxHuntPreview = r;
+        const est = $("#cov-max-estimate");
+        if (est) {
+          const n = r.estimated_generate_tasks ?? (r.files || []).length;
+          est.textContent =
+            `About ${n} generate_skill task(s) (~${n} hunts after generation). ` +
+            `Matched ${r.file_count ?? n} file(s); cap ${r.capped_to ?? n}` +
+            (r.truncated ? " (truncated)." : ".") +
+            (r.files_sample?.length
+              ? ` Sample: ${r.files_sample.slice(0, 5).join(", ")}`
+              : "");
+        }
+        return r;
+      } catch (e) {
+        toast(e.message || String(e), true);
+        return null;
+      }
+    }
+
+    $("#cov-max-preview")?.addEventListener("click", () => {
+      runMaxHuntPreview();
+    });
+
+    $("#cov-max-start")?.addEventListener("click", async () => {
+      let prev = maxHuntPreview;
+      if (!prev) prev = await runMaxHuntPreview();
+      if (!prev || !prev.ok) return;
+      const n = prev.estimated_generate_tasks ?? (prev.files || []).length;
+      if (!n) {
+        toast("No source files matched", true);
+        return;
+      }
+      const costNote =
+        n > 10
+          ? `\n\nThis will run ~${n} LLM skill authorings (then ~${n} hunts). Confirm you accept the cost.`
+          : "";
+      if (
+        !window.confirm(
+          `Start MAX Hunt?\n\n` +
+            `Enqueue ${n} generate_skill task(s) (≈ ${n} hunts after). ` +
+            `Cap ${prev.capped_to}; matched ${prev.file_count}.` +
+            costNote +
+            `\n\nSkills default inactive. Not exploit proof. Ralph must be running.`
+        )
+      ) {
+        return;
+      }
+      const scope =
+        el.querySelector('input[name="cov-max-scope"]:checked')?.value || "all";
+      let maxFiles = parseInt($("#cov-max-files")?.value || "50", 10);
+      if (!Number.isFinite(maxFiles)) maxFiles = 50;
+      maxFiles = Math.max(1, Math.min(200, maxFiles));
+      const body = {
+        scope,
+        max_files: maxFiles,
+        dry_run: false,
+        activate: !!$("#cov-max-activate")?.checked,
+        operator_notes: ($("#cov-max-notes")?.value || "").trim(),
+      };
+      if (scope === "paths") {
+        body.path_targets = customPathTargets.map((t) => ({
+          path: t.path,
+          is_dir: !!t.is_dir,
+        }));
+      }
+      try {
+        const r = await api(`${runApiBase()}/coverage/max-hunt`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        toast(r.message || `Queued ${r.enqueued_generate || 0} generate_skill task(s)`);
+        maxHuntFormOpen = false;
+        maxHuntPreview = null;
+        if (typeof window.loadRunFull === "function") await window.loadRunFull();
+        else renderModeBar(window.__VF_cov_policy || p);
+      } catch (e) {
+        toast(e.message || String(e), true);
+      }
+    });
+
+    $("#cov-gen-submit")?.addEventListener("click", async () => {
+      const brief = ($("#cov-gen-brief")?.value || "").trim();
+      if (!brief) {
+        toast("Brief is required to generate a skill", true);
+        $("#cov-gen-brief")?.focus();
+        return;
+      }
+      const sel = collectCustomSelection();
+      const body = {
+        brief,
+        suggested_id: ($("#cov-gen-id")?.value || "").trim() || null,
+        activate: !!$("#cov-gen-activate")?.checked,
+        enqueue_hunts: $("#cov-gen-queue") ? !!$("#cov-gen-queue").checked : true,
+        areas: sel.areas,
+        path_targets: sel.pathTargets,
+      };
+      if (
+        !window.confirm(
+          "Queue generate_skill via Ralph?\n\n" +
+            (body.enqueue_hunts
+              ? "After the skill is authored, hunt(s) will be enqueued for selected paths/areas."
+              : "Skill only — no hunts will be enqueued.") +
+            "\n\nStart/Resume Ralph to run."
+        )
+      ) {
+        return;
+      }
+      try {
+        const r = await api(`${runApiBase()}/coverage/generate-skill`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+        toast(r.message || `Queued generate_skill #${r.task_id}`);
+        if (typeof window.loadRunFull === "function") await window.loadRunFull();
+      } catch (e) {
+        toast(e.message || String(e), true);
+      }
+    });
+
     $("#cov-select-enqueue")?.addEventListener("click", () => {
-      const pickedAreas = [...el.querySelectorAll("[data-cov-area]:checked")].map(
-        (i) => i.value
-      );
-      const extra = ($("#cov-extra-areas")?.value || "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const sel = collectCustomSelection();
       const pickedClasses = [...el.querySelectorAll("[data-cov-class]:checked")].map(
         (i) => i.value
       );
-      const pathTargets = customPathTargets.map((t) => ({
-        path: t.path,
-        is_dir: !!t.is_dir,
-      }));
-      if (!pickedClasses.length) {
-        toast("Pick at least one hunt class", true);
+      const extraSkills = ($("#cov-extra-skills")?.value || "")
+        .split(",")
+        .map((s) => s.trim().toLowerCase().replace(/_/g, "-"))
+        .filter(Boolean);
+      const skillSet = [...new Set([...pickedClasses, ...extraSkills])];
+      if (!skillSet.length) {
+        toast("Pick at least one hunt skill", true);
         return;
       }
       const nA =
-        pickedAreas.length + extra.length + pathTargets.length ||
-        knownAreas().length ||
-        1;
-      const raw = nA * pickedClasses.length;
+        sel.areas.length + sel.pathTargets.length || knownAreas().length || 1;
+      const raw = nA * skillSet.length;
       const cap = maxTasksCap();
       const capped = Math.min(raw, cap);
-      const pathNote = pathTargets.length
-        ? `\nPath targets: ${pathTargets.map((t) => t.path).join(", ")}`
+      const pathNote = sel.pathTargets.length
+        ? `\nPath targets: ${sel.pathTargets.map((t) => t.path).join(", ")}`
         : "";
       if (
         !window.confirm(
@@ -899,9 +1346,9 @@
       }
       applyCoverageMode(
         "select",
-        [...new Set([...pickedAreas, ...extra])],
-        pickedClasses,
-        pathTargets
+        [...new Set([...sel.areas, ...sel.typedPaths])],
+        skillSet,
+        sel.pathTargets
       );
     });
   }
@@ -960,12 +1407,12 @@
       `<a class="cov-class-link mono" href="/dev#hunt/${encodeURIComponent(c)}" target="_blank" rel="noopener">${esc(c)}</a>`;
 
     const classCaption = `<div class="coverage-class-caption controls-hint">
-      <strong>${areas.length}</strong> areas × <strong>${classes.length}</strong> classes:
+      <strong>${areas.length}</strong> areas × <strong>${classes.length}</strong> skills:
       ${classes.map((c) => `<span class="cov-class-pill">${classLink(c)}</span>`).join(" ")}
     </div>`;
 
     const head =
-      `<tr><th class="row-head">Area \\ class</th>` +
+      `<tr><th class="row-head">Area \\ skill</th>` +
       classes.map((c) => `<th title="${esc(c)}">${classLink(c)}</th>`).join("") +
       `</tr>`;
 
@@ -1007,7 +1454,7 @@
       <div class="coverage-wrap"><table class="coverage-grid">${head}${rows}</table></div>
       <p class="controls-hint" style="margin-top:0.5rem">
         Click a cell for reasons and re-queue. Dimmed cells are outside the active filter.
-        Scroll horizontally when many hunt classes are in play.
+        Scroll horizontally when many hunt skills are in play.
       </p>`;
   }
 

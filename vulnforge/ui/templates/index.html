@@ -82,144 +82,214 @@
     <div class="modal modal-init" role="dialog" aria-labelledby="init-modal-title" aria-modal="true">
       <header class="modal-init-header">
         <h2 id="init-modal-title">New audit</h2>
-        <p class="modal-init-sub">Point VulnForge at a code tree and choose how to start.</p>
+        <p class="modal-init-sub">Point VulnForge at a code tree and choose how to start. Hover <span class="init-help-inline" aria-hidden="true">?</span> for details.</p>
       </header>
       <form id="init-form" class="init-form">
-        <div class="field">
-          <label class="field-label-text" for="init-target">Target directory</label>
-          <div class="path-input-row">
-            <input id="init-target" name="target" required placeholder="C:\path\to\repo" autocomplete="off" spellcheck="false" />
-            <button type="button" class="btn" id="btn-browse-target" title="Browse for folder">Browse...</button>
-          </div>
-        </div>
 
-        <fieldset class="init-fieldset">
-          <legend class="field-label-text">Strategy</legend>
-          <div class="strategy-list" role="radiogroup" aria-label="Run strategy">
-            <label class="strategy-option">
-              <input type="radio" name="init-strategy" value="discovery" checked />
-              <span class="strategy-option-main">
-                <span class="strategy-option-title">Discovery recon</span>
-                <span class="strategy-option-desc">Map architecture, then plan hunts. Best default.</span>
-              </span>
-            </label>
-            <label class="strategy-option">
-              <input type="radio" name="init-strategy" value="file_by_file" />
-              <span class="strategy-option-main">
-                <span class="strategy-option-title">File-by-file</span>
-                <span class="strategy-option-desc">One hunt queue per source file. Thorough, more tasks.</span>
-              </span>
-            </label>
-            <label class="strategy-option">
-              <input type="radio" name="init-strategy" value="recon_docs" />
-              <span class="strategy-option-main">
-                <span class="strategy-option-title">Recon with docs</span>
-                <span class="strategy-option-desc">Use design docs / ADRs to guide recon.</span>
-              </span>
-            </label>
+        <!-- 1. Target -->
+        <section class="init-section" aria-labelledby="init-sec-target">
+          <h3 class="init-section-title" id="init-sec-target">Target</h3>
+          <div class="field">
+            <div class="field-label-row">
+              <label class="field-label-text" for="init-target">Directory</label>
+              <button type="button" class="init-help" data-tip="Read-only audit tree path. Agents never write into the target — evidence and run state live under the run directory." aria-label="Help: Target directory">?</button>
+            </div>
+            <div class="path-input-row">
+              <input id="init-target" name="target" required placeholder="C:\path\to\repo" autocomplete="off" spellcheck="false" />
+              <button type="button" class="btn" id="btn-browse-target" title="Browse for folder">Browse...</button>
+            </div>
           </div>
-        </fieldset>
+        </section>
 
-        <div class="field" id="init-docs-field" hidden>
-          <label class="field-label-text" for="init-docs-path">Docs path</label>
-          <div class="path-input-row">
-            <input id="init-docs-path" name="docs_path" placeholder="C:\path\to\docs" autocomplete="off" spellcheck="false" />
-            <button type="button" class="btn" id="btn-browse-docs" title="Browse for docs folder or file">Browse...</button>
+        <!-- 2. Strategy -->
+        <section class="init-section" aria-labelledby="init-sec-strategy">
+          <div class="field-label-row init-section-head">
+            <h3 class="init-section-title" id="init-sec-strategy">Strategy</h3>
+            <button type="button" class="init-help" data-tip="How this run is planned. Discovery is the usual default; file-by-file is exhaustive; recon with docs steers mapping from design docs." aria-label="Help: Strategy">?</button>
           </div>
-          <p class="controls-hint init-hint">Folder or file with design docs (md, html, docx, pdf, xlsx).</p>
-        </div>
+          <fieldset class="init-fieldset">
+            <legend class="visually-hidden">Run strategy</legend>
+            <div class="strategy-list" role="radiogroup" aria-label="Run strategy">
+              <label class="strategy-option">
+                <input type="radio" name="init-strategy" value="discovery" checked />
+                <span class="strategy-option-main">
+                  <span class="strategy-option-title-row">
+                    <span class="strategy-option-title">Discovery recon</span>
+                    <button type="button" class="init-help" data-tip="Maps architecture with recon agents, then plans hunt tasks. Best default for most codebases." aria-label="Help: Discovery recon" tabindex="-1">?</button>
+                  </span>
+                  <span class="strategy-option-desc">Map architecture, then plan hunts.</span>
+                </span>
+              </label>
+              <label class="strategy-option">
+                <input type="radio" name="init-strategy" value="file_by_file" />
+                <span class="strategy-option-main">
+                  <span class="strategy-option-title-row">
+                    <span class="strategy-option-title">File-by-file</span>
+                    <button type="button" class="init-help" data-tip="Enqueues a hunt per source file × active/allowed skills. Thorough but can create many tasks; respects max tasks." aria-label="Help: File-by-file" tabindex="-1">?</button>
+                  </span>
+                  <span class="strategy-option-desc">One hunt per source file. Thorough, more tasks.</span>
+                </span>
+              </label>
+              <label class="strategy-option">
+                <input type="radio" name="init-strategy" value="recon_docs" />
+                <span class="strategy-option-main">
+                  <span class="strategy-option-title-row">
+                    <span class="strategy-option-title">Recon with docs</span>
+                    <button type="button" class="init-help" data-tip="Ingests design docs/ADRs (md/html/docx/pdf/xlsx) to guide recon focus before planning hunts." aria-label="Help: Recon with docs" tabindex="-1">?</button>
+                  </span>
+                  <span class="strategy-option-desc">Steer recon with design docs / ADRs.</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
 
+          <div class="field init-docs-field" id="init-docs-field" hidden>
+            <div class="field-label-row">
+              <label class="field-label-text" for="init-docs-path">Docs path</label>
+              <button type="button" class="init-help" data-tip="Folder or file of design docs used by recon-with-docs. Supported: md, html, docx, pdf, xlsx." aria-label="Help: Docs path">?</button>
+            </div>
+            <div class="path-input-row">
+              <input id="init-docs-path" name="docs_path" placeholder="C:\path\to\docs" autocomplete="off" spellcheck="false" />
+              <button type="button" class="btn" id="btn-browse-docs" title="Browse for docs folder or file">Browse...</button>
+            </div>
+            <p class="controls-hint init-hint">md · html · docx · pdf · xlsx</p>
+          </div>
+        </section>
+
+        <!-- 3. Recon (discovery / recon_docs only) -->
         <div id="init-recon-fields">
-          <div class="field">
-            <label class="field-label-text">Recon agents</label>
-            <p class="controls-hint init-hint" style="margin:0.15rem 0 0.4rem">
-              Select one or more recon profiles — each runs as its own Ralph task; maps merge when the batch finishes. Leave all unchecked to use the active set from Dev.
-            </p>
-            <div id="init-recon-agents" class="recon-agent-picker" role="group" aria-label="Recon agents">
-              <div class="controls-hint">Loading agents…</div>
+          <section class="init-section" aria-labelledby="init-sec-recon">
+            <h3 class="init-section-title" id="init-sec-recon">Recon</h3>
+
+            <div class="field">
+              <div class="field-label-row">
+                <span class="field-label-text" id="init-recon-agents-label">Agents</span>
+                <button type="button" class="init-help" data-tip="Each selected agent is its own Ralph task; results merge into one architecture. Leave unchecked to use the active set from Dev → Recon agents." aria-label="Help: Recon agents">?</button>
+              </div>
+              <p class="controls-hint init-hint">Unchecked = Dev active set</p>
+              <div id="init-recon-agents" class="recon-agent-picker" role="group" aria-labelledby="init-recon-agents-label">
+                <div class="controls-hint">Loading agents…</div>
+              </div>
             </div>
-          </div>
-          <div class="field">
-            <label class="field-label-text" for="init-recon-notes">Recon brief (optional)</label>
-            <textarea
-              id="init-recon-notes"
-              class="op-notes"
-              rows="3"
-              placeholder="Extra instructions for recon — what to map, fix, or deepen (e.g. focus on auth and payment entrypoints)."
-            ></textarea>
-          </div>
-          <div class="field" id="init-dynamic-skills-field">
-            <label class="init-check">
-              <input type="checkbox" id="init-dynamic-skills" />
-              <span>Generate custom hunt skills for this run</span>
-            </label>
-            <p class="controls-hint init-hint" style="margin:0.35rem 0 0.4rem">
-              After recon, author target-specific hunt skills from architecture and inventory
-              (editable system prompt under Dev → Skill generator). Stock hunts still run; these are additive.
-            </p>
-            <div class="field" id="init-dynamic-skill-count-wrap" hidden>
-              <label class="field-label-text" for="init-dynamic-skill-count">Number of custom skills</label>
-              <input id="init-dynamic-skill-count" type="number" value="3" min="1" max="10" step="1" />
+
+            <div class="field">
+              <div class="field-label-row">
+                <label class="field-label-text" for="init-recon-notes">Brief <span class="init-optional">(optional)</span></label>
+                <button type="button" class="init-help" data-tip="Free-text operator guidance injected into recon packets — what to map, deepen, or prioritize." aria-label="Help: Recon brief">?</button>
+              </div>
+              <textarea
+                id="init-recon-notes"
+                class="op-notes"
+                rows="2"
+                placeholder="e.g. focus on auth and payment entrypoints"
+              ></textarea>
             </div>
-          </div>
+
+            <div class="field init-dyn-skills" id="init-dynamic-skills-field">
+              <div class="init-check-row">
+                <label class="init-check">
+                  <input type="checkbox" id="init-dynamic-skills" />
+                  <span>Generate custom hunt skills</span>
+                </label>
+                <button type="button" class="init-help" data-tip="After recon, an LLM authors target-specific hunt skills (additive; stock skills still run). Count 1–10. System prompt editable under Dev → Skill generator." aria-label="Help: Generate custom hunt skills">?</button>
+              </div>
+              <div class="field init-inline-count" id="init-dynamic-skill-count-wrap" hidden>
+                <label class="field-label-text" for="init-dynamic-skill-count">Count</label>
+                <input id="init-dynamic-skill-count" type="number" value="3" min="1" max="10" step="1" />
+              </div>
+            </div>
+
+            <div class="field" id="init-enqueue-hunts-field">
+              <div class="init-check-row">
+                <label class="init-check">
+                  <input type="checkbox" id="init-enqueue-hunts" checked />
+                  <span>Queue hunts after recon</span>
+                </label>
+                <button type="button" class="init-help" data-tip="When on (default), recon plans and enqueues hunt tasks automatically. Turn off for architecture-only: map the app, then enqueue hunts yourself from Coverage, Explorer, or residual cells." aria-label="Help: Queue hunts after recon">?</button>
+              </div>
+              <p class="controls-hint init-hint">Off = manual hunts (Coverage / Explorer)</p>
+            </div>
+          </section>
         </div>
 
-        <div class="field" id="init-hunt-skill-mode-field">
-          <label class="field-label-text">Hunt skills for this run</label>
-          <p class="controls-hint init-hint" style="margin:0.15rem 0 0.4rem">
-            Run-scoped only — does not change global Dev active toggles.
-            Empty custom-only sets enqueue zero hunts after recon (OK).
-          </p>
+        <!-- 4. Hunt skills -->
+        <section class="init-section" id="init-hunt-skill-mode-field" aria-labelledby="init-sec-hunt">
+          <div class="field-label-row init-section-head">
+            <h3 class="init-section-title" id="init-sec-hunt">Hunt skills</h3>
+            <button type="button" class="init-help" data-tip="Run-scoped only — does not change global Dev active toggles. Controls which skills may be enqueued for this run." aria-label="Help: Hunt skills">?</button>
+          </div>
           <div class="strategy-list hunt-skill-mode-list" role="radiogroup" aria-label="Hunt skill mode">
             <label class="strategy-option">
               <input type="radio" name="init-hunt-skill-mode" value="all_active" checked />
               <span class="strategy-option-main">
-                <span class="strategy-option-title">Default active</span>
-                <span class="strategy-option-desc">All currently active hunt skills (Dev collection).</span>
+                <span class="strategy-option-title-row">
+                  <span class="strategy-option-title">Default active</span>
+                  <button type="button" class="init-help" data-tip="Currently active skills in the operator collection (Dev)." aria-label="Help: Default active" tabindex="-1">?</button>
+                </span>
+                <span class="strategy-option-desc">All active skills from Dev.</span>
               </span>
             </label>
             <label class="strategy-option">
               <input type="radio" name="init-hunt-skill-mode" value="seed_active" />
               <span class="strategy-option-main">
-                <span class="strategy-option-title">Seed only</span>
-                <span class="strategy-option-desc">Active package-seed skills only (source=seed).</span>
+                <span class="strategy-option-title-row">
+                  <span class="strategy-option-title">Seed only</span>
+                  <button type="button" class="init-help" data-tip="Active package-seed skills only (source=seed). Edited seeds count as custom." aria-label="Help: Seed only" tabindex="-1">?</button>
+                </span>
+                <span class="strategy-option-desc">Active package-seed skills only.</span>
               </span>
             </label>
             <label class="strategy-option">
               <input type="radio" name="init-hunt-skill-mode" value="custom_only" />
               <span class="strategy-option-main">
-                <span class="strategy-option-title">Custom only</span>
-                <span class="strategy-option-desc">Active custom / generated / import skills — no seeds.</span>
+                <span class="strategy-option-title-row">
+                  <span class="strategy-option-title">Custom only</span>
+                  <button type="button" class="init-help" data-tip="Active custom/generated/import skills only — no seeds. Empty set enqueues zero hunts after recon (allowed)." aria-label="Help: Custom only" tabindex="-1">?</button>
+                </span>
+                <span class="strategy-option-desc">Custom / generated / import only.</span>
               </span>
             </label>
             <label class="strategy-option">
               <input type="radio" name="init-hunt-skill-mode" value="explicit" />
               <span class="strategy-option-main">
-                <span class="strategy-option-title">Pick skills</span>
-                <span class="strategy-option-desc">Choose exact skill ids for this run.</span>
+                <span class="strategy-option-title-row">
+                  <span class="strategy-option-title">Pick skills</span>
+                  <button type="button" class="init-help" data-tip="Explicit allowlist of skill ids for this run only." aria-label="Help: Pick skills" tabindex="-1">?</button>
+                </span>
+                <span class="strategy-option-desc">Choose exact skill ids.</span>
               </span>
             </label>
           </div>
           <div id="init-hunt-skill-picker" class="hunt-skill-picker" hidden>
-            <p class="controls-hint" style="margin:0.4rem 0">Select one or more hunt skills:</p>
+            <p class="controls-hint init-hint">Select one or more hunt skills</p>
             <div id="init-hunt-skills" class="recon-agent-picker" role="group" aria-label="Hunt skills">
               <div class="controls-hint">Loading skills…</div>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div class="init-row-2">
-          <div class="field">
-            <label class="field-label-text" for="init-max-tasks">Max tasks</label>
-            <input id="init-max-tasks" type="number" value="50" min="1" step="1" />
+        <!-- 5. Limits & start -->
+        <section class="init-section" aria-labelledby="init-sec-limits">
+          <h3 class="init-section-title" id="init-sec-limits">Limits &amp; start</h3>
+          <div class="init-row-2">
+            <div class="field">
+              <div class="field-label-row">
+                <label class="field-label-text" for="init-max-tasks">Max tasks</label>
+                <button type="button" class="init-help" data-tip="Cap on planned/enqueued hunt tasks for this run. Coverage estimates use this too." aria-label="Help: Max tasks">?</button>
+              </div>
+              <input id="init-max-tasks" type="number" value="50" min="1" step="1" />
+            </div>
+            <div class="field init-start-field">
+              <div class="init-check-row">
+                <label class="init-check">
+                  <input type="checkbox" id="init-start" checked />
+                  <span>Start Ralph after create</span>
+                </label>
+                <button type="button" class="init-help" data-tip="When on, immediately runs the task loop after init. Off = create the run only; start later from Mission." aria-label="Help: Start Ralph after create">?</button>
+              </div>
+            </div>
           </div>
-          <div class="field init-start-field">
-            <label class="init-check">
-              <input type="checkbox" id="init-start" checked />
-              <span>Start Ralph after create</span>
-            </label>
-          </div>
-        </div>
+        </section>
 
         <div class="modal-actions">
           <button type="button" class="btn" id="init-cancel">Cancel</button>
@@ -337,7 +407,7 @@
                     </span>
                   </button>
                 </label>
-                <input id="set-model" required placeholder="models/Ornith-1.0-35B@4bit" />
+                <input id="set-model" required placeholder="ornith-1.0-35b@4bit" />
               </div>
               <div class="field" style="grid-column:1/-1">
                 <label class="field-label" for="set-api-mode">

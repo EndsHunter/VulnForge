@@ -38,8 +38,8 @@ def _base_url(host: str, port: int) -> str:
     return f"http://{host.strip()}:{int(port)}/v1"
 
 
-def _model_candidates(requested: str, listed: list[str]) -> list[str]:
-    """Ordered unique candidates for model id matching."""
+def model_candidates(requested: str, listed: list[str]) -> list[str]:
+    """Ordered unique candidates for model id matching (LM Studio / Ornith quirks)."""
     req = (requested or "").strip()
     out: list[str] = []
     seen: set[str] = set()
@@ -70,6 +70,32 @@ def _model_candidates(requested: str, listed: list[str]) -> list[str]:
             if stem in m_stem or m_stem in stem:
                 add(m)
     return out
+
+
+# Back-compat private alias
+_model_candidates = model_candidates
+
+
+def resolve_listed_model(requested: str, listed: list[str]) -> Optional[str]:
+    """Pick the best listed model id for a configured request string.
+
+    Prefers an id that appears in ``listed`` (case/prefix-normalized). Falls
+    back to the configured string when the server list is empty or unmatched
+    (some proxies accept unlisted names).
+    """
+    listed = [str(x) for x in (listed or []) if x]
+    if not listed:
+        return (requested or "").strip() or None
+    for cand in model_candidates(requested, listed):
+        if cand in listed:
+            return cand
+    # Case-insensitive membership
+    low = {m.lower(): m for m in listed}
+    for cand in model_candidates(requested, listed):
+        hit = low.get(cand.lower())
+        if hit:
+            return hit
+    return listed[0]
 
 
 def _extract_context_tokens(model_obj: dict[str, Any]) -> Optional[int]:

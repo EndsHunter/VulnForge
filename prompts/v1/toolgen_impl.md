@@ -2,9 +2,11 @@
 
 You implement a VulnForge agent tool from an approved SPEC.
 
-## Output
+## Output format (strict)
 
-JSON only:
+- Reply with **one JSON object only** (no prose before/after).
+- Keep `impl_py` complete but **small** — one module, one primary function.
+- Function name and schema `name` **must equal the draft tool id**.
 
 ```json
 {
@@ -41,11 +43,12 @@ JSON only:
 
 ## Implementation requirements
 
-- `def tool_id(ctx: dict, ...) -> dict` returning `{"ok": True, ...}` or `{"ok": False, "error": "..."}`.
-- Paths: `from vulnforge.tools.fs_read import resolve_target_path` and scope helpers when accepting paths.
+- `impl_py` is a **complete** module: `from __future__ import annotations`, imports, then
+  `def tool_id(ctx: dict, ...) -> dict` returning `{"ok": True, ...}` or `{"ok": False, "error": "..."}`.
+- Paths: `from vulnforge.tools.fs_read import resolve_target_path` (and scope helpers) when accepting paths.
 - Read caps from `ctx.get("cfg") or {}` under `tools` when relevant.
-- No `subprocess` / network for `read_only`.
-- Keep module self-contained; avoid writing outside evidence patterns.
-- Tests should call `build_tool_handler` after integrate; for the stub, test the pure function with a toy `ctx` if import of package tools is awkward — still include at least one `def test_…`.
+- No `subprocess` / network / `eval` / `exec` for `read_only`.
+- Keep module self-contained; never write under the target tree.
+- Tests should call `build_tool_handler` after integrate; for the stub, test the pure function with a toy `ctx` — include at least one `def test_…`.
 
 Follow `toolgen_validation.md` rules. Operator will run `validate_tool` after you respond.

@@ -146,6 +146,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Hunt skill id when --hunt-skill-mode=explicit (repeatable)",
     )
+    init_p.add_argument(
+        "--no-enqueue-hunts",
+        dest="enqueue_hunts",
+        action="store_false",
+        default=True,
+        help=(
+            "Do not auto-queue hunt tasks after recon (architecture-only). "
+            "Enqueue later from Coverage / Explorer. "
+            "For file_by_file, create the run with zero hunt tasks."
+        ),
+    )
 
     once = sub.add_parser("run-once", help="Lease and execute one task")
     once.add_argument("--run-dir", type=Path, default=None)
@@ -451,6 +462,8 @@ def cmd_init(args, cfg: dict) -> int:
         for x in (getattr(args, "hunt_skill_ids", None) or [])
         if str(x).strip()
     ][:64]
+    # Default True (auto-queue). Explicit False = architecture-only / manual hunts.
+    init_enqueue_hunts = bool(getattr(args, "enqueue_hunts", True))
 
     cfg_store = {
         "llm": cfg.get("llm", {}),
@@ -465,6 +478,7 @@ def cmd_init(args, cfg: dict) -> int:
             "dynamic_skill_count": init_dynamic_skill_count if init_dynamic_skills else 0,
             "hunt_skill_mode": init_hunt_mode,
             "hunt_skill_ids": init_hunt_ids,
+            "enqueue_hunts": init_enqueue_hunts,
         },
         "stages": cfg.get("stages", {}),
         "packet": cfg.get("packet", {}),
@@ -495,6 +509,9 @@ def cmd_init(args, cfg: dict) -> int:
         recon_pl["hunt_skill_mode"] = init_hunt_mode
         recon_pl["hunt_skill_ids"] = list(init_hunt_ids)
 
+    def _attach_enqueue_hunts(recon_pl: dict[str, Any]) -> None:
+        recon_pl["enqueue_hunts"] = init_enqueue_hunts
+
     from vulnforge.stages.recon import enqueue_recon_agent_tasks, resolve_recon_agent_ids
 
     try:
@@ -505,24 +522,28 @@ def cmd_init(args, cfg: dict) -> int:
     hunts_enqueued = 0
     recon_task_ids: list[int] = []
     if strategy == STRATEGY_FILE_BY_FILE:
-        # No recon — plan hunts from file index at init.
-        payloads = plan_file_by_file_hunts(
-            target,
-            ignore=ignore,
-            max_tasks=max_tasks,
-            classes=None,
-            hunt_skill_mode=init_hunt_mode,
-            hunt_skill_ids=init_hunt_ids or None,
-        )
-        for pl in payloads:
-            db.enqueue_task("hunt", pl, priority=50)
-            db.upsert_coverage_fact(
-                pl.get("area", "app"),
-                pl.get("class", "wildcard"),
-                path=(pl.get("path_hints") or [""])[0],
-                visit_delta=0,
+        # No recon — plan hunts from file index at init (unless manual mode).
+        if init_enqueue_hunts:
+            payloads = plan_file_by_file_hunts(
+                target,
+                ignore=ignore,
+                max_tasks=max_tasks,
+                classes=None,
+                hunt_skill_mode=init_hunt_mode,
+                hunt_skill_ids=init_hunt_ids or None,
             )
-        hunts_enqueued = len(payloads)
+            for pl in payloads:
+                db.enqueue_task("hunt", pl, priority=50)
+                db.upsert_coverage_fact(
+                    pl.get("area", "app"),
+                    pl.get("class", "wildcard"),
+                    path=(pl.get("path_hints") or [""])[0],
+                    visit_delta=0,
+                )
+            hunts_enqueued = len(payloads)
+        else:
+            payloads = []
+            hunts_enqueued = 0
     elif strategy == STRATEGY_RECON_DOCS:
         docs_summary = str(docs_meta.get("summary") or "")
         if init_operator_notes and docs_summary:
@@ -544,6 +565,7 @@ def cmd_init(args, cfg: dict) -> int:
         }
         _attach_dynamic_skills(recon_payload)
         _attach_hunt_skill_policy(recon_payload)
+        _attach_enqueue_hunts(recon_payload)
         # One Ralph task per recon agent; architecture merges when batch completes.
         recon_task_ids = enqueue_recon_agent_tasks(
             db,
@@ -563,6 +585,7 @@ def cmd_init(args, cfg: dict) -> int:
             recon_payload["operator_brief"] = init_operator_notes
         _attach_dynamic_skills(recon_payload)
         _attach_hunt_skill_policy(recon_payload)
+        _attach_enqueue_hunts(recon_payload)
         recon_task_ids = enqueue_recon_agent_tasks(
             db,
             recon_payload,

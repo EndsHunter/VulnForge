@@ -42,3 +42,6 @@ vulnforge = ["ui/templates/*", "ui/static/*"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = ["--basetemp=.pytest_tmp"]
+markers = [
+  "live: hits a real LLM endpoint (requires VF_LIVE=1)",
+]

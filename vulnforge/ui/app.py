@@ -80,6 +80,8 @@ class InitBody(BaseModel):
     # Run-scoped hunt skill policy (does not change global Dev active toggles)
     hunt_skill_mode: Optional[str] = "all_active"
     hunt_skill_ids: Optional[list[str]] = None
+    # After recon (or at file_by_file init), enqueue hunt tasks. False = map only / manual.
+    enqueue_hunts: bool = True
 
 
 class ControlBody(BaseModel):
@@ -289,6 +291,28 @@ class CoverageModeBody(BaseModel):
     classes: Optional[list[str]] = None
     path_targets: Optional[list[dict]] = None  # [{path, is_dir}] from Coverage path picker
     enqueue: bool = True
+
+
+class CoverageGenerateSkillBody(BaseModel):
+    """Enqueue Ralph generate_skill from Coverage (async)."""
+
+    brief: str
+    suggested_id: Optional[str] = None
+    activate: bool = False
+    enqueue_hunts: bool = True
+    areas: Optional[list[str]] = None
+    path_targets: Optional[list[dict]] = None
+
+
+class CoverageMaxHuntBody(BaseModel):
+    """MAX Hunt: per-file generate_skill (+ hunt) fan-out. dry_run previews only."""
+
+    scope: str = "all"  # all | paths
+    path_targets: Optional[list[dict]] = None
+    max_files: int = 50
+    operator_notes: str = ""
+    activate: bool = False
+    dry_run: bool = False
 
 
 class TaskPriorityBody(BaseModel):
@@ -588,6 +612,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             if str(x).strip()
         ][:64]
         args.hunt_skill_ids = skill_ids or None
+        args.enqueue_hunts = bool(body.enqueue_hunts)
 
         if not args.target.is_dir():
             raise HTTPException(400, f"target not a directory: {body.target}")
@@ -1129,6 +1154,46 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         )
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "mode failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/coverage/generate-skill")
+    def api_coverage_generate_skill(
+        target_id: str, run_id: str, body: CoverageGenerateSkillBody
+    ):
+        """Queue Ralph generate_skill from Coverage (brief + optional paths)."""
+        run = _get_run(target_id, run_id)
+        r = dashops.coverage_generate_skill(
+            run.path,
+            brief=body.brief or "",
+            suggested_id=body.suggested_id or "",
+            activate=bool(body.activate),
+            enqueue_hunts=bool(body.enqueue_hunts),
+            areas=body.areas,
+            path_targets=body.path_targets,
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "generate-skill failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/coverage/max-hunt")
+    def api_coverage_max_hunt(target_id: str, run_id: str, body: CoverageMaxHuntBody):
+        """MAX Hunt: dry_run preview or enqueue per-file generate_skill tasks."""
+        run = _get_run(target_id, run_id)
+        try:
+            max_files = max(1, int(body.max_files or 50))
+        except (TypeError, ValueError):
+            max_files = 50
+        r = dashops.enqueue_max_hunt(
+            run.path,
+            scope=body.scope or "all",
+            path_targets=body.path_targets,
+            max_files=max_files,
+            operator_notes=body.operator_notes or "",
+            activate=bool(body.activate),
+            dry_run=bool(body.dry_run),
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "max-hunt failed")
         return r
 
     @app.get("/api/runs/{target_id}/{run_id}/target/list")

@@ -25,7 +25,7 @@ DEFAULT_API_MODE = "chat_completions"
 DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "host": "127.0.0.1",
     "port": 1234,
-    "model": "models/Ornith-1.0-35B@4bit",
+    "model": "ornith-1.0-35b@4bit",
     "api_mode": DEFAULT_API_MODE,
     "max_concurrent_agents": 1,
     "context_tokens": 32768,

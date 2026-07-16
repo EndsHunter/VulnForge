@@ -93,6 +93,18 @@ Add check in `stages/validate_mech.py` `CHECKS` list; unit test in `tests/test_v
 - Extending `grep` / `file_inventory` / etc. with new args
 - Adding a brand-new `code_static` tool name
 
+**Ornith + AI generate (not FakeLLM)**
+
+1. LM Studio (or compatible) with Ornith loaded; Settings → **Optimize AI** → Save (`ornith-1.0-35b@4bit` style id, high `max_tokens`).
+2. Dev → **Tools** → **Generate tool…** (or `python scripts/live_toolgen_smoke.py`).
+3. Offline tests use FakeLLM / hand-seeded drafts; live path:
+
+```bash
+VF_LIVE=1 pytest tests/test_live_ornith.py tests/test_live_toolgen.py -v -s
+```
+
+Integrate **apply** mutates package source — dry-run first. Toolgen JSON success ≠ recon tool-call readiness.
+
 **Wire-up order** (details + skeleton in `toolgen.md`)
 
 | Step | Where |
@@ -110,7 +122,8 @@ Add check in `stages/validate_mech.py` `CHECKS` list; unit test in `tests/test_v
 **Verify**
 
 ```powershell
-python -m pytest tests/test_tools.py tests/test_tool_gaps.py tests/test_phase1_scope.py -q
+python -m pytest tests/test_tools.py tests/test_tool_gaps.py tests/test_phase1_scope.py tests/test_toolgen_validate.py tests/test_toolgen_generate.py -q
+# Live Ornith (optional): $env:VF_LIVE=1; pytest tests/test_live_toolgen.py -v -s
 ```
 
 

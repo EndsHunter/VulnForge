@@ -33,26 +33,135 @@ def _load_prompt(name: str, fallback: str) -> str:
         return fallback
 
 
+def _strip_think_blocks(text: str) -> str:
+    """Remove common chain-of-thought wrappers that leak into content."""
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.I)
+    text = re.sub(r"<thinking>[\s\S]*?</thinking>", "", text, flags=re.I)
+    return text
+
+
+def _extract_json_objects(text: str) -> list[str]:
+    """Find balanced top-level {...} slices (best-effort for LLM leakage)."""
+    out: list[str] = []
+    depth = 0
+    start: Optional[int] = None
+    in_str = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    out.append(text[start : i + 1])
+                    start = None
+    return out
+
+
 def _parse_json_content(content: Optional[str]) -> dict[str, Any]:
     if not content or not str(content).strip():
         raise GenerateToolError("empty LLM response")
     text = str(content).strip()
-    if text.startswith("```"):
+    text = _strip_think_blocks(text).strip()
+    if not text:
+        raise GenerateToolError("empty LLM response after stripping think blocks")
+    # Fenced code blocks (optionally with language tag)
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.I)
+    if fence and fence.group(1).strip():
+        text = fence.group(1).strip()
+    elif text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        m = re.search(r"\{[\s\S]*\}", text)
-        if not m:
-            raise GenerateToolError("LLM response is not valid JSON") from None
+
+    candidates: list[str] = []
+    # Prefer the last balanced object when prose precedes JSON
+    objs = _extract_json_objects(text)
+    if objs:
+        candidates.extend(reversed(objs))
+    candidates.append(text)
+    # De-dupe while preserving order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for c in candidates:
+        c2 = (c or "").strip()
+        if not c2 or c2 in seen:
+            continue
+        seen.add(c2)
+        uniq.append(c2)
+
+    last_err: Optional[Exception] = None
+    for cand in uniq:
         try:
-            data = json.loads(m.group(0))
+            data = json.loads(cand)
         except json.JSONDecodeError as e:
-            raise GenerateToolError(f"LLM JSON parse failed: {e}") from e
-    if not isinstance(data, dict):
-        raise GenerateToolError("LLM JSON must be an object")
-    return data
+            last_err = e
+            continue
+        if isinstance(data, dict):
+            return data
+        last_err = GenerateToolError("LLM JSON must be an object")
+    preview = text[:200].replace("\n", " ")
+    if last_err is not None:
+        raise GenerateToolError(
+            f"LLM JSON parse failed: {last_err}; preview={preview!r}"
+        ) from last_err
+    raise GenerateToolError(f"LLM response is not valid JSON; preview={preview!r}")
+
+
+def _toolgen_max_tokens(cfg: dict, *, stage: str) -> int:
+    """Completion budget for toolgen stages (reasoning models need headroom)."""
+    llm = cfg.get("llm") or {}
+    base = int(llm.get("max_tokens") or 4096)
+    explicit = llm.get("toolgen_max_tokens")
+    if explicit is not None:
+        try:
+            base = max(base, int(explicit))
+        except (TypeError, ValueError):
+            pass
+    # Impl / fix payloads include full module source — prefer at least 8k
+    if stage in ("impl", "fix"):
+        return max(base, 8192)
+    return max(base, 4096)
+
+
+def _llm_failure_hint(result: Any) -> str:
+    """Operator-facing hint when Ornith-class models burn tokens on reasoning."""
+    err = getattr(result, "error", None) or "llm_failed"
+    classification = str(getattr(result, "classification", "") or "")
+    content = getattr(result, "content", None)
+    reasoning = getattr(result, "reasoning_content", None)
+    bits = [f"LLM failed: {err}"]
+    if classification:
+        bits.append(f"class={classification}")
+    if (not content or not str(content).strip()) and reasoning:
+        bits.append(
+            "reasoning-only empty content — raise llm.max_tokens / "
+            "toolgen_max_tokens (Settings → Optimize AI) for reasoning models"
+        )
+    elif "length" in str(err).lower() or classification in (
+        "context_length",
+        "truncated",
+    ):
+        bits.append(
+            "response truncated — raise llm.max_tokens / toolgen_max_tokens"
+        )
+    clen = len(str(content)) if content else 0
+    if clen:
+        bits.append(f"content_chars={clen}")
+    return "; ".join(bits)
 
 
 def _known_tools_blob() -> str:
@@ -282,6 +391,8 @@ def _chat(
     kind: str = "generate_tool",
     run_dir: Optional[Path | str] = None,
     task_id: Optional[int] = None,
+    max_tokens: Optional[int] = None,
+    stage: str = "spec",
 ) -> tuple[dict[str, Any], Optional[str]]:
     own = client is None
     if client is None:
@@ -292,42 +403,86 @@ def _chat(
             model_id = client.fingerprint_model()
         except Exception as e:
             raise GenerateToolError(f"model fingerprint failed: {e}") from e
-        result = client.chat(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            tools=None,
-            temperature=temperature,
-        )
-        if run_dir is not None:
-            try:
-                from vulnforge.llm import estimate_usage_from_messages
-                from vulnforge.usage import record_llm_result
+        mt = max_tokens if max_tokens is not None else _toolgen_max_tokens(cfg, stage=stage)
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        last_parse_err: Optional[Exception] = None
+        # One automatic retry: Ornith-class models occasionally emit prose/empty content
+        for attempt in range(2):
+            result = client.chat(
+                messages,
+                tools=None,
+                temperature=temperature if attempt == 0 else min(temperature, 0.2),
+                max_tokens=mt,
+            )
+            if run_dir is not None:
+                try:
+                    from vulnforge.llm import estimate_usage_from_messages
+                    from vulnforge.usage import record_llm_result
 
-                if result.usage is None or getattr(result.usage, "source", "none") == "none":
-                    result.usage = estimate_usage_from_messages(
-                        [
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": user},
-                        ],
-                        result.content,
-                        result.tool_calls,
+                    if result.usage is None or getattr(result.usage, "source", "none") == "none":
+                        result.usage = estimate_usage_from_messages(
+                            messages,
+                            result.content,
+                            result.tool_calls,
+                        )
+                    record_llm_result(
+                        run_dir,
+                        task_id=task_id,
+                        kind=kind if attempt == 0 else f"{kind}_retry",
+                        model_id=model_id or getattr(result, "model_id", None),
+                        result=result,
                     )
-                record_llm_result(
-                    run_dir,
-                    task_id=task_id,
-                    kind=kind,
-                    model_id=model_id or getattr(result, "model_id", None),
-                    result=result,
-                )
-            except Exception:
-                pass
-        if not result.ok:
-            err = result.error or "llm_failed"
-            raise GenerateToolError(f"LLM failed: {err}")
-        data = _parse_json_content(result.content)
-        return data, model_id or getattr(result, "model_id", None)
+                except Exception:
+                    pass
+            if not result.ok:
+                raise GenerateToolError(_llm_failure_hint(result))
+            # Prefer content; fall back to reasoning if it looks like JSON
+            payload = result.content
+            if (not payload or not str(payload).strip()) and getattr(
+                result, "reasoning_content", None
+            ):
+                payload = result.reasoning_content
+            elif (
+                payload
+                and "{" not in str(payload)
+                and getattr(result, "reasoning_content", None)
+                and "{" in str(result.reasoning_content)
+            ):
+                payload = result.reasoning_content
+            try:
+                data = _parse_json_content(payload)
+                return data, model_id or getattr(result, "model_id", None)
+            except GenerateToolError as e:
+                last_parse_err = e
+                if attempt == 0:
+                    # Nudge: ask only for JSON on retry (appended user turn)
+                    preview = (str(payload or "")[:240]).replace("\n", " ")
+                    messages = [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                        {
+                            "role": "assistant",
+                            "content": str(payload or "")[:2000] or "(empty)",
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "Your previous reply was not valid JSON "
+                                f"(preview={preview!r}). "
+                                "Reply again with a single JSON object only — "
+                                "no markdown, no prose."
+                            ),
+                        },
+                    ]
+                    continue
+                raise GenerateToolError(
+                    f"{e}; after retry. content_preview="
+                    f"{(str(payload or '')[:200])!r}"
+                ) from e
+        raise GenerateToolError(f"LLM JSON parse failed: {last_parse_err}")
     finally:
         if own and hasattr(client, "close"):
             try:
@@ -356,6 +511,7 @@ def generate_spec(
         client=client,
         kind="generate_tool_spec",
         run_dir=run_dir,
+        stage="spec",
     )
     spec_md = str(data.get("spec_md") or data.get("spec") or "").strip()
     if not spec_md:
@@ -408,6 +564,7 @@ def generate_impl(
         client=client,
         kind="generate_tool_impl",
         run_dir=run_dir,
+        stage="impl",
     )
     impl_py = str(data.get("impl_py") or data.get("impl") or "").strip()
     if not impl_py:
@@ -474,6 +631,7 @@ def generate_fix(
         client=client,
         kind="generate_tool_fix",
         run_dir=run_dir,
+        stage="fix",
     )
     impl_py = str(data.get("impl_py") or "").strip()
     schema = data.get("schema") if isinstance(data.get("schema"), dict) else None

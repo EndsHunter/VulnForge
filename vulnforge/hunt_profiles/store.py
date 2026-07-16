@@ -981,13 +981,54 @@ def filter_profiles_for_run(
     return [p for p in rows if p.get("id") in allowed]
 
 
-def catalog_for_ui() -> dict[str, list[str]]:
+def catalog_for_ui() -> dict[str, Any]:
+    """Hunt skill lists for Coverage / Explorer / Mission UI.
+
+    - all / active: id lists (backward compatible)
+    - by_source: seed | custom | generated | import | other
+    - profiles: lightweight rows for grouping labels (id, source, active, title)
+    """
     coll = ensure_collection()
-    all_ids = [p["id"] for p in coll["profiles"]]
-    active = [p["id"] for p in coll["profiles"] if p.get("active")]
+    all_ids: list[str] = []
+    active: list[str] = []
+    by_source: dict[str, list[str]] = {
+        "seed": [],
+        "custom": [],
+        "generated": [],
+        "import": [],
+        "other": [],
+    }
+    profiles: list[dict[str, Any]] = []
+    for p in coll["profiles"]:
+        pid = str(p.get("id") or "").strip()
+        if not pid:
+            continue
+        all_ids.append(pid)
+        is_active = bool(p.get("active"))
+        if is_active:
+            active.append(pid)
+        src = str(p.get("source") or "custom").strip().lower() or "custom"
+        if src not in by_source:
+            src_key = "other"
+        else:
+            src_key = src
+        by_source[src_key].append(pid)
+        profiles.append(
+            {
+                "id": pid,
+                "source": src,
+                "active": is_active,
+                "title": str(p.get("title") or pid),
+            }
+        )
     if not active:
         active = list(all_ids)
-    return {"all": all_ids, "active": active}
+    return {
+        "all": all_ids,
+        "active": active,
+        "by_source": by_source,
+        "profiles": profiles,
+    }
 
 
 def save_profile(

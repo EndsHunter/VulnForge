@@ -620,6 +620,125 @@ function openInitModal() {
 }
 function closeInitModal() {
   $("#init-modal")?.classList.remove("open");
+  hideInitFloatingTip();
+}
+
+/* Floating help tips for #init-modal (avoids overflow:auto clipping) */
+let _initTipAnchor = null;
+
+function ensureInitFloatingTip() {
+  let el = $("#init-floating-tip");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "init-floating-tip";
+    el.className = "init-floating-tip";
+    el.setAttribute("role", "tooltip");
+    el.hidden = true;
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function positionInitFloatingTip(anchor) {
+  const tip = ensureInitFloatingTip();
+  if (tip.hidden || !anchor) return;
+  const r = anchor.getBoundingClientRect();
+  const pad = 8;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  // Measure after content is set
+  tip.style.left = "0px";
+  tip.style.top = "0px";
+  const tw = tip.offsetWidth;
+  const th = tip.offsetHeight;
+  // Prefer above the icon; flip below if clipped
+  let top = r.top - th - 8;
+  if (top < pad) top = r.bottom + 8;
+  if (top + th > vh - pad) top = Math.max(pad, vh - th - pad);
+  // Align to icon, keep on-screen
+  let left = r.left + r.width / 2 - tw / 2;
+  if (left < pad) left = pad;
+  if (left + tw > vw - pad) left = Math.max(pad, vw - tw - pad);
+  tip.style.left = `${Math.round(left)}px`;
+  tip.style.top = `${Math.round(top)}px`;
+}
+
+function showInitFloatingTip(anchor) {
+  const text = (anchor?.getAttribute("data-tip") || "").trim();
+  if (!text || !anchor) return;
+  const tip = ensureInitFloatingTip();
+  tip.textContent = text;
+  tip.hidden = false;
+  _initTipAnchor = anchor;
+  const tipId = "init-floating-tip";
+  anchor.setAttribute("aria-describedby", tipId);
+  positionInitFloatingTip(anchor);
+}
+
+function hideInitFloatingTip(anchor) {
+  if (anchor && _initTipAnchor && anchor !== _initTipAnchor) return;
+  const tip = $("#init-floating-tip");
+  if (tip) tip.hidden = true;
+  if (_initTipAnchor) {
+    _initTipAnchor.removeAttribute("aria-describedby");
+    _initTipAnchor = null;
+  }
+}
+
+/** Event delegation for .init-help buttons inside New audit modal. */
+function wireInitHelpTips() {
+  const modal = $("#init-modal");
+  if (!modal || modal.dataset.helpWired === "1") return;
+  modal.dataset.helpWired = "1";
+
+  const onEnter = (e) => {
+    const btn = e.target.closest?.(".init-help");
+    if (!btn || !modal.contains(btn)) return;
+    showInitFloatingTip(btn);
+  };
+  const onLeave = (e) => {
+    const btn = e.target.closest?.(".init-help");
+    if (!btn || !modal.contains(btn)) return;
+    // Keep tip if focus moves into related target that is the same help (rare)
+    const next = e.relatedTarget;
+    if (next && (next === btn || btn.contains(next))) return;
+    hideInitFloatingTip(btn);
+  };
+
+  modal.addEventListener("mouseover", onEnter);
+  modal.addEventListener("mouseout", onLeave);
+  modal.addEventListener("focusin", onEnter);
+  modal.addEventListener("focusout", onLeave);
+
+  // Clicking ? inside a strategy <label> should not flip selection awkwardly
+  // (label still works via the radio); stop activation when using the help control.
+  modal.addEventListener(
+    "click",
+    (e) => {
+      const btn = e.target.closest?.(".init-help");
+      if (!btn || !modal.contains(btn)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // Toggle tip on click for touch / explicit open
+      if (_initTipAnchor === btn && !$("#init-floating-tip")?.hidden) {
+        hideInitFloatingTip(btn);
+      } else {
+        showInitFloatingTip(btn);
+      }
+    },
+    true
+  );
+
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (_initTipAnchor) positionInitFloatingTip(_initTipAnchor);
+    },
+    true
+  );
+  window.addEventListener("resize", () => {
+    if (_initTipAnchor) positionInitFloatingTip(_initTipAnchor);
+  });
 }
 
 /* ---------- Host path picker (New audit) ---------- */
@@ -1048,7 +1167,9 @@ async function submitInit(ev) {
   }
   const skillPolicy = collectHuntSkillPolicy("init-hunt-skill-mode", $("#init-hunt-skills"));
   body.hunt_skill_mode = skillPolicy.hunt_skill_mode;
-  if (skillPolicy.hunt_skill_mode === "explicit") {
+  // Default true when control missing (older cached HTML)
+  body.enqueue_hunts = $("#init-enqueue-hunts") ? !!$("#init-enqueue-hunts").checked : true;
+  if (skillPolicy.hunt_skill_mode === "explicit" && body.enqueue_hunts) {
     body.hunt_skill_ids = skillPolicy.hunt_skill_ids || [];
     if (!body.hunt_skill_ids.length) {
       toast("Pick at least one hunt skill, or choose another skill mode", true);
@@ -1057,6 +1178,8 @@ async function submitInit(ev) {
       $("#init-modal")?.classList.add("open");
       return;
     }
+  } else if (skillPolicy.hunt_skill_mode === "explicit") {
+    body.hunt_skill_ids = skillPolicy.hunt_skill_ids || [];
   }
   try {
     const r = await api("/api/runs/init", {
@@ -2991,12 +3114,33 @@ function huntClassOptionsHtml(selected) {
       ? cat.active
       : activeHuntClasses();
   const all = allHuntClasses();
-  const inactive = all.filter((c) => !active.includes(c));
-  const opt = (c) =>
-    `<option value="${esc(c)}"${c === sel ? " selected" : ""}>${esc(c)}</option>`;
-  let html = `<optgroup label="Active">${active.map(opt).join("")}</optgroup>`;
-  if (inactive.length) {
-    html += `<optgroup label="Optional">${inactive.map(opt).join("")}</optgroup>`;
+  const bySource = cat.by_source || {};
+  const customGen = new Set(
+    [...(bySource.custom || []), ...(bySource.generated || []), ...(bySource.import || [])].map(
+      String
+    )
+  );
+  if (Array.isArray(cat.profiles)) {
+    for (const p of cat.profiles) {
+      if (!p?.id) continue;
+      const src = String(p.source || "").toLowerCase();
+      if (src === "custom" || src === "generated" || src === "import") {
+        customGen.add(String(p.id));
+      }
+    }
+  }
+  const inactiveCustom = all.filter((c) => !active.includes(c) && customGen.has(c));
+  const inactiveSeed = all.filter((c) => !active.includes(c) && !customGen.has(c));
+  const opt = (c) => {
+    const tag = customGen.has(c) ? " (custom)" : "";
+    return `<option value="${esc(c)}"${c === sel ? " selected" : ""}>${esc(c)}${tag}</option>`;
+  };
+  let html = `<optgroup label="Active skills">${active.map(opt).join("")}</optgroup>`;
+  if (inactiveCustom.length) {
+    html += `<optgroup label="Custom & generated">${inactiveCustom.map(opt).join("")}</optgroup>`;
+  }
+  if (inactiveSeed.length) {
+    html += `<optgroup label="Optional seed skills">${inactiveSeed.map(opt).join("")}</optgroup>`;
   }
   return html;
 }
@@ -3026,7 +3170,7 @@ function mountExplorer() {
         <div class="arch-viewer">
           <div class="toolbar explorer-viewer-toolbar">
             <span class="mono" id="explorer-file-label">${esc(explorerOpenFile || "No file open")}</span>
-            <select id="explorer-hunt-class" title="Hunt class">
+            <select id="explorer-hunt-class" title="Hunt skill">
               ${huntClassOptionsHtml(prevClass)}
             </select>
             <button type="button" class="btn btn-primary" id="explorer-hunt-sel" disabled>Hunt selection</button>
@@ -3820,6 +3964,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setInterval(loadRuns, 5000);
     loadHomeToolGapsSummary();
     wirePathPicker();
+    wireInitHelpTips();
     $("#btn-new-run")?.addEventListener("click", openInitModal);
     $("#init-cancel")?.addEventListener("click", closeInitModal);
     $("#init-form")?.addEventListener("submit", submitInit);

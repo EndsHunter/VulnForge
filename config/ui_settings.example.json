@@ -1,7 +1,7 @@
 {
   "host": "127.0.0.1",
   "port": 1234,
-  "model": "models/Ornith-1.0-35B@4bit",
+  "model": "ornith-1.0-35b@4bit",
   "api_mode": "chat_completions",
   "max_concurrent_agents": 1,
   "context_tokens": 32768,

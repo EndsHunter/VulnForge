@@ -3,9 +3,12 @@
 llm:
   # OpenAI-compatible endpoint (LM Studio default local bind)
   base_url: "http://127.0.0.1:1234/v1"
-  # Exact model id as exposed by your server (change to match)
-  model: "models/Ornith-1.0-35B@4bit"
+  # Exact model id as exposed by /v1/models (LM Studio Ornith is usually lowercase)
+  model: "ornith-1.0-35b@4bit"
   display_name: "Ornith 1.0 35B 4bit"
+  # Toolgen (Dev → Generate tool) uses these when present
+  temperature_code: 0.15
+  toolgen_max_tokens: 8192
   api_key: "lm-studio"   # LM Studio often ignores this; required by some clients
   # HTTP API surface: chat_completions | responses | messages
   # chat_completions → POST /v1/chat/completions (OpenAI classic; LM Studio default)

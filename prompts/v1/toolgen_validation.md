@@ -15,12 +15,19 @@ Your artifacts must pass **hard** checks before integrate.
    - `eval` / `exec` / dynamic shell
 7. `risk_class=exec` is only for future `code_exec` profile — do not add to `code_static` allowlist.
 8. Prefer **extending** `grep` / `file_inventory` / `read_file` when the gap is only a filter or arg.
+9. Primary function name **equals draft id**; schema tool `name` matches.
 
 ## Schema
 
 - OpenAI function shape: `name`, `description`, `parameters: {type: object, properties, required}`.
 - Required schema properties must appear in the implementation (`args.get("…")` or signature).
 - Tool `name` must match draft id style: `[a-z][a-z0-9_]{0,47}`.
+
+## Size / local models
+
+- Keep `impl_py` compact (small single-purpose tools). Large modules risk truncation on
+  reasoning models that spend tokens on chain-of-thought before JSON.
+- Stay under validation size caps (hard `size_limits` check).
 
 ## Wire-up (operator integrate — you produce snippets only)
 

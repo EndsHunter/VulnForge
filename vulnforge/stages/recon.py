@@ -57,11 +57,12 @@ _RECON_RECOVERABLE_ERRORS = frozenset(
 )
 
 
-def hunt_class_catalog() -> dict[str, list[str]]:
-    """Canonical hunt-class lists for UI, API, and operators.
+def hunt_class_catalog() -> dict:
+    """Canonical hunt-skill lists for UI, API, and operators.
 
     - active: bulk enqueue set (recon active_fallback, coverage all, file_by_file)
     - all: every registered profile in the operator collection
+    - by_source / profiles: grouping for Coverage custom picker
     """
     return catalog_for_ui()
 
@@ -853,6 +854,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         )
 
         # Hunts / dynamic skills: single-task or last-completed batch member only.
+        # want_hunts=False → architecture-only (operator enqueues hunts manually).
         batch_id = str(payload.get("recon_batch_id") or "")
         want_hunts = payload.get("batch_enqueue_hunts")
         if want_hunts is None:
@@ -861,19 +863,23 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             want_hunts = True
         want_hunts = bool(want_hunts)
 
+        # Claim finalize once when this agent is the last sibling (or solo).
+        # Independent of want_hunts so dynamic skills can still run with
+        # enqueue_hunts=false (skills created, hunts not auto-queued).
         should_finalize = False
         if batch_id:
-            if want_hunts and _batch_ready_to_finalize(db, batch_id, task.id):
+            if _batch_ready_to_finalize(db, batch_id, task.id):
                 should_finalize = _claim_batch_finalize(db, batch_id)
         else:
-            should_finalize = want_hunts and bool(
-                payload.get("enqueue_hunts")
-                if payload.get("enqueue_hunts") is not None
-                else True
-            )
+            should_finalize = True
 
         hunt_enqueued = 0
-        hunt_plan_source = "skipped" if not should_finalize else "pending"
+        if not should_finalize:
+            hunt_plan_source = "pending_batch"
+        elif not want_hunts:
+            hunt_plan_source = "skipped_manual"
+        else:
+            hunt_plan_source = "pending"
         if should_finalize and want_hunts:
             # Re-read full merged map after batch siblings
             arch = db.get_architecture() or arch
@@ -957,7 +963,8 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 "signals": inv_signals,
                 "operator_brief": operator_brief,
                 "operator_notes": operator_brief,
-                "enqueue_hunts": True,
+                # Respect architecture-only / manual hunt mode
+                "enqueue_hunts": bool(want_hunts),
                 "activate": bool(payload.get("dynamic_skills_activate")),
                 "reason": "dynamic_skills_init",
             }

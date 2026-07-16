@@ -115,8 +115,8 @@
               <span class="controls-hint" id="explorer-sel-meta">Open a file, then hunt whole file or select lines.</span>
             </div>
             <div class="explorer-steer-row">
-              <label class="sr-only" for="explorer-hunt-class">Hunt class</label>
-              <select id="explorer-hunt-class" title="Hunt class">${huntClassOptionsHtml(prevClass)}</select>
+              <label class="sr-only" for="explorer-hunt-class">Hunt skill</label>
+              <select id="explorer-hunt-class" title="Hunt skill">${huntClassOptionsHtml(prevClass)}</select>
               <input id="explorer-op-notes" type="text" placeholder="Operator notes for this hunt..." value="${esc(prevNotes)}" aria-label="Operator notes for this hunt" />
               <button type="button" class="btn btn-primary" id="explorer-hunt-sel" disabled>Enqueue hunt</button>
             </div>

@@ -52,12 +52,18 @@ def test_api_mode_aliases_and_default(tmp_path: Path, monkeypatch):
 
 
 def test_model_candidates_resolve_prefix():
-    from vulnforge.settings_probe import _model_candidates
+    from vulnforge.settings_probe import model_candidates, resolve_listed_model
 
     listed = ["ornith-1.0-35b", "gpt-oss-20b"]
-    c = _model_candidates("models/Ornith-1.0-35b", listed)
+    c = model_candidates("models/Ornith-1.0-35b", listed)
     assert "ornith-1.0-35b" in c
     assert c[0] == "models/Ornith-1.0-35b" or "ornith" in c[0].lower()
+    assert resolve_listed_model("models/Ornith-1.0-35B@4bit", ["ornith-1.0-35b@4bit"]) == (
+        "ornith-1.0-35b@4bit"
+    )
+    assert resolve_listed_model("Ornith-1.0-35B@4bit", ["ornith-1.0-35b@4bit"]) == (
+        "ornith-1.0-35b@4bit"
+    )
 
 
 def test_optimize_unreachable_endpoint(tmp_path: Path, monkeypatch):

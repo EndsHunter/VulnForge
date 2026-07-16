@@ -2169,6 +2169,38 @@ button.cov-plan-action.is-current {
 }
 
 /* Coverage heat matrix */
+.cov-skill-src {
+  display: inline-block;
+  margin-left: 0.25rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: rgba(255, 61, 110, 0.12);
+  border: 1px solid rgba(255, 61, 110, 0.28);
+  vertical-align: middle;
+}
+.cov-skill-note {
+  margin: 0.25rem 0 0.45rem;
+  font-size: 11.5px;
+}
+.cov-generate-block {
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+.cov-gen-opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin: 0.35rem 0 0.25rem;
+}
+.cov-max-hunt-form .cov-path-picker {
+  margin-top: 0.35rem;
+}
 .coverage-class-caption {
   margin: 0 0 0.5rem;
   line-height: 1.55;
@@ -2609,54 +2641,120 @@ tr.task-row .task-actions-cell .btn {
 .home-btn { font-weight: 700; min-width: 5.5rem; }
 .modal-wide { width: min(760px, 100%); }
 
-/* —— New audit modal (compact, no overflow) —— */
+/* —— New audit modal (sectioned, scannable) —— */
 .modal-init {
-  width: min(440px, calc(100vw - 2rem));
-  max-height: min(90vh, 720px);
+  width: min(640px, calc(100vw - 2rem));
+  max-height: min(92vh, 860px);
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 1.15rem 1.25rem 1.1rem;
+  padding: 1.2rem 1.35rem 1.15rem;
   box-sizing: border-box;
 }
 .modal-init-header {
-  margin-bottom: 0.9rem;
-  padding-bottom: 0.75rem;
+  margin-bottom: 0.85rem;
+  padding-bottom: 0.7rem;
   border-bottom: 1px solid var(--border);
 }
 .modal-init-header h2 {
   margin: 0 0 0.25rem;
-  font-size: 1.15rem;
+  font-size: 1.2rem;
   font-weight: 700;
   letter-spacing: -0.02em;
+  color: var(--text);
 }
 .modal-init-sub {
   margin: 0;
   font-size: 12.5px;
   color: var(--muted);
-  line-height: 1.4;
+  line-height: 1.45;
+}
+.init-help-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+  line-height: 1;
 }
 .init-form {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.7rem;
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
 }
-.modal-init .field {
-  margin-bottom: 0.85rem;
+
+/* Section cards */
+.modal-init .init-section {
+  margin: 0;
+  padding: 0.75rem 0.85rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+  min-width: 0;
+}
+.modal-init .init-section-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+  line-height: 1.3;
+}
+.modal-init .init-section-head {
+  margin-bottom: 0.55rem;
+}
+.modal-init .init-section > .init-section-title {
+  margin-bottom: 0.55rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid rgba(46, 36, 52, 0.85);
+}
+.modal-init .init-section .field {
+  margin-bottom: 0.65rem;
+}
+.modal-init .init-section .field:last-child {
+  margin-bottom: 0;
+}
+
+/* Label + help icon row */
+.modal-init .field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.35rem;
+  min-width: 0;
+}
+.modal-init .field-label-row .field-label-text,
+.modal-init .field-label-row .init-section-title {
+  margin: 0;
+  flex: 1;
   min-width: 0;
 }
 .modal-init .field-label-text,
 .modal-init .init-fieldset legend,
-.modal-init label.field-label-text {
+.modal-init label.field-label-text,
+.modal-init span.field-label-text {
   display: block;
   color: var(--muted);
   font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  margin: 0 0 0.4rem;
+  margin: 0 0 0.35rem;
+}
+.modal-init .init-optional {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  opacity: 0.85;
 }
 .modal-init .field input[type="text"],
 .modal-init .field input[type="number"],
@@ -2667,6 +2765,67 @@ tr.task-row .task-actions-cell .btn {
   font-family: var(--mono);
   font-size: 12.5px;
 }
+.modal-init .field textarea.op-notes {
+  min-height: 2.6rem;
+  font-size: 13px;
+}
+
+/* Help ? control + floating tip (positioned in JS) */
+.modal-init .init-help {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  margin: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  font-family: var(--font);
+  line-height: 1;
+  cursor: help;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+.modal-init .init-help:hover,
+.modal-init .init-help:focus,
+.modal-init .init-help:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(255, 61, 110, 0.12);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 61, 110, 0.18);
+}
+.modal-init label.strategy-option .init-help {
+  width: 1.05rem;
+  height: 1.05rem;
+  font-size: 10px;
+  margin-top: 0.05rem;
+}
+.init-floating-tip {
+  position: fixed;
+  z-index: 80;
+  max-width: min(320px, calc(100vw - 1.5rem));
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: #1c1622;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 1.45;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  white-space: normal;
+}
+.init-floating-tip[hidden] {
+  display: none !important;
+}
+
 .path-input-row {
   display: flex;
   gap: 0.45rem;
@@ -2680,6 +2839,19 @@ tr.task-row .task-actions-cell .btn {
 .path-input-row .btn {
   flex-shrink: 0;
   white-space: nowrap;
+}
+
+/* Screen-reader only (fieldset legend) */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* Path picker modal (host FS) */
@@ -2761,7 +2933,7 @@ tr.task-row .task-actions-cell .btn {
 }
 .init-fieldset {
   border: none;
-  margin: 0 0 0.85rem;
+  margin: 0;
   padding: 0;
   min-width: 0;
 }
@@ -2776,14 +2948,22 @@ tr.task-row .task-actions-cell .btn {
   min-width: 0;
   width: 100%;
 }
+/* Two-column option grids when wide enough */
+@media (min-width: 560px) {
+  .modal-init .strategy-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.45rem;
+  }
+}
 /* Do NOT use generic .field label rules on strategy options */
 .modal-init label.strategy-option {
   display: grid;
   grid-template-columns: 1.1rem 1fr;
-  column-gap: 0.65rem;
+  column-gap: 0.6rem;
   align-items: start;
   margin: 0;
-  padding: 0.6rem 0.7rem;
+  padding: 0.65rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg);
@@ -2797,20 +2977,28 @@ tr.task-row .task-actions-cell .btn {
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
 }
 .modal-init label.strategy-option:hover {
   border-color: var(--border-strong);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--bg-card-hover);
 }
 .modal-init label.strategy-option:has(input:checked) {
-  border-color: rgba(255, 61, 110, 0.65);
-  background: rgba(255, 61, 110, 0.1);
-  box-shadow: inset 0 0 0 1px rgba(255, 61, 110, 0.2);
+  border-color: rgba(255, 61, 110, 0.7);
+  background: rgba(255, 61, 110, 0.12);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 61, 110, 0.22),
+    0 0 0 1px rgba(255, 61, 110, 0.12);
+}
+.modal-init label.strategy-option:has(input:checked) .strategy-option-title {
+  color: var(--text);
+}
+.modal-init label.strategy-option:has(input:checked) .strategy-option-desc {
+  color: #c4b0c2;
 }
 .modal-init label.strategy-option input[type="radio"] {
-  margin: 0.2rem 0 0;
+  margin: 0.22rem 0 0;
   width: 0.95rem;
   height: 0.95rem;
   accent-color: var(--accent);
@@ -2819,9 +3007,19 @@ tr.task-row .task-actions-cell .btn {
 .strategy-option-main {
   display: flex;
   flex-direction: column;
-  gap: 0.12rem;
+  gap: 0.15rem;
   min-width: 0;
   overflow: hidden;
+}
+.strategy-option-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.strategy-option-title-row .strategy-option-title {
+  flex: 1;
+  min-width: 0;
 }
 .strategy-option-title {
   font-weight: 650;
@@ -2835,26 +3033,73 @@ tr.task-row .task-actions-cell .btn {
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
-#init-docs-field[hidden] { display: none !important; }
+#init-docs-field[hidden],
+#init-recon-fields[hidden],
+#init-dynamic-skill-count-wrap[hidden],
+#init-hunt-skill-picker[hidden] {
+  display: none !important;
+}
+.modal-init .init-docs-field {
+  margin-top: 0.65rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
 .init-hint {
-  margin: 0.35rem 0 0;
+  margin: 0 0 0.4rem;
   line-height: 1.35;
+  font-size: 12px;
+  color: var(--muted);
+}
+.modal-init .hunt-skill-picker {
+  margin-top: 0.55rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.modal-init .init-check-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.modal-init .init-check-row .init-check {
+  flex: 1;
+  min-width: 0;
+}
+.modal-init .init-inline-count {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0.5rem 0 0 !important;
+  max-width: 12rem;
+}
+.modal-init .init-inline-count .field-label-text {
+  margin: 0;
+  flex-shrink: 0;
+}
+.modal-init .init-inline-count input {
+  width: 4.5rem;
+  max-width: 100%;
 }
 .init-row-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-  margin-bottom: 0.35rem;
+  gap: 0.75rem 1rem;
+  margin-bottom: 0;
   align-items: end;
 }
-@media (max-width: 480px) {
+@media (max-width: 520px) {
   .init-row-2 { grid-template-columns: 1fr; }
+  .modal-init .strategy-list {
+    display: flex;
+    flex-direction: column;
+  }
 }
 .init-start-field {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   min-height: 2.4rem;
-  margin-bottom: 0.85rem !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 0.15rem;
 }
 .modal-init label.init-check {
   display: flex;
@@ -2872,11 +3117,15 @@ tr.task-row .task-actions-cell .btn {
   width: auto;
   margin: 0;
   accent-color: var(--accent);
+  flex-shrink: 0;
 }
 .modal-init .modal-actions {
-  margin-top: 0.5rem;
-  padding-top: 0.85rem;
+  margin-top: 0.15rem;
+  padding-top: 0.9rem;
   border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 .modal-tall { width: min(920px, 100%); max-height: 90vh; display: flex; flex-direction: column; }

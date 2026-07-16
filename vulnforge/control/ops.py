@@ -717,46 +717,93 @@ def apply_coverage_mode(
         run_allowed = list(resolve_run_class_ids(skill_mode, skill_ids))
         run_allowed_set = set(run_allowed)
         active = list(run_allowed)
-        sel_areas = [str(a).strip() for a in (areas or []) if str(a).strip()]
+        raw_areas = [str(a).strip() for a in (areas or []) if str(a).strip()]
         sel_classes = [
             _normalize_class(c) for c in (classes or []) if str(c).strip()
         ]
-        # validate classes against registered profiles
+        # validate skills against registered profiles
         sel_classes = [c for c in sel_classes if c in available]
-        # Restricted run modes: only allow classes inside the run allowlist
-        if skill_mode not in ("", "all_active") and run_allowed_set:
-            sel_classes = [c for c in sel_classes if c in run_allowed_set]
-        elif skill_mode not in ("", "all_active") and not run_allowed_set:
-            sel_classes = []
+        # mode=select is an operator override: any registered skill is allowed
+        # (including inactive custom/generated). mode=all stays on run allowlist.
+        if mode_n != "select":
+            if skill_mode not in ("", "all_active") and run_allowed_set:
+                sel_classes = [c for c in sel_classes if c in run_allowed_set]
+            elif skill_mode not in ("", "all_active") and not run_allowed_set:
+                sel_classes = []
         if not sel_classes and mode_n != "auto":
-            sel_classes = list(active)
+            # all: run allowlist; select: prefer active, else full catalog
+            if mode_n == "select":
+                sel_classes = list(active) if active else list(available)
+            else:
+                sel_classes = list(active)
 
-        # Normalize path targets (folder/file from picker)
+        def _looks_like_path(s: str) -> bool:
+            """Treat slashy names or file-like stems as path targets, not abstract areas."""
+            t = (s or "").replace("\\", "/").strip()
+            if not t or t in (".", "..") or ".." in t.split("/"):
+                return False
+            if "/" in t:
+                return True
+            # bare file.ext (e.g. main.py) — not multi-word abstract area names
+            base = t.rsplit("/", 1)[-1]
+            if "." in base and not base.startswith("."):
+                ext = base.rsplit(".", 1)[-1]
+                if 1 <= len(ext) <= 12 and ext.isalnum():
+                    return True
+            return False
+
+        # Normalize path targets (folder/file from picker + path-like areas)
         norm_targets: list[dict[str, Any]] = []
-        for raw in path_targets or []:
-            if not isinstance(raw, dict):
-                continue
-            p = normalize_relpath(str(raw.get("path") or "").strip())
-            if not p or ".." in p.split("/"):
-                continue
-            is_dir = bool(raw.get("is_dir"))
-            # If client omitted is_dir, infer from listing when possible
-            if "is_dir" not in raw:
+        seen_paths: set[str] = set()
+
+        def _add_path_target(path: str, is_dir: bool | None = None) -> None:
+            p = normalize_relpath(str(path or "").strip())
+            if not p or ".." in p.split("/") or p in seen_paths:
+                return
+            dir_flag = bool(is_dir) if is_dir is not None else False
+            if is_dir is None:
                 parent = "/".join(p.split("/")[:-1]) or "."
                 name = p.split("/")[-1]
                 listing = target_list(run_dir, path=parent, max_entries=300)
                 if listing.get("ok"):
                     for e in listing.get("entries") or []:
                         if isinstance(e, dict) and e.get("name") == name:
-                            is_dir = bool(e.get("is_dir"))
+                            dir_flag = bool(e.get("is_dir"))
                             break
-            norm_targets.append({"path": p, "is_dir": is_dir})
+                else:
+                    # Heuristic: no extension → treat as folder area path
+                    dir_flag = "." not in name or name.startswith(".")
+            seen_paths.add(p)
+            norm_targets.append({"path": p, "is_dir": dir_flag})
+
+        for raw in path_targets or []:
+            if not isinstance(raw, dict):
+                # bare string path
+                if isinstance(raw, str) and raw.strip():
+                    _add_path_target(raw.strip(), None)
+                continue
+            p = str(raw.get("path") or "").strip()
+            if not p:
+                continue
+            if "is_dir" in raw:
+                _add_path_target(p, bool(raw.get("is_dir")))
+            else:
+                _add_path_target(p, None)
+
+        # Split free-text / selected areas into abstract names vs file paths
+        sel_areas: list[str] = []
+        for a in raw_areas:
+            if _looks_like_path(a):
+                _add_path_target(a, None)
+            else:
+                if a not in sel_areas:
+                    sel_areas.append(a)
 
         path_area_names = [t["path"] for t in norm_targets]
         policy = {
             "mode": mode_n,
             "areas": sel_areas + [a for a in path_area_names if a not in sel_areas],
-            # select: operator picks any registered class; all/auto use run allowlist
+            # select: operator picks any registered skill; all/auto use run allowlist
             "classes": (
                 sel_classes if mode_n == "select" else list(active)
             ),
@@ -778,11 +825,11 @@ def apply_coverage_mode(
                 for area in use_areas:
                     units.append((area, _path_hints_for_area(db, area)))
             else:
-                use_classes = sel_classes or list(active)
-                # Architecture / named areas
+                use_classes = sel_classes or list(available)
+                # Architecture / named abstract areas
                 for area in sel_areas:
                     units.append((area, _path_hints_for_area(db, area)))
-                # Path targets from explorer picker
+                # Path targets (picker + path-like custom areas)
                 for pt in norm_targets:
                     area = str(pt["path"])
                     hints = _hints_for_path_target(
@@ -866,6 +913,401 @@ def apply_coverage_mode(
             "enqueued": enqueued,
             "enqueued_count": len(enqueued),
             "path_targets": norm_targets,
+        }
+    finally:
+        db.close()
+
+
+# Hard ceiling for MAX Hunt fan-out (safety; UI also confirms).
+MAX_MAX_HUNT_HARD = 200
+
+
+def _run_target_and_ignore(db: Database, run_dir: Path) -> tuple[Optional[Path], list[str]]:
+    """Return (target_path, ignore globs) from run row / config."""
+    row = db.get_run()
+    if not row:
+        return None, []
+    target = Path(str(row["target_path"] or "")).resolve()
+    if not target.is_dir():
+        return None, []
+    cfg = get_run_config(db)
+    ignore: list[str] = []
+    tools = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+    inv = tools.get("file_inventory") if isinstance(tools.get("file_inventory"), dict) else {}
+    raw = inv.get("ignore") or cfg.get("ignore") or []
+    if isinstance(raw, list):
+        ignore = [str(x) for x in raw if str(x).strip()]
+    elif isinstance(raw, str) and raw.strip():
+        ignore = [raw.strip()]
+    return target, ignore
+
+
+def _norm_path_targets(
+    run_dir: Path,
+    path_targets: Optional[list[Any]],
+) -> list[dict[str, Any]]:
+    """Normalize path_targets list to [{path, is_dir}]."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in path_targets or []:
+        if isinstance(raw, dict):
+            p = normalize_relpath(str(raw.get("path") or "").strip())
+            is_dir = bool(raw.get("is_dir")) if "is_dir" in raw else None
+        else:
+            p = normalize_relpath(str(raw or "").strip())
+            is_dir = None
+        if not p or ".." in p.split("/") or p in seen:
+            continue
+        if is_dir is None:
+            parent = "/".join(p.split("/")[:-1]) or "."
+            name = p.split("/")[-1]
+            listing = target_list(run_dir, path=parent, max_entries=300)
+            is_dir = False
+            if listing.get("ok"):
+                for e in listing.get("entries") or []:
+                    if isinstance(e, dict) and e.get("name") == name:
+                        is_dir = bool(e.get("is_dir"))
+                        break
+            else:
+                is_dir = "." not in name or name.startswith(".")
+        seen.add(p)
+        out.append({"path": p, "is_dir": bool(is_dir)})
+    return out
+
+
+def _path_hints_union(
+    run_dir: Path,
+    areas: Optional[list[str]],
+    path_targets: Optional[list[Any]],
+) -> tuple[str, list[str], list[dict[str, Any]]]:
+    """Combine areas + path targets into (primary_area, path_hints, norm_targets)."""
+    norm = _norm_path_targets(run_dir, path_targets)
+    hints: list[str] = []
+    for pt in norm:
+        for h in _hints_for_path_target(run_dir, pt["path"], bool(pt.get("is_dir"))):
+            if h not in hints:
+                hints.append(h)
+            if len(hints) >= 24:
+                break
+        if len(hints) >= 24:
+            break
+    area_list = [str(a).strip() for a in (areas or []) if str(a).strip()]
+    for a in area_list:
+        if a not in hints and not any(a == t["path"] for t in norm):
+            # abstract area name — leave for area field only
+            pass
+    primary = ""
+    if norm:
+        primary = str(norm[0]["path"])
+    elif area_list:
+        primary = area_list[0]
+    else:
+        primary = "app"
+    # Prefer file path as area when single path target
+    if len(norm) == 1:
+        primary = norm[0]["path"]
+    elif area_list:
+        primary = area_list[0]
+    return primary, hints[:24], norm
+
+
+def coverage_generate_skill(
+    run_dir: Path,
+    *,
+    brief: str,
+    suggested_id: str = "",
+    activate: bool = False,
+    enqueue_hunts: bool = True,
+    areas: Optional[list[str]] = None,
+    path_targets: Optional[list[Any]] = None,
+    reason: str = "coverage_generate_skill",
+) -> dict[str, Any]:
+    """
+    Enqueue a Ralph ``generate_skill`` task for Coverage (async LLM).
+
+    Does not call the model in-process — operator must Start/Resume Ralph.
+    """
+    notes = (brief or "").strip()
+    if not notes:
+        return {"ok": False, "error": "brief is required"}
+
+    db = _open_db(run_dir)
+    try:
+        row = db.get_run()
+        if not row:
+            return {"ok": False, "error": "no run"}
+        primary_area, path_hints, norm_targets = _path_hints_union(
+            run_dir, areas, path_targets
+        )
+        # Fold checked areas into path_hints when they look like paths
+        for a in areas or []:
+            s = str(a).strip().replace("\\", "/")
+            if not s:
+                continue
+            if ("/" in s or "." in s.rsplit("/", 1)[-1]) and s not in path_hints:
+                path_hints.append(s)
+        path_hints = path_hints[:24]
+
+        payload: dict[str, Any] = {
+            "brief": notes[:6000],
+            "operator_brief": notes[:6000],
+            "activate": bool(activate),
+            "enqueue_hunts": bool(enqueue_hunts),
+            "area": primary_area or "app",
+            "path_hints": path_hints,
+            "path_targets": norm_targets,
+            "reason": reason or "coverage_generate_skill",
+            "operator_requested": True,
+        }
+        sid = str(suggested_id or "").strip()
+        if sid:
+            payload["suggested_id"] = sid[:64]
+
+        # Prefer higher priority than bulk hunts so generate runs soon
+        tid = db.enqueue_task("generate_skill", payload, priority=25)
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "dashboard",
+                    "event": "coverage_generate_skill",
+                    "task_id": tid,
+                    "enqueue_hunts": bool(enqueue_hunts),
+                    "activate": bool(activate),
+                    "path_targets": [t.get("path") for t in norm_targets][:20],
+                    "areas": [str(a) for a in (areas or [])][:20],
+                },
+            )
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "task_id": tid,
+            "enqueue_hunts": bool(enqueue_hunts),
+            "activate": bool(activate),
+            "area": payload["area"],
+            "path_hints": path_hints,
+            "path_targets": norm_targets,
+            "message": (
+                f"Queued generate_skill #{tid}. "
+                "Start/Resume Ralph to author the skill"
+                + (" and enqueue hunt(s)." if enqueue_hunts else ".")
+            ),
+        }
+    finally:
+        db.close()
+
+
+def _max_hunt_file_list(
+    run_dir: Path,
+    *,
+    scope: str = "all",
+    path_targets: Optional[list[Any]] = None,
+    max_files: int = 50,
+) -> dict[str, Any]:
+    """Resolve capped source-file list for MAX Hunt (preview + enqueue)."""
+    from vulnforge.strategies import list_source_files
+
+    db = _open_db(run_dir)
+    try:
+        target, ignore = _run_target_and_ignore(db, run_dir)
+        if target is None:
+            return {"ok": False, "error": "target missing or no run"}
+        cfg = get_run_config(db)
+        try:
+            max_tasks = max(1, int((cfg.get("run") or {}).get("max_tasks") or 50))
+        except (TypeError, ValueError):
+            max_tasks = 50
+        try:
+            want = int(max_files) if max_files is not None else max_tasks
+        except (TypeError, ValueError):
+            want = max_tasks
+        want = max(1, want)
+        hard = MAX_MAX_HUNT_HARD
+        cap = min(want, max_tasks, hard)
+
+        scope_n = str(scope or "all").strip().lower()
+        if scope_n not in ("all", "paths"):
+            scope_n = "all"
+
+        files: list[str] = []
+        if scope_n == "paths":
+            norm = _norm_path_targets(run_dir, path_targets)
+            if not norm:
+                return {
+                    "ok": False,
+                    "error": "scope=paths requires path_targets",
+                    "file_count": 0,
+                    "files": [],
+                    "capped_to": cap,
+                }
+            # Expand folders to source files; keep files as-is
+            all_src = list_source_files(target, ignore=ignore)
+            all_set = set(all_src)
+            picked: list[str] = []
+            for pt in norm:
+                p = pt["path"]
+                if pt.get("is_dir"):
+                    prefix = p.rstrip("/") + "/"
+                    for f in all_src:
+                        if f == p or f.startswith(prefix):
+                            if f not in picked:
+                                picked.append(f)
+                else:
+                    # exact file or any source under that path
+                    if p in all_set:
+                        if p not in picked:
+                            picked.append(p)
+                    else:
+                        # allow non-indexed path if it exists as file
+                        if (target / p).is_file() and p not in picked:
+                            picked.append(p)
+            files = picked
+        else:
+            files = list_source_files(target, ignore=ignore)
+
+        total = len(files)
+        files_capped = files[:cap]
+        return {
+            "ok": True,
+            "scope": scope_n,
+            "file_count": total,
+            "files": files_capped,
+            "files_sample": files_capped[:20],
+            "capped_to": cap,
+            "max_tasks": max_tasks,
+            "max_files_requested": want,
+            "hard_ceiling": hard,
+            "estimated_generate_tasks": len(files_capped),
+            "estimated_hunts": len(files_capped),  # one hunt per generate when enqueue_hunts
+            "truncated": total > cap,
+            "target": str(target),
+        }
+    finally:
+        db.close()
+
+
+def preview_max_hunt(
+    run_dir: Path,
+    *,
+    scope: str = "all",
+    path_targets: Optional[list[Any]] = None,
+    max_files: int = 50,
+) -> dict[str, Any]:
+    """Dry-run MAX Hunt file enumeration (no enqueue)."""
+    return _max_hunt_file_list(
+        run_dir, scope=scope, path_targets=path_targets, max_files=max_files
+    )
+
+
+def enqueue_max_hunt(
+    run_dir: Path,
+    *,
+    scope: str = "all",
+    path_targets: Optional[list[Any]] = None,
+    max_files: int = 50,
+    operator_notes: str = "",
+    activate: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """
+    Enqueue one ``generate_skill`` (enqueue_hunts=true) per source file for MAX Hunt.
+
+    activate defaults False so bulk does not rewrite Dev active set.
+    Skills are saved as source=generated (inactive); hunts use class_body_override.
+    """
+    preview = _max_hunt_file_list(
+        run_dir, scope=scope, path_targets=path_targets, max_files=max_files
+    )
+    if not preview.get("ok"):
+        return preview
+    if dry_run:
+        return {**preview, "dry_run": True, "enqueued_generate": 0, "task_ids": []}
+
+    files: list[str] = list(preview.get("files") or [])
+    if not files:
+        return {
+            **preview,
+            "ok": False,
+            "error": "no source files matched scope",
+            "enqueued_generate": 0,
+            "task_ids": [],
+        }
+
+    notes = (operator_notes or "").strip()
+    arch_summary = ""
+    db = _open_db(run_dir)
+    try:
+        arch = db.get_architecture() or {}
+        if isinstance(arch, dict):
+            arch_summary = str(arch.get("summary") or "").strip()[:600]
+
+        task_ids: list[int] = []
+        from vulnforge.hunt_profiles.generate import slugify_profile_id
+
+        for rel in files:
+            rel_n = normalize_relpath(rel)
+            parts = rel_n.split("/")
+            area = parts[0] if len(parts) > 1 else rel_n
+            # Slug from path for suggested skill id
+            base = rel_n.replace("/", "-").replace(".", "-")
+            suggested = slugify_profile_id(base, fallback="file-hunt")
+            brief_parts = [
+                f"Author a focused hunt skill for the single source file `{rel_n}` only.",
+                "Map sinks, trust edges, input surfaces, and abuse cases in this file "
+                "and its direct callees/callers when needed.",
+                "Do not expand into unrelated modules except for minimal context.",
+            ]
+            if arch_summary:
+                brief_parts.append(f"Architecture context: {arch_summary}")
+            if notes:
+                brief_parts.append(f"Operator notes: {notes}")
+            brief = "\n".join(brief_parts)
+            payload: dict[str, Any] = {
+                "brief": brief[:6000],
+                "operator_brief": brief[:6000],
+                "suggested_id": suggested,
+                "activate": bool(activate),
+                "enqueue_hunts": True,
+                "area": area,
+                "path_hints": [rel_n],
+                "path_targets": [{"path": rel_n, "is_dir": False}],
+                "reason": "coverage_max_hunt",
+                "operator_requested": True,
+                "max_hunts": 1,
+            }
+            tid = db.enqueue_task("generate_skill", payload, priority=28)
+            task_ids.append(int(tid))
+
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "dashboard",
+                    "event": "coverage_max_hunt",
+                    "enqueued_generate": len(task_ids),
+                    "scope": preview.get("scope"),
+                    "capped_to": preview.get("capped_to"),
+                    "file_count": preview.get("file_count"),
+                    "activate": bool(activate),
+                    "task_ids": task_ids[:50],
+                },
+            )
+        except OSError:
+            pass
+
+        return {
+            **preview,
+            "ok": True,
+            "dry_run": False,
+            "enqueued_generate": len(task_ids),
+            "task_ids": task_ids,
+            "activate": bool(activate),
+            "message": (
+                f"Queued {len(task_ids)} generate_skill task(s) "
+                f"(~{len(task_ids)} hunts after generation). "
+                "Start/Resume Ralph. Generated skills default inactive in Dev."
+            ),
         }
     finally:
         db.close()
