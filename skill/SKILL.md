@@ -12,7 +12,7 @@ description: >
 
 # vulnforge skill
 
-You are a client of the **vulnforge protocol** (`PROTOCOL.md` / `AGENT.md` in the harness repo).
+You are a client of the **vulnforge protocol** (`PROTOCOL.md` / `AGENTS.md` in the harness repo).
 Do not invent a second orchestrator. Prefer `vf` / Ralph / dashboard over free-form audit essays.
 
 ## Principles
@@ -101,7 +101,7 @@ Filing a candidate?
    └─ One path+sink → one weakness_class (most specific profile wins)
 ```
 
-See **PROTOCOL.md** for CLI contracts and **AGENT.md** for operator/agent roles when present in the repo.
+See **PROTOCOL.md** for CLI contracts and **AGENTS.md** for operator/agent roles when present in the repo.
 
 ## Workflow
 
@@ -149,7 +149,7 @@ This skill covers **operating VulnForge** as a coding-agent client: init/run, fi
 
 Related surfaces (not separate inventable class ids):
 
-- **PROTOCOL.md / AGENT.md** — CLI contracts and operator/agent roles
+- **PROTOCOL.md / AGENTS.md** — CLI contracts and operator/agent roles
 - **prompts/v1/PRINCIPLES.md** — exploitability bar shared by all hunters
 - **Hunt skills** (`config/hunt_profiles/`, `prompts/v1/hunt_classes/`) — per-class Mission/Method; do not restate them here
 - **Dev generate skill** — authors new profile bodies via `generate_skill.md`; still protocol-bound

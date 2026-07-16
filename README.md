@@ -180,7 +180,7 @@ Token usage (when the model returns `usage`, or estimated) appears on Home and M
 ## Docs
 
 - [`PROTOCOL.md`](PROTOCOL.md) — authority model, labels, apply-candidate contract  
-- [`AGENT.md`](AGENT.md) — extending tools, profiles, and the cockpit  
+- [`AGENTS.md`](AGENTS.md) — extending tools, profiles, and the cockpit  
 - [`skill/SKILL.md`](skill/SKILL.md) — optional skill for coding agents using this harness  
 
 ## License

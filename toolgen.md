@@ -1,6 +1,6 @@
 # toolgen.md — adding agent tools to VulnForge
 
-Checklist of record for humans and local/offline models. Linked from `AGENT.md`.
+Checklist of record for humans and local/offline models. Linked from `AGENTS.md`.
 
 ## When to open this
 

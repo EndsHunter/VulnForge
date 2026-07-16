@@ -1,4 +1,4 @@
-# AGENT.md — using and extending VulnForge
+# AGENTS.md — using and extending VulnForge
 
 ## What this system is
 
