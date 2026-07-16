@@ -331,6 +331,40 @@ class FindingPocBody(BaseModel):
     operator: str = "operator"
 
 
+class FindingsMergeBody(BaseModel):
+    """Operator merge: supersede drop_ids into keep_id (never auto-confirm)."""
+
+    keep_id: int
+    drop_ids: list[int]
+    operator: str = "operator"
+
+
+class ChainStepBody(BaseModel):
+    finding_id: int
+    role: str = ""
+    notes: str = ""
+    poc_path: Optional[str] = None
+
+
+class ChainBody(BaseModel):
+    """Create/update attack chain document under evidence/chains/."""
+
+    id: Optional[str] = None
+    title: str = "Attack chain"
+    include_states: Optional[list[str]] = None
+    steps: list[ChainStepBody] = Field(default_factory=list)
+
+
+class ChainFromFindingsBody(BaseModel):
+    """Build chain from selected findings (or all matching include_states)."""
+
+    finding_ids: Optional[list[int]] = None
+    include_states: Optional[list[str]] = None
+    title: str = ""
+    enqueue_poc: bool = False
+    operator: str = "operator"
+
+
 def create_app(runs_root: Optional[Path] = None) -> FastAPI:
     cfg = load_config()
     root = Path(runs_root) if runs_root else resolve_runs_root(cfg)
@@ -1018,6 +1052,106 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         )
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "poc save failed")
+        return r
+
+    # ---------- Findings clusters / merge (PR-D) ----------
+
+    @app.get("/api/runs/{target_id}/{run_id}/findings/clusters")
+    def api_findings_clusters(target_id: str, run_id: str):
+        """Overlap clusters (merge_key / path-only) for Report near-dup UI."""
+        run = _get_run(target_id, run_id)
+        return dashops.list_finding_clusters(run.path)
+
+    @app.post("/api/runs/{target_id}/{run_id}/findings/merge")
+    def api_findings_merge(target_id: str, run_id: str, body: FindingsMergeBody):
+        """Supersede drop_ids into keep_id; never auto-confirm."""
+        run = _get_run(target_id, run_id)
+        r = dashops.merge_findings_op(
+            run.path,
+            int(body.keep_id),
+            [int(x) for x in (body.drop_ids or [])],
+            operator=body.operator or "operator",
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "merge failed")
+        return r
+
+    # ---------- Attack chains (PR-E) ----------
+
+    @app.get("/api/runs/{target_id}/{run_id}/chains")
+    def api_chains_list(target_id: str, run_id: str):
+        run = _get_run(target_id, run_id)
+        return dashops.list_chains_op(run.path)
+
+    @app.post("/api/runs/{target_id}/{run_id}/chains")
+    def api_chains_create(target_id: str, run_id: str, body: ChainBody):
+        run = _get_run(target_id, run_id)
+        payload = {
+            "id": body.id,
+            "title": body.title or "Attack chain",
+            "include_states": body.include_states,
+            "steps": [s.model_dump() if hasattr(s, "model_dump") else s.dict() for s in (body.steps or [])],
+        }
+        # Drop null id so save allocates uuid
+        if not payload.get("id"):
+            payload.pop("id", None)
+        r = dashops.save_chain_op(run.path, payload)
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "chain save failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/chains/from-findings")
+    def api_chains_from_findings(target_id: str, run_id: str, body: ChainFromFindingsBody):
+        run = _get_run(target_id, run_id)
+        r = dashops.build_chain_from_findings_op(
+            run.path,
+            finding_ids=body.finding_ids,
+            include_states=body.include_states or ["confirmed"],
+            title=body.title or "",
+            enqueue_poc=bool(body.enqueue_poc),
+            operator=body.operator or "operator",
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "chain build failed")
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/chains/{chain_id}")
+    def api_chains_get(target_id: str, run_id: str, chain_id: str):
+        run = _get_run(target_id, run_id)
+        r = dashops.get_chain_op(run.path, chain_id)
+        if not r.get("ok"):
+            raise HTTPException(404, r.get("error") or "chain not found")
+        return r
+
+    @app.put("/api/runs/{target_id}/{run_id}/chains/{chain_id}")
+    def api_chains_put(target_id: str, run_id: str, chain_id: str, body: ChainBody):
+        run = _get_run(target_id, run_id)
+        payload = {
+            "id": chain_id,
+            "title": body.title or "Attack chain",
+            "include_states": body.include_states,
+            "steps": [s.model_dump() if hasattr(s, "model_dump") else s.dict() for s in (body.steps or [])],
+        }
+        r = dashops.save_chain_op(run.path, payload)
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "chain save failed")
+        return r
+
+    @app.delete("/api/runs/{target_id}/{run_id}/chains/{chain_id}")
+    def api_chains_delete(target_id: str, run_id: str, chain_id: str):
+        run = _get_run(target_id, run_id)
+        r = dashops.delete_chain_op(run.path, chain_id)
+        if not r.get("ok"):
+            raise HTTPException(404, r.get("error") or "chain not found")
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/chains/{chain_id}/export")
+    def api_chains_export(target_id: str, run_id: str, chain_id: str):
+        """Markdown export of an attack chain (honesty disclaimer included)."""
+        run = _get_run(target_id, run_id)
+        r = dashops.export_chain_markdown_op(run.path, chain_id)
+        if not r.get("ok"):
+            raise HTTPException(404, r.get("error") or "chain not found")
         return r
 
     # ---------- API: global LLM / agent settings ----------

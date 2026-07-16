@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from vulnforge.stages.dedup import (
     class_rank,
+    cluster_findings,
+    merge_findings,
     merge_key,
     merge_near_duplicate,
     primary_sink,
@@ -11,6 +13,8 @@ from vulnforge.stages.dedup import (
 
 __all__ = [
     "class_rank",
+    "cluster_findings",
+    "merge_findings",
     "merge_key",
     "merge_near_duplicate",
     "primary_sink",

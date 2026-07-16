@@ -3600,3 +3600,135 @@ tr.task-row:hover td { background: rgba(255, 61, 110, 0.08); }
 }
 .badge.warn { background: rgba(240,180,41,0.15); color: var(--warn); border-color: rgba(240,180,41,0.35); }
 .badge.info { background: rgba(122,162,247,0.12); color: var(--info); border-color: rgba(122,162,247,0.3); }
+.badge.near-dup {
+  color: #f0c060;
+  border-color: rgba(240, 180, 41, 0.55);
+  background: rgba(240, 160, 40, 0.18);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.report-summary-grid-wide {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+@media (max-width: 900px) {
+  .report-summary-grid-wide { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.report-check-col,
+.report-check-cell {
+  width: 2rem;
+  text-align: center;
+  vertical-align: middle;
+}
+.report-row.near-dup-row {
+  box-shadow: inset 3px 0 0 rgba(240, 180, 41, 0.55);
+}
+.report-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+.report-clusters-card,
+.report-chains-card {
+  padding: 0.75rem 0.85rem 1rem;
+}
+.report-cluster-block {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  margin-bottom: 0.5rem;
+  background: rgba(0, 0, 0, 0.15);
+}
+.report-cluster-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 0.4rem;
+}
+.report-cluster-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.report-related-panel,
+.report-merge-meta {
+  margin: 0.65rem 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(240, 180, 41, 0.25);
+  background: rgba(240, 160, 40, 0.06);
+}
+.report-related-list {
+  list-style: none;
+  margin: 0.35rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.report-related-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+.report-related-item.self {
+  opacity: 0.85;
+}
+.report-related-title {
+  flex: 1 1 8rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.report-chains-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+.report-chain-scope select {
+  margin-left: 0.25rem;
+  max-width: 14rem;
+}
+.report-chain-honesty {
+  margin: 0.25rem 0 0.5rem;
+}
+.report-chain-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.report-chain-row.open {
+  background: rgba(122, 162, 247, 0.08);
+}
+.report-chain-detail {
+  margin-top: 0.65rem;
+  padding: 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(122, 162, 247, 0.25);
+  background: rgba(122, 162, 247, 0.05);
+}
+.report-chain-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+}
+.report-chain-role,
+.report-chain-notes {
+  min-width: 6rem;
+  max-width: 12rem;
+  font-size: 0.85rem;
+}
+#report-chain-title {
+  min-width: 14rem;
+}

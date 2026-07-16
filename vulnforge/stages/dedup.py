@@ -224,24 +224,209 @@ def deterministic_shortlist(finding, db, k: int = 10) -> list[int]:
     return out
 
 
-def merge_findings(db, keep_id: int, drop_ids: list[int]) -> None:
-    """Mark drop_ids as superseded; link to keep_id."""
+# Keeper preference for cluster labels (lower = better primary).
+_CLUSTER_STATE_RANK = {
+    "confirmed": 0,
+    "needs_human": 1,
+    "candidate": 2,
+    "rejected_mech": 10,
+    "rejected_llm": 11,
+    "rejected_human": 12,
+}
+
+
+def _cluster_sort_key(f) -> tuple:
+    """confirmed > needs_human > candidate; then lower id first."""
+    rank = _CLUSTER_STATE_RANK.get(str(f.state or ""), 50)
+    return (rank, int(f.id))
+
+
+def _member_dict(f, label: str) -> dict[str, Any]:
+    body = f.body or {}
+    path, symbol = primary_sink(body)
+    return {
+        "id": int(f.id),
+        "label": label,
+        "state": f.state,
+        "title": body.get("title") or f.stable_key or f"Finding #{f.id}",
+        "class": body.get("weakness_class") or "",
+        "path": path or "",
+        "symbol": symbol or "",
+        "stable_key": f.stable_key,
+        "near_dup": bool(
+            body.get("merged_classes")
+            or body.get("near_dup_titles")
+            or body.get("superseded_by")
+            or f.state == "superseded"
+        ),
+        "merged_classes": list(body.get("merged_classes") or []),
+        "near_dup_titles": list(body.get("near_dup_titles") or []),
+        "superseded_by": body.get("superseded_by"),
+    }
+
+
+def _label_for_index(index: int) -> str:
+    """0 -> 1A, 1 -> 1B, … 25 -> 1Z, 26 -> 1AA (rare)."""
+    n = index
+    letters = ""
+    while True:
+        letters = chr(ord("A") + (n % 26)) + letters
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return f"1{letters}"
+
+
+def _build_cluster(
+    cluster_index: int,
+    members_sorted: list,
+    *,
+    strength: str,
+    group_key: str,
+) -> dict[str, Any]:
+    labeled = []
+    for i, f in enumerate(members_sorted):
+        labeled.append(_member_dict(f, _label_for_index(i)))
+    primary = members_sorted[0]
+    return {
+        "cluster_id": f"c{cluster_index}",
+        "primary_id": int(primary.id),
+        "strength": strength,  # merge_key | path_only
+        "group_key": group_key,
+        "size": len(labeled),
+        "members": labeled,
+    }
+
+
+def cluster_findings(db) -> list[dict[str, Any]]:
+    """
+    Group non-superseded findings for operator overlap review.
+
+    - Strong clusters: same merge_key (path|symbol) when symbol present
+    - Weak clusters: same path without symbol (path-only; report-time only)
+    - Exact stable_key is unique in DB so never multi-member
+
+    Each cluster:
+      { cluster_id, primary_id, strength, group_key, size,
+        members: [{id, label "1A"|"1B", state, title, class, path, symbol, …}] }
+
+    Labels: keeper first (confirmed > needs_human > candidate; then lower id)
+    as 1A, then 1B, 1C, …
+    Only multi-member clusters are returned.
+    """
+    findings = [
+        f
+        for f in db.list_findings()
+        if f.state not in ("superseded",)
+    ]
+
+    by_merge: dict[str, list] = {}
+    by_path_weak: dict[str, list] = {}
+    for f in findings:
+        body = f.body or {}
+        mk = merge_key(body)
+        if mk:
+            by_merge.setdefault(mk, []).append(f)
+            continue
+        path, _sym = primary_sink(body)
+        if path:
+            by_path_weak.setdefault(path, []).append(f)
+
+    clusters: list[dict[str, Any]] = []
+    idx = 1
+    # Strong first, stable order by group_key
+    for key in sorted(by_merge.keys()):
+        group = by_merge[key]
+        if len(group) < 2:
+            continue
+        ordered = sorted(group, key=_cluster_sort_key)
+        clusters.append(
+            _build_cluster(idx, ordered, strength="merge_key", group_key=key)
+        )
+        idx += 1
+    for path in sorted(by_path_weak.keys()):
+        group = by_path_weak[path]
+        if len(group) < 2:
+            continue
+        ordered = sorted(group, key=_cluster_sort_key)
+        clusters.append(
+            _build_cluster(
+                idx, ordered, strength="path_only", group_key=f"path:{path}"
+            )
+        )
+        idx += 1
+    return clusters
+
+
+def merge_findings(db, keep_id: int, drop_ids: list[int]) -> dict[str, Any]:
+    """
+    Mark drop_ids as superseded; link each to keep_id via body.superseded_by.
+
+    Annotates the keeper with merged_classes / near_dup_titles from dropped
+    findings. Does **not** change keeper state (never auto-confirms).
+    """
+    import json
+
     keep = db.get_finding(keep_id)
     if not keep:
         raise KeyError(keep_id)
-    for did in drop_ids:
-        if did == keep_id:
+    if keep.state == "superseded":
+        raise ValueError("cannot keep a superseded finding")
+
+    keep_body = dict(keep.body or {})
+    titles = list(keep_body.get("near_dup_titles") or [])
+    classes: set[str] = set(keep_body.get("merged_classes") or [])
+    kc = str(keep_body.get("weakness_class") or "")
+    if kc:
+        classes.add(kc)
+
+    dropped: list[int] = []
+    for did in drop_ids or []:
+        did_i = int(did)
+        if did_i == int(keep_id):
             continue
-        f = db.get_finding(did)
+        f = db.get_finding(did_i)
         if not f:
             continue
         body = dict(f.body or {})
-        body["superseded_by"] = keep_id
+        body["superseded_by"] = int(keep_id)
+        title = body.get("title")
+        if title and title not in titles:
+            titles.append(title)
+        cls = str(body.get("weakness_class") or "")
+        if cls:
+            classes.add(cls)
+        for t in body.get("near_dup_titles") or []:
+            if t and t not in titles:
+                titles.append(t)
+        for c in body.get("merged_classes") or []:
+            if c:
+                classes.add(str(c))
         db.conn.execute(
             """
             UPDATE findings SET state=?, body_json=?, updated_at=datetime('now')
             WHERE id=?
             """,
-            ("superseded", __import__("json").dumps(body), did),
+            ("superseded", json.dumps(body), did_i),
         )
+        dropped.append(did_i)
+
+    keep_body["near_dup_titles"] = titles[:20]
+    keep_body["merged_classes"] = sorted(c for c in classes if c)
+    # Keep state unchanged — never promote to confirmed.
+    db.conn.execute(
+        """
+        UPDATE findings SET body_json=?, updated_at=datetime('now')
+        WHERE id=?
+        """,
+        (json.dumps(keep_body), int(keep_id)),
+    )
     db.conn.commit()
+    return {
+        "ok": True,
+        "keep_id": int(keep_id),
+        "dropped_ids": dropped,
+        "keep_state": keep.state,
+        "merged_classes": keep_body["merged_classes"],
+        "near_dup_titles": keep_body["near_dup_titles"],
+    }

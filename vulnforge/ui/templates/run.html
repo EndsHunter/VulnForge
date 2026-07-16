@@ -147,6 +147,7 @@
               <table class="data report-table">
                 <thead>
                   <tr>
+                    <th class="report-check-col" title="Select for attack chain"></th>
                     <th>ID</th>
                     <th>Title</th>
                     <th>Class</th>
@@ -157,11 +158,46 @@
                   </tr>
                 </thead>
                 <tbody id="report-tbody">
-                  <tr><td colspan="7" class="empty">Loading...</td></tr>
+                  <tr><td colspan="8" class="empty">Loading...</td></tr>
                 </tbody>
               </table>
             </div>
             <div id="report-detail" class="report-detail" hidden></div>
+          </div>
+          <div class="card report-clusters-card" id="report-clusters-card">
+            <div class="report-panel-head">
+              <h3 class="report-raw-title">Near-dup / Overlaps</h3>
+              <button type="button" class="btn btn-sm" id="report-clusters-refresh" title="Reload clusters">Refresh</button>
+            </div>
+            <p class="controls-hint">
+              Groups share the same sink path+symbol (strong) or path-only (weak). Labels
+              <span class="mono">1A</span>/<span class="mono">1B</span> mark primary vs variants.
+              Merge never auto-confirms.
+            </p>
+            <div id="report-clusters" class="report-clusters"></div>
+          </div>
+          <div class="card report-chains-card" id="report-chains-card">
+            <div class="report-panel-head">
+              <h3 class="report-raw-title">Attack chains</h3>
+              <div class="report-chains-actions">
+                <label class="controls-hint report-chain-scope">
+                  Scope
+                  <select id="report-chain-scope" title="Findings eligible for new chains">
+                    <option value="confirmed">Confirmed only</option>
+                    <option value="confirmed,needs_human">Confirmed + needs_human</option>
+                  </select>
+                </label>
+                <button type="button" class="btn btn-sm btn-primary" id="report-chain-create" title="Create chain from selected rows">Create from selection</button>
+                <button type="button" class="btn btn-sm" id="report-chain-create-all" title="Create chain from all findings in scope">Create from scope</button>
+                <button type="button" class="btn btn-sm" id="report-chains-refresh">Refresh</button>
+              </div>
+            </div>
+            <p class="controls-hint report-chain-honesty">
+              <strong>Honesty:</strong> Chains are operator research narratives — not exploit proof.
+              <code>confirmed</code> = human accepted; always re-check before production claims.
+            </p>
+            <div id="report-chains-list" class="report-chains-list"></div>
+            <div id="report-chain-detail" class="report-chain-detail" hidden></div>
           </div>
           <div class="card report-raw-card">
             <h3 class="report-raw-title">Raw projections</h3>

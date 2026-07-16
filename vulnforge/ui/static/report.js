@@ -11,6 +11,15 @@
   let pocFindingId = null;
   let pocChromeBound = false;
   let meta = { target_id: "", run_id: "", target_path: "" };
+  /** Multi-member overlap clusters from GET /findings/clusters */
+  let clustersCache = [];
+  /** Map finding_id -> cluster member meta */
+  let clusterByFinding = {};
+  /** Selected finding ids for attack chain builder */
+  let selectedIds = new Set();
+  let chainsCache = [];
+  let openChainId = null;
+  let reportPanelsBound = false;
 
   function esc(s) {
     return String(s ?? "")
@@ -61,11 +70,25 @@
     const ftr = (filter || "all").toLowerCase();
     if (ftr === "all") return true;
     if (ftr === "rejected") return st.startsWith("rejected") || st === "superseded";
+    if (ftr === "near_dup" || ftr === "overlaps") {
+      return !!(f.near_dup || clusterByFinding[f.id]);
+    }
     if (ftr === "needs_human") {
       const b = bodyOf(f);
       return st === "needs_human" || !!(b.needs_human || b.validation_mech?.pending_llm);
     }
     return st === ftr;
+  }
+
+  function apiBase() {
+    if (!meta.target_id || !meta.run_id) return null;
+    return `/api/runs/${encodeURIComponent(meta.target_id)}/${encodeURIComponent(meta.run_id)}`;
+  }
+
+  function callApi(path, opts) {
+    const api = typeof window.api === "function" ? window.api : null;
+    if (!api) return Promise.reject(new Error("API unavailable"));
+    return api(path, opts);
   }
 
   function sortedFindings() {
@@ -92,6 +115,7 @@
       needs_human: 0,
       candidate: 0,
       rejected: 0,
+      near_dup: 0,
       other: 0,
       total: cache.length,
     };
@@ -102,6 +126,7 @@
       else if (st === "candidate") c.candidate++;
       else if (st.startsWith("rejected") || st === "superseded") c.rejected++;
       else c.other++;
+      if (f.near_dup || clusterByFinding[f.id]) c.near_dup++;
     }
     return c;
   }
@@ -113,7 +138,7 @@
     const ftr = (filter || "all").toLowerCase();
     const active = (key) => (ftr === key ? " active" : "");
     el.innerHTML = `
-      <div class="report-summary-grid">
+      <div class="report-summary-grid report-summary-grid-wide">
         <button type="button" class="stat info stat-link${active("all")}" data-rfilter="all" title="Show all findings" aria-pressed="${ftr === "all"}">
           <div class="label">All</div><div class="value">${c.total}</div>
         </button>
@@ -126,11 +151,15 @@
         <button type="button" class="stat bad stat-link${active("rejected")}" data-rfilter="rejected" title="Filter: rejected" aria-pressed="${ftr === "rejected"}">
           <div class="label">Rejected</div><div class="value">${c.rejected}</div>
         </button>
+        <button type="button" class="stat warn stat-link${active("near_dup")}" data-rfilter="near_dup" title="Filter: near-dup / overlaps" aria-pressed="${ftr === "near_dup"}">
+          <div class="label">Near-dup</div><div class="value">${c.near_dup}</div>
+        </button>
       </div>
       <p class="controls-hint report-disclaimer">
         Click a count to filter the table.
         <strong>needs_human</strong> = mechanical gates passed.
         <strong>confirmed</strong> = human accepted (not exploit proof). Expand a row to review.
+        Use checkboxes to build <strong>attack chains</strong>.
       </p>`;
     el.querySelectorAll("[data-rfilter]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -191,6 +220,89 @@
             )
             .join("")}</ul></details>`
         : "";
+    const cm = clusterByFinding[f.id];
+    const cluster = cm
+      ? clustersCache.find((c) => c.cluster_id === cm.cluster_id)
+      : null;
+    const mergedClasses = b.merged_classes || [];
+    const nearTitles = b.near_dup_titles || [];
+    const supersededBy = b.superseded_by;
+    const relatedHtml = cluster
+      ? `<div class="report-related-panel">
+          <h4>Related variants <span class="badge near-dup">${esc(cluster.strength || "overlap")}</span>
+            <span class="controls-hint mono">cluster ${esc(cluster.cluster_id)} · primary #${cluster.primary_id}</span>
+          </h4>
+          <ul class="report-related-list">${(cluster.members || [])
+            .map((m) => {
+              const isSelf = Number(m.id) === Number(f.id);
+              const isPrimary = Number(m.id) === Number(cluster.primary_id);
+              return `<li class="report-related-item${isSelf ? " self" : ""}">
+                <span class="badge info mono">${esc(m.label)}</span>
+                <button type="button" class="btn btn-ghost btn-sm report-open-related" data-fid="${m.id}" ${
+                  isSelf ? "disabled" : ""
+                }>#${m.id}</button>
+                <span class="mono">${esc(m.class || "-")}</span>
+                ${badge(m.state)}
+                <span class="report-related-title">${esc(m.title || "")}</span>
+                ${
+                  !isSelf && !isPrimary && f.state !== "superseded"
+                    ? `<button type="button" class="btn btn-sm report-merge-into" data-keep="${cluster.primary_id}" data-drop="${m.id}" title="Supersede this variant into primary">Merge into primary</button>`
+                    : ""
+                }
+                ${
+                  isSelf && !isPrimary && f.state !== "superseded"
+                    ? `<button type="button" class="btn btn-sm btn-primary report-merge-into" data-keep="${cluster.primary_id}" data-drop="${f.id}" title="Supersede this finding into cluster primary">Merge this into primary</button>`
+                    : ""
+                }
+              </li>`;
+            })
+            .join("")}</ul>
+          ${
+            Number(f.id) === Number(cluster.primary_id) &&
+            (cluster.members || []).some((m) => Number(m.id) !== Number(f.id) && m.state !== "superseded")
+              ? `<button type="button" class="btn btn-sm report-merge-all" data-keep="${cluster.primary_id}" data-drops="${(cluster.members || [])
+                  .filter((m) => Number(m.id) !== Number(cluster.primary_id))
+                  .map((m) => m.id)
+                  .join(",")}" title="Supersede all other variants into primary">Merge all variants into primary</button>`
+              : ""
+          }
+          <p class="controls-hint">Merge marks drop as <span class="mono">superseded</span> and annotates keeper — does not change keeper state / never auto-confirms.</p>
+        </div>`
+      : "";
+    const mergeMeta =
+      mergedClasses.length || nearTitles.length || supersededBy != null
+        ? `<div class="report-merge-meta">
+            <h4>Merge metadata</h4>
+            <div class="kv">
+              ${
+                supersededBy != null
+                  ? `<div class="k">superseded_by</div><div class="v"><button type="button" class="btn btn-ghost btn-sm report-open-related" data-fid="${esc(
+                      String(supersededBy)
+                    )}">#${esc(String(supersededBy))}</button></div>`
+                  : ""
+              }
+              ${
+                mergedClasses.length
+                  ? `<div class="k">merged_classes</div><div class="v mono">${esc(
+                      mergedClasses.join(", ")
+                    )}</div>`
+                  : ""
+              }
+              ${
+                nearTitles.length
+                  ? `<div class="k">near_dup_titles</div><div class="v">${nearTitles
+                      .map((t) => `<div class="controls-hint">${esc(t)}</div>`)
+                      .join("")}</div>`
+                  : ""
+              }
+            </div>
+          </div>`
+        : "";
+    const nearBadge = f.near_dup || cluster
+      ? `<span class="badge near-dup" title="Near-duplicate / overlap">near-dup${
+          cm && cm.label ? " " + esc(cm.label) : ""
+        }</span>`
+      : "";
     return `
       <div class="report-detail-inner" data-fid="${f.id}">
         <div class="report-detail-head">
@@ -199,11 +311,13 @@
             ${badge(f.state)}
             ${sevBadge(f.severity || b.severity_claim || "unknown")}
             <span class="badge info">${esc(b.weakness_class || "-")}</span>
-            ${f.near_dup ? badge("near-dup") : ""}
+            ${nearBadge}
           </div>
         </div>
         <p class="report-detail-summary">${esc(b.summary || "No summary.")}</p>
         ${rejectBox}
+        ${relatedHtml}
+        ${mergeMeta}
         <div class="report-detail-grid">
           <div>
             <h4>Threat model</h4>
@@ -768,6 +882,41 @@
     }
   }
 
+  async function doMerge(keepId, dropIds) {
+    const base = apiBase();
+    if (!base) {
+      toast("No run loaded", true);
+      return;
+    }
+    const drops = (dropIds || []).map(Number).filter((n) => n && n !== Number(keepId));
+    if (!drops.length) {
+      toast("Nothing to merge", true);
+      return;
+    }
+    try {
+      const r = await callApi(`${base}/findings/merge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          keep_id: Number(keepId),
+          drop_ids: drops,
+          operator: "operator",
+        }),
+      });
+      toast(
+        `Merged ${r.dropped_ids?.length || drops.length} finding(s) into #${keepId} (state unchanged: ${r.keep_state || "?"})`
+      );
+      if (typeof window.loadRunFull === "function") {
+        await window.loadRunFull();
+      }
+      await loadClusters();
+      openId = Number(keepId);
+      openFinding(keepId);
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
   function bindDetailActions(root) {
     root.querySelectorAll(".report-review-btn").forEach((btn) => {
       btn.addEventListener("click", (e) => {
@@ -776,6 +925,34 @@
         const action = btn.getAttribute("data-action");
         if (!fid || !action) return;
         submitReview(fid, action, root);
+      });
+    });
+    root.querySelectorAll(".report-open-related").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const fid = Number(btn.getAttribute("data-fid"));
+        if (fid) openFinding(fid);
+      });
+    });
+    root.querySelectorAll(".report-merge-into").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const keep = Number(btn.getAttribute("data-keep"));
+        const drop = Number(btn.getAttribute("data-drop"));
+        if (!keep || !drop) return;
+        doMerge(keep, [drop]);
+      });
+    });
+    root.querySelectorAll(".report-merge-all").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const keep = Number(btn.getAttribute("data-keep"));
+        const drops = (btn.getAttribute("data-drops") || "")
+          .split(",")
+          .map((x) => Number(x.trim()))
+          .filter(Boolean);
+        if (!keep || !drops.length) return;
+        doMerge(keep, drops);
       });
     });
     root.querySelectorAll(".report-open-ev").forEach((btn) => {
@@ -842,7 +1019,7 @@
     if (!tbody) return;
     const rows = sortedFindings();
     if (!cache.length) {
-      tbody.innerHTML = `<tr><td colspan="7"><div class="empty empty-cta">
+      tbody.innerHTML = `<tr><td colspan="8"><div class="empty empty-cta">
         <p><strong>No findings yet</strong></p>
         <p class="controls-hint">Run recon and hunts, then return here. Use Explorer to steer work.</p>
         <div class="empty-cta-actions">
@@ -859,7 +1036,7 @@
       return;
     }
     if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="7" class="empty">No findings match this filter.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">No findings match this filter.</td></tr>`;
       return;
     }
     tbody.innerHTML = rows
@@ -867,9 +1044,20 @@
         const b = bodyOf(f);
         const p = primaryPath(f);
         const open = Number(openId) === Number(f.id);
-        return `<tr class="report-row${open ? " open" : ""}" data-fid="${f.id}" tabindex="0">
+        const cm = clusterByFinding[f.id];
+        const near =
+          f.near_dup || cm
+            ? `<span class="badge near-dup" title="Near-duplicate / overlap">${
+                cm && cm.label ? esc(cm.label) + " near-dup" : "near-dup"
+              }</span>`
+            : "";
+        const checked = selectedIds.has(Number(f.id)) ? " checked" : "";
+        return `<tr class="report-row${open ? " open" : ""}${f.near_dup || cm ? " near-dup-row" : ""}" data-fid="${f.id}" tabindex="0">
+          <td class="report-check-cell" onclick="event.stopPropagation()">
+            <input type="checkbox" class="report-select-cb" data-fid="${f.id}" aria-label="Select finding ${f.id}"${checked} />
+          </td>
           <td class="mono">${f.id}</td>
-          <td class="report-title-cell">${esc(b.title || f.stable_key || "-")}</td>
+          <td class="report-title-cell">${esc(b.title || f.stable_key || "-")} ${near}</td>
           <td><span class="mono">${esc(b.weakness_class || "-")}</span></td>
           <td>${sevBadge(f.severity || b.severity_claim || "unknown")}</td>
           <td>${badge(f.state)}</td>
@@ -878,6 +1066,16 @@
         </tr>`;
       })
       .join("");
+
+    tbody.querySelectorAll(".report-select-cb").forEach((cb) => {
+      cb.addEventListener("change", (e) => {
+        e.stopPropagation();
+        const id = Number(cb.getAttribute("data-fid"));
+        if (!id) return;
+        if (cb.checked) selectedIds.add(id);
+        else selectedIds.delete(id);
+      });
+    });
 
     tbody.querySelectorAll(".report-row").forEach((tr) => {
       const openDetail = () => {
@@ -1218,6 +1416,398 @@
     }
   }
 
+  function rebuildClusterIndex() {
+    clusterByFinding = {};
+    for (const c of clustersCache) {
+      for (const m of c.members || []) {
+        clusterByFinding[m.id] = {
+          cluster_id: c.cluster_id,
+          label: m.label,
+          primary_id: c.primary_id,
+          strength: c.strength,
+        };
+      }
+    }
+  }
+
+  async function loadClusters() {
+    const base = apiBase();
+    const el = $("#report-clusters");
+    if (!base) {
+      if (el) el.innerHTML = `<p class="controls-hint">No run loaded.</p>`;
+      return;
+    }
+    try {
+      const r = await callApi(`${base}/findings/clusters`);
+      clustersCache = Array.isArray(r.clusters) ? r.clusters : [];
+      rebuildClusterIndex();
+      renderClusters();
+      // Refresh table badges if filter depends on clusters
+      renderSummary();
+      renderTable();
+      if (openId != null) {
+        const f = cache.find((x) => Number(x.id) === Number(openId));
+        const d = $("#report-detail");
+        if (d && f) {
+          d.hidden = false;
+          d.innerHTML = detailHtml(f);
+          bindDetailActions(d);
+        }
+      }
+    } catch (e) {
+      if (el) {
+        el.innerHTML = `<p class="controls-hint err">${esc(e.message || String(e))}</p>`;
+      }
+    }
+  }
+
+  function renderClusters() {
+    const el = $("#report-clusters");
+    if (!el) return;
+    if (!clustersCache.length) {
+      el.innerHTML = `<p class="controls-hint">No multi-finding overlaps detected (same path+symbol or path-only weak groups).</p>`;
+      return;
+    }
+    el.innerHTML = clustersCache
+      .map((c) => {
+        const members = (c.members || [])
+          .map(
+            (m) =>
+              `<button type="button" class="path-chip report-cluster-member" data-fid="${m.id}" title="${esc(
+                m.title || ""
+              )}">
+                <span class="badge info mono">${esc(m.label)}</span>
+                #${m.id} ${badge(m.state)}
+                <span class="mono">${esc(m.class || "-")}</span>
+              </button>`
+          )
+          .join(" ");
+        return `<div class="report-cluster-block" data-cluster="${esc(c.cluster_id)}">
+          <div class="report-cluster-head">
+            <strong class="mono">${esc(c.cluster_id)}</strong>
+            <span class="badge ${c.strength === "merge_key" ? "near-dup" : "info"}">${esc(
+              c.strength || "overlap"
+            )}</span>
+            <span class="controls-hint">primary #${c.primary_id} · ${c.size} members</span>
+            <span class="mono controls-hint">${esc(c.group_key || "")}</span>
+            <button type="button" class="btn btn-sm report-cluster-merge-all" data-keep="${
+              c.primary_id
+            }" data-drops="${(c.members || [])
+              .filter((m) => Number(m.id) !== Number(c.primary_id))
+              .map((m) => m.id)
+              .join(",")}" title="Merge all into primary">Merge all → primary</button>
+          </div>
+          <div class="report-cluster-members">${members}</div>
+        </div>`;
+      })
+      .join("");
+    el.querySelectorAll(".report-cluster-member").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const fid = Number(btn.getAttribute("data-fid"));
+        if (fid) openFinding(fid);
+      });
+    });
+    el.querySelectorAll(".report-cluster-merge-all").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const keep = Number(btn.getAttribute("data-keep"));
+        const drops = (btn.getAttribute("data-drops") || "")
+          .split(",")
+          .map((x) => Number(x.trim()))
+          .filter(Boolean);
+        if (keep && drops.length) doMerge(keep, drops);
+      });
+    });
+  }
+
+  function chainScopeStates() {
+    const sel = $("#report-chain-scope");
+    const raw = sel ? sel.value : "confirmed";
+    return String(raw || "confirmed")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  async function loadChains() {
+    const base = apiBase();
+    const el = $("#report-chains-list");
+    if (!base) {
+      if (el) el.innerHTML = `<p class="controls-hint">No run loaded.</p>`;
+      return;
+    }
+    try {
+      const r = await callApi(`${base}/chains`);
+      chainsCache = Array.isArray(r.chains) ? r.chains : [];
+      renderChainsList();
+      if (openChainId) {
+        const ch = chainsCache.find((c) => c.id === openChainId);
+        if (ch) renderChainDetail(ch);
+        else {
+          openChainId = null;
+          const d = $("#report-chain-detail");
+          if (d) {
+            d.hidden = true;
+            d.innerHTML = "";
+          }
+        }
+      }
+    } catch (e) {
+      if (el) {
+        el.innerHTML = `<p class="controls-hint err">${esc(e.message || String(e))}</p>`;
+      }
+    }
+  }
+
+  function renderChainsList() {
+    const el = $("#report-chains-list");
+    if (!el) return;
+    if (!chainsCache.length) {
+      el.innerHTML = `<p class="controls-hint">No attack chains yet. Select findings (checkboxes) or create from scope.</p>`;
+      return;
+    }
+    el.innerHTML = chainsCache
+      .map((c) => {
+        const n = (c.steps || []).length;
+        const open = openChainId === c.id;
+        return `<div class="report-chain-row${open ? " open" : ""}" data-chain="${esc(c.id)}">
+          <button type="button" class="btn btn-ghost report-chain-open" data-chain="${esc(c.id)}">
+            <strong>${esc(c.title || "Chain")}</strong>
+            <span class="controls-hint mono">${esc(String(c.id).slice(0, 8))}… · ${n} step${n === 1 ? "" : "s"}</span>
+          </button>
+          <button type="button" class="btn btn-sm report-chain-export" data-chain="${esc(c.id)}" title="Export markdown">MD</button>
+          <button type="button" class="btn btn-sm btn-bad report-chain-delete" data-chain="${esc(c.id)}" title="Delete chain">Delete</button>
+        </div>`;
+      })
+      .join("");
+    el.querySelectorAll(".report-chain-open").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-chain");
+        const ch = chainsCache.find((c) => c.id === id);
+        if (ch) {
+          openChainId = id;
+          renderChainsList();
+          renderChainDetail(ch);
+        }
+      });
+    });
+    el.querySelectorAll(".report-chain-export").forEach((btn) => {
+      btn.addEventListener("click", () => exportChainMd(btn.getAttribute("data-chain")));
+    });
+    el.querySelectorAll(".report-chain-delete").forEach((btn) => {
+      btn.addEventListener("click", () => deleteChain(btn.getAttribute("data-chain")));
+    });
+  }
+
+  function renderChainDetail(chain) {
+    const d = $("#report-chain-detail");
+    if (!d || !chain) return;
+    d.hidden = false;
+    const steps = chain.steps || [];
+    const stepsHtml = steps
+      .map((s, i) => {
+        const f = cache.find((x) => Number(x.id) === Number(s.finding_id));
+        const title = f ? bodyOf(f).title || f.stable_key : "";
+        const st = f ? f.state : "";
+        return `<div class="report-chain-step" data-idx="${i}">
+          <span class="mono">#${i + 1}</span>
+          <button type="button" class="btn btn-ghost btn-sm report-open-related" data-fid="${s.finding_id}">finding #${s.finding_id}</button>
+          ${st ? badge(st) : ""}
+          <span class="report-related-title">${esc(title || "")}</span>
+          <input type="text" class="report-chain-role" data-idx="${i}" placeholder="role" value="${esc(s.role || "")}" />
+          <input type="text" class="report-chain-notes" data-idx="${i}" placeholder="notes" value="${esc(s.notes || "")}" />
+          <span class="controls-hint mono">${esc(s.poc_path || "no poc")}</span>
+          <button type="button" class="btn btn-sm report-chain-up" data-idx="${i}" title="Move up" ${i === 0 ? "disabled" : ""}>↑</button>
+          <button type="button" class="btn btn-sm report-chain-down" data-idx="${i}" title="Move down" ${i >= steps.length - 1 ? "disabled" : ""}>↓</button>
+        </div>`;
+      })
+      .join("");
+    d.innerHTML = `
+      <div class="report-chain-detail-inner" data-chain="${esc(chain.id)}">
+        <div class="report-panel-head">
+          <label class="field-label">Title
+            <input type="text" id="report-chain-title" value="${esc(chain.title || "")}" />
+          </label>
+          <div>
+            <button type="button" class="btn btn-sm btn-primary" id="report-chain-save">Save steps</button>
+            <button type="button" class="btn btn-sm" id="report-chain-export-detail">Export MD</button>
+            <button type="button" class="btn btn-sm" id="report-chain-close-detail">Close</button>
+          </div>
+        </div>
+        <p class="controls-hint">Scope: <span class="mono">${esc((chain.include_states || []).join(", "))}</span>
+          · stored under <span class="mono">evidence/chains/${esc(chain.id)}.json</span></p>
+        <div class="report-chain-steps">${stepsHtml || '<p class="controls-hint">No steps.</p>'}</div>
+      </div>`;
+    d.querySelectorAll(".report-open-related").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const fid = Number(btn.getAttribute("data-fid"));
+        if (fid) openFinding(fid);
+      });
+    });
+    d.querySelectorAll(".report-chain-up").forEach((btn) => {
+      btn.addEventListener("click", () => reorderChainStep(chain, Number(btn.getAttribute("data-idx")), -1));
+    });
+    d.querySelectorAll(".report-chain-down").forEach((btn) => {
+      btn.addEventListener("click", () => reorderChainStep(chain, Number(btn.getAttribute("data-idx")), 1));
+    });
+    $("#report-chain-save")?.addEventListener("click", () => saveChainEdits(chain));
+    $("#report-chain-export-detail")?.addEventListener("click", () => exportChainMd(chain.id));
+    $("#report-chain-close-detail")?.addEventListener("click", () => {
+      openChainId = null;
+      d.hidden = true;
+      d.innerHTML = "";
+      renderChainsList();
+    });
+  }
+
+  function collectChainStepsFromDom(chain) {
+    const steps = (chain.steps || []).map((s) => ({ ...s }));
+    const d = $("#report-chain-detail");
+    if (!d) return steps;
+    d.querySelectorAll(".report-chain-role").forEach((inp) => {
+      const i = Number(inp.getAttribute("data-idx"));
+      if (steps[i]) steps[i].role = inp.value || "";
+    });
+    d.querySelectorAll(".report-chain-notes").forEach((inp) => {
+      const i = Number(inp.getAttribute("data-idx"));
+      if (steps[i]) steps[i].notes = inp.value || "";
+    });
+    return steps;
+  }
+
+  async function reorderChainStep(chain, idx, delta) {
+    const steps = collectChainStepsFromDom(chain);
+    const j = idx + delta;
+    if (j < 0 || j >= steps.length) return;
+    const tmp = steps[idx];
+    steps[idx] = steps[j];
+    steps[j] = tmp;
+    const titleEl = $("#report-chain-title");
+    await putChain({
+      ...chain,
+      title: titleEl ? titleEl.value : chain.title,
+      steps,
+    });
+  }
+
+  async function saveChainEdits(chain) {
+    const titleEl = $("#report-chain-title");
+    await putChain({
+      ...chain,
+      title: titleEl ? titleEl.value : chain.title,
+      steps: collectChainStepsFromDom(chain),
+    });
+  }
+
+  async function putChain(chain) {
+    const base = apiBase();
+    if (!base || !chain?.id) return;
+    try {
+      const r = await callApi(`${base}/chains/${encodeURIComponent(chain.id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: chain.id,
+          title: chain.title || "Attack chain",
+          include_states: chain.include_states,
+          steps: chain.steps || [],
+        }),
+      });
+      toast("Chain saved");
+      openChainId = r.chain?.id || chain.id;
+      await loadChains();
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async function createChain(opts) {
+    const base = apiBase();
+    if (!base) {
+      toast("No run loaded", true);
+      return;
+    }
+    const include_states = chainScopeStates();
+    const body = {
+      include_states,
+      title: "",
+      enqueue_poc: false,
+      operator: "operator",
+    };
+    if (opts && opts.fromSelection) {
+      const ids = [...selectedIds];
+      if (!ids.length) {
+        toast("Select findings with checkboxes first", true);
+        return;
+      }
+      body.finding_ids = ids;
+    }
+    try {
+      const r = await callApi(`${base}/chains/from-findings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      toast(`Created chain ${r.chain?.id?.slice?.(0, 8) || ""}… (${(r.chain?.steps || []).length} steps)`);
+      openChainId = r.chain?.id || null;
+      selectedIds.clear();
+      renderTable();
+      await loadChains();
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async function deleteChain(chainId) {
+    const base = apiBase();
+    if (!base || !chainId) return;
+    try {
+      await callApi(`${base}/chains/${encodeURIComponent(chainId)}`, {
+        method: "DELETE",
+      });
+      toast("Chain deleted");
+      if (openChainId === chainId) {
+        openChainId = null;
+        const d = $("#report-chain-detail");
+        if (d) {
+          d.hidden = true;
+          d.innerHTML = "";
+        }
+      }
+      await loadChains();
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async function exportChainMd(chainId) {
+    const base = apiBase();
+    if (!base || !chainId) return;
+    try {
+      const r = await callApi(`${base}/chains/${encodeURIComponent(chainId)}/export`);
+      downloadBlob(
+        r.filename || `chain-${chainId}.md`,
+        r.markdown || "",
+        "text/markdown;charset=utf-8"
+      );
+      toast("Exported chain markdown");
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  function setupReportPanels() {
+    if (reportPanelsBound) return;
+    reportPanelsBound = true;
+    $("#report-clusters-refresh")?.addEventListener("click", () => loadClusters());
+    $("#report-chains-refresh")?.addEventListener("click", () => loadChains());
+    $("#report-chain-create")?.addEventListener("click", () =>
+      createChain({ fromSelection: true })
+    );
+    $("#report-chain-create-all")?.addEventListener("click", () =>
+      createChain({ fromSelection: false })
+    );
+  }
+
   function setupChrome() {
     const bind = (id, fn) => {
       const el = $(id);
@@ -1239,6 +1829,7 @@
         exportRawProjection(btn.getAttribute("data-export-proj"))
       );
     });
+    setupReportPanels();
   }
 
   function setFilter(next) {
@@ -1288,6 +1879,9 @@
     setupPocChrome();
     renderSummary();
     renderTable();
+    // Load clusters + chains (async); badges update when clusters return
+    loadClusters().catch(() => {});
+    loadChains().catch(() => {});
     // Restore open detail after refresh / human review
     if (openId != null) {
       const f = cache.find((x) => Number(x.id) === Number(openId));

@@ -1748,3 +1748,294 @@ def save_finding_poc(
         }
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Findings clusters / operator merge (PR-D)
+# ---------------------------------------------------------------------------
+
+
+def list_finding_clusters(run_dir: Path) -> dict[str, Any]:
+    """Return multi-member overlap clusters (merge_key + weak path-only)."""
+    from vulnforge.stages.dedup import cluster_findings
+
+    db = _open_db(run_dir)
+    try:
+        clusters = cluster_findings(db)
+        return {
+            "ok": True,
+            "clusters": clusters,
+            "count": len(clusters),
+        }
+    finally:
+        db.close()
+
+
+def merge_findings_op(
+    run_dir: Path,
+    keep_id: int,
+    drop_ids: list[int],
+    *,
+    operator: str = "operator",
+) -> dict[str, Any]:
+    """
+    Operator merge: supersede drop_ids into keep_id.
+
+    Never changes keep state (never auto-confirm). Annotates keeper with
+    merged_classes / near_dup_titles.
+    """
+    from vulnforge.stages.dedup import merge_findings
+
+    if not drop_ids:
+        return {"ok": False, "error": "drop_ids required"}
+    db = _open_db(run_dir)
+    try:
+        keep = db.get_finding(int(keep_id))
+        if not keep:
+            return {"ok": False, "error": "keep_finding_not_found"}
+        if keep.state == "superseded":
+            return {"ok": False, "error": "cannot keep a superseded finding"}
+        try:
+            result = merge_findings(db, int(keep_id), [int(x) for x in drop_ids])
+        except KeyError:
+            return {"ok": False, "error": "keep_finding_not_found"}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+
+        keep_after = db.get_finding(int(keep_id))
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "dashboard",
+                    "event": "findings_merged",
+                    "keep_id": int(keep_id),
+                    "dropped_ids": result.get("dropped_ids") or [],
+                    "operator": operator or "operator",
+                    "keep_state": keep.state,
+                },
+            )
+        except OSError:
+            pass
+
+        return {
+            "ok": True,
+            "keep_id": int(keep_id),
+            "dropped_ids": result.get("dropped_ids") or [],
+            "keep_state": keep.state,
+            "merged_classes": result.get("merged_classes") or [],
+            "near_dup_titles": result.get("near_dup_titles") or [],
+            "finding": {
+                "id": keep.id,
+                "state": keep_after.state if keep_after else keep.state,
+                "stable_key": keep.stable_key,
+                "evidence_id": keep.evidence_id,
+                "body": (keep_after.body if keep_after else keep.body),
+            },
+        }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Attack chains (PR-E) — evidence/chains/<id>.json
+# ---------------------------------------------------------------------------
+
+
+def list_chains_op(run_dir: Path) -> dict[str, Any]:
+    from vulnforge.chains import list_chains
+
+    chains = list_chains(run_dir)
+    return {"ok": True, "chains": chains, "count": len(chains)}
+
+
+def get_chain_op(run_dir: Path, chain_id: str) -> dict[str, Any]:
+    from vulnforge.chains import get_chain
+
+    chain = get_chain(run_dir, chain_id)
+    if not chain:
+        return {"ok": False, "error": "chain_not_found"}
+    return {"ok": True, "chain": chain}
+
+
+def save_chain_op(run_dir: Path, chain: dict[str, Any]) -> dict[str, Any]:
+    from vulnforge.chains import save_chain
+
+    try:
+        saved = save_chain(run_dir, chain)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    try:
+        append_event(
+            run_dir,
+            {
+                "source": "dashboard",
+                "event": "chain_saved",
+                "chain_id": saved.get("id"),
+                "steps": len(saved.get("steps") or []),
+            },
+        )
+    except OSError:
+        pass
+    return {"ok": True, "chain": saved}
+
+
+def delete_chain_op(run_dir: Path, chain_id: str) -> dict[str, Any]:
+    from vulnforge.chains import delete_chain
+
+    ok = delete_chain(run_dir, chain_id)
+    if not ok:
+        return {"ok": False, "error": "chain_not_found"}
+    try:
+        append_event(
+            run_dir,
+            {
+                "source": "dashboard",
+                "event": "chain_deleted",
+                "chain_id": chain_id,
+            },
+        )
+    except OSError:
+        pass
+    return {"ok": True, "deleted": True, "chain_id": chain_id}
+
+
+def build_chain_from_findings_op(
+    run_dir: Path,
+    *,
+    finding_ids: Optional[list[int]] = None,
+    include_states: Optional[list[str]] = None,
+    title: str = "",
+    enqueue_poc: bool = False,
+    operator: str = "operator",
+) -> dict[str, Any]:
+    """
+    Build an attack chain from selected findings (or all matching include_states).
+
+    Optional enqueue_poc queues develop_poc for steps missing a poc_path.
+    Never auto-confirms findings.
+    """
+    from vulnforge.chains import build_chain_from_findings, chain_to_markdown
+
+    states = include_states or ["confirmed"]
+    db = _open_db(run_dir)
+    try:
+        all_findings = db.list_findings()
+        by_id = {int(f.id): f for f in all_findings}
+        if finding_ids is not None:
+            ids = [int(x) for x in finding_ids]
+            missing = [i for i in ids if i not in by_id]
+            if missing:
+                return {
+                    "ok": False,
+                    "error": f"findings not found: {missing[:10]}",
+                }
+            selected = [by_id[i] for i in ids]
+            # Filter by include_states when provided
+            state_set = {str(s).lower() for s in states}
+            selected = [f for f in selected if f.state in state_set]
+            if not selected:
+                return {
+                    "ok": False,
+                    "error": "no findings match include_states",
+                }
+            chain = build_chain_from_findings(
+                run_dir,
+                finding_ids=[int(f.id) for f in selected],
+                include_states=list(states),
+                title=title,
+                findings=selected,
+            )
+        else:
+            state_set = {str(s).lower() for s in states}
+            selected = [f for f in all_findings if f.state in state_set]
+            if not selected:
+                return {
+                    "ok": False,
+                    "error": "no findings match include_states",
+                }
+            chain = build_chain_from_findings(
+                run_dir,
+                include_states=list(states),
+                title=title,
+                findings=selected,
+            )
+
+        enqueued: list[dict[str, Any]] = []
+        if enqueue_poc:
+            for step in chain.get("steps") or []:
+                if step.get("poc_path"):
+                    continue
+                fid = int(step.get("finding_id") or 0)
+                f = by_id.get(fid)
+                if not f:
+                    continue
+                body = dict(f.body or {})
+                # Only enqueue if no existing poc_relpath on body either
+                if body.get("poc_relpath"):
+                    step["poc_path"] = body.get("poc_relpath")
+                    continue
+                r = save_finding_poc(
+                    run_dir,
+                    fid,
+                    content=None,
+                    enqueue_agent=True,
+                    operator_notes="Queued from attack chain builder (missing PoC).",
+                    operator=operator or "operator",
+                )
+                if r.get("ok"):
+                    step["poc_path"] = r.get("poc_relpath") or POC_DEVELOP_RELPATH
+                    enqueued.append(
+                        {
+                            "finding_id": fid,
+                            "task_id": r.get("task_id"),
+                            "evidence_id": r.get("evidence_id"),
+                        }
+                    )
+            # Persist poc_path updates on chain
+            from vulnforge.chains import save_chain
+
+            chain = save_chain(run_dir, chain)
+
+        md = chain_to_markdown(chain, findings_by_id=by_id)
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "dashboard",
+                    "event": "chain_built",
+                    "chain_id": chain.get("id"),
+                    "steps": len(chain.get("steps") or []),
+                    "enqueue_poc": bool(enqueue_poc),
+                    "poc_tasks": len(enqueued),
+                },
+            )
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "chain": chain,
+            "markdown": md,
+            "poc_enqueued": enqueued,
+        }
+    finally:
+        db.close()
+
+
+def export_chain_markdown_op(run_dir: Path, chain_id: str) -> dict[str, Any]:
+    from vulnforge.chains import chain_to_markdown, get_chain
+
+    chain = get_chain(run_dir, chain_id)
+    if not chain:
+        return {"ok": False, "error": "chain_not_found"}
+    db = _open_db(run_dir)
+    try:
+        by_id = {int(f.id): f for f in db.list_findings()}
+    finally:
+        db.close()
+    return {
+        "ok": True,
+        "chain_id": chain_id,
+        "markdown": chain_to_markdown(chain, findings_by_id=by_id),
+        "filename": f"chain-{chain_id}.md",
+    }
