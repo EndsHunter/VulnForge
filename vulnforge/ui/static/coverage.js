@@ -518,7 +518,7 @@
         badge: "all",
         title: "Bulk: all architecture areas",
         detail:
-          `Last action filled the queue with active hunt skills × known areas (capped at ${cap}). Ralph drains those hunts while it runs.`,
+          "Last action filled the queue with active hunt skills × all known areas (no max_tasks cap). Ralph drains those hunts while it runs.",
       };
     }
     if (mode === "select") {
@@ -548,8 +548,8 @@
     const nAreas = Math.max(knownAreas().length, 1);
     const nCore = activeClassesList().length || 5;
     const raw = nAreas * nCore;
-    const cap = maxTasksCap();
-    return { raw, capped: Math.min(raw, cap), nAreas, nCore, cap };
+    // Cover-all is uncapped (no run.max_tasks ceiling)
+    return { raw, capped: raw, nAreas, nCore, cap: null, uncapped: true };
   }
 
   function joinPath(base, name) {
@@ -706,22 +706,29 @@
     if (crumb) crumb.innerHTML = pathPickerBreadcrumb(browse);
     list.innerHTML = `<div class="controls-hint" style="padding:0.4rem">Loading…</div>`;
     try {
+      // Request high entry cap so deep trees open fully (API max 500).
       const data = await api(
-        `${runApiBase()}/target/list?path=${encodeURIComponent(browse)}&max_entries=200`
+        `${runApiBase()}/target/list?path=${encodeURIComponent(browse)}&max_entries=500`
       );
       if (!data.ok) {
         list.innerHTML = `<div class="empty" style="color:var(--bad)">${esc(data.error || "list failed")}</div>`;
         return;
       }
       const entries = data.entries || [];
+      const truncated =
+        data.truncated ||
+        data.capped ||
+        (typeof data.total === "number" && data.total > entries.length) ||
+        entries.length >= 500;
       if (!entries.length) {
         list.innerHTML = `<div class="controls-hint" style="padding:0.4rem">Empty folder</div>`;
       } else {
-        list.innerHTML = entries
-          .map((e) => {
-            const full = joinPath(browse, e.name);
-            const isDir = !!e.is_dir;
-            return `<div class="cov-picker-row">
+        list.innerHTML =
+          entries
+            .map((e) => {
+              const full = joinPath(browse, e.name);
+              const isDir = !!e.is_dir;
+              return `<div class="cov-picker-row">
               <button type="button" class="cov-picker-name mono ${isDir ? "is-dir" : "is-file"}" data-open-path="${esc(full)}" data-is-dir="${isDir ? "1" : "0"}" title="${esc(full)}">
                 ${isDir ? "📁" : "📄"} ${esc(e.name)}
               </button>
@@ -729,9 +736,18 @@
                 ${isDir ? "Add folder" : "Add file"}
               </button>
             </div>`;
-          })
-          .join("");
+            })
+            .join("") +
+          (truncated
+            ? `<div class="cov-picker-truncated">Showing first ${entries.length} entries — open a subfolder for the rest.</div>`
+            : "");
       }
+      // Scroll list into view and ensure the panel is fully visible
+      try {
+        list.scrollTop = 0;
+        const picker = list.closest(".cov-path-picker");
+        picker?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      } catch (_) {}
       list.querySelectorAll("[data-open-path]").forEach((btn) => {
         btn.addEventListener("click", () => {
           if (btn.getAttribute("data-is-dir") === "1") {
@@ -944,7 +960,7 @@
           </button>
           <button type="button" class="cov-plan-action ${mode === "all" && !selectFormOpen && !maxHuntFormOpen ? "is-current" : ""}" data-cov-mode="all" id="cov-plan-all">
             <span class="cov-plan-action-title">Cover all areas (active)</span>
-            <span class="cov-plan-action-desc">Queue about ${est.capped} hunt${est.capped === 1 ? "" : "s"}: ${est.nCore} active skills × ${est.nAreas} area${est.nAreas === 1 ? "" : "s"}${est.raw > est.cap ? ` (capped at ${est.cap})` : ""}. Starts work immediately if Ralph is running.</span>
+            <span class="cov-plan-action-desc">Queue about ${est.raw} hunt${est.raw === 1 ? "" : "s"}: ${est.nCore} active skills × ${est.nAreas} area${est.nAreas === 1 ? "" : "s"} (no max_tasks cap). Starts work immediately if Ralph is running.</span>
           </button>
           <button type="button" class="cov-plan-action ${selectFormOpen || mode === "select" ? "is-current" : ""}" data-cov-mode="select" id="cov-plan-custom">
             <span class="cov-plan-action-title">Custom areas &amp; skills…</span>
@@ -1135,10 +1151,9 @@
           const e = estimateAllAreasJobs();
           if (
             !window.confirm(
-              `Queue about ${e.capped} hunt(s)?\n\n` +
-                `${e.nCore} active skills × ${e.nAreas} areas` +
-                (e.raw > e.cap ? ` (capped at ${e.cap})` : "") +
-                ".\n\nRalph must be running to work the queue."
+              `Queue about ${e.raw} hunt(s)?\n\n` +
+                `${e.nCore} active skills × ${e.nAreas} areas (no max_tasks cap).\n\n` +
+                `This can be a large queue. Ralph must be running to work it.`
             )
           ) {
             return;

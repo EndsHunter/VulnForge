@@ -431,12 +431,20 @@ def store_merged_architecture(
                 except Exception:
                     pass_usage = {}
                 try:
+                    merge_messages = list(getattr(llm_result, "transcript", None) or [])
+                    if not merge_messages and getattr(llm_result, "content", None):
+                        merge_messages = [
+                            {
+                                "role": "assistant",
+                                "content": str(getattr(llm_result, "content", "") or ""),
+                            }
+                        ]
                     save_transcript(
                         run_dir,
                         task_id or 0,
                         kind="architecture_merge",
                         model_id=getattr(llm_result, "model_id", None),
-                        messages=[],
+                        messages=merge_messages,
                         result={
                             "ok": bool(getattr(llm_result, "ok", False)),
                             "classification": getattr(
@@ -450,6 +458,7 @@ def store_merged_architecture(
                             **(pass_usage if isinstance(pass_usage, dict) else {}),
                         },
                         meta={"merge": "llm" if llm_part else "llm_failed_fallback"},
+                        pass_key="architecture_merge",
                     )
                 except OSError:
                     pass
@@ -945,6 +954,17 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                         "recon_agent_id": agent_id,
                         **pass_usage,
                     },
+                    meta={
+                        "pass_key": agent_id,
+                        "recon_agent_id": agent_id,
+                        "temperature": temp,
+                        "max_tool_rounds": max_rounds,
+                        "payload": {
+                            "recon_agent_id": agent_id,
+                            "agent_id": agent_id,
+                        },
+                    },
+                    pass_key=str(agent_id),
                 )
             except OSError:
                 pass
@@ -1510,6 +1530,129 @@ def partition_by_top_dir(sample_paths: list[str], top_n: int = 12) -> list[dict]
     return [{"dir": d, "file_count": n} for d, n in ranked]
 
 
+def _hints_for_named_area(
+    area: str,
+    *,
+    area_hints: dict[str, list[str]],
+    inventory: dict,
+) -> list[str]:
+    """Resolve path_hints for one architecture area — never steal another area's paths.
+
+    Prefer component path_hints, then sample_paths under that area/dir.
+    Do **not** fall back to global entrypoints for every area (that makes all
+    hunt skills pile onto the same Package-install / entrypoint paths).
+    """
+    area_s = str(area or "").strip()
+    if not area_s:
+        return []
+    if area_s in area_hints and area_hints[area_s]:
+        return list(area_hints[area_s])[:15]
+
+    samples = list(inventory.get("sample_paths") or [])
+    # Direct dir / prefix match
+    if area_s not in ("app", "."):
+        under = [
+            normalize_relpath(p)
+            for p in samples
+            if normalize_relpath(p) == area_s
+            or normalize_relpath(p).startswith(area_s.rstrip("/") + "/")
+        ]
+        if under:
+            return under[:15]
+        # Soft match: first path segment or token in multi-word area names
+        # e.g. area "API auth" → paths containing "api" or "auth"
+        tokens = [
+            t.lower()
+            for t in area_s.replace("&", " ").replace("/", " ").replace("-", " ").split()
+            if len(t) >= 3 and t.lower() not in {"the", "and", "for", "with", "from"}
+        ]
+        if tokens:
+            soft: list[str] = []
+            for p in samples:
+                pl = normalize_relpath(p).lower()
+                if any(tok in pl for tok in tokens):
+                    soft.append(normalize_relpath(p))
+                if len(soft) >= 15:
+                    break
+            if soft:
+                return soft[:15]
+
+    # Partition dir match
+    for part in inventory.get("dir_partitions") or []:
+        if not isinstance(part, dict):
+            continue
+        d = str(part.get("dir") or "")
+        if d and (d == area_s or area_s.startswith(d + "/") or d.startswith(area_s)):
+            under = [
+                normalize_relpath(p)
+                for p in samples
+                if normalize_relpath(p) == d
+                or normalize_relpath(p).startswith(d.rstrip("/") + "/")
+            ]
+            if under:
+                return under[:15]
+
+    # Last resort for lone generic area only
+    if area_s in ("app", ".", "root", "target"):
+        return list(
+            inventory.get("entrypoints") or inventory.get("sample_paths", [])[:10]
+        )[:15]
+    return []
+
+
+def balanced_product_tasks(
+    units: list[tuple[str, list[str]]],
+    classes: list[str],
+    max_tasks: Optional[int] = None,
+) -> list[dict]:
+    """Build area×class hunt payloads with diagonal-first ordering.
+
+    When max_tasks is smaller than the full product, older area-outer×class-inner
+    ordering stuffed the budget with *one* area × all skills. Diagonal ordering
+    spreads skills across areas first, then fills remaining pairs.
+    """
+    if not units or not classes:
+        return []
+    n_u, n_c = len(units), len(classes)
+    full = n_u * n_c
+    cap = full if max_tasks is None else max(0, int(max_tasks))
+    if cap <= 0:
+        return []
+
+    seen: set[tuple[str, str]] = set()
+    out: list[dict] = []
+
+    def _add(ui: int, ci: int) -> bool:
+        if len(out) >= cap:
+            return False
+        area, hints = units[ui % n_u]
+        cls = classes[ci % n_c]
+        key = (str(area), str(cls))
+        if key in seen:
+            return True
+        seen.add(key)
+        out.append(
+            {
+                "area": area,
+                "class": cls,
+                "path_hints": list(hints or [])[:15],
+            }
+        )
+        return len(out) < cap
+
+    # Wave 1: diagonal spread (area i, class i) so N skills → N different areas when possible
+    for i in range(max(n_u, n_c)):
+        if not _add(i % n_u, i % n_c):
+            return out
+
+    # Wave 2: remaining pairs, class-major then area (each skill walks areas)
+    for ci in range(n_c):
+        for ui in range(n_u):
+            if not _add(ui, ci):
+                return out
+    return out
+
+
 def _fallback_hunt_tasks(
     architecture: dict,
     inventory: dict,
@@ -1519,6 +1662,9 @@ def _fallback_hunt_tasks(
 
     Class set comes from run hunt_skill_mode (default all_active). Empty
     allowlist yields zero tasks (custom_only with no customs is OK).
+
+    Ordering is area×class balanced so max_tasks clipping does not pin every
+    skill to the first architecture component only.
     """
     components = architecture.get("components") or []
     if not isinstance(components, list):
@@ -1542,42 +1688,30 @@ def _fallback_hunt_tasks(
         else:
             areas = ["app"]
 
-    default_hints = inventory.get("entrypoints") or inventory.get("sample_paths", [])[:10]
     mode, skill_ids = skill_policy_from_run_cfg(cfg or {})
     use_classes = resolve_run_class_ids(mode, skill_ids)
     if not use_classes:
         return []
-    tasks: list[dict] = []
     # Cap areas for monorepos (H3b: tests/test_mono_synth_plan.py)
     max_areas = 6 if (inventory.get("file_count") or 0) > 200 else 8
+    units: list[tuple[str, list[str]]] = []
     for area in areas[:max_areas]:
-        hints = area_hints.get(str(area)) or list(default_hints)
-        # Prefer files under partition dir when area matches a top dir
-        if area and area != "app" and area != ".":
-            under = [
-                p
-                for p in (inventory.get("sample_paths") or [])
-                if normalize_relpath(p) == area
-                or normalize_relpath(p).startswith(str(area).rstrip("/") + "/")
-            ][:12]
-            if under:
-                hints = under
-        for cls in use_classes:
-            tasks.append(
-                {
-                    "area": area,
-                    "class": cls,
-                    "path_hints": hints[:15],
-                }
-            )
-    return tasks
+        hints = _hints_for_named_area(
+            str(area), area_hints=area_hints, inventory=inventory
+        )
+        units.append((str(area), hints))
+    return balanced_product_tasks(units, list(use_classes), max_tasks=None)
 
 
-def _normalize_path_hints(raw: object, inventory: dict) -> list[str]:
+def _normalize_path_hints(
+    raw: object, inventory: dict, *, area: Optional[str] = None
+) -> list[str]:
     if isinstance(raw, list):
         out = [normalize_relpath(str(x)) for x in raw if x]
         if out:
             return out[:15]
+    if area:
+        return _hints_for_named_area(str(area), area_hints={}, inventory=inventory)
     return list(
         inventory.get("entrypoints")
         or inventory.get("sample_paths", [])[:5]
@@ -1669,11 +1803,14 @@ def plan_hunt_tasks(
                     continue
             if not focus_allow and mode != "all_active":
                 continue
+            area = f.get("area") or "app"
             tasks.append(
                 {
-                    "area": f.get("area") or "app",
+                    "area": area,
                     "class": cls,
-                    "path_hints": _normalize_path_hints(f.get("path_hints"), inventory),
+                    "path_hints": _normalize_path_hints(
+                        f.get("path_hints"), inventory, area=str(area)
+                    ),
                 }
             )
         if tasks:
@@ -1685,8 +1822,43 @@ def plan_hunt_tasks(
         source = "active_fallback"
     tasks = _apply_class_routing(tasks, inventory)
     # Honor operator run.max_tasks only (no monorepo hard-cap override).
+    # Interleave by area so a small budget does not keep only the first component.
     max_tasks = max(0, int(max_tasks))
-    return tasks[:max_tasks], source
+    return diversify_clip_tasks(tasks, max_tasks), source
+
+
+def diversify_clip_tasks(tasks: list[dict], max_tasks: int) -> list[dict]:
+    """Clip hunt plans spreading both areas and classes (not first-N area dump).
+
+    Greedy: repeatedly pick the remaining task whose area and class have been
+    chosen least so far. Prevents max_tasks from keeping only area0×all skills
+    *or* only class0×all areas when the raw list is area-major ordered.
+    """
+    if max_tasks <= 0:
+        return []
+    if len(tasks) <= max_tasks:
+        return list(tasks)
+
+    remaining = list(tasks)
+    out: list[dict] = []
+    area_count: dict[str, int] = defaultdict(int)
+    class_count: dict[str, int] = defaultdict(int)
+    # Stable tie-break by original order
+    order_idx = {id(t): i for i, t in enumerate(tasks)}
+
+    while remaining and len(out) < max_tasks:
+        remaining.sort(
+            key=lambda t: (
+                area_count[str(t.get("area") or "app")],
+                class_count[str(t.get("class") or "wildcard")],
+                order_idx.get(id(t), 0),
+            )
+        )
+        t = remaining.pop(0)
+        out.append(t)
+        area_count[str(t.get("area") or "app")] += 1
+        class_count[str(t.get("class") or "wildcard")] += 1
+    return out
 
 
 def detect_profile_mismatch(inventory: dict, profile: str) -> str | None:

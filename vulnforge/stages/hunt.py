@@ -145,6 +145,23 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             result=result,
         )
         try:
+            evidence_ids = list(session.get("evidence_ids_written") or [])
+            if session.get("evidence_id") and session["evidence_id"] not in evidence_ids:
+                evidence_ids.append(session["evidence_id"])
+            files_created: list[str] = []
+            for eid in evidence_ids:
+                pack = Path(run_dir) / "evidence" / str(eid)
+                if pack.is_dir():
+                    for f in pack.rglob("*"):
+                        if f.is_file():
+                            try:
+                                files_created.append(
+                                    str(f.relative_to(run_dir)).replace("\\", "/")
+                                )
+                            except ValueError:
+                                files_created.append(str(f))
+                else:
+                    files_created.append(f"evidence/{eid}/")
             save_transcript(
                 run_dir,
                 task.id,
@@ -156,9 +173,19 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     "classification": result.classification.value,
                     "error": result.error,
                     "content": result.content,
+                    "evidence_id": session.get("evidence_id"),
+                    "evidence_ids": evidence_ids,
                     **usage_fields,
                 },
-                meta={"payload": payload},
+                meta={
+                    "payload": payload,
+                    "tools_used": list(session.get("tools_used") or []),
+                    "evidence_id": session.get("evidence_id"),
+                    "evidence_ids_written": evidence_ids,
+                    "files_created": files_created,
+                    "temperature": temp,
+                    "max_tool_rounds": max_rounds,
+                },
             )
         except OSError:
             pass

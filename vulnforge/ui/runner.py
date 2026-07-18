@@ -205,6 +205,7 @@ def start_run(
     max_wall_seconds: Optional[float] = None,
     config: Optional[Path] = None,
     workers: int = 1,
+    loop_profile_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Start Ralph against an existing run directory.
@@ -279,6 +280,11 @@ def start_run(
         "pid": primary,
         "pids": pids,
         "workers": workers,
+        "task_timeout": task_timeout,
+        "max_tasks": max_tasks,
+        "max_iterations": max_iterations,
+        "max_wall_seconds": max_wall_seconds,
+        "loop_profile_id": loop_profile_id,
     }
     _meta_path(run_dir).write_text(json.dumps(meta_extra, indent=2), encoding="utf-8")
     if len(pids) > 1:
@@ -303,6 +309,10 @@ def start_run(
             "pids": pids,
             "workers": workers,
             "argv": cmd,
+            "loop_profile_id": loop_profile_id,
+            "max_tasks": max_tasks,
+            "max_iterations": max_iterations,
+            "task_timeout": task_timeout,
         },
     )
     return {
@@ -310,6 +320,7 @@ def start_run(
         "pid": primary,
         "pids": pids,
         "workers": workers,
+        "loop_profile_id": loop_profile_id,
         "status": runner_status(run_dir),
         "note": (
             None

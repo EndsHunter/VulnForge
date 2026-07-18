@@ -593,7 +593,12 @@ def requeue_recon(
         db.close()
 
 
-def _areas_from_architecture(db: Database) -> list[str]:
+def _areas_from_architecture(db: Database, *, limit: Optional[int] = None) -> list[str]:
+    """Collect known architecture / partition / coverage areas.
+
+    ``limit`` caps how many areas are returned (legacy default was 24).
+    Pass ``limit=None`` for Cover-all (uncapped).
+    """
     arch = db.get_architecture() or {}
     areas: list[str] = []
     for c in arch.get("components") or []:
@@ -611,30 +616,40 @@ def _areas_from_architecture(db: Database) -> list[str]:
             areas.append(str(a))
     if not areas:
         areas = ["app"]
-    return areas[:24]
+    if limit is None:
+        return areas
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        n = 24
+    if n <= 0:
+        return areas
+    return areas[:n]
 
 
 def _path_hints_for_area(db: Database, area: str) -> list[str]:
+    """Path hints for one architecture area — do not share global entrypoints across areas."""
+    from vulnforge.stages.recon import _hints_for_named_area
+
     arch = db.get_architecture() or {}
+    area_hints: dict[str, list[str]] = {}
     for c in arch.get("components") or []:
-        if isinstance(c, dict) and str(c.get("name")) == area:
-            ph = c.get("path_hints") or []
-            if isinstance(ph, list) and ph:
-                return [normalize_relpath(str(x)) for x in ph if x][:15]
+        if not isinstance(c, dict) or not c.get("name"):
+            continue
+        ph = c.get("path_hints") or []
+        if isinstance(ph, list) and ph:
+            area_hints[str(c["name"])] = [
+                normalize_relpath(str(x)) for x in ph if x
+            ][:15]
     inv = arch.get("inventory") if isinstance(arch.get("inventory"), dict) else {}
-    samples = inv.get("entrypoints") or []
-    under = [
-        normalize_relpath(str(p))
-        for p in samples
-        if normalize_relpath(str(p)).startswith(area.rstrip("/") + "/")
-        or normalize_relpath(str(p)) == area
-    ]
-    if under:
-        return under[:15]
-    # any fact path
+    if not isinstance(inv, dict):
+        inv = {}
+    hints = _hints_for_named_area(str(area), area_hints=area_hints, inventory=inv)
+    if hints:
+        return hints[:15]
     for f in db.list_coverage_facts():
         if f.get("area") == area and f.get("path"):
-            return [f["path"]]
+            return [str(f["path"])]
     return []
 
 
@@ -698,8 +713,10 @@ def apply_coverage_mode(
     Set coverage policy and optionally enqueue hunts.
 
     - auto: store mode only (recon plan remains authority; no bulk enqueue)
-    - all: enqueue active hunt profiles x discovered areas (capped)
+    - all: enqueue active hunt profiles × all discovered areas (uncapped;
+      full product; not limited by run.max_tasks)
     - select: enqueue user-selected areas / path targets x classes
+      (still capped by run.max_tasks)
     - path_targets: optional [{path, is_dir}] from Coverage explorer picker
     """
     mode_n = str(mode or "auto").lower()
@@ -819,7 +836,8 @@ def apply_coverage_mode(
 
         if enqueue and mode_n in ("all", "select"):
             if mode_n == "all":
-                use_areas = _areas_from_architecture(db)
+                # Full cover: every known area, no 24-area slice
+                use_areas = _areas_from_architecture(db, limit=None)
                 # Respect run hunt_skill_mode (empty → no bulk enqueue)
                 use_classes = list(run_allowed)
                 for area in use_areas:
@@ -838,59 +856,63 @@ def apply_coverage_mode(
                     units.append((area, hints))
                 # Fallback if nothing selected
                 if not units:
-                    use_areas = _areas_from_architecture(db)
+                    use_areas = _areas_from_architecture(db, limit=None)
                     for area in use_areas:
                         units.append((area, _path_hints_for_area(db, area)))
                 else:
                     use_areas = [u[0] for u in units]
 
-            # Cap total new tasks by run.max_tasks (operator setting); no fixed 40 ceiling
-            try:
-                max_new = int((cfg.get("run") or {}).get("max_tasks") or 50)
-            except (TypeError, ValueError):
-                max_new = 50
-            max_new = max(1, max_new)
-            seen_pair: set[tuple[str, str]] = set()
-            for area, hints in units:
-                for cls in use_classes:
-                    if len(enqueued) >= max_new:
-                        break
-                    key = (area, cls)
-                    if key in seen_pair:
-                        continue
-                    seen_pair.add(key)
-                    ph = list(hints or [])[:15]
-                    payload = {
+            # Cover-all: no run.max_tasks ceiling (full active skills × all areas).
+            # Custom select: still capped by run.max_tasks so one click cannot
+            # flood unbounded skill×path products by accident.
+            from vulnforge.stages.recon import balanced_product_tasks
+
+            if mode_n == "all":
+                max_new = None  # uncapped product
+            else:
+                try:
+                    max_new = int((cfg.get("run") or {}).get("max_tasks") or 50)
+                except (TypeError, ValueError):
+                    max_new = 50
+                max_new = max(1, max_new)
+
+            planned = balanced_product_tasks(units, use_classes, max_tasks=max_new)
+            for item in planned:
+                area = item.get("area") or "app"
+                cls = item.get("class") or "wildcard"
+                ph = list(item.get("path_hints") or [])[:15]
+                payload = {
+                    "area": area,
+                    "class": cls,
+                    "path_hints": ph,
+                    "force_depth": True,
+                    "operator_requested": True,
+                    "operator_reason": f"coverage_mode_{mode_n}",
+                }
+                if ph and (
+                    any(
+                        "/" in h or h.endswith((".py", ".js", ".ts", ".go", ".rs"))
+                        for h in ph
+                    )
+                    or area in ph
+                ):
+                    payload["operator_reason"] = f"coverage_mode_{mode_n}_path"
+                tid = db.enqueue_task("hunt", payload, priority=48)
+                db.upsert_coverage_fact(
+                    area,
+                    cls,
+                    path=(ph[0] if ph else ""),
+                    visit_delta=0,
+                    last_depth="planned",
+                )
+                enqueued.append(
+                    {
+                        "task_id": tid,
                         "area": area,
                         "class": cls,
                         "path_hints": ph,
-                        "force_depth": True,
-                        "operator_requested": True,
-                        "operator_reason": f"coverage_mode_{mode_n}",
                     }
-                    if ph and (
-                        any("/" in h or h.endswith((".py", ".js", ".ts", ".go", ".rs")) for h in ph)
-                        or area in ph
-                    ):
-                        payload["operator_reason"] = f"coverage_mode_{mode_n}_path"
-                    tid = db.enqueue_task("hunt", payload, priority=48)
-                    db.upsert_coverage_fact(
-                        area,
-                        cls,
-                        path=(ph[0] if ph else ""),
-                        visit_delta=0,
-                        last_depth="planned",
-                    )
-                    enqueued.append(
-                        {
-                            "task_id": tid,
-                            "area": area,
-                            "class": cls,
-                            "path_hints": ph,
-                        }
-                    )
-                if len(enqueued) >= max_new:
-                    break
+                )
 
         try:
             append_event(

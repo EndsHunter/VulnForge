@@ -1,6 +1,6 @@
 {
   "format": "vulnforge.hunt_collection/v1",
-  "updated_at": "2026-07-16T02:16:09Z",
+  "updated_at": "2026-07-18T10:18:47Z",
   "seeded_from": "prompts/v1/hunt_classes",
   "profiles": [
     {

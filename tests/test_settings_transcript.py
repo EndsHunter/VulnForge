@@ -114,3 +114,19 @@ def test_transcript_roundtrip(tmp_path: Path):
     assert data["kind"] == "hunt"
     assert len(data["messages"]) == 3
     assert 7 in list_transcript_ids(run)
+
+
+def test_loop_profile_default(tmp_path: Path, monkeypatch):
+    from vulnforge import loop_profiles
+
+    d = tmp_path / "harnesses"
+    d.mkdir()
+    monkeypatch.setattr(loop_profiles, "HARNESSES_DIR", d)
+    p = loop_profiles.ensure_default_profile()
+    assert p["id"] == "default-campaign"
+    listed = loop_profiles.list_profiles()
+    assert any(x["id"] == "default-campaign" for x in listed)
+    kw = loop_profiles.profile_to_start_kwargs(p)
+    assert kw["max_iterations"] == 200
+    assert kw["task_timeout"] == 900
+    assert kw["loop_profile_id"] == "default-campaign"

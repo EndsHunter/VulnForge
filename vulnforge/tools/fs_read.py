@@ -35,10 +35,23 @@ def list_dir(ctx: dict, path: str = ".", max_entries: int | None = None) -> dict
         if not p.is_dir():
             return {"ok": False, "error": "not a directory"}
         cap = max_entries or int((ctx.get("cfg") or {}).get("tools", {}).get("max_list_entries", 200))
+        try:
+            cap = max(1, int(cap))
+        except (TypeError, ValueError):
+            cap = 200
+        all_children = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        total = len(all_children)
         entries = []
-        for e in sorted(p.iterdir(), key=lambda x: x.name)[:cap]:
+        for e in all_children[:cap]:
             entries.append({"name": e.name, "is_dir": e.is_dir()})
-        result = {"ok": True, "path": path, "entries": entries}
+        result = {
+            "ok": True,
+            "path": path,
+            "entries": entries,
+            "total": total,
+            "truncated": total > len(entries),
+            "max_entries": cap,
+        }
         return attach_scope_warning(result, ctx)
     except Exception as e:
         return {"ok": False, "error": str(e)}

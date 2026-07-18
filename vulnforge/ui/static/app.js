@@ -2382,42 +2382,212 @@ function renderTasks(tasks) {
   });
 }
 
+/** @type {{ taskId: number|string, data: object, tab: string, passKey: string|null } | null} */
+let _stepIoState = null;
+
 async function openTranscript(taskId) {
+  return openStepIO(taskId);
+}
+
+async function openStepIO(taskId, passKey) {
   const [target_id, run_id] = currentKey.split("/");
   try {
-    const data = await api(
-      `/api/runs/${encodeURIComponent(target_id)}/${encodeURIComponent(run_id)}/tasks/${taskId}/transcript`
-    );
-    $("#transcript-title").textContent = `Task #${taskId} | ${data.kind || "agent"}`;
-    $("#transcript-meta").textContent = `model ${data.model_id || " - "} | ${data.message_count || 0} messages | ${data.saved_at || ""}`;
-    const body = $("#transcript-body");
-    body.innerHTML = (data.messages || [])
-      .map((m) => {
-        const role = m.role || "unknown";
-        let content = m.content;
-        if (m.tool_calls) {
-          content = (content || "") + "\n" + JSON.stringify(m.tool_calls, null, 2);
-        }
-        if (m.reasoning_content) {
-          content =
-            `[reasoning]\n${m.reasoning_content}\n\n[content]\n` + (content || "");
-        }
-        if (m.name) content = `[tool ${m.name}]\n` + (content || "");
-        return `<div class="transcript-turn role-${esc(role)}">
-          <div class="role">${esc(role)}</div>
-          <pre>${esc(content || "")}</pre>
-        </div>`;
-      })
-      .join("");
+    let url = `/api/runs/${encodeURIComponent(target_id)}/${encodeURIComponent(run_id)}/tasks/${taskId}/io`;
+    if (passKey) url += `?pass_key=${encodeURIComponent(passKey)}`;
+    const data = await api(url);
+    _stepIoState = {
+      taskId,
+      data,
+      tab: (_stepIoState && String(_stepIoState.taskId) === String(taskId) && _stepIoState.tab) || "input",
+      passKey: passKey || null,
+    };
+    renderStepIOModal();
     $("#transcript-modal")?.classList.add("open");
   } catch (e) {
-    toast(e.message, true);
+    // Fallback to raw transcript for older runs / edge cases
+    try {
+      const data = await api(
+        `/api/runs/${encodeURIComponent(target_id)}/${encodeURIComponent(run_id)}/tasks/${taskId}/transcript`
+      );
+      $("#transcript-title").textContent = `Task #${taskId} | ${data.kind || "agent"}`;
+      $("#transcript-meta").textContent = `model ${data.model_id || " — "} | ${data.message_count || 0} messages | ${data.saved_at || ""}`;
+      $("#transcript-passes")?.setAttribute("hidden", "");
+      const body = $("#transcript-body");
+      body.innerHTML = (data.messages || [])
+        .map((m) => renderTurnHtml(m))
+        .join("");
+      $("#transcript-modal")?.classList.add("open");
+    } catch (e2) {
+      toast(e.message || e2.message, true);
+    }
+  }
+}
+
+function renderTurnHtml(m) {
+  const role = m.role || "unknown";
+  let content = m.content;
+  if (m.tool_calls) {
+    content = (content || "") + "\n" + JSON.stringify(m.tool_calls, null, 2);
+  }
+  if (m.reasoning_content) {
+    content =
+      `[reasoning]\n${m.reasoning_content}\n\n[content]\n` + (content || "");
+  }
+  if (m.name) content = `[tool ${m.name}]\n` + (content || "");
+  return `<div class="transcript-turn role-${esc(role)}">
+    <div class="role">${esc(role)}</div>
+    <pre>${esc(content || "")}</pre>
+  </div>`;
+}
+
+function renderStepIOModal() {
+  if (!_stepIoState) return;
+  const { taskId, data, tab } = _stepIoState;
+  const modelId = data.model?.id || data.model_id || "—";
+  $("#transcript-title").textContent = `Task #${taskId} | ${data.kind || "agent"} · ${data.state || ""}`;
+  $("#transcript-meta").textContent = `model ${modelId} | ${data.message_count || (data.turns || []).length || 0} messages | ${data.saved_at || ""} | run artifacts only (target RO)`;
+
+  const passBar = $("#transcript-passes");
+  const passes = data.passes || [];
+  if (passBar) {
+    if (passes.length > 1) {
+      passBar.hidden = false;
+      passBar.innerHTML = passes
+        .map((p) => {
+          const pk = p.pass_key || "";
+          const active =
+            (!_stepIoState.passKey && p === passes[passes.length - 1]) ||
+            String(_stepIoState.passKey || "") === String(pk);
+          return `<button type="button" class="chip${active ? " active" : ""}" data-pass="${esc(pk)}">${esc(
+            pk || p.kind || "pass"
+          )}</button>`;
+        })
+        .join("");
+      passBar.querySelectorAll("[data-pass]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          openStepIO(taskId, btn.getAttribute("data-pass") || undefined);
+        });
+      });
+    } else {
+      passBar.hidden = true;
+      passBar.innerHTML = "";
+    }
+  }
+
+  document.querySelectorAll("#transcript-tabs .tab").forEach((t) => {
+    t.classList.toggle("active", t.getAttribute("data-iotab") === tab);
+  });
+
+  const body = $("#transcript-body");
+  if (!body) return;
+  if (tab === "input") {
+    const inp = data.input || {};
+    const sources = (inp.sources || [])
+      .map((s) => {
+        if (s.type === "md_body") {
+          return `<li><strong>MD body</strong> <code>${esc(s.ref || "")}</code> ${esc(s.label || "")}</li>`;
+        }
+        if (s.type === "manual") {
+          return `<li><strong>Manual</strong> (${esc(s.field || "")}): <pre class="inline-pre">${esc(
+            s.preview || ""
+          )}</pre></li>`;
+        }
+        return `<li><strong>${esc(s.type || "source")}</strong> ${esc(
+          JSON.stringify(s).slice(0, 200)
+        )}</li>`;
+      })
+      .join("");
+    body.innerHTML = `
+      <div class="step-io-section">
+        <h4>Sources</h4>
+        <ul class="step-io-sources">${sources || "<li class='controls-hint'>No structured sources</li>"}</ul>
+      </div>
+      <div class="step-io-section">
+        <h4>Tools available / used</h4>
+        <pre>${esc((inp.tools || []).join(", ") || "—")}</pre>
+      </div>
+      <div class="step-io-section">
+        <h4>System</h4>
+        <pre>${esc(inp.system || "(empty)")}</pre>
+      </div>
+      <div class="step-io-section">
+        <h4>User / packet</h4>
+        <pre>${esc(inp.user || "(empty)")}</pre>
+      </div>
+      <div class="step-io-section">
+        <h4>Task payload</h4>
+        <pre>${esc(JSON.stringify(inp.payload || {}, null, 2))}</pre>
+      </div>`;
+  } else if (tab === "turns") {
+    const turns = data.turns || [];
+    body.innerHTML = turns.length
+      ? turns.map((m) => renderTurnHtml(m)).join("")
+      : '<p class="empty">No LLM turns (mechanical task or empty transcript).</p>';
+  } else if (tab === "output") {
+    const out = data.output || {};
+    body.innerHTML = `
+      <div class="step-io-section">
+        <h4>Submit</h4>
+        <pre>${esc(out.submit || "—")}</pre>
+      </div>
+      <div class="step-io-section">
+        <h4>Classification / ok</h4>
+        <pre>ok=${esc(String(out.ok))} classification=${esc(out.classification || "—")} error=${esc(
+      out.error || "—"
+    )}</pre>
+      </div>
+      <div class="step-io-section">
+        <h4>Content</h4>
+        <pre>${esc(out.content || "")}</pre>
+      </div>
+      <div class="step-io-section">
+        <h4>Result JSON</h4>
+        <pre>${esc(JSON.stringify(out.result || {}, null, 2))}</pre>
+      </div>`;
+  } else if (tab === "files") {
+    const files = data.files || {};
+    const created = files.created || [];
+    const modified = files.modified || [];
+    body.innerHTML = `
+      <p class="controls-hint">Run artifacts only (evidence / project). Target tree is read-only for agents.</p>
+      <div class="step-io-section">
+        <h4>Created (${created.length})</h4>
+        <ul>${
+          created.length
+            ? created.map((f) => `<li><code>${esc(f)}</code></li>`).join("")
+            : "<li class='controls-hint'>None recorded</li>"
+        }</ul>
+      </div>
+      <div class="step-io-section">
+        <h4>Modified (${modified.length})</h4>
+        <ul>${
+          modified.length
+            ? modified.map((f) => `<li><code>${esc(f)}</code></li>`).join("")
+            : "<li class='controls-hint'>None recorded</li>"
+        }</ul>
+      </div>`;
+  } else if (tab === "usage") {
+    const u = data.usage || {};
+    const events = data.usage_events || [];
+    body.innerHTML = `
+      <div class="step-io-section">
+        <h4>Totals</h4>
+        <pre>${esc(JSON.stringify(u, null, 2))}</pre>
+      </div>
+      <div class="step-io-section">
+        <h4>Events (${events.length})</h4>
+        <pre>${esc(JSON.stringify(events, null, 2))}</pre>
+      </div>`;
   }
 }
 
 function closeTranscript() {
   $("#transcript-modal")?.classList.remove("open");
+  _stepIoState = null;
 }
+
+window.openStepIO = openStepIO;
+window.openTranscript = openTranscript;
 
 async function openSettings() {
   try {
@@ -3799,6 +3969,22 @@ function connectStream() {
  */
 function controlBodyFromSettings(settings) {
   const s = settings || {};
+  // Prefer Harness loop profile when selected (Start/Resume)
+  const profileId =
+    (window.VulnForgeHarness &&
+      typeof window.VulnForgeHarness.getSelectedLoopProfileId === "function" &&
+      window.VulnForgeHarness.getSelectedLoopProfileId()) ||
+    (typeof localStorage !== "undefined" && localStorage.getItem("vf_loop_profile_id")) ||
+    null;
+  if (profileId) {
+    const body = { loop_profile_id: profileId };
+    // Optional worker override from settings still applies when set
+    const w = parseInt(s.max_concurrent_agents, 10);
+    if (Number.isFinite(w) && w > 0) {
+      body.workers = w;
+    }
+    return body;
+  }
   const mt = parseInt(s.max_tasks, 10);
   const max_tasks = Number.isFinite(mt) && mt > 0 ? mt : 50;
   const body = { max_tasks, task_timeout: 900 };
@@ -4062,6 +4248,13 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#transcript-close")?.addEventListener("click", closeTranscript);
   $("#transcript-modal")?.addEventListener("click", (e) => {
     if (e.target.id === "transcript-modal") closeTranscript();
+  });
+  document.querySelectorAll("#transcript-tabs .tab").forEach((t) => {
+    t.addEventListener("click", () => {
+      if (!_stepIoState) return;
+      _stepIoState.tab = t.getAttribute("data-iotab") || "input";
+      renderStepIOModal();
+    });
   });
 
   if (page === "home") {

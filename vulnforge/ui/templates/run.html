@@ -61,6 +61,7 @@
       <button class="mode-tab" data-mode="report" type="button" role="tab" aria-selected="false">Report</button>
       <button class="mode-tab" data-mode="evidence" type="button" role="tab" aria-selected="false">Evidence</button>
       <button class="mode-tab" data-mode="audit" type="button" role="tab" aria-selected="false">Tasks</button>
+      <button class="mode-tab" data-mode="harness" type="button" role="tab" aria-selected="false">Harness</button>
     </div>
 
     <!-- Mission -->
@@ -267,16 +268,68 @@
         </p>
       </div>
     </div>
+
+    <!-- Harness: live agent graph + Ralph loop profiles -->
+    <div class="mode-panel" data-mode-panel="harness">
+      <div class="harness-shell">
+        <div class="harness-header">
+          <div>
+            <h2 class="harness-title">Harness</h2>
+            <p class="controls-hint">
+              Live map of the campaign (tasks as nodes). Click a node for step I/O.
+              Run artifacts only — target tree stays read-only for agents.
+            </p>
+          </div>
+          <div class="harness-header-actions">
+            <label class="controls-hint">
+              Loop profile
+              <select id="harness-loop-select" title="Ralph loop profile for Start/Resume"></select>
+            </label>
+            <button type="button" class="btn" id="harness-refresh">Refresh graph</button>
+          </div>
+        </div>
+        <div class="harness-layout">
+          <div class="harness-main card">
+            <div class="toolbar">
+              <h3 style="margin:0;flex:1">Agent graph</h3>
+              <label class="controls-hint">
+                <input type="checkbox" id="harness-type-view" /> Type view
+              </label>
+            </div>
+            <div id="harness-graph" class="harness-graph" role="img" aria-label="Agent task graph"></div>
+          </div>
+          <aside class="harness-side">
+            <div class="card">
+              <h3 style="margin-top:0">Ralph loop</h3>
+              <div id="harness-runner" class="harness-runner"></div>
+              <div id="harness-loop-detail" class="harness-loop-detail controls-hint"></div>
+            </div>
+            <div class="card">
+              <h3 style="margin-top:0">Kind summary</h3>
+              <div id="harness-kind-summary"></div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </div>
   </main>
 
   <div class="modal-backdrop" id="transcript-modal">
     <div class="modal modal-wide modal-tall">
       <div class="toolbar">
-        <h2 style="margin:0;flex:1" id="transcript-title">Agent transcript</h2>
+        <h2 style="margin:0;flex:1" id="transcript-title">Step I/O</h2>
         <button type="button" class="btn" id="transcript-close">Close</button>
       </div>
       <div class="controls-hint" id="transcript-meta"></div>
-      <div class="transcript-view" id="transcript-body"></div>
+      <div class="step-io-pass-bar" id="transcript-passes" hidden></div>
+      <div class="sub-tabs step-io-tabs" id="transcript-tabs" role="tablist">
+        <button type="button" class="tab active" data-iotab="input">Input</button>
+        <button type="button" class="tab" data-iotab="turns">Turns</button>
+        <button type="button" class="tab" data-iotab="output">Output</button>
+        <button type="button" class="tab" data-iotab="files">Files</button>
+        <button type="button" class="tab" data-iotab="usage">Usage</button>
+      </div>
+      <div class="transcript-view step-io-body" id="transcript-body"></div>
     </div>
   </div>
 
@@ -444,6 +497,7 @@
   <script src="/static/explorer.js"></script>
   <script src="/static/report.js"></script>
   <script src="/static/coverage.js"></script>
+  <script src="/static/harness.js"></script>
   <script src="/static/modes.js"></script>
 </body>
 </html>

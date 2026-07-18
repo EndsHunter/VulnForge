@@ -20,10 +20,16 @@ from pydantic import BaseModel, Field
 
 from vulnforge.cli import PROJECT_ROOT, load_config, resolve_runs_root
 from vulnforge.settings import load_ui_settings, save_ui_settings
-from vulnforge.transcript import list_transcript_ids, load_transcript
+from vulnforge.step_io import build_graph_snapshot, build_task_io
+from vulnforge.transcript import (
+    list_transcript_ids,
+    list_transcript_passes,
+    load_transcript,
+)
 from vulnforge.ui import ops as dashops
 from vulnforge.ui import runner as runctl
 from vulnforge.ui import store
+from vulnforge.usage import load_usage_for_task
 
 UI_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(UI_DIR / "templates"))
@@ -91,6 +97,8 @@ class ControlBody(BaseModel):
     max_iterations: int = 200
     max_wall_seconds: Optional[float] = None
     workers: Optional[int] = None  # defaults from UI settings
+    # Named Ralph loop profile under config/harnesses/ (overrides knobs when set)
+    loop_profile_id: Optional[str] = None
 
 
 def control_start_kwargs(body: ControlBody, ui: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -100,9 +108,32 @@ def control_start_kwargs(body: ControlBody, ui: Optional[dict[str, Any]] = None)
     should send max_tasks (and workers) from Settings. Empty body / null fields
     fall back to UI settings, then max_tasks=50 / workers=1. task_timeout has no
     Settings field yet (Ralph default 900; distinct from LLM timeout_seconds).
+
+    When loop_profile_id is set, load config/harnesses/<id>.yaml and use it as
+    the base; explicit ControlBody fields still win when non-default is hard —
+    profile supplies all start_run kwargs, then UI workers/max_tasks only fill
+    gaps left null by the profile.
     """
     if ui is None:
         ui = load_ui_settings()
+    kwargs: dict[str, Any] = {}
+    if body.loop_profile_id:
+        from vulnforge.loop_profiles import load_profile, profile_to_start_kwargs
+
+        prof = load_profile(body.loop_profile_id)
+        if not prof:
+            raise ValueError(f"unknown loop profile: {body.loop_profile_id}")
+        kwargs.update(profile_to_start_kwargs(prof))
+        # Allow request body to override profile when client sends explicit values
+        if body.max_tasks is not None:
+            kwargs["max_tasks"] = body.max_tasks
+        if body.workers is not None:
+            kwargs["workers"] = body.workers
+        if body.max_wall_seconds is not None:
+            kwargs["max_wall_seconds"] = body.max_wall_seconds
+        # Prefer profile knobs for timeout/iterations when loop_profile_id is set.
+        return kwargs
+
     workers = body.workers if body.workers is not None else int(
         ui.get("max_concurrent_agents") or 1
     )
@@ -837,12 +868,107 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         return {"pack_id": pack_id, "relpath": relpath, "content": text}
 
     @app.get("/api/runs/{target_id}/{run_id}/tasks/{task_id}/transcript")
-    def api_task_transcript(target_id: str, run_id: str, task_id: int):
+    def api_task_transcript(
+        target_id: str,
+        run_id: str,
+        task_id: int,
+        pass_key: Optional[str] = Query(None),
+    ):
         run = _get_run(target_id, run_id)
-        data = load_transcript(run.path, task_id)
+        data = load_transcript(run.path, task_id, pass_key=pass_key)
         if not data:
             raise HTTPException(404, "no transcript for this task")
+        passes = list_transcript_passes(run.path, task_id)
+        if passes:
+            data = dict(data)
+            data["passes"] = passes
         return data
+
+    @app.get("/api/runs/{target_id}/{run_id}/tasks/{task_id}/io")
+    def api_task_io(
+        target_id: str,
+        run_id: str,
+        task_id: int,
+        pass_key: Optional[str] = Query(None),
+    ):
+        """Normalized step I/O for Harness builder / Tasks panel."""
+        run = _get_run(target_id, run_id)
+        task_row = None
+        try:
+            from vulnforge.db import Database
+
+            db = Database(run.path / "harness.db")
+            try:
+                t = db.get_task(task_id)
+                if t:
+                    task_row = {
+                        "id": t.id,
+                        "kind": t.kind,
+                        "state": t.state,
+                        "payload": t.payload or {},
+                        "result": t.result or {},
+                        "attempt": t.attempt,
+                        "priority": t.priority,
+                    }
+            finally:
+                db.close()
+        except Exception:
+            task_row = None
+        data = build_task_io(run.path, task_id, task=task_row, pass_key=pass_key)
+        if not data:
+            raise HTTPException(404, "no step I/O for this task")
+        return data
+
+    @app.get("/api/runs/{target_id}/{run_id}/tasks/{task_id}/usage")
+    def api_task_usage(target_id: str, run_id: str, task_id: int):
+        run = _get_run(target_id, run_id)
+        return {"task_id": task_id, "events": load_usage_for_task(run.path, task_id)}
+
+    @app.get("/api/runs/{target_id}/{run_id}/graph")
+    def api_run_graph(target_id: str, run_id: str):
+        """Live agent graph derived from tasks (+ recent events)."""
+        run = _get_run(target_id, run_id)
+        tasks: list[dict[str, Any]] = []
+        try:
+            from vulnforge.db import Database
+
+            db = Database(run.path / "harness.db")
+            try:
+                for t in db.list_tasks(limit=2000):
+                    tasks.append(
+                        {
+                            "id": t.id,
+                            "kind": t.kind,
+                            "state": t.state,
+                            "payload": t.payload or {},
+                            "result": t.result or {},
+                        }
+                    )
+            finally:
+                db.close()
+        except Exception as e:
+            raise HTTPException(500, f"graph failed: {e}") from e
+        events: list[dict] = []
+        try:
+            ev_path = run.path / "events.jsonl"
+            if ev_path.is_file():
+                # Last ~500 lines for edge hints
+                lines = ev_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line in lines[-500:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(row, dict):
+                        events.append(row)
+        except OSError:
+            pass
+        graph = build_graph_snapshot(tasks, events=events)
+        graph["runner"] = runctl.runner_status(run.path)
+        return graph
 
     @app.post("/api/runs/{target_id}/{run_id}/tasks/{task_id}/priority")
     def api_task_priority(target_id: str, run_id: str, task_id: int, body: TaskPriorityBody):
@@ -873,6 +999,45 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
     def api_list_transcripts(target_id: str, run_id: str):
         run = _get_run(target_id, run_id)
         return {"task_ids": list_transcript_ids(run.path)}
+
+    # --- Harness: Ralph loop profiles ---
+    @app.get("/api/loop-profiles")
+    def api_loop_profiles_list():
+        from vulnforge.loop_profiles import list_profiles
+
+        return {"profiles": list_profiles()}
+
+    @app.get("/api/loop-profiles/{profile_id}")
+    def api_loop_profile_get(profile_id: str):
+        from vulnforge.loop_profiles import load_profile
+
+        p = load_profile(profile_id)
+        if not p:
+            raise HTTPException(404, "profile not found")
+        return p
+
+    @app.put("/api/loop-profiles/{profile_id}")
+    def api_loop_profile_put(profile_id: str, body: dict[str, Any] = Body(...)):
+        from vulnforge.loop_profiles import save_profile
+
+        data = dict(body or {})
+        data["id"] = profile_id
+        try:
+            return save_profile(data)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.delete("/api/loop-profiles/{profile_id}")
+    def api_loop_profile_delete(profile_id: str):
+        from vulnforge.loop_profiles import delete_profile
+
+        try:
+            ok = delete_profile(profile_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if not ok:
+            raise HTTPException(404, "profile not found")
+        return {"ok": True, "id": profile_id}
 
     @app.get("/api/runs/{target_id}/{run_id}/tool-gaps")
     def api_tool_gaps_get(target_id: str, run_id: str, refresh: bool = Query(False)):
@@ -1203,7 +1368,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         target_id: str,
         run_id: str,
         path: str = Query("."),
-        max_entries: int = Query(200, ge=1, le=500),
+        max_entries: int = Query(500, ge=1, le=2000),
     ):
         run = _get_run(target_id, run_id)
         r = dashops.target_list(run.path, path=path, max_entries=max_entries)
@@ -2173,7 +2338,11 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
     @app.post("/api/runs/{target_id}/{run_id}/start")
     def api_start(target_id: str, run_id: str, body: ControlBody = Body(default_factory=ControlBody)):
         run = _get_run(target_id, run_id)
-        r = runctl.start_run(run.path, **control_start_kwargs(body))
+        try:
+            kw = control_start_kwargs(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        r = runctl.start_run(run.path, **kw)
         if not r.get("ok"):
             raise HTTPException(409, r.get("error") or "start failed")
         return r
@@ -2189,7 +2358,11 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
     @app.post("/api/runs/{target_id}/{run_id}/resume")
     def api_resume(target_id: str, run_id: str, body: ControlBody = Body(default_factory=ControlBody)):
         run = _get_run(target_id, run_id)
-        r = runctl.resume_run(run.path, **control_start_kwargs(body))
+        try:
+            kw = control_start_kwargs(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        r = runctl.resume_run(run.path, **kw)
         if not r.get("ok"):
             raise HTTPException(409, r.get("error") or "resume failed")
         return r

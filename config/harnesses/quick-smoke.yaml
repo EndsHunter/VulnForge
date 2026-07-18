@@ -1,0 +1,22 @@
+schema: harness.loop/v1
+id: quick-smoke
+title: Quick smoke (5 tasks)
+tags:
+  - smoke
+  - test
+loop:
+  max_iterations: 20
+  max_tasks: 5
+  task_timeout_s: 600
+  max_wall_seconds: 1800
+  sleep_seconds: 1.0
+  max_infra_retries: 3
+  infra_backoff_base: 5.0
+  workers: 1
+run:
+  max_leases_parallel: 1
+  max_task_attempts: 3
+  lease_ttl_seconds: 1800
+  max_split_depth: 2
+  max_recon_auto_retries: 1
+  auto_tool_gaps: false

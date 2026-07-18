@@ -1,0 +1,21 @@
+schema: harness.loop/v1
+id: default-campaign
+title: Default Ralph campaign
+tags:
+  - default
+loop:
+  max_iterations: 200
+  max_tasks: 50
+  task_timeout_s: 900
+  max_wall_seconds: null
+  sleep_seconds: 2.0
+  max_infra_retries: 5
+  infra_backoff_base: 5.0
+  workers: 1
+run:
+  max_leases_parallel: 1
+  max_task_attempts: 3
+  lease_ttl_seconds: 1800
+  max_split_depth: 2
+  max_recon_auto_retries: 2
+  auto_tool_gaps: false

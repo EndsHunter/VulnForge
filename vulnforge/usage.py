@@ -207,6 +207,41 @@ def usage_fields_for_result(usage: Any) -> dict[str, Any]:
     }
 
 
+def load_usage_for_task(
+    run_dir: Union[str, Path], task_id: int, *, limit: int = 500
+) -> list[dict[str, Any]]:
+    """Return usage jsonl events for a single task_id (oldest first)."""
+    path = Path(run_dir) / JSONL_NAME
+    if not path.is_file():
+        return []
+    want = int(task_id)
+    out: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                tid = row.get("task_id")
+                try:
+                    if tid is None or int(tid) != want:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                out.append(row)
+                if len(out) >= limit:
+                    break
+    except OSError:
+        return []
+    return out
+
+
 def llm_usage_for_card(run_dir: Union[str, Path]) -> dict[str, Any]:
     """Compact usage blob for home/run cards."""
     s = load_usage_summary(run_dir)
