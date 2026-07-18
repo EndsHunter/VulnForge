@@ -1,10 +1,16 @@
 """
-Stage: validate_llm (OPTIONAL â€” default off)
+Stage: validate_llm (OPTIONAL — default off)
 
-Adversarial disprove pass after validate_mech when stages.validate_llm is true.
+Adversarial dual-disprove pass after validate_mech when stages.validate_llm is true.
 
-Can only demote/reject. Never create findings. Never raise severity.
-Same model as hunter is weak signal â€” residual risk is recorded on the finding.
+Two sequential LLM verifiers (threat-model + code/mitigation perspectives) each
+try to kill the finding. Can only demote/reject. Never create findings. Never
+raise severity. Never auto-confirm.
+
+Aggregation:
+  - both reject → rejected_llm
+  - any stand / needs_human / parse fail → needs_human
+  - stood = count of VERDICT=stand; Report shows stood/total llm verified
 
 When the flag is **off**, a leased validate_llm task (e.g. enqueued while the
 flag was on, then config flipped) treats mech as terminal for automation:
@@ -27,7 +33,7 @@ from vulnforge.util import append_event, utc_now_iso
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Full pack_disprove + LLM path is implemented.
+# Full pack_disprove + dual LLM path is implemented.
 IMPLEMENTATION_COMPLETE = True
 
 # States that must not be reopened or "upgraded" by this stage.
@@ -36,6 +42,12 @@ IMPLEMENTATION_COMPLETE = True
 _TERMINAL_FINDING_STATES = frozenset(
     ("confirmed", "rejected_mech", "rejected_llm", "rejected_human", "superseded")
 )
+
+# Default dual verifiers when llm.disprove_verifiers is omitted.
+_DEFAULT_DISPROVE_VERIFIERS: list[dict[str, str]] = [
+    {"id": "threat_model", "prompt": "disprove_threat.md"},
+    {"id": "code_mitigation", "prompt": "disprove_code.md"},
+]
 
 
 def _parse_finding_id(raw: Any) -> tuple[int | None, str | None]:
@@ -50,16 +62,16 @@ def _parse_finding_id(raw: Any) -> tuple[int | None, str | None]:
 
 def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     """
-    Adversarial disprove pass.
+    Adversarial dual-disprove pass.
 
     Behavior:
       - flag off + open finding (mech already passed / pending_llm) -> needs_human
       - flag off + missing/terminal finding -> succeeded skip (no mutation)
       - flag on + missing/invalid finding -> failed_task (never raise / never confirm)
       - flag on + terminal finding -> succeeded skip
-      - flag on + LLM: reject -> rejected_llm; stand | needs_human / parse fail ->
-        needs_human (never auto-confirm; human is the confirm gate)
-      - flag on + infra LLM failure -> failed_infra (retryable)
+      - flag on + dual LLM: both reject -> rejected_llm; else -> needs_human
+        (never auto-confirm; human is the confirm gate)
+      - flag on + infra LLM failure before aggregate -> failed_infra (retryable)
     """
     stages = cfg.get("stages") or {}
     flag_on = bool(stages.get("validate_llm"))
@@ -82,6 +94,71 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     return _run_disprove(task, db, run_dir, cfg, fid)
 
 
+def resolve_disprove_verifiers(cfg: dict) -> list[dict[str, Any]]:
+    """Return ordered verifier slots from config or built-in defaults."""
+    llm = cfg.get("llm") or {}
+    raw = llm.get("disprove_verifiers")
+    if not isinstance(raw, list) or not raw:
+        return [dict(x) for x in _DEFAULT_DISPROVE_VERIFIERS]
+    out: list[dict[str, Any]] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        vid = str(item.get("id") or f"verifier_{i + 1}").strip() or f"verifier_{i + 1}"
+        prompt = str(item.get("prompt") or "").strip()
+        if not prompt:
+            continue
+        slot: dict[str, Any] = {"id": vid, "prompt": prompt}
+        if item.get("model") is not None:
+            slot["model"] = item.get("model")
+        out.append(slot)
+    return out if out else [dict(x) for x in _DEFAULT_DISPROVE_VERIFIERS]
+
+
+def aggregate_disprove_verdicts(
+    verifier_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    Aggregate per-slot verdicts.
+
+    stood = count of stand; rejected_llm only if every slot is reject.
+    """
+    total = len(verifier_results)
+    if total == 0:
+        return {
+            "stood": 0,
+            "total": 0,
+            "label": "0/0",
+            "aggregate": "needs_human",
+            "verdict": "needs_human",
+            "all_reject": False,
+        }
+    verdicts = []
+    for vr in verifier_results:
+        v = str(vr.get("verdict") or "needs_human").lower()
+        if v not in ("reject", "stand", "needs_human"):
+            v = "needs_human"
+        verdicts.append(v)
+    stood = sum(1 for v in verdicts if v == "stand")
+    all_reject = all(v == "reject" for v in verdicts)
+    aggregate = "rejected_llm" if all_reject else "needs_human"
+    # Compatibility top-level verdict for older readers
+    if all_reject:
+        top = "reject"
+    elif stood == total:
+        top = "stand"
+    else:
+        top = "needs_human"
+    return {
+        "stood": stood,
+        "total": total,
+        "label": f"{stood}/{total}",
+        "aggregate": aggregate,
+        "verdict": top,
+        "all_reject": all_reject,
+    }
+
+
 def _run_disprove(
     task,
     db,
@@ -89,7 +166,7 @@ def _run_disprove(
     cfg: dict,
     fid: int,
 ) -> dict[str, Any]:
-    """Full disprove: citation slices â†’ pack_disprove â†’ single chat â†’ verdict."""
+    """Full dual disprove: citation slices → sequential pack+chat → aggregate."""
     finding = db.get_finding(fid)
     if finding is None:
         return _failed_invalid_payload(
@@ -134,24 +211,11 @@ def _run_disprove(
     slices = load_citation_slices(finding, target, max_chars=max_chars)
     prompts_root = PROJECT_ROOT / "prompts" / "v1"
     body = dict(finding.body or {})
-    try:
-        packet = pack_disprove(cfg, prompts_root, body, slices)
-    except FileNotFoundError as e:
-        return _apply_verdict(
-            task,
-            db,
-            run_dir,
-            fid,
-            verdict="needs_human",
-            parse_reason="missing_prompts",
-            content=None,
-            model_id=None,
-            extra={"error": str(e)},
-        )
+    verifiers = resolve_disprove_verifiers(cfg)
 
     client = make_client(cfg)
     model_id: str | None = None
-    result_content: str | None = None
+    verifier_results: list[dict[str, Any]] = []
     try:
         try:
             model_id = client.fingerprint_model()
@@ -162,81 +226,144 @@ def _run_disprove(
                 "finding_id": fid,
             }
 
-        messages = messages_from_packet(packet)
         temp = float((cfg.get("llm") or {}).get("temperature_disprove", 0.2))
-        result = client.chat(messages, tools=None, temperature=temp)
-        if result.usage is None or result.usage.source == "none":
-            from vulnforge.llm import estimate_usage_from_messages
 
-            result.usage = estimate_usage_from_messages(
-                messages, result.content, result.tool_calls
-            )
-        usage_fields = record_llm_result(
-            run_dir,
-            task_id=getattr(task, "id", 0) or 0,
-            kind="validate_llm",
-            model_id=model_id,
-            result=result,
-        )
-        result_content = result.content
-        try:
-            save_transcript(
+        for slot in verifiers:
+            slot_id = str(slot.get("id") or "verifier")
+            perspective = str(slot.get("prompt") or "")
+            # Future: per-slot model override recorded when present
+            slot_model = slot.get("model")
+            recorded_model = str(slot_model) if slot_model else model_id
+
+            try:
+                packet = pack_disprove(
+                    cfg,
+                    prompts_root,
+                    body,
+                    slices,
+                    perspective=perspective or None,
+                    verifier_id=slot_id,
+                )
+            except FileNotFoundError as e:
+                verifier_results.append(
+                    {
+                        "id": slot_id,
+                        "prompt": perspective,
+                        "verdict": "needs_human",
+                        "parse_reason": "missing_prompts",
+                        "model_id": recorded_model,
+                        "reasoning": "",
+                        "at": utc_now_iso(),
+                        "error": str(e),
+                    }
+                )
+                continue
+
+            messages = messages_from_packet(packet)
+            result = client.chat(messages, tools=None, temperature=temp)
+            if result.usage is None or result.usage.source == "none":
+                from vulnforge.llm import estimate_usage_from_messages
+
+                result.usage = estimate_usage_from_messages(
+                    messages, result.content, result.tool_calls
+                )
+            usage_fields = record_llm_result(
                 run_dir,
-                getattr(task, "id", 0) or 0,
+                task_id=getattr(task, "id", 0) or 0,
                 kind="validate_llm",
-                model_id=model_id,
-                messages=list(result.transcript or messages)
-                + (
-                    [{"role": "assistant", "content": result.content or ""}]
-                    if result.content
-                    else []
-                ),
-                result={
-                    "ok": result.ok,
-                    "classification": result.classification.value,
-                    "error": result.error,
-                    "content": result.content,
-                    **usage_fields,
-                },
-                meta={"finding_id": fid, "stage": "disprove"},
+                model_id=recorded_model,
+                result=result,
             )
-        except OSError:
-            pass
+            try:
+                save_transcript(
+                    run_dir,
+                    getattr(task, "id", 0) or 0,
+                    kind="validate_llm",
+                    model_id=recorded_model,
+                    messages=list(result.transcript or messages)
+                    + (
+                        [{"role": "assistant", "content": result.content or ""}]
+                        if result.content
+                        else []
+                    ),
+                    result={
+                        "ok": result.ok,
+                        "classification": result.classification.value,
+                        "error": result.error,
+                        "content": result.content,
+                        **usage_fields,
+                    },
+                    meta={
+                        "finding_id": fid,
+                        "stage": "disprove",
+                        "verifier_id": slot_id,
+                        "perspective": perspective,
+                    },
+                    pass_key=f"disprove-{slot_id}",
+                )
+            except OSError:
+                pass
 
-        if not result.ok:
-            status = classify_llm_failure(result)
-            if status == "failed_infra":
-                return {
-                    "status": "failed_infra",
-                    "error": result.error or result.classification.value,
-                    "finding_id": fid,
-                    "model_id": model_id,
-                    **usage_fields,
+            if not result.ok:
+                status = classify_llm_failure(result)
+                if status == "failed_infra":
+                    # Do not finalize reject on partial dual pass; retry whole task.
+                    if verifier_results:
+                        _stamp_partial_llm(
+                            db,
+                            fid,
+                            verifier_results,
+                            error=result.error or result.classification.value,
+                        )
+                    return {
+                        "status": "failed_infra",
+                        "error": result.error or result.classification.value,
+                        "finding_id": fid,
+                        "model_id": recorded_model,
+                        "verifier_id": slot_id,
+                        "partial_verifiers": len(verifier_results),
+                        **usage_fields,
+                    }
+                # Model thrash / empty → slot needs_human; continue other slots
+                verifier_results.append(
+                    {
+                        "id": slot_id,
+                        "prompt": perspective,
+                        "verdict": "needs_human",
+                        "parse_reason": result.error
+                        or result.classification.value,
+                        "model_id": recorded_model,
+                        "reasoning": (result.content or "")[:8000],
+                        "at": utc_now_iso(),
+                        "llm_failed": True,
+                    }
+                )
+                continue
+
+            parsed = parse_disprove_verdict(result.content or "")
+            v = parsed["verdict"]
+            reasoning = (result.content or "").strip()
+            if len(reasoning) > 8000:
+                reasoning = reasoning[:8000] + "\n…[truncated]"
+            verifier_results.append(
+                {
+                    "id": slot_id,
+                    "prompt": perspective,
+                    "verdict": v,
+                    "parse_reason": parsed.get("reason") or "ok",
+                    "model_id": recorded_model,
+                    "reasoning": reasoning,
+                    "at": utc_now_iso(),
                 }
-            # Model thrash / empty â†’ never confirm; hold for human
-            return _apply_verdict(
-                task,
-                db,
-                run_dir,
-                fid,
-                verdict="needs_human",
-                parse_reason=result.error or result.classification.value,
-                content=result.content,
-                model_id=model_id,
-                extra={"llm_failed": True},
             )
 
-        parsed = parse_disprove_verdict(result.content or "")
-        return _apply_verdict(
+        return _apply_dual_verdict(
             task,
             db,
             run_dir,
             fid,
-            verdict=parsed["verdict"],
-            parse_reason=parsed.get("reason") or "ok",
-            content=result.content,
+            verifier_results=verifier_results,
             model_id=model_id,
-            extra={"parse": parsed},
         )
     finally:
         try:
@@ -245,23 +372,56 @@ def _run_disprove(
             pass
 
 
-def _apply_verdict(
+def _stamp_partial_llm(
+    db,
+    fid: int,
+    verifier_results: list[dict[str, Any]],
+    *,
+    error: str,
+) -> None:
+    """Record partial dual results without changing finding state (infra retry)."""
+    finding = db.get_finding(fid)
+    if finding is None or finding.state in _TERMINAL_FINDING_STATES:
+        return
+    body = dict(finding.body or {})
+    agg = aggregate_disprove_verdicts(verifier_results)
+    body["validation_llm"] = {
+        "status": "partial",
+        "stood": agg["stood"],
+        "total": agg["total"],
+        "label": agg["label"],
+        "aggregate": "pending",
+        "verdict": "pending",
+        "verifiers": verifier_results,
+        "error": error,
+        "at": utc_now_iso(),
+        "residual_risk": (
+            "Dual disprove interrupted by infrastructure failure; "
+            "finding state not finalized."
+        ),
+    }
+    db.conn.execute(
+        "UPDATE findings SET body_json=?, updated_at=? WHERE id=?",
+        (json.dumps(body), utc_now_iso(), fid),
+    )
+    db.conn.commit()
+
+
+def _apply_dual_verdict(
     task,
     db,
     run_dir: Path,
     fid: int,
     *,
-    verdict: str,
-    parse_reason: str,
-    content: str | None,
+    verifier_results: list[dict[str, Any]],
     model_id: str | None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Map disprove verdict -> finding state.
+    Map dual disprove results -> finding state.
 
-    reject -> rejected_llm
-    stand | needs_human -> needs_human (never auto-confirm; human is the gate)
+    Both reject -> rejected_llm
+    Else -> needs_human (never auto-confirm; human is the gate)
     """
     finding = db.get_finding(fid)
     if finding is None:
@@ -277,10 +437,25 @@ def _apply_verdict(
             "finding_state": finding.state,
         }
 
-    v = (verdict or "needs_human").lower()
-    if v not in ("reject", "stand", "needs_human"):
-        v = "needs_human"
-        parse_reason = f"invalid_verdict:{verdict}"
+    if not verifier_results:
+        verifier_results = [
+            {
+                "id": "none",
+                "prompt": "",
+                "verdict": "needs_human",
+                "parse_reason": "no_verifiers",
+                "model_id": model_id,
+                "reasoning": "",
+                "at": utc_now_iso(),
+            }
+        ]
+
+    agg = aggregate_disprove_verdicts(verifier_results)
+    top_verdict = agg["verdict"]
+    all_reject = bool(agg["all_reject"])
+    stood = int(agg["stood"])
+    total = int(agg["total"])
+    label = str(agg["label"])
 
     body = dict(finding.body or {})
     mech_meta = body.get("validation_mech")
@@ -289,60 +464,72 @@ def _apply_verdict(
         mech_meta["pending_llm"] = False
         body["validation_mech"] = mech_meta
 
-    reasoning = (content or "").strip()
+    # Compatibility reasoning: join truncated slot reasonings
+    joined_parts = []
+    for vr in verifier_results:
+        rid = vr.get("id") or "?"
+        vv = vr.get("verdict") or "?"
+        rs = (vr.get("reasoning") or "").strip()
+        if len(rs) > 2000:
+            rs = rs[:2000] + "…"
+        joined_parts.append(f"### {rid} ({vv})\n{rs}")
+    reasoning = "\n\n".join(joined_parts)
     if len(reasoning) > 8000:
-        reasoning = reasoning[:8000] + "\nâ€¦[truncated]"
+        reasoning = reasoning[:8000] + "\n…[truncated]"
 
     llm_meta: dict[str, Any] = {
-        "status": "completed",
-        "verdict": v,
-        "parse_reason": parse_reason,
+        "status": "completed" if all_reject else "needs_human",
+        "stood": stood,
+        "total": total,
+        "label": label,
+        "aggregate": "rejected_llm" if all_reject else "needs_human",
+        "verdict": top_verdict,
+        "parse_reason": "aggregate",
         "model_id": model_id,
         "reasoning": reasoning,
+        "verifiers": verifier_results,
         "at": utc_now_iso(),
         "residual_risk": (
-            "Same-model or same-provider disprove is weak signal; "
-            "prefer human review for HIGH/CRITICAL claims."
+            "Same-model dual disprove is still weak signal; "
+            "human is the confirm gate."
         ),
     }
     if extra:
-        # Keep body compact â€” drop large parse raw if present
         safe_extra = {k: extra[k] for k in extra if k != "parse"}
-        if "parse" in extra and isinstance(extra["parse"], dict):
-            safe_extra["parse_reason_detail"] = extra["parse"].get("reason")
         llm_meta.update(safe_extra)
     body["validation_llm"] = llm_meta
 
-    if v == "reject":
+    if all_reject:
         new_state = "rejected_llm"
         body.pop("needs_human", None)
         reasons = body.get("validation_reasons")
         if not isinstance(reasons, list):
             reasons = []
-        note = "validate_llm:rejected"
+        note = f"validate_llm:rejected:{label}"
         if note not in reasons:
             reasons.append(note)
         body["validation_reasons"] = reasons
+        llm_meta["status"] = "completed"
     else:
-        # stand or needs_human — queue for operator; never auto-confirm
         new_state = "needs_human"
         body["needs_human"] = True
         if isinstance(body.get("validation_mech"), dict):
             body["validation_mech"]["resolved"] = (
-                "stand_awaiting_human" if v == "stand" else "needs_human"
+                "stand_awaiting_human"
+                if top_verdict == "stand"
+                else "needs_human"
             )
         reasons = body.get("validation_reasons")
         if not isinstance(reasons, list):
             reasons = []
-        if v == "stand":
-            note = "validate_llm:stand_awaiting_human"
+        if top_verdict == "stand":
+            note = f"validate_llm:stand_awaiting_human:{label}"
         else:
-            note = f"validate_llm:needs_human:{parse_reason}"
+            note = f"validate_llm:needs_human:{label}"
         if note not in reasons:
             reasons.append(note)
         body["validation_reasons"] = reasons
-        if v != "stand":
-            llm_meta["status"] = "needs_human"
+        llm_meta["status"] = "needs_human"
 
     db.conn.execute(
         "UPDATE findings SET state=?, body_json=?, updated_at=? WHERE id=?",
@@ -357,24 +544,81 @@ def _apply_verdict(
             "event": "validate_llm_done",
             "task_id": getattr(task, "id", None),
             "finding_id": fid,
-            "verdict": v,
+            "verdict": top_verdict,
+            "stood": stood,
+            "total": total,
+            "label": label,
             "finding_state": new_state,
-            "parse_reason": parse_reason,
+            "parse_reason": "aggregate",
             "model_id": model_id,
+            "verdicts": [
+                {"id": vr.get("id"), "verdict": vr.get("verdict")}
+                for vr in verifier_results
+            ],
         },
     )
 
     return {
         "status": "succeeded",
-        "verdict": v,
+        "verdict": top_verdict,
+        "stood": stood,
+        "total": total,
+        "label": label,
         "finding_id": fid,
         "finding_state": new_state,
-        "parse_reason": parse_reason,
+        "parse_reason": "aggregate",
         "model_id": model_id,
         "confirmed": False,
         "rejected": new_state == "rejected_llm",
         "needs_human": new_state == "needs_human",
     }
+
+
+def _apply_verdict(
+    task,
+    db,
+    run_dir: Path,
+    fid: int,
+    *,
+    verdict: str,
+    parse_reason: str,
+    content: str | None,
+    model_id: str | None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Single-slot fallback used by incomplete/error hold paths."""
+    v = (verdict or "needs_human").lower()
+    if v not in ("reject", "stand", "needs_human"):
+        v = "needs_human"
+        parse_reason = f"invalid_verdict:{verdict}"
+    reasoning = (content or "").strip()
+    if len(reasoning) > 8000:
+        reasoning = reasoning[:8000] + "\n…[truncated]"
+    single = [
+        {
+            "id": "single",
+            "prompt": "",
+            "verdict": v,
+            "parse_reason": parse_reason,
+            "model_id": model_id,
+            "reasoning": reasoning,
+            "at": utc_now_iso(),
+        }
+    ]
+    # Single reject alone is not both-reject dual; map reject → needs_human
+    # unless callers already used dual path. Hold paths should not reject.
+    if v == "reject":
+        single[0]["verdict"] = "needs_human"
+        single[0]["parse_reason"] = f"hold_demote:{parse_reason}"
+    return _apply_dual_verdict(
+        task,
+        db,
+        run_dir,
+        fid,
+        verifier_results=single,
+        model_id=model_id,
+        extra=extra,
+    )
 
 
 def _flag_off_skip_or_confirm(

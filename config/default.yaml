@@ -25,6 +25,13 @@ llm:
   # Ornith-class reasoning models need headroom beyond answer tokens
   max_tokens: 4096
   context_tokens: 32768
+  # Dual adversarial disprove (validate_llm). Sole job: try to kill the finding.
+  # Per-slot model override is reserved for later (omit = inherit llm.model).
+  disprove_verifiers:
+    - id: threat_model
+      prompt: disprove_threat.md
+    - id: code_mitigation
+      prompt: disprove_code.md
 
 run:
   profile: code_static

@@ -934,7 +934,15 @@ def pack_disprove(
     prompts_root: Path,
     finding_body: dict,
     file_slices: list[dict],
+    *,
+    perspective: str | None = None,
+    verifier_id: str | None = None,
 ) -> Packet:
+    """Build adversarial disprove packet.
+
+    ``perspective`` is a prompts/v1-relative path (e.g. ``disprove_threat.md``)
+    appended after the shared ``disprove.md`` contract. Omitted when missing.
+    """
     # Severity + exclusion gates without hunt Evidence/Tools sections.
     try:
         preamble = load_prompt_slice(prompts_root, "preamble.md")
@@ -948,6 +956,18 @@ def pack_disprove(
         + _principles_without_hunt_tools(prompts_root)
     )
     disprove = load_prompt_slice(prompts_root, "disprove.md")
+    perspective_txt = ""
+    if perspective:
+        rel = str(perspective).replace("\\", "/").lstrip("/")
+        if ".." in rel.split("/"):
+            raise PermissionError(f"path escape: {perspective}")
+        try:
+            perspective_txt = "\n\n" + load_prompt_slice(prompts_root, rel)
+        except FileNotFoundError:
+            perspective_txt = (
+                f"\n\n# Perspective: {verifier_id or rel}\n"
+                f"(Perspective prompt missing: {rel}. Follow shared disprove contract only.)\n"
+            )
     pkt = cfg.get("packet") or {}
     max_slice = int(pkt.get("max_file_slice_chars", 4000))
     slices_txt = []
@@ -968,6 +988,7 @@ def pack_disprove(
         )
     user = (
         disprove
+        + perspective_txt
         + "\n\n## Finding JSON\n```json\n"
         + json.dumps(finding_body, indent=2)[:12000]
         + "\n```\n\n## Cited slices\n"
@@ -977,7 +998,11 @@ def pack_disprove(
         system=system,
         user=user,
         tools_schema=[],
-        meta={"stage": "disprove"},
+        meta={
+            "stage": "disprove",
+            "verifier_id": verifier_id,
+            "perspective": perspective,
+        },
         over_budget=False,
     )
 

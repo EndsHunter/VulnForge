@@ -785,7 +785,11 @@ button.cov-plan-action.is-current {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg);
-  overflow: hidden;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  min-height: 16rem;
+  max-height: min(52vh, 28rem);
 }
 .cov-path-picker-toolbar {
   display: flex;
@@ -796,6 +800,7 @@ button.cov-plan-action.is-current {
   padding: 0.45rem 0.55rem;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
+  flex-shrink: 0;
 }
 .cov-path-picker-bc {
   display: flex;
@@ -822,9 +827,13 @@ button.cov-plan-action.is-current {
   gap: 0.3rem;
 }
 .cov-path-picker-list {
-  max-height: 14rem;
-  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 12rem;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 0.25rem;
+  -webkit-overflow-scrolling: touch;
 }
 .cov-picker-row {
   display: flex;
@@ -2214,12 +2223,26 @@ button.cov-plan-action.is-current {
 }
 .cov-max-hunt-form .cov-path-picker {
   margin-top: 0.35rem;
+  min-height: 18rem;
+  max-height: min(60vh, 32rem);
 }
 .cov-max-hunt-form .cov-path-picker-list {
-  max-height: 16rem;
+  min-height: 14rem;
+  max-height: none;
 }
 .cov-max-hunt-form .cov-path-targets {
   min-height: 2rem;
+}
+.cov-select-form .cov-path-picker {
+  min-height: 16rem;
+  max-height: min(52vh, 28rem);
+}
+.cov-picker-truncated {
+  padding: 0.35rem 0.5rem;
+  font-size: 12px;
+  color: var(--warn);
+  border-top: 1px solid var(--border);
+  background: rgba(255, 180, 50, 0.06);
 }
 .coverage-class-caption {
   margin: 0 0 0.5rem;
@@ -3186,6 +3209,137 @@ tr.task-row .task-actions-cell .btn {
   word-break: break-word;
   color: var(--text);
 }
+
+/* Step I/O modal */
+.step-io-tabs { margin-top: 0.5rem; }
+.step-io-pass-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+.step-io-section { margin-bottom: 0.85rem; }
+.step-io-section h4 {
+  margin: 0 0 0.35rem;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.step-io-sources { margin: 0; padding-left: 1.1rem; }
+.step-io-sources .inline-pre {
+  display: inline;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* Harness mode */
+.harness-shell { margin-top: 0.5rem; }
+.harness-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.harness-title { margin: 0 0 0.25rem; }
+.harness-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+}
+.harness-layout {
+  display: grid;
+  grid-template-columns: 1fr min(280px, 100%);
+  gap: 0.75rem;
+}
+@media (max-width: 900px) {
+  .harness-layout { grid-template-columns: 1fr; }
+}
+.harness-graph {
+  position: relative;
+  min-height: 360px;
+  height: min(62vh, 560px);
+  overflow: hidden;
+  background: #0a080c;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0;
+  touch-action: none;
+  user-select: none;
+}
+.harness-graph-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  background: linear-gradient(to bottom, rgba(10, 8, 12, 0.95), rgba(10, 8, 12, 0.55));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  pointer-events: none;
+}
+.harness-graph-toolbar .harness-zoom-btns {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.harness-zoom-label {
+  min-width: 3.2rem;
+  text-align: center;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+.harness-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
+}
+.harness-edge {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  opacity: 0.75;
+  pointer-events: none;
+}
+.harness-node-click { cursor: pointer; }
+.harness-node-click:hover rect { filter: brightness(1.15); }
+.harness-node-kind {
+  font-size: 10px;
+  fill: var(--muted);
+  font-family: var(--sans, system-ui, sans-serif);
+}
+.harness-node-label {
+  font-size: 11px;
+  fill: var(--text);
+  font-family: var(--mono);
+}
+.harness-runner-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 13px;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.harness-kind-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 13px;
+}
+.harness-loop-detail { margin-top: 0.5rem; line-height: 1.45; }
+
 tr.task-row { cursor: pointer; }
 tr.task-row:hover td { background: rgba(255, 61, 110, 0.08); }
 .llm-pill { font-size: 11px; font-weight: 700; color: var(--accent); }
@@ -3869,6 +4023,57 @@ tr.task-row:hover td { background: rgba(255, 61, 110, 0.08); }
 }
 .badge.warn { background: rgba(240,180,41,0.15); color: var(--warn); border-color: rgba(240,180,41,0.35); }
 .badge.info { background: rgba(122,162,247,0.12); color: var(--info); border-color: rgba(122,162,247,0.3); }
+.badge.llm-verify {
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+.badge.llm-verify-none {
+  color: var(--bad);
+  border-color: #8a3038;
+  background: #241018;
+}
+.badge.llm-verify-mid {
+  color: var(--warn);
+  border-color: #8a6a1a;
+  background: #241e0c;
+}
+.badge.llm-verify-all {
+  color: var(--info);
+  border-color: rgba(122, 162, 247, 0.35);
+  background: rgba(122, 162, 247, 0.1);
+}
+.report-llm-verify {
+  margin: 0.75rem 0 1rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.15);
+}
+.report-llm-verify h4 {
+  margin: 0 0 0.35rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+.report-llm-slot {
+  margin-top: 0.45rem;
+}
+.report-llm-slot summary {
+  cursor: pointer;
+  list-style: disclosure-closed;
+}
+.report-llm-reasoning {
+  margin: 0.4rem 0 0;
+  max-height: 12rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.78rem;
+  padding: 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.2);
+}
 .badge.near-dup {
   color: #f0c060;
   border-color: rgba(240, 180, 41, 0.55);

@@ -111,25 +111,66 @@ def _fake_cfg(*verdict_contents: str) -> dict:
     }
 
 
+_REJECT = (
+    "Claim restated.\nAlternative: mitigated.\nReachable: no.\n"
+    "VERDICT=reject\nFramework binds parameters."
+)
+_STAND = (
+    "Claim holds. Alternative fails: no parameterization on path.\n"
+    "Reachable: yes.\nVERDICT=stand"
+)
+_NEEDS = "VERDICT=needs_human\nUnclear host binding."
+_PARSE_FAIL = "I would reject this finding but forgot the tag."
+
+
 def test_flag_on_disprove_reject(tmp_path: Path, toy_sqli: Path):
+    """Both dual verifiers must reject for rejected_llm."""
     run_dir, db = _setup_run(tmp_path, toy_sqli)
     body = _good_body(toy_sqli)
     _write_evidence(run_dir)
     fid = db.insert_finding(body, state="candidate")
-    cfg = _fake_cfg(
-        "Claim restated.\nAlternative: mitigated.\nReachable: no.\n"
-        "VERDICT=reject\nFramework binds parameters."
-    )
+    cfg = _fake_cfg(_REJECT, _REJECT)
     r = validate_llm.run(T(fid), db, run_dir, cfg)
     assert r["status"] == "succeeded"
     assert r.get("verdict") == "reject"
     assert r.get("rejected") is True
+    assert r.get("stood") == 0
+    assert r.get("total") == 2
+    assert r.get("label") == "0/2"
     f = db.get_finding(fid)
     assert f.state == "rejected_llm"
     assert f.state != "confirmed"
-    assert (f.body.get("validation_llm") or {}).get("verdict") == "reject"
+    vl = f.body.get("validation_llm") or {}
+    assert vl.get("verdict") == "reject"
+    assert vl.get("stood") == 0
+    assert vl.get("label") == "0/2"
+    assert len(vl.get("verifiers") or []) == 2
+    assert all(v.get("verdict") == "reject" for v in vl["verifiers"])
     events = (run_dir / "events.jsonl").read_text(encoding="utf-8")
     assert "validate_llm_done" in events
+    assert '"stood": 0' in events or '"stood":0' in events
+    db.close()
+
+
+def test_flag_on_disprove_single_reject_not_enough(tmp_path: Path, toy_sqli: Path):
+    """One reject + one stand → needs_human, 1/2 llm verified."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body(toy_sqli)
+    _write_evidence(run_dir)
+    fid = db.insert_finding(body, state="candidate")
+    cfg = _fake_cfg(_REJECT, _STAND)
+    r = validate_llm.run(T(fid), db, run_dir, cfg)
+    assert r["status"] == "succeeded"
+    assert r.get("rejected") is False
+    assert r.get("stood") == 1
+    assert r.get("label") == "1/2"
+    f = db.get_finding(fid)
+    assert f.state == "needs_human"
+    assert f.state != "rejected_llm"
+    vl = f.body.get("validation_llm") or {}
+    assert vl.get("stood") == 1
+    assert vl.get("total") == 2
+    assert {v["verdict"] for v in vl["verifiers"]} == {"reject", "stand"}
     db.close()
 
 
@@ -138,17 +179,17 @@ def test_flag_on_disprove_stand_needs_human(tmp_path: Path, toy_sqli: Path):
     body = _good_body(toy_sqli)
     _write_evidence(run_dir)
     fid = db.insert_finding(body, state="candidate")
-    cfg = _fake_cfg(
-        "Claim holds. Alternative fails: no parameterization on path.\n"
-        "Reachable: yes.\nVERDICT=stand"
-    )
+    cfg = _fake_cfg(_STAND, _STAND)
     r = validate_llm.run(T(fid), db, run_dir, cfg)
     assert r["status"] == "succeeded"
     assert r.get("verdict") == "stand"
     assert r.get("confirmed") is False
+    assert r.get("stood") == 2
+    assert r.get("label") == "2/2"
     f = db.get_finding(fid)
     assert f.state == "needs_human"
     assert f.body.get("needs_human") is True
+    assert (f.body.get("validation_llm") or {}).get("label") == "2/2"
     db.close()
 
 
@@ -159,10 +200,11 @@ def test_flag_on_disprove_parse_fail_needs_human_never_confirms(
     body = _good_body(toy_sqli)
     _write_evidence(run_dir)
     fid = db.insert_finding(body, state="candidate")
-    cfg = _fake_cfg("I would reject this finding but forgot the tag.")
+    cfg = _fake_cfg(_PARSE_FAIL, _PARSE_FAIL)
     r = validate_llm.run(T(fid), db, run_dir, cfg)
     assert r["status"] == "succeeded"
     assert r.get("verdict") == "needs_human"
+    assert r.get("stood") == 0
     f = db.get_finding(fid)
     assert f.state == "needs_human"
     assert f.state != "confirmed"
@@ -178,7 +220,7 @@ def test_mech_with_validate_llm_enqueues_then_disprove(
     body = _good_body(toy_sqli)
     _write_evidence(run_dir)
     fid = db.insert_finding(body, state="candidate")
-    cfg = _fake_cfg("VERDICT=needs_human\nUnclear host binding.")
+    cfg = _fake_cfg(_NEEDS, _NEEDS)
     r = validate_mech_run(T(fid), db, run_dir, cfg)
     assert r["status"] == "succeeded"
     assert r["verdict"] == "pending_llm"
@@ -195,6 +237,7 @@ def test_mech_with_validate_llm_enqueues_then_disprove(
     assert r2["status"] == "succeeded"
     assert db.get_finding(fid).state == "needs_human"
     assert db.get_finding(fid).body.get("needs_human") is True
+    assert (db.get_finding(fid).body.get("validation_llm") or {}).get("total") == 2
     db.close()
 
 
@@ -316,8 +359,82 @@ def test_parse_disprove_verdict_defaults_needs_human():
     )
 
 
+def test_aggregate_disprove_verdicts():
+    a = validate_llm.aggregate_disprove_verdicts(
+        [{"verdict": "reject"}, {"verdict": "reject"}]
+    )
+    assert a["all_reject"] is True
+    assert a["stood"] == 0
+    assert a["label"] == "0/2"
+    assert a["aggregate"] == "rejected_llm"
+
+    b = validate_llm.aggregate_disprove_verdicts(
+        [{"verdict": "reject"}, {"verdict": "stand"}]
+    )
+    assert b["all_reject"] is False
+    assert b["stood"] == 1
+    assert b["label"] == "1/2"
+    assert b["aggregate"] == "needs_human"
+
+    c = validate_llm.aggregate_disprove_verdicts(
+        [{"verdict": "stand"}, {"verdict": "stand"}]
+    )
+    assert c["stood"] == 2
+    assert c["verdict"] == "stand"
+
+    d = validate_llm.aggregate_disprove_verdicts(
+        [{"verdict": "reject"}, {"verdict": "needs_human"}]
+    )
+    assert d["stood"] == 0
+    assert d["all_reject"] is False
+    assert d["aggregate"] == "needs_human"
+
+
+def test_resolve_disprove_verifiers_defaults():
+    v = validate_llm.resolve_disprove_verifiers({})
+    assert len(v) == 2
+    assert v[0]["id"] == "threat_model"
+    assert v[1]["prompt"] == "disprove_code.md"
+    custom = validate_llm.resolve_disprove_verifiers(
+        {
+            "llm": {
+                "disprove_verifiers": [
+                    {"id": "a", "prompt": "disprove_threat.md"},
+                    {"id": "b", "prompt": "disprove_code.md", "model": "other"},
+                ]
+            }
+        }
+    )
+    assert custom[1]["model"] == "other"
+
+
+def test_pack_disprove_includes_perspective():
+    from vulnforge.packet import pack_disprove
+
+    root = Path(__file__).resolve().parents[1] / "prompts" / "v1"
+    pkt = pack_disprove(
+        {"packet": {}},
+        root,
+        {"title": "t", "summary": "s"},
+        [],
+        perspective="disprove_threat.md",
+        verifier_id="threat_model",
+    )
+    assert "threat-model skeptic" in pkt.user.lower() or "threat-model" in pkt.user.lower()
+    assert "Finding JSON" in pkt.user
+    pkt2 = pack_disprove(
+        {"packet": {}},
+        root,
+        {"title": "t"},
+        [],
+        perspective="disprove_code.md",
+        verifier_id="code_mitigation",
+    )
+    assert "mitigation" in pkt2.user.lower() or "code" in pkt2.user.lower()
+
+
 def test_dispatch_validate_llm_no_crash(tmp_path: Path, toy_sqli: Path):
-    """cli.dispatch_task runs full disprove without raising."""
+    """cli.dispatch_task runs full dual disprove without raising."""
     run_dir, db = _setup_run(tmp_path, toy_sqli)
     body = _good_body(toy_sqli)
     _write_evidence(run_dir)
@@ -325,9 +442,10 @@ def test_dispatch_validate_llm_no_crash(tmp_path: Path, toy_sqli: Path):
     task_id = db.enqueue_task("validate_llm", {"finding_id": fid}, priority=25)
     row = db.conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
     task = db._row_to_task(row)
-    r = dispatch_task(task, db, run_dir, _fake_cfg("VERDICT=reject\nMitigated."))
+    r = dispatch_task(task, db, run_dir, _fake_cfg(_REJECT, _REJECT))
     assert r["status"] == "succeeded"
     assert db.get_finding(fid).state == "rejected_llm"
+    assert (db.get_finding(fid).body.get("validation_llm") or {}).get("label") == "0/2"
     db.close()
 
 

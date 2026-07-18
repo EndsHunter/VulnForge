@@ -65,6 +65,78 @@
     return s;
   }
 
+  /**
+   * Dual LLM disprove signal: stood/total where stand = could not kill.
+   * Returns { stood, total, label, verifiers } or null if not dual-run.
+   */
+  function llmVerifyMeta(f) {
+    const v = bodyOf(f).validation_llm;
+    if (!v || typeof v !== "object") return null;
+    const verifiers = Array.isArray(v.verifiers) ? v.verifiers : null;
+    if (verifiers && verifiers.length) {
+      const total =
+        v.total != null ? Number(v.total) : verifiers.length;
+      const stood =
+        v.stood != null
+          ? Number(v.stood)
+          : verifiers.filter(
+              (x) => String(x && x.verdict || "").toLowerCase() === "stand"
+            ).length;
+      const label = v.label || `${stood}/${total}`;
+      return { stood, total, label, verifiers, status: v.status };
+    }
+    return null;
+  }
+
+  function llmVerifyBadge(f) {
+    const m = llmVerifyMeta(f);
+    if (!m) return "";
+    let tone = "llm-verify-mid";
+    if (m.stood <= 0) tone = "llm-verify-none";
+    else if (m.stood >= m.total) tone = "llm-verify-all";
+    return `<span class="badge llm-verify ${tone}" title="LLM verifiers that could not disprove (stand) / total">${esc(
+      m.label
+    )} llm verified</span>`;
+  }
+
+  function llmVerifyDetailHtml(f) {
+    const m = llmVerifyMeta(f);
+    if (!m) {
+      const legacy = bodyOf(f).validation_llm;
+      if (!legacy || typeof legacy !== "object") return "";
+      // Pre-dual single pass: no N/2 badge data
+      const v = legacy.verdict || legacy.status || "";
+      if (!v) return "";
+      return `<div class="report-llm-verify">
+        <h4>LLM verify</h4>
+        <p class="controls-hint">Legacy single disprove (no dual score). Verdict: <span class="mono">${esc(
+          String(v)
+        )}</span></p>
+      </div>`;
+    }
+    const rows = (m.verifiers || [])
+      .map((vr) => {
+        const vid = esc(vr.id || "?");
+        const vv = esc(vr.verdict || "?");
+        const model = vr.model_id ? esc(String(vr.model_id)) : "—";
+        const prompt = vr.prompt ? esc(String(vr.prompt)) : "";
+        const reason = esc(String(vr.reasoning || "").slice(0, 1200));
+        return `<details class="report-llm-slot">
+          <summary><span class="mono">${vid}</span> · <span class="badge">${vv}</span>
+            <span class="controls-hint mono">${model}${
+              prompt ? " · " + prompt : ""
+            }</span></summary>
+          <pre class="report-llm-reasoning mono">${reason || "(no reasoning)"}</pre>
+        </details>`;
+      })
+      .join("");
+    return `<div class="report-llm-verify">
+      <h4>LLM verify <span class="badge llm-verify">${esc(m.label)} llm verified</span></h4>
+      <p class="controls-hint">Each verifier tries to <strong>disprove</strong> the finding. Score = how many returned <span class="mono">stand</span> (could not kill). Both must <span class="mono">reject</span> for auto <span class="mono">rejected_llm</span>.</p>
+      ${rows}
+    </div>`;
+  }
+
   function matchesFilter(f) {
     const st = (f.state || "").toLowerCase();
     const ftr = (filter || "all").toLowerCase();
@@ -303,6 +375,8 @@
           cm && cm.label ? " " + esc(cm.label) : ""
         }</span>`
       : "";
+    const llmBadge = llmVerifyBadge(f);
+    const llmDetail = llmVerifyDetailHtml(f);
     return `
       <div class="report-detail-inner" data-fid="${f.id}">
         <div class="report-detail-head">
@@ -312,10 +386,12 @@
             ${sevBadge(f.severity || b.severity_claim || "unknown")}
             <span class="badge info">${esc(b.weakness_class || "-")}</span>
             ${nearBadge}
+            ${llmBadge}
           </div>
         </div>
         <p class="report-detail-summary">${esc(b.summary || "No summary.")}</p>
         ${rejectBox}
+        ${llmDetail}
         ${relatedHtml}
         ${mergeMeta}
         <div class="report-detail-grid">
@@ -1051,13 +1127,14 @@
                 cm && cm.label ? esc(cm.label) + " near-dup" : "near-dup"
               }</span>`
             : "";
+        const llmBadge = llmVerifyBadge(f);
         const checked = selectedIds.has(Number(f.id)) ? " checked" : "";
         return `<tr class="report-row${open ? " open" : ""}${f.near_dup || cm ? " near-dup-row" : ""}" data-fid="${f.id}" tabindex="0">
           <td class="report-check-cell" onclick="event.stopPropagation()">
             <input type="checkbox" class="report-select-cb" data-fid="${f.id}" aria-label="Select finding ${f.id}"${checked} />
           </td>
           <td class="mono">${f.id}</td>
-          <td class="report-title-cell">${esc(b.title || f.stable_key || "-")} ${near}</td>
+          <td class="report-title-cell">${esc(b.title || f.stable_key || "-")} ${near} ${llmBadge}</td>
           <td><span class="mono">${esc(b.weakness_class || "-")}</span></td>
           <td>${sevBadge(f.severity || b.severity_claim || "unknown")}</td>
           <td>${badge(f.state)}</td>
