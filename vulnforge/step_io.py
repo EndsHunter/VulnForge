@@ -441,39 +441,82 @@ def _sum_usage_events(events: list[dict]) -> dict[str, Any]:
     return out
 
 
+def _as_int(v: Any) -> Optional[int]:
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _task_fields(t: Any) -> tuple[int, Any, Any, dict, dict]:
+    if isinstance(t, dict):
+        tid = int(t.get("id") or 0)
+        kind = t.get("kind")
+        state = t.get("state")
+        payload = t.get("payload") if isinstance(t.get("payload"), dict) else {}
+        result = t.get("result") if isinstance(t.get("result"), dict) else {}
+        if not result and isinstance(t.get("result_json"), dict):
+            result = t["result_json"]
+    else:
+        tid = int(getattr(t, "id", 0) or 0)
+        kind = getattr(t, "kind", None)
+        state = getattr(t, "state", None)
+        payload = getattr(t, "payload", None) or {}
+        result = getattr(t, "result", None) or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if not isinstance(result, dict):
+            result = {}
+    return tid, kind, state, payload, result
+
+
+def _add_edge(
+    edges: list[dict[str, Any]],
+    *,
+    source: int,
+    target: int,
+    etype: str,
+    known_ids: set[int],
+) -> None:
+    if source == target:
+        return
+    if source not in known_ids or target not in known_ids:
+        return
+    edges.append(
+        {
+            "id": f"e-{source}-{target}-{etype}",
+            "source": f"task-{source}",
+            "target": f"task-{target}",
+            "type": etype,
+        }
+    )
+
+
 def build_graph_snapshot(
     tasks: list[Any],
     *,
     events: Optional[list[dict]] = None,
 ) -> dict[str, Any]:
     """
-    Derive a simple agent graph from task list + optional events.
+    Derive an agent graph from task list + optional events.
 
-    Nodes are task instances; edges from parent_task_id and known result links.
+    Edges from:
+      - payload.parent_task_id
+      - result child/split/spawn ids
+      - finding pipeline (hunt → validate_mech → validate_llm → develop_poc)
+      - recon → orphan hunts (infer by hunt_enqueued count / id order)
+      - events (requeue / enqueue)
     """
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     by_id: dict[int, dict] = {}
+    raw_by_id: dict[int, tuple[Any, dict, dict]] = {}
 
+    # Pass 1: nodes only (so all ids exist before edges)
     for t in tasks:
-        if isinstance(t, dict):
-            tid = int(t.get("id") or 0)
-            kind = t.get("kind")
-            state = t.get("state")
-            payload = t.get("payload") if isinstance(t.get("payload"), dict) else {}
-            result = t.get("result") if isinstance(t.get("result"), dict) else {}
-            if not result and isinstance(t.get("result_json"), dict):
-                result = t["result_json"]
-        else:
-            tid = int(getattr(t, "id", 0) or 0)
-            kind = getattr(t, "kind", None)
-            state = getattr(t, "state", None)
-            payload = getattr(t, "payload", None) or {}
-            result = getattr(t, "result", None) or {}
-            if not isinstance(payload, dict):
-                payload = {}
-            if not isinstance(result, dict):
-                result = {}
+        tid, kind, state, payload, result = _task_fields(t)
         if not tid:
             continue
         label_bits = [str(kind or "task"), f"#{tid}"]
@@ -488,6 +531,11 @@ def build_graph_snapshot(
             aid = payload.get("recon_agent_id") or payload.get("agent_id")
             if aid:
                 label_bits.append(str(aid))
+        fid = payload.get("finding_id")
+        if fid is None:
+            fid = result.get("finding_id")
+        if fid is not None:
+            label_bits.append(f"f#{fid}")
         node = {
             "id": f"task-{tid}",
             "task_id": tid,
@@ -506,79 +554,201 @@ def build_graph_snapshot(
                 )
                 if k in payload
             },
+            "finding_id": _as_int(fid),
             "has_parent": payload.get("parent_task_id") is not None,
         }
         nodes.append(node)
         by_id[tid] = node
+        raw_by_id[tid] = (kind, payload, result)
 
-        parent = payload.get("parent_task_id")
+    known_ids = set(by_id.keys())
+
+    # Pass 2: explicit parent / result edges
+    for tid, (kind, payload, result) in raw_by_id.items():
+        parent = _as_int(payload.get("parent_task_id"))
         if parent is not None:
-            try:
-                pid = int(parent)
-            except (TypeError, ValueError):
-                pid = None
-            if pid is not None:
-                edges.append(
-                    {
-                        "id": f"e-{pid}-{tid}-parent",
-                        "source": f"task-{pid}",
-                        "target": f"task-{tid}",
-                        "type": "parent",
-                    }
-                )
+            _add_edge(
+                edges, source=parent, target=tid, etype="parent", known_ids=known_ids
+            )
 
-        # Child links recorded on result
         for key, etype in (
             ("child_task_id", "requeue"),
-            ("finding_id", "finding"),
+            ("generate_run_skills_task_id", "skills"),
         ):
-            if key == "finding_id":
-                continue  # finding is not a task node
-            cid = result.get(key)
+            cid = _as_int(result.get(key))
             if cid is not None:
-                try:
-                    cid_i = int(cid)
-                except (TypeError, ValueError):
-                    continue
-                edges.append(
-                    {
-                        "id": f"e-{tid}-{cid_i}-{etype}",
-                        "source": f"task-{tid}",
-                        "target": f"task-{cid_i}",
-                        "type": etype,
-                    }
+                _add_edge(
+                    edges, source=tid, target=cid, etype=etype, known_ids=known_ids
                 )
+
+        for list_key, etype in (
+            ("fanout_task_ids", "fanout"),
+            ("child_task_ids", "children"),
+            ("spawned_task_ids", "spawn"),
+            ("hunt_task_ids", "enqueue_hunt"),
+            ("enqueued_task_ids", "enqueue"),
+        ):
+            raw_list = result.get(list_key)
+            if not isinstance(raw_list, list):
+                continue
+            for cid in raw_list:
+                cid_i = _as_int(cid)
+                if cid_i is not None:
+                    _add_edge(
+                        edges,
+                        source=tid,
+                        target=cid_i,
+                        etype=etype,
+                        known_ids=known_ids,
+                    )
+
         split = result.get("split")
         if isinstance(split, dict):
             for cid in split.get("child_task_ids") or split.get("children") or []:
-                try:
-                    cid_i = int(cid)
-                except (TypeError, ValueError):
-                    continue
-                edges.append(
-                    {
-                        "id": f"e-{tid}-{cid_i}-split",
-                        "source": f"task-{tid}",
-                        "target": f"task-{cid_i}",
-                        "type": "split",
-                    }
-                )
+                cid_i = _as_int(cid)
+                if cid_i is not None:
+                    _add_edge(
+                        edges,
+                        source=tid,
+                        target=cid_i,
+                        etype="split",
+                        known_ids=known_ids,
+                    )
         for cid in result.get("spawned_hunts") or []:
-            # spawned_hunts may be payloads not ids — skip non-int
-            try:
-                cid_i = int(cid)
-            except (TypeError, ValueError):
-                continue
-            edges.append(
-                {
-                    "id": f"e-{tid}-{cid_i}-spawn",
-                    "source": f"task-{tid}",
-                    "target": f"task-{cid_i}",
-                    "type": "spawn",
-                }
+            cid_i = _as_int(cid)
+            if cid_i is not None:
+                _add_edge(
+                    edges, source=tid, target=cid_i, etype="spawn", known_ids=known_ids
+                )
+
+    # --- Finding pipeline: hunt → validate_mech → validate_llm → develop_poc ---
+    FINDING_KIND_RANK = {
+        "hunt": 0,
+        "validate_mech": 1,
+        "validate_llm": 2,
+        "develop_poc": 3,
+    }
+    by_finding: dict[int, list[tuple[int, int, str]]] = {}
+    for tid, (kind, payload, result) in raw_by_id.items():
+        k = str(kind or "")
+        if k not in FINDING_KIND_RANK:
+            continue
+        fid = _as_int(payload.get("finding_id"))
+        if fid is None:
+            fid = _as_int(result.get("finding_id"))
+        if fid is None:
+            continue
+        by_finding.setdefault(fid, []).append((FINDING_KIND_RANK[k], tid, k))
+
+    for fid, members in by_finding.items():
+        members.sort(key=lambda x: (x[0], x[1]))
+        # Chain consecutive pipeline stages (same finding)
+        for i in range(len(members) - 1):
+            _, a_id, a_kind = members[i]
+            _, b_id, b_kind = members[i + 1]
+            # Only link forward in pipeline (not hunt→hunt)
+            if FINDING_KIND_RANK.get(a_kind, 99) < FINDING_KIND_RANK.get(b_kind, -1):
+                _add_edge(
+                    edges,
+                    source=a_id,
+                    target=b_id,
+                    etype="finding",
+                    known_ids=known_ids,
+                )
+        # Also link first hunt that produced finding to first validate_mech if not adjacent
+        hunts = [m for m in members if m[2] == "hunt"]
+        mechs = [m for m in members if m[2] == "validate_mech"]
+        if hunts and mechs:
+            _add_edge(
+                edges,
+                source=hunts[0][1],
+                target=mechs[0][1],
+                etype="finding",
+                known_ids=known_ids,
             )
 
-    # Kind-order edges when no parent (pipeline visualization aid)
+    # --- Recon → orphan hunts (legacy runs without parent_task_id) ---
+    recon_ids = sorted(
+        tid
+        for tid, (kind, _, _) in raw_by_id.items()
+        if str(kind or "") == "recon" or str(kind or "").startswith("recon")
+    )
+    orphan_hunts = sorted(
+        tid
+        for tid, (kind, payload, _) in raw_by_id.items()
+        if str(kind or "") == "hunt" and payload.get("parent_task_id") is None
+    )
+    # Assign orphan hunts to the most recent recon with id < hunt id
+    # Prefer recon results that report hunt_enqueued > 0
+    recon_capacity: dict[int, int] = {}
+    for rid in recon_ids:
+        _, _, result = raw_by_id[rid]
+        n = result.get("hunt_enqueued")
+        n_i = _as_int(n)
+        if n_i is not None and n_i > 0:
+            recon_capacity[rid] = n_i
+        else:
+            # still allow linking a few if recon succeeded
+            if result.get("status") == "succeeded" or result.get("enqueue_hunts"):
+                recon_capacity[rid] = recon_capacity.get(rid, 0) or 50
+
+    assigned: set[int] = set()
+    for rid in sorted(recon_capacity.keys()):
+        cap = recon_capacity[rid]
+        linked = 0
+        for hid in orphan_hunts:
+            if hid in assigned or hid <= rid:
+                continue
+            # stop at next recon id
+            next_recons = [x for x in recon_ids if x > rid]
+            if next_recons and hid >= next_recons[0]:
+                break
+            _add_edge(
+                edges,
+                source=rid,
+                target=hid,
+                etype="enqueue_hunt",
+                known_ids=known_ids,
+            )
+            assigned.add(hid)
+            linked += 1
+            if linked >= cap:
+                break
+
+    # Remaining orphan hunts → nearest prior recon (operator / later enqueue)
+    for hid in orphan_hunts:
+        if hid in assigned:
+            continue
+        preds = [r for r in recon_ids if r < hid]
+        if not preds:
+            continue
+        _add_edge(
+            edges,
+            source=preds[-1],
+            target=hid,
+            etype="enqueue_hunt",
+            known_ids=known_ids,
+        )
+        assigned.add(hid)
+
+    # Skills / render without parent: link generate_run_skills already handled;
+    # link first render after last recon if no edges
+    for tid, (kind, payload, result) in raw_by_id.items():
+        if str(kind or "") != "render":
+            continue
+        if payload.get("parent_task_id") is not None:
+            continue
+        # Prefer latest succeeded recon before this render
+        preds = [r for r in recon_ids if r < tid]
+        if preds:
+            _add_edge(
+                edges,
+                source=preds[-1],
+                target=tid,
+                etype="pipeline",
+                known_ids=known_ids,
+            )
+
     kind_order = [
         "recon",
         "hunt",
@@ -622,31 +792,46 @@ def build_graph_snapshot(
         if not isinstance(ev, dict):
             continue
         et = ev.get("event")
-        if et in ("shallow_requeue", "hunt_split", "enqueue_hunt", "task_enqueued"):
+        if et in (
+            "shallow_requeue",
+            "hunt_split",
+            "enqueue_hunt",
+            "task_enqueued",
+            "validate_llm_done",
+            "candidate_submitted",
+        ):
             src = ev.get("task_id") or ev.get("parent_task_id")
-            dst = ev.get("child_task_id") or ev.get("new_task_id")
+            dst = (
+                ev.get("child_task_id")
+                or ev.get("new_task_id")
+                or ev.get("spawned_task_id")
+            )
             if src is not None and dst is not None:
-                try:
-                    s, d = int(src), int(dst)
-                except (TypeError, ValueError):
-                    continue
-                edges.append(
-                    {
-                        "id": f"e-{s}-{d}-{et}",
-                        "source": f"task-{s}",
-                        "target": f"task-{d}",
-                        "type": str(et),
-                    }
-                )
+                s, d = _as_int(src), _as_int(dst)
+                if s is not None and d is not None:
+                    _add_edge(
+                        edges,
+                        source=s,
+                        target=d,
+                        etype=str(et),
+                        known_ids=known_ids,
+                    )
 
-    # Dedupe edges
+    # Dedupe edges (prefer keeping first; also collapse source+target dupes)
     seen_e: set[str] = set()
+    seen_pair: set[tuple[str, str]] = set()
     deduped = []
     for e in edges:
-        eid = e.get("id") or f"{e.get('source')}->{e.get('target')}:{e.get('type')}"
+        pair = (str(e.get("source")), str(e.get("target")))
+        if pair[0] == pair[1]:
+            continue
+        if pair in seen_pair:
+            continue
+        eid = e.get("id") or f"{pair[0]}->{pair[1]}:{e.get('type')}"
         if eid in seen_e:
             continue
-        seen_e.add(eid)
+        seen_e.add(str(eid))
+        seen_pair.add(pair)
         deduped.append(e)
 
     return {
@@ -655,6 +840,7 @@ def build_graph_snapshot(
         "type_nodes": type_nodes,
         "type_edges": type_edges,
         "task_count": len(nodes),
+        "edge_count": len(deduped),
     }
 
 

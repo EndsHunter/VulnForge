@@ -115,6 +115,78 @@ def test_step_io_usage_events(tmp_path: Path):
     assert io.get("usage_events")
 
 
+def test_graph_links_finding_pipeline_and_orphan_hunts():
+    """Graph should link recon→hunts and hunt→validate_mech via finding_id."""
+    tasks = [
+        {
+            "id": 1,
+            "kind": "recon",
+            "state": "succeeded",
+            "payload": {},
+            "result": {"status": "succeeded", "hunt_enqueued": 2},
+        },
+        {
+            "id": 2,
+            "kind": "hunt",
+            "state": "succeeded",
+            "payload": {"class": "injection", "area": "api"},
+            "result": {"finding_id": 10, "status": "succeeded"},
+        },
+        {
+            "id": 3,
+            "kind": "hunt",
+            "state": "succeeded",
+            "payload": {"class": "access-control", "area": "api"},
+            "result": {"none_found": True},
+        },
+        {
+            "id": 4,
+            "kind": "validate_mech",
+            "state": "succeeded",
+            "payload": {"finding_id": 10},
+            "result": {"verdict": "needs_human", "finding_id": 10},
+        },
+        {
+            "id": 5,
+            "kind": "validate_llm",
+            "state": "succeeded",
+            "payload": {"finding_id": 10},
+            "result": {"verdict": "stand", "finding_id": 10},
+        },
+    ]
+    g = build_graph_snapshot(tasks)
+    pairs = {(e["source"], e["target"], e["type"]) for e in g["edges"]}
+    # Orphan hunts linked from recon
+    assert ("task-1", "task-2", "enqueue_hunt") in pairs
+    assert ("task-1", "task-3", "enqueue_hunt") in pairs
+    # Finding pipeline
+    assert ("task-2", "task-4", "finding") in pairs
+    assert ("task-4", "task-5", "finding") in pairs
+    assert g["edge_count"] >= 4
+
+
+def test_graph_respects_explicit_parent_task_id():
+    tasks = [
+        {
+            "id": 10,
+            "kind": "hunt",
+            "state": "succeeded",
+            "payload": {},
+            "result": {"finding_id": 1},
+        },
+        {
+            "id": 11,
+            "kind": "validate_mech",
+            "state": "succeeded",
+            "payload": {"finding_id": 1, "parent_task_id": 10},
+            "result": {},
+        },
+    ]
+    g = build_graph_snapshot(tasks)
+    sources = [e for e in g["edges"] if e["target"] == "task-11"]
+    assert any(e["source"] == "task-10" for e in sources)
+
+
 def test_balanced_product_spreads_areas_under_budget():
     from vulnforge.stages.recon import balanced_product_tasks, diversify_clip_tasks
 

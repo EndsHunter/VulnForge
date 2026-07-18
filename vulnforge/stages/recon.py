@@ -1184,6 +1184,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                             t["operator_notes"] = (
                                 f"From refined recon: {operator_brief[:500]}"
                             )
+                    t["parent_task_id"] = task.id
                     db.enqueue_task("hunt", t, priority=50)
                     db.upsert_coverage_fact(
                         t.get("area", "app"),

@@ -61,7 +61,14 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             ("needs_human", json.dumps(body), utc_now_iso(), finding.id),
         )
         db.conn.commit()
-        db.enqueue_task("validate_llm", {"finding_id": finding.id}, priority=25)
+        db.enqueue_task(
+            "validate_llm",
+            {
+                "finding_id": finding.id,
+                "parent_task_id": getattr(task, "id", None),
+            },
+            priority=25,
+        )
         return {
             "status": "succeeded",
             "verdict": "pending_llm",

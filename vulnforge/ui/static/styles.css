@@ -3261,15 +3261,21 @@ tr.task-row .task-actions-cell .btn {
 }
 .harness-graph {
   position: relative;
-  min-height: 360px;
-  height: min(62vh, 560px);
+  min-height: 420px;
+  height: min(68vh, 640px);
   overflow: hidden;
-  background: #0a080c;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(122, 162, 247, 0.06), transparent 50%),
+    #0a080c;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0;
   touch-action: none;
   user-select: none;
+  cursor: grab;
+}
+.harness-graph.is-panning {
+  cursor: grabbing;
 }
 .harness-graph-toolbar {
   position: absolute;
@@ -3282,10 +3288,17 @@ tr.task-row .task-actions-cell .btn {
   align-items: center;
   justify-content: space-between;
   gap: 0.4rem;
-  padding: 0.35rem 0.5rem;
-  background: linear-gradient(to bottom, rgba(10, 8, 12, 0.95), rgba(10, 8, 12, 0.55));
+  padding: 0.4rem 0.55rem;
+  background: linear-gradient(to bottom, rgba(10, 8, 12, 0.96), rgba(10, 8, 12, 0.5));
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   pointer-events: none;
+}
+.harness-graph-toolbar kbd {
+  font-size: 10px;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.05);
 }
 .harness-graph-toolbar .harness-zoom-btns {
   pointer-events: auto;
@@ -3304,16 +3317,25 @@ tr.task-row .task-actions-cell .btn {
   display: block;
   width: 100%;
   height: 100%;
-  min-height: 360px;
+  min-height: 420px;
+}
+.harness-svg-bg,
+.harness-world-pad {
+  pointer-events: all;
+  cursor: inherit;
 }
 .harness-edge {
   fill: none;
   stroke: var(--muted);
-  stroke-width: 1.5;
-  opacity: 0.75;
+  stroke-width: 1.75;
+  opacity: 0.85;
   pointer-events: none;
 }
+.harness-node {
+  pointer-events: all;
+}
 .harness-node-click { cursor: pointer; }
+.harness-graph.is-panning .harness-node-click { cursor: grabbing; }
 .harness-node-click:hover rect { filter: brightness(1.15); }
 .harness-node-kind {
   font-size: 10px;
@@ -3324,6 +3346,15 @@ tr.task-row .task-actions-cell .btn {
   font-size: 11px;
   fill: var(--text);
   font-family: var(--mono);
+}
+.harness-graph-meta {
+  position: absolute;
+  right: 0.55rem;
+  bottom: 0.4rem;
+  z-index: 2;
+  font-size: 11px;
+  opacity: 0.75;
+  pointer-events: none;
 }
 .harness-runner-row {
   display: flex;

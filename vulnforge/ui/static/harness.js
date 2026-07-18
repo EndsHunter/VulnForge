@@ -1,6 +1,6 @@
 /**
  * Harness mode — live agent graph + Ralph loop profile picker.
- * Graph supports pan (drag) and zoom (wheel / buttons).
+ * Graph: pan (drag empty or background), zoom (wheel / buttons), click node → step I/O.
  */
 (function () {
   const $ = (sel, el = document) => el.querySelector(sel);
@@ -13,14 +13,17 @@
     "default-campaign";
   let typeView = false;
   let activated = false;
+  let shellReady = false;
 
   // Viewport: pan/zoom over graph content coordinates
   let view = { x: 0, y: 0, k: 1 };
   let contentSize = { w: 800, h: 400 };
+  let hasUserView = false; // after pan/zoom, don't auto-fit on refresh
   let dragging = false;
   let dragMoved = false;
   let dragStart = { x: 0, y: 0, vx: 0, vy: 0 };
   let suppressClick = false;
+  let spacePan = false;
 
   function esc(s) {
     return String(s ?? "")
@@ -39,6 +42,14 @@
       return "var(--bad)";
     if (s === "blocked" || s === "cancelled") return "var(--warn)";
     return "var(--border)";
+  }
+
+  function edgeColor(type) {
+    const t = String(type || "");
+    if (t === "finding" || t === "parent") return "var(--info)";
+    if (t === "split" || t === "spawn" || t === "requeue") return "var(--warn)";
+    if (t === "enqueue_hunt" || t === "pipeline") return "var(--muted)";
+    return "var(--muted)";
   }
 
   async function api(path, opts) {
@@ -189,12 +200,12 @@
       if (!cols[c]) cols[c] = [];
       cols[c].push(n);
     });
-    const nodeW = 168;
-    const nodeH = 52;
-    const colW = nodeW + 48;
-    const rowH = nodeH + 20;
-    const padX = 48;
-    const padY = 40;
+    const nodeW = 172;
+    const nodeH = 56;
+    const colW = nodeW + 56;
+    const rowH = nodeH + 24;
+    const padX = 56;
+    const padY = 48;
     const positions = {};
     Object.keys(cols)
       .map(Number)
@@ -220,6 +231,41 @@
     };
   }
 
+  function ensureShell(host) {
+    if (!host) return null;
+    if (shellReady && host.querySelector(".harness-svg")) {
+      return host.querySelector("#harness-world");
+    }
+    host.innerHTML = `
+      <div class="harness-graph-toolbar">
+        <span class="controls-hint">Drag empty space or hold <kbd>Space</kbd> + drag to pan · Scroll to zoom · Click node for step I/O</span>
+        <div class="harness-zoom-btns">
+          <button type="button" class="btn btn-sm" id="harness-zoom-out" title="Zoom out">−</button>
+          <span id="harness-zoom-label" class="harness-zoom-label">100%</span>
+          <button type="button" class="btn btn-sm" id="harness-zoom-in" title="Zoom in">+</button>
+          <button type="button" class="btn btn-sm" id="harness-zoom-fit" title="Fit graph">Fit</button>
+        </div>
+      </div>
+      <svg class="harness-svg" width="100%" height="100%">
+        <defs>
+          <marker id="harness-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L6,3 L0,6 Z" fill="var(--muted)" />
+          </marker>
+          <marker id="harness-arrow-info" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L6,3 L0,6 Z" fill="var(--info)" />
+          </marker>
+        </defs>
+        <rect class="harness-svg-bg" x="0" y="0" width="100%" height="100%" fill="transparent" />
+        <g id="harness-viewport">
+          <g id="harness-world"></g>
+        </g>
+      </svg>
+      <div id="harness-graph-meta" class="harness-graph-meta controls-hint"></div>`;
+    shellReady = true;
+    bindViewport(host);
+    return host.querySelector("#harness-world");
+  }
+
   function applyViewTransform() {
     const g = $("#harness-viewport");
     if (!g) return;
@@ -231,18 +277,19 @@
     if (zlab) zlab.textContent = `${Math.round(view.k * 100)}%`;
   }
 
-  function fitView(host) {
+  function fitView(host, force) {
     if (!host) return;
     const rect = host.getBoundingClientRect();
     const vw = Math.max(200, rect.width - 8);
     const vh = Math.max(160, rect.height - 8);
     const cw = Math.max(1, contentSize.w);
     const ch = Math.max(1, contentSize.h);
-    const k = Math.min(1.2, Math.max(0.25, Math.min(vw / cw, vh / ch) * 0.92));
+    const k = Math.min(1.25, Math.max(0.2, Math.min(vw / cw, vh / ch) * 0.9));
     view.k = k;
     view.x = (vw - cw * k) / 2;
-    view.y = (vh - ch * k) / 2;
+    view.y = (vh - ch * k) / 2 + 12; // leave room for toolbar
     applyViewTransform();
+    if (force) hasUserView = false;
   }
 
   function zoomAt(clientX, clientY, factor, host) {
@@ -250,35 +297,28 @@
     const mx = clientX - rect.left;
     const my = clientY - rect.top;
     const prev = view.k;
-    const next = Math.min(3, Math.max(0.2, prev * factor));
+    const next = Math.min(3, Math.max(0.15, prev * factor));
     if (next === prev) return;
-    // Keep point under cursor stable
     view.x = mx - (mx - view.x) * (next / prev);
     view.y = my - (my - view.y) * (next / prev);
     view.k = next;
+    hasUserView = true;
     applyViewTransform();
   }
 
-  function bindZoomButtons(host) {
-    $("#harness-zoom-in")?.addEventListener("click", () => {
-      const r = host.getBoundingClientRect();
-      zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1.15, host);
-    });
-    $("#harness-zoom-out")?.addEventListener("click", () => {
-      const r = host.getBoundingClientRect();
-      zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1 / 1.15, host);
-    });
-    $("#harness-zoom-fit")?.addEventListener("click", () => fitView(host));
-  }
-
   function bindViewport(host) {
-    if (!host) return;
+    if (!host || host.dataset.panBound === "1") {
+      // Re-bind zoom buttons if shell was recreated without clearing flag
+      if (host && host.dataset.panBound === "1") {
+        wireZoomButtons(host);
+      }
+      return;
+    }
+    host.dataset.panBound = "1";
     host.style.cursor = "grab";
     host.tabIndex = 0;
-    // Zoom controls are recreated each render
-    bindZoomButtons(host);
-    if (host.dataset.panBound === "1") return;
-    host.dataset.panBound = "1";
+
+    wireZoomButtons(host);
 
     host.addEventListener(
       "wheel",
@@ -292,39 +332,101 @@
 
     host.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
-      // Don't pan when starting on toolbar buttons
       if (e.target.closest?.(".harness-graph-toolbar")) return;
+      if (e.target.closest?.(".harness-zoom-btns")) return;
+
+      const onNode = e.target.closest?.(".harness-node-click");
+      // Pan: empty background, or Space+drag, or middle-button-like force on node via Alt
+      const wantPan = !onNode || spacePan || e.altKey;
+      if (!wantPan) {
+        // node click only — no pan start
+        return;
+      }
+
       dragging = true;
       dragMoved = false;
       dragStart = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
-      host.setPointerCapture?.(e.pointerId);
+      try {
+        host.setPointerCapture(e.pointerId);
+      } catch (_) {}
+      host.classList.add("is-panning");
       host.style.cursor = "grabbing";
+      e.preventDefault();
     });
+
     host.addEventListener("pointermove", (e) => {
       if (!dragging) return;
       const dx = e.clientX - dragStart.x;
       const dy = e.clientY - dragStart.y;
-      if (Math.hypot(dx, dy) > 4) dragMoved = true;
+      if (Math.hypot(dx, dy) > 3) dragMoved = true;
       view.x = dragStart.vx + dx;
       view.y = dragStart.vy + dy;
+      hasUserView = true;
       applyViewTransform();
     });
+
     const endDrag = (e) => {
       if (!dragging) return;
       dragging = false;
-      host.style.cursor = "grab";
+      host.classList.remove("is-panning");
+      host.style.cursor = spacePan ? "grab" : "grab";
       if (dragMoved) {
         suppressClick = true;
         setTimeout(() => {
           suppressClick = false;
-        }, 0);
+        }, 50);
       }
       try {
-        host.releasePointerCapture?.(e.pointerId);
+        host.releasePointerCapture(e.pointerId);
       } catch (_) {}
     };
     host.addEventListener("pointerup", endDrag);
     host.addEventListener("pointercancel", endDrag);
+    host.addEventListener("lostpointercapture", endDrag);
+
+    // Space to pan over nodes
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "Space" && !e.repeat && !e.target.matches?.("input,textarea,select")) {
+        spacePan = true;
+        host.style.cursor = "grab";
+      }
+    });
+    window.addEventListener("keyup", (e) => {
+      if (e.code === "Space") {
+        spacePan = false;
+        if (!dragging) host.style.cursor = "grab";
+      }
+    });
+  }
+
+  function wireZoomButtons(host) {
+    const zin = $("#harness-zoom-in");
+    const zout = $("#harness-zoom-out");
+    const zfit = $("#harness-zoom-fit");
+    if (zin && !zin.dataset.bound) {
+      zin.dataset.bound = "1";
+      zin.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const r = host.getBoundingClientRect();
+        zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1.15, host);
+      });
+    }
+    if (zout && !zout.dataset.bound) {
+      zout.dataset.bound = "1";
+      zout.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const r = host.getBoundingClientRect();
+        zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1 / 1.15, host);
+      });
+    }
+    if (zfit && !zfit.dataset.bound) {
+      zfit.dataset.bound = "1";
+      zfit.addEventListener("click", (e) => {
+        e.stopPropagation();
+        hasUserView = false;
+        fitView(host, true);
+      });
+    }
   }
 
   function renderGraph(graph) {
@@ -336,6 +438,8 @@
     const edges = useType ? graph.type_edges || [] : graph.edges || [];
 
     if (!nodes.length) {
+      shellReady = false;
+      host.dataset.panBound = "";
       host.innerHTML =
         '<p class="empty controls-hint">No tasks yet. Init a run and Start Ralph to populate the graph.</p>';
       renderKindSummary(graph);
@@ -359,6 +463,9 @@
     const { positions, nodeW, nodeH, width, height } = layoutNodes(norm);
     contentSize = { w: width, h: height };
 
+    const world = ensureShell(host);
+    if (!world) return;
+
     const edgeSvg = edges
       .map((e) => {
         const a = positions[e.source];
@@ -368,9 +475,14 @@
         const y1 = a.y + (a.h || nodeH) / 2;
         const x2 = b.x;
         const y2 = b.y + (b.h || nodeH) / 2;
-        return `<path d="M${x1},${y1} C${x1 + 36},${y1} ${x2 - 36},${y2} ${x2},${y2}" class="harness-edge" data-type="${esc(
+        const stroke = edgeColor(e.type);
+        const marker =
+          e.type === "finding" || e.type === "parent"
+            ? "url(#harness-arrow-info)"
+            : "url(#harness-arrow)";
+        return `<path d="M${x1},${y1} C${x1 + 40},${y1} ${x2 - 40},${y2} ${x2},${y2}" class="harness-edge" data-type="${esc(
           e.type || ""
-        )}" />`;
+        )}" style="stroke:${stroke}" marker-end="${marker}" />`;
       })
       .join("");
 
@@ -392,42 +504,38 @@
         return `<g class="harness-node${clickable}" data-task-id="${esc(
           n.task_id ?? ""
         )}" transform="translate(${p.x},${p.y})">
-          <title>${esc(n.label || n.id || "")}</title>
+          <title>${esc(n.label || n.id || "")} · ${esc(n.state || "")}</title>
           <rect width="${w}" height="${h}" rx="8" ry="8" fill="var(--panel)" stroke="${fill}" stroke-width="2" />
-          <text x="10" y="16" class="harness-node-kind">${esc(kindLine)}</text>
-          <text x="10" y="34" class="harness-node-label">${lineEls}</text>
+          <circle cx="12" cy="12" r="4" fill="${fill}" />
+          <text x="22" y="16" class="harness-node-kind">${esc(kindLine)}</text>
+          <text x="10" y="36" class="harness-node-label">${lineEls}</text>
         </g>`;
       })
       .join("");
 
-    // Keep panBound flag across re-renders (listeners on host stay attached)
-    const wasBound = host.dataset.panBound === "1";
-    host.innerHTML = `
-      <div class="harness-graph-toolbar">
-        <span class="controls-hint">Scroll = zoom · Drag = pan · Click node = step I/O</span>
-        <div class="harness-zoom-btns">
-          <button type="button" class="btn btn-sm" id="harness-zoom-out" title="Zoom out">−</button>
-          <span id="harness-zoom-label" class="harness-zoom-label">100%</span>
-          <button type="button" class="btn btn-sm" id="harness-zoom-in" title="Zoom in">+</button>
-          <button type="button" class="btn btn-sm" id="harness-zoom-fit" title="Fit graph">Fit</button>
-        </div>
-      </div>
-      <svg class="harness-svg" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
-        <defs>
-          <marker id="harness-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-            <path d="M0,0 L6,3 L0,6 Z" fill="var(--muted)" />
-          </marker>
-        </defs>
-        <g id="harness-viewport">
-          <g class="harness-edges" marker-end="url(#harness-arrow)">${edgeSvg}</g>
-          <g class="harness-nodes">${nodeSvg}</g>
-        </g>
-      </svg>`;
-    if (wasBound) host.dataset.panBound = "1";
-    bindViewport(host);
-    fitView(host);
+    world.innerHTML = `
+      <rect class="harness-world-pad" x="-200" y="-200" width="${
+        width + 400
+      }" height="${height + 400}" fill="transparent" />
+      <g class="harness-edges">${edgeSvg}</g>
+      <g class="harness-nodes">${nodeSvg}</g>`;
 
-    host.querySelectorAll(".harness-node-click").forEach((g) => {
+    const meta = $("#harness-graph-meta");
+    if (meta) {
+      const ec = (graph.edges || []).length;
+      const nc = (graph.nodes || []).length;
+      meta.textContent = useType
+        ? `Type view · ${(graph.type_nodes || []).length} kinds`
+        : `${nc} tasks · ${ec} links`;
+    }
+
+    if (!hasUserView) {
+      fitView(host);
+    } else {
+      applyViewTransform();
+    }
+
+    world.querySelectorAll(".harness-node-click").forEach((g) => {
       g.addEventListener("click", (ev) => {
         if (suppressClick || dragMoved) {
           ev.preventDefault();
@@ -481,10 +589,13 @@
       renderGraph(graph);
     } catch (e) {
       const host = $("#harness-graph");
-      if (host)
+      if (host) {
+        shellReady = false;
+        host.dataset.panBound = "";
         host.innerHTML = `<p class="empty" style="color:var(--bad)">${esc(
           e.message || e
         )}</p>`;
+      }
     }
   }
 
@@ -495,7 +606,10 @@
   function activate() {
     if (!activated) {
       activated = true;
-      $("#harness-refresh")?.addEventListener("click", () => refreshGraph());
+      $("#harness-refresh")?.addEventListener("click", () => {
+        // Manual refresh keeps view unless Fit was last intent
+        refreshGraph();
+      });
       $("#harness-loop-select")?.addEventListener("change", (e) => {
         selectedProfileId = e.target.value;
         try {
@@ -505,6 +619,7 @@
       });
       $("#harness-type-view")?.addEventListener("change", (e) => {
         typeView = !!e.target.checked;
+        hasUserView = false; // re-fit when switching view mode
         if (lastGraph) renderGraph(lastGraph);
       });
     }

@@ -291,7 +291,11 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 fid = db.insert_finding(body, state="candidate", profile=profile)
                 need_validate = True
             if need_validate:
-                db.enqueue_task("validate_mech", {"finding_id": fid}, priority=20)
+                db.enqueue_task(
+                    "validate_mech",
+                    {"finding_id": fid, "parent_task_id": task.id},
+                    priority=20,
+                )
             db.upsert_coverage_fact(area, cls, visit_delta=1, last_depth="candidate")
             out_ok: dict[str, Any] = {
                 "status": "succeeded",
