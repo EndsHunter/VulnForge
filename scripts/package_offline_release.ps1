@@ -172,6 +172,12 @@ if (Test-Path $offlineDoc) {
 } else {
     "See AGENTS.md binary_re section." | Set-Content (Join-Path $stage "OFFLINE_README.md")
 }
+$ghidraDoc = Join-Path $RepoRoot "docs\GHIDRA_SETUP.md"
+if (Test-Path $ghidraDoc) {
+    $docsStage = Join-Path $stage "docs"
+    New-Item -ItemType Directory -Force -Path $docsStage | Out-Null
+    Copy-Item $ghidraDoc (Join-Path $docsStage "GHIDRA_SETUP.md") -Force
+}
 
 $jarName = $null
 $j = Get-ChildItem (Join-Path $stage "ghidra-mcp\build\libs\GhidraMCP*.jar") -ErrorAction SilentlyContinue | Select-Object -First 1

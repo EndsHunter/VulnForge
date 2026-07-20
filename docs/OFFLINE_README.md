@@ -4,6 +4,9 @@ This archive is a self-contained handoff for developers **without** needing to
 clone GitHub or download Ghidra separately (when `ghidra/` and `ghidra-mcp/`
 are included in the zip).
 
+For a **from-scratch online setup** of Ghidra + Ghidra MCP (not this zip), see
+**[GHIDRA_SETUP.md](GHIDRA_SETUP.md)** in the main repo.
+
 ## Layout
 
 | Path | Purpose |

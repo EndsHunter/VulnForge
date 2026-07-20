@@ -163,6 +163,8 @@ Optional: set `run.auto_tool_gaps: true` in config so idle `run-once` writes gap
 
 Audit a **single PE** (`.exe` / `.dll`) via **Ghidra MCP** ([bethington/ghidra-mcp](https://github.com/bethington/ghidra-mcp)) as the sole target of a run.
 
+**Setup (Java, Ghidra, build MCP, smoke-test):** see **[docs/GHIDRA_SETUP.md](docs/GHIDRA_SETUP.md)**.
+
 ```powershell
 # 1) Build/deploy ghidra-mcp against your Ghidra install (config paths only — not vendored).
 # 2) Set binary_re.headless_command in config/default.yaml OR start GhidraMCP on :8089.
