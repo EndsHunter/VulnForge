@@ -187,33 +187,40 @@ python scripts/ralph.py --run-dir runs\<target_id>\run-001 --task-timeout 900 --
 | Fixture | `fixtures/binary_vuln/vuln_copy.exe` — intentional `strcpy` sink for pipeline smoke (rebuild: `scripts/build_binary_vuln_fixture.ps1`) |
 | Live LLM tests | Use local Ornith (e.g. `http://10.0.0.232` + `mlx-community/ornith-1.0-35b`) — not cloud Grok for MCP smoke |
 
-**Portable binary_re layout** (paths relative to the VulnForge project root; no machine absolutes in config):
+**Portable binary_re layout** (paths relative to the VulnForge project root):
 
 ```
 VulnForge/
-  ghidra/                 # Ghidra distribution (gitignored) — ghidraRun.bat, Ghidra/, support/
-  ghidra-mcp/             # bethington/ghidra-mcp clone + build (gitignored)
+  ghidra/                 # Full Ghidra distro (large; usually not in git)
+  ghidra-mcp/             # GhidraMCP source + build/libs/GhidraMCP-*.jar
   scripts/start_ghidra_mcp_headless.ps1
+  scripts/package_offline_release.ps1
   config/default.yaml     # binary_re.ghidra_install_dir: ghidra
 ```
 
-On `vf init --profile binary_re`, VulnForge starts headless MCP itself when `:8089` is down (using `./ghidra` + `ghidra-mcp/build/libs/GhidraMCP*.jar`). Override root with env `VULNFORGE_ROOT` if needed.
+On `vf init --profile binary_re`, VulnForge starts headless MCP when `:8089` is down.
+
+### Offline developer release (zip of everything)
+
+Ship a USB / air-gapped handoff that includes VulnForge **plus** Ghidra **plus** ghidra-mcp:
 
 ```powershell
-# One-time setup for a new machine / recipient
-# 1) Unpack Ghidra into ./ghidra
-# 2) Clone + build MCP against that install:
-cd ghidra-mcp
-$env:TOOLS_SETUP_BACKEND = "gradle"
-$env:GHIDRA_INSTALL_DIR = (Resolve-Path ..\ghidra).Path
-$env:JAVA_HOME = ...   # Java matching Ghidra (12.2_DEV → 25)
-py -3 -m tools.setup ensure-prereqs --ghidra-path $env:GHIDRA_INSTALL_DIR
-py -3 -m tools.setup build
-py -3 -m tools.setup deploy --ghidra-path $env:GHIDRA_INSTALL_DIR
+# From a machine that already has ./ghidra and a built MCP jar:
+powershell -ExecutionPolicy Bypass -File scripts\package_offline_release.ps1
+# Optional: bake pip wheels for fully offline Python install
+powershell -File scripts\package_offline_release.ps1 -IncludeWheelhouse
 
-# Manual headless smoke (optional — vf init also starts it):
-powershell -File scripts\start_ghidra_mcp_headless.ps1
-# curl http://127.0.0.1:8089/check_connection
+# Output: dist/VulnForge-offline-<version>-<date>.zip
+# Recipient: unpack → read OFFLINE_README.md inside the zip
+```
+
+```powershell
+# After unpack on the offline machine:
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+# if wheelhouse present:
+pip install --no-index --find-links=wheelhouse -e ".[dev]"
+vf dashboard
 ```
 
 Honesty unchanged: `needs_human` ≠ exploit proof; never execute the target binary in v1.
