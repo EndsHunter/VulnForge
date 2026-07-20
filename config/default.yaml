@@ -9,7 +9,9 @@ llm:
   # Toolgen (Dev → Generate tool) uses these when present
   temperature_code: 0.15
   toolgen_max_tokens: 8192
-  api_key: "lm-studio"   # LM Studio often ignores this; required by some clients
+  # Optional. Blank, none, or null → no Authorization header. Dummy "lm-studio"
+  # is fine for local OpenAI-compatible servers that require any Bearer string.
+  api_key: "lm-studio"
   # HTTP API surface: chat_completions | responses | messages
   # chat_completions → POST /v1/chat/completions (OpenAI classic; LM Studio default)
   # responses        → POST /v1/responses (OpenAI Responses API)
@@ -38,7 +40,8 @@ run:
   max_tasks: 50
   max_task_attempts: 3       # infra requeues until attempt >= this â†’ deadletter
   max_split_depth: 2         # P1.5 auto-split ladder cap (L0â†’L2)
-  max_wall_hours: 8
+  # Wall clock is only via Ralph --max-wall-seconds or a dev loop profile
+  # (e.g. quick-smoke). Operator Mission Start never sets a wall.
   max_leases_parallel: 1
   lease_ttl_seconds: 1800
   auto_tool_gaps: false       # on idle run-once after render, write tool gap reports
@@ -46,6 +49,9 @@ run:
   max_recon_auto_retries: 2   # child recon generations after recoverable failed_task
   # After recon, merge new map with prior via LLM (mechanical fallback on failure)
   architecture_llm_merge: true
+  # Keep post-agent merge bounded so recon handoff cannot hang on local LLMs
+  architecture_merge_timeout_seconds: 120
+  architecture_merge_max_tokens: 2048
   runs_root: "runs"          # relative to cwd or absolute
   ignore_globs:
     - ".git/**"
@@ -94,3 +100,32 @@ tools:
   max_grep_pattern_len: 200
   grep_timeout_seconds: 8
   max_grep_files: 8000
+
+# Binary reverse-engineering (profile binary_re) — PE only in v1.
+# Requires --i-am-authorized-for-binary-re or i_am_authorized: true.
+# Ghidra MCP: https://github.com/bethington/ghidra-mcp (HTTP on :8089 by default).
+#
+# Portable layout (paths relative to the VulnForge project root / VULNFORGE_ROOT):
+#   ghidra/           Ghidra distribution (ghidraRun.bat, Ghidra/, support/)
+#   ghidra-mcp/       clone + build of bethington/ghidra-mcp
+#   scripts/start_ghidra_mcp_headless.ps1
+# headless_command is auto-built when null — no absolute machine paths needed.
+binary_re:
+  i_am_authorized: false
+  ghidra_install_dir: "ghidra"
+  mcp_base_url: "http://127.0.0.1:8089"
+  headless_command: null
+  headless_script: "scripts/start_ghidra_mcp_headless.ps1"
+  headless_cwd: null
+  ghidra_mcp_repo: "ghidra-mcp"
+  ghidra_mcp_jar: null
+  start_timeout_seconds: 180
+  analyze_timeout_seconds: 600
+  # Per-run Ghidra project dir under the run folder (not the Ghidra install)
+  project_subdir: "ghidra_project"
+  allowed_extensions:
+    - ".exe"
+    - ".dll"
+  max_decompile_chars: 24000
+  max_list_page: 100
+  request_timeout_seconds: 45

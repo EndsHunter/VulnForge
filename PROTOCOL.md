@@ -23,7 +23,8 @@ Single control plane. CLI (`vf`), skill, Ralph, and the dashboard are clients of
 ## CLI surface
 
 ```
-vf init --target PATH [--profile code_static] [--config PATH]
+vf init --target PATH [--profile code_static|binary_re] [--config PATH]
+# binary_re: PATH is a single .exe/.dll; requires --i-am-authorized-for-binary-re
 vf run-once [--run-dir PATH]
 vf status [--run-dir PATH]
 vf project [--run-dir PATH]
@@ -58,7 +59,17 @@ recon without exiting mid-campaign.
 
 ```
 queued → leased → succeeded | failed_task | blocked | deadletter
+queued | leased → paused → queued (resume) | leased (auto when last left)
+queued | paused | leased → cancelled (operator remove / halt)
 ```
+
+**Operator pause / halt (per task, not whole runner):**
+
+| Action | From | Effect |
+|--------|------|--------|
+| **Pause** | `queued` or `leased` | Park as `paused`. If leased, free the lease slot and stop that run-once worker so the next queued task can start. Paused tasks are not leased while any `queued` work remains; when only paused work is left, `lease_next_task` picks them up. |
+| **Resume** | `paused` | Back to `queued` (default priority: run next). |
+| **Halt** | `queued`, `paused`, or `leased` | Terminal `cancelled`. If leased, stop the worker so the next queued can start. |
 
 Thrash / empty / max_tool_rounds → `failed_task` (not infra).
 Transport / model-list under `max_task_attempts` → requeue + exit 20; at cap → `deadletter` + exit 0.
@@ -104,13 +115,49 @@ init → recon → hunt × N → validate_mech → [optional validate_llm]
 
 ## Tools (`code_static`)
 
-`list_dir` | `file_inventory` | `read_file` | `grep` | `write_evidence` | `submit_candidate` | `submit_none` | `note` | `submit_architecture` (recon)
+Schemas live in `vulnforge/packet.py` → `tool_schemas_for` (OpenAI function tools; Dev dashboard **Tools** tab mirrors them).
 
-- **file_inventory** — recursive tree / file list (optional `extension` / `glob`); prefer over many `list_dir` rounds.
-- **grep** — content regex; `extension`/`glob` file-type filter; `files_only` (paths only); `match_path` (filename search); empty pattern + extension lists files of that type.
-- **develop_poc** stage uses read tools + `write_evidence` only (no `submit_*`).
+| Tool | Stages | Role |
+|------|--------|------|
+| `list_dir` | recon, hunt, develop_poc | One directory level (not recursive) |
+| `file_inventory` | recon, hunt, develop_poc | Recursive tree/list; prefer over many `list_dir` |
+| `read_file` | recon, hunt, develop_poc | File or 1-based line range; target is read-only |
+| `grep` | recon, hunt, develop_poc | Content regex; `extension`/`glob`/`files_only`/`match_path` |
+| `note` | recon, hunt, develop_poc | wishlist / sibling_seed / codemap (does not finish task) |
+| `submit_architecture` | recon only | Finish recon map (not findings) |
+| `submit_candidate` / `submit_none` | hunt only | Finish hunt (candidate is not confirmed) |
+| `write_evidence` | hunt, develop_poc | Write under `evidence/` only |
+| `list_hunt_profiles` / `request_hunt` | hunt | Spawn another profile hunt (does not finish this task) |
 
-No unrestricted shell on the default profile.
+- **Paths** are always relative to the audit target root (or evidence pack for `write_evidence`). No shell, no target writes on `code_static`.
+- **grep** — empty pattern + `extension`/`glob` lists files by path; prefer `file_inventory` for trees. On 0 hits, follow the response hint — do not repeat the same empty query.
+- **develop_poc** — read tools + `write_evidence` only (no `submit_*`).
+
+## Tools (`binary_re`)
+
+Single PE target via Ghidra MCP HTTP (read-only analysis). Schemas: `tool_schemas_for("binary_re", stage)`.
+
+| Tool | Role |
+|------|------|
+| `ghidra_status` / `ghidra_metadata` | Connection + program info |
+| `ghidra_list_functions` / `ghidra_function_at` | Function inventory / resolve address |
+| `ghidra_decompile` / `ghidra_disassemble` | Primary evidence sources (decompile **callers**, not IAT stubs) |
+| `ghidra_xrefs` / `ghidra_call_graph` | Callers/callees and cross-refs |
+| `ghidra_imports` | Imported APIs (optional `filter` / `name_filter` substring) |
+| `ghidra_import_callers` | One-hop import symbol/address → calling functions |
+| `ghidra_exports` / `ghidra_strings` | Exports and strings |
+| `ghidra_search_bytes` | Optional pattern search |
+| `write_evidence` / `note` | Evidence packs only (not the PE) |
+| `submit_architecture` | recon finish |
+| `submit_candidate` / `submit_none` / `list_hunt_profiles` / `request_hunt` | hunt finish + multi-layer spawn |
+
+- **No** Ghidra rename/type/script endpoints. **No** execution of the target binary.
+- For dangerous APIs: `ghidra_imports` (filter) → `ghidra_import_callers` → decompile **callers**.
+- **Depth:** binary hunts count as deep when tools include decompile / xrefs / call_graph / function_at / import_callers (not source `read_file`/`grep`).
+- Hunt and recon both call `ensure_ghidra_for_run` so a dead MCP can be restarted mid-campaign.
+- Research fixture: `fixtures/binary_vuln/vuln_copy.exe` (intentional strcpy sink).
+- Citations may use `path` (binary name) + `address` / `symbol` instead of source line ranges.
+- Auth: `binary_re.i_am_authorized` or CLI `--i-am-authorized-for-binary-re`.
 
 ## Operator guidance
 

@@ -36,6 +36,34 @@ def test_init_missing_target(tmp_path: Path):
     assert code == 30
 
 
+def test_init_single_source_file(tmp_path: Path):
+    src = tmp_path / "one.py"
+    src.write_text("x = 1\n", encoding="utf-8")
+    runs = tmp_path / "runs"
+    code = main(
+        [
+            "init",
+            "--target",
+            str(src),
+            "--runs-root",
+            str(runs),
+            "--no-enqueue-hunts",
+        ]
+    )
+    assert code == EXIT_PROGRESS
+    run_dir = next(next(runs.iterdir()).iterdir())
+    man = (run_dir / "target_manifest.json").read_text(encoding="utf-8")
+    assert "single_file" in man
+    db = Database.open(run_dir / "harness.db")
+    try:
+        row = db.get_run()
+        assert row is not None
+        assert row["profile"] == "code_static"
+        assert Path(row["target_path"]).resolve() == src.resolve()
+    finally:
+        db.close()
+
+
 def test_init_no_enqueue_hunts_stores_flag(toy_sqli: Path, tmp_path: Path):
     """Architecture-only / manual: recon queued, enqueue_hunts=false on payload + config."""
     runs = tmp_path / "runs"

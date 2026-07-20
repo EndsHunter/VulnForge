@@ -25,6 +25,51 @@ SCHEMA_VERSION = 1
 # Cap architecture revision history to avoid harness.db bloat.
 ARCHITECTURE_REVISION_CAP = 50
 
+# Lease owner format from run-once: ``vf-{pid}-{hex8}``
+_LEASE_OWNER_PREFIX = "vf-"
+
+
+def pid_from_lease_owner(owner: str | None) -> int | None:
+    """Parse worker id ``vf-{pid}-{hex}`` → pid, or None if not parseable."""
+    if not owner or not isinstance(owner, str):
+        return None
+    s = owner.strip()
+    if not s.startswith(_LEASE_OWNER_PREFIX):
+        return None
+    rest = s[len(_LEASE_OWNER_PREFIX) :]
+    # pid is the first segment before the next hyphen
+    head = rest.split("-", 1)[0]
+    try:
+        pid = int(head)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def process_pid_alive(pid: int) -> bool:
+    """Best-effort: True if *pid* appears to be a live process."""
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+            )
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            return False
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+    except Exception:
+        return False
+
 
 def _sort_coverage_classes(classes: set[str] | Iterable[str]) -> list[str]:
     """Stable column order: active first, then rest of registry, then unknowns."""
@@ -508,7 +553,11 @@ class Database:
         *,
         max_parallel: int = 1,
     ) -> Optional[Task]:
-        """Atomically lease one queued task, respecting concurrent lease cap.
+        """Atomically lease one task, respecting concurrent lease cap.
+
+        Prefers ``queued`` (priority ASC, id ASC). When the queue is empty,
+        leases the next ``paused`` task so operator-paused work runs once it is
+        the last remaining work (or among only paused leftovers).
 
         ``max_parallel`` limits how many tasks may be in ``leased`` at once
         (across all workers). Uses BEGIN IMMEDIATE so multi-process agents
@@ -525,6 +574,7 @@ class Database:
             if int(leased_n) >= cap:
                 self.conn.execute("COMMIT")
                 return None
+            # Prefer active queue; fall back to paused (last remaining).
             row = self.conn.execute(
                 """
                 SELECT * FROM tasks
@@ -533,6 +583,15 @@ class Database:
                 LIMIT 1
                 """
             ).fetchone()
+            if not row:
+                row = self.conn.execute(
+                    """
+                    SELECT * FROM tasks
+                    WHERE state='paused'
+                    ORDER BY priority ASC, id ASC
+                    LIMIT 1
+                    """
+                ).fetchone()
             if not row:
                 self.conn.execute("COMMIT")
                 return None
@@ -563,6 +622,95 @@ class Database:
             WHERE state='leased' AND lease_until IS NOT NULL AND lease_until < ?
             """,
             (now, now),
+        )
+        self.conn.commit()
+        return int(cur.rowcount or 0)
+
+    def reclaim_dead_owner_leases(self) -> int:
+        """Requeue leased tasks whose worker PID is no longer alive.
+
+        Hard pause / kill can leave ``state=leased`` with a live lease_until for
+        up to ``lease_ttl_seconds`` (default 30m). Without this, the next Ralph
+        worker only sees EXIT_BUSY (lease cap) and spins until TTL expires.
+
+        Worker ids are ``vf-{pid}-{hex}`` (see ``cmd_run_once``).
+        """
+        rows = self.conn.execute(
+            "SELECT id, lease_owner FROM tasks WHERE state='leased'"
+        ).fetchall()
+        dead_ids: list[int] = []
+        for row in rows:
+            owner = row["lease_owner"]
+            pid = pid_from_lease_owner(owner)
+            # Only reclaim when owner is the standard vf-{pid}-* form and that
+            # PID is gone. Unparseable owners (tests, older workers) keep the
+            # lease until TTL so we do not false-reclaim live holders.
+            if pid is not None and not process_pid_alive(pid):
+                dead_ids.append(int(row["id"]))
+        if not dead_ids:
+            return 0
+        now = utc_now_iso()
+        body = json.dumps(
+            {
+                "status": "requeued",
+                "error": "dead_lease_owner",
+                "orphaned_lease_reclaim": True,
+            }
+        )
+        n = 0
+        for tid in dead_ids:
+            cur = self.conn.execute(
+                """
+                UPDATE tasks
+                SET state='queued',
+                    result_json=CASE
+                        WHEN result_json IS NULL OR result_json = '' THEN ?
+                        ELSE result_json
+                    END,
+                    lease_owner=NULL,
+                    lease_until=NULL,
+                    updated_at=?
+                WHERE id=? AND state='leased'
+                """,
+                (body, now, tid),
+            )
+            n += int(cur.rowcount or 0)
+        self.conn.commit()
+        return n
+
+    def reclaim_stale_leases(self) -> int:
+        """Expired TTL + dead worker owners. Safe to call at the start of every run-once."""
+        return self.reclaim_expired_leases() + self.reclaim_dead_owner_leases()
+
+    def reclaim_all_leased_tasks(self, *, reason: str = "orphaned_lease") -> int:
+        """Force every leased task back to queued (e.g. hard pause killed the worker).
+
+        Clears lease_owner / lease_until. Does not touch succeeded/failed tasks.
+        Stamps a lightweight result_json note only when the task had no result yet.
+        """
+        now = utc_now_iso()
+        body = json.dumps(
+            {
+                "status": "requeued",
+                "error": reason,
+                "orphaned_lease_reclaim": True,
+            }
+        )
+        # Preserve existing result_json when present; only stamp note when null.
+        cur = self.conn.execute(
+            """
+            UPDATE tasks
+            SET state='queued',
+                result_json=CASE
+                    WHEN result_json IS NULL OR result_json = '' THEN ?
+                    ELSE result_json
+                END,
+                lease_owner=NULL,
+                lease_until=NULL,
+                updated_at=?
+            WHERE state='leased'
+            """,
+            (body, now),
         )
         self.conn.commit()
         return int(cur.rowcount or 0)
@@ -661,6 +809,144 @@ class Database:
         )
         self.conn.commit()
         return int(cur.rowcount or 0) > 0
+
+    def pause_task(
+        self,
+        task_id: int,
+        *,
+        reason: str = "operator_pause",
+    ) -> Optional[dict[str, Any]]:
+        """Park a queued or leased task so the next queued can run.
+
+        Returns ``{prev_state, lease_owner, priority, kind}`` on success, else None.
+        Paused tasks are not leased while any ``queued`` work remains; when only
+        paused (or no higher-priority queue) remains, ``lease_next_task`` picks them up.
+        """
+        task = self.get_task(int(task_id))
+        if not task or task.state not in ("queued", "leased"):
+            return None
+        now = utc_now_iso()
+        prev_state = task.state
+        prev_owner = task.lease_owner
+        body = {
+            "status": "paused",
+            "error": str(reason or "operator_pause"),
+            "operator_paused": True,
+            "prev_state": prev_state,
+        }
+        # Preserve useful prior result fields when re-pausing after partial work.
+        if isinstance(task.result, dict):
+            for k, v in task.result.items():
+                if k not in body:
+                    body[k] = v
+            body["status"] = "paused"
+            body["error"] = str(reason or "operator_pause")
+            body["operator_paused"] = True
+            body["prev_state"] = prev_state
+        cur = self.conn.execute(
+            """
+            UPDATE tasks
+            SET state='paused', result_json=?, lease_owner=NULL, lease_until=NULL, updated_at=?
+            WHERE id=? AND state IN ('queued', 'leased')
+            """,
+            (json.dumps(body), now, int(task_id)),
+        )
+        self.conn.commit()
+        if int(cur.rowcount or 0) <= 0:
+            return None
+        return {
+            "prev_state": prev_state,
+            "lease_owner": prev_owner,
+            "priority": task.priority,
+            "kind": task.kind,
+            "attempt": task.attempt,
+            "payload": task.payload,
+        }
+
+    def resume_paused_task(
+        self,
+        task_id: int,
+        *,
+        priority: Optional[int] = None,
+        reason: str = "operator_resume",
+    ) -> Optional[dict[str, Any]]:
+        """Return a paused task to ``queued`` (optionally with a new priority).
+
+        Returns ``{priority, kind, prev_priority}`` on success, else None.
+        """
+        task = self.get_task(int(task_id))
+        if not task or task.state != "paused":
+            return None
+        now = utc_now_iso()
+        new_p = int(priority) if priority is not None else int(task.priority)
+        body = {
+            "status": "requeued",
+            "error": str(reason or "operator_resume"),
+            "operator_resumed": True,
+            "prev_state": "paused",
+        }
+        cur = self.conn.execute(
+            """
+            UPDATE tasks
+            SET state='queued', priority=?, result_json=?, lease_owner=NULL, lease_until=NULL, updated_at=?
+            WHERE id=? AND state='paused'
+            """,
+            (new_p, json.dumps(body), now, int(task_id)),
+        )
+        self.conn.commit()
+        if int(cur.rowcount or 0) <= 0:
+            return None
+        return {
+            "priority": new_p,
+            "prev_priority": task.priority,
+            "kind": task.kind,
+            "payload": task.payload,
+            "attempt": task.attempt,
+        }
+
+    def halt_task(
+        self,
+        task_id: int,
+        *,
+        reason: str = "operator_halt",
+    ) -> Optional[dict[str, Any]]:
+        """Terminal-cancel a queued, paused, or leased task.
+
+        Returns ``{prev_state, lease_owner, kind, priority}`` on success, else None.
+        Caller should kill the lease-owner PID when ``prev_state == 'leased'``.
+        """
+        task = self.get_task(int(task_id))
+        if not task or task.state not in ("queued", "paused", "leased"):
+            return None
+        now = utc_now_iso()
+        prev_state = task.state
+        prev_owner = task.lease_owner
+        body = {
+            "status": "cancelled",
+            "error": str(reason or "operator_halt"),
+            "operator_halted": True,
+            "operator_cancelled": True,
+            "prev_state": prev_state,
+        }
+        cur = self.conn.execute(
+            """
+            UPDATE tasks
+            SET state='cancelled', result_json=?, lease_owner=NULL, lease_until=NULL, updated_at=?
+            WHERE id=? AND state IN ('queued', 'paused', 'leased')
+            """,
+            (json.dumps(body), now, int(task_id)),
+        )
+        self.conn.commit()
+        if int(cur.rowcount or 0) <= 0:
+            return None
+        return {
+            "prev_state": prev_state,
+            "lease_owner": prev_owner,
+            "kind": task.kind,
+            "priority": task.priority,
+            "payload": task.payload,
+            "attempt": task.attempt,
+        }
 
     def min_queued_priority(self) -> Optional[int]:
         """Lowest priority among queued tasks (sooner), or None if queue empty."""
@@ -883,8 +1169,9 @@ class Database:
         return {r["state"]: r["n"] for r in rows}
 
     def has_queued_or_leased(self) -> bool:
+        """True when campaign work remains (queued, leased, or operator-paused)."""
         row = self.conn.execute(
-            "SELECT 1 FROM tasks WHERE state IN ('queued','leased') LIMIT 1"
+            "SELECT 1 FROM tasks WHERE state IN ('queued','leased','paused') LIMIT 1"
         ).fetchone()
         return row is not None
 

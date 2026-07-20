@@ -1,12 +1,15 @@
 schema: harness.loop/v1
 id: default-campaign
-title: Default Ralph campaign
+title: Default Ralph campaign (no wall limit)
 tags:
   - default
 loop:
-  max_iterations: 200
-  max_tasks: 50
+  # Safety rail only — not a campaign budget.
+  max_iterations: 10000
+  # null = no Ralph --max-tasks (run until idle / Pause / STOP).
+  max_tasks: null
   task_timeout_s: 900
+  # No wall-clock budget — Ralph runs until idle, max_tasks (if set), or Pause.
   max_wall_seconds: null
   sleep_seconds: 2.0
   max_infra_retries: 5

@@ -37,8 +37,17 @@ The dashboard is the main operator surface:
 | **Report** | Structured findings table + exports; detail links to Evidence |
 | **Evidence** | On-disk evidence packs (browse / open from Report) |
 | **Tasks** | Task queue / transcripts, event timeline (mode id `audit`) |
+| **AI** | Campaign co-pilot: start/query hunts, status, findings, runner control (confirm mutators) |
+| **Harness** | Live agent graph (loop profiles are dev/API only — not operator UI) |
 
-**Home** (`/`): all runs + **Tool gaps** (`/tool-gaps`) + **Dev dashboard** (`/dev`, hunt skills).
+**Home** (`/`): all runs + **AI Chat** (`/chat`, fleet co-pilot) + **Tool gaps** (`/tool-gaps`) + **Dev dashboard** (`/dev`, hunt skills).
+
+### Operator AI chat
+
+- **Home** (`/chat`): query results across all runs, list/start/query hunts on a named run, init audits, start/pause Ralph. Mutating tools need UI **Confirm**.
+- **Run tab AI**: bound to the current run (enqueue/requeue hunts, inspect tasks, coverage, findings).
+- Implementation: `vulnforge/operator_chat/` (control-plane tools only — not the code_static hunt agent loop). Sessions: `config/operator_chat/home/` or `{run_dir}/operator_chat/`.
+- Chat **enqueues** work; Ralph **executes** hunts.
 
 ### Steer a live campaign
 
@@ -53,6 +62,7 @@ Keyboard: `e` focuses Explorer.
 
 ```
 vulnforge/
+  operator_chat/ # Home + run AI co-pilot (tools, confirm, sessions)
   control/       # exit codes, ops (coverage/selection hunt)
   findings/      # stable_key + near-dup merge (not a stage)
   hunt_profiles/ # operator hunt skills collection (seed + CRUD + import/export)
@@ -148,6 +158,67 @@ Ralph can pick up a no-LLM task if enqueued:
 ```
 
 Optional: set `run.auto_tool_gaps: true` in config so idle `run-once` writes gaps after render (default false).
+
+## Binary reverse-engineering (`binary_re`)
+
+Audit a **single PE** (`.exe` / `.dll`) via **Ghidra MCP** ([bethington/ghidra-mcp](https://github.com/bethington/ghidra-mcp)) as the sole target of a run.
+
+```powershell
+# 1) Build/deploy ghidra-mcp against your Ghidra install (config paths only — not vendored).
+# 2) Set binary_re.headless_command in config/default.yaml OR start GhidraMCP on :8089.
+# 3) Init with authorization flag:
+
+vf init --target C:\path\to\app.exe --profile binary_re --i-am-authorized-for-binary-re
+# optional: --skip-ghidra-init  (lazy import on first recon)
+
+python scripts/ralph.py --run-dir runs\<target_id>\run-001 --task-timeout 900 --max-tasks 50
+```
+
+| Piece | Notes |
+|-------|--------|
+| Profile | `binary_re` — curated `ghidra_*` tools only (read-only Ghidra; no rename/script) |
+| Auth | Hard gate: `binary_re.i_am_authorized` or `--i-am-authorized-for-binary-re` |
+| Recon | Agents `binary-surface`, `binary-sink-map` (seeded; selected on binary_re init) |
+| Hunts | `bin-memory-safety`, `bin-dangerous-apis`, `bin-follow-xref` (multi-layer via `request_hunt`) |
+| Key tools | `ghidra_imports` (`filter`), **`ghidra_import_callers`** (import→callers), decompile **callers** not IAT stubs |
+| Depth | Hunt is **not** shallow when agent used decompile/xrefs/call_graph/function_at/import_callers (not `read_file`/`grep`) |
+| Lifecycle | Hunt **and** recon call `ensure_ghidra_for_run` so MCP can restart mid-campaign |
+| Config | `binary_re.*` in `config/default.yaml` — `ghidra_install_dir`, `mcp_base_url`, `headless_command` |
+| Fixture | `fixtures/binary_vuln/vuln_copy.exe` — intentional `strcpy` sink for pipeline smoke (rebuild: `scripts/build_binary_vuln_fixture.ps1`) |
+| Live LLM tests | Use local Ornith (e.g. `http://10.0.0.232` + `mlx-community/ornith-1.0-35b`) — not cloud Grok for MCP smoke |
+
+**Portable binary_re layout** (paths relative to the VulnForge project root; no machine absolutes in config):
+
+```
+VulnForge/
+  ghidra/                 # Ghidra distribution (gitignored) — ghidraRun.bat, Ghidra/, support/
+  ghidra-mcp/             # bethington/ghidra-mcp clone + build (gitignored)
+  scripts/start_ghidra_mcp_headless.ps1
+  config/default.yaml     # binary_re.ghidra_install_dir: ghidra
+```
+
+On `vf init --profile binary_re`, VulnForge starts headless MCP itself when `:8089` is down (using `./ghidra` + `ghidra-mcp/build/libs/GhidraMCP*.jar`). Override root with env `VULNFORGE_ROOT` if needed.
+
+```powershell
+# One-time setup for a new machine / recipient
+# 1) Unpack Ghidra into ./ghidra
+# 2) Clone + build MCP against that install:
+cd ghidra-mcp
+$env:TOOLS_SETUP_BACKEND = "gradle"
+$env:GHIDRA_INSTALL_DIR = (Resolve-Path ..\ghidra).Path
+$env:JAVA_HOME = ...   # Java matching Ghidra (12.2_DEV → 25)
+py -3 -m tools.setup ensure-prereqs --ghidra-path $env:GHIDRA_INSTALL_DIR
+py -3 -m tools.setup build
+py -3 -m tools.setup deploy --ghidra-path $env:GHIDRA_INSTALL_DIR
+
+# Manual headless smoke (optional — vf init also starts it):
+powershell -File scripts\start_ghidra_mcp_headless.ps1
+# curl http://127.0.0.1:8089/check_connection
+```
+
+Honesty unchanged: `needs_human` ≠ exploit proof; never execute the target binary in v1.
+
+**Limits (v1):** PE only; static RE only (no debugger/exec). Prefer symbol/caller path_hints over raw IAT VAs. Campaigns still need a capable LLM + stable Ghidra; offline tests use FakeLLM + fake Ghidra client.
 
 ## Honesty rules
 

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vulnforge.settings import apply_ui_settings_to_cfg, save_ui_settings, load_ui_settings
+from vulnforge.settings import (
+    apply_ui_settings_to_cfg,
+    build_llm_base_url,
+    load_ui_settings,
+    normalize_api_key,
+    save_ui_settings,
+)
 from vulnforge.transcript import save_transcript, load_transcript, list_transcript_ids
 
 
@@ -16,6 +22,7 @@ def test_ui_settings_merge(tmp_path: Path, monkeypatch):
             "port": 9999,
             "model": "test-model",
             "api_mode": "responses",
+            "api_key": "sk-test",
             "max_concurrent_agents": 2,
             "context_tokens": 16384,
             "max_context_fraction": 0.2,
@@ -25,12 +32,109 @@ def test_ui_settings_merge(tmp_path: Path, monkeypatch):
     assert ui["host"] == "192.168.1.5"
     assert ui["port"] == 9999
     assert ui["api_mode"] == "responses"
+    assert ui["api_key"] == "sk-test"
     cfg = apply_ui_settings_to_cfg({"llm": {}, "run": {}}, ui)
     assert cfg["llm"]["base_url"] == "http://192.168.1.5:9999/v1"
     assert cfg["llm"]["model"] == "test-model"
     assert cfg["llm"]["api_mode"] == "responses"
+    assert cfg["llm"]["api_key"] == "sk-test"
     assert cfg["run"]["max_leases_parallel"] == 2
     assert cfg["llm"]["context_tokens"] == 16384
+
+
+def test_build_llm_base_url_https_and_local():
+    assert build_llm_base_url("10.0.0.232", 1234) == "http://10.0.0.232:1234/v1"
+    assert build_llm_base_url("192.168.1.5", 9999) == "http://192.168.1.5:9999/v1"
+    # Full HTTPS hostname — port field ignored; empty path → /v1
+    assert build_llm_base_url("https://random.something", 1234) == "https://random.something/v1"
+    assert build_llm_base_url("https://random.something/", 9999) == "https://random.something/v1"
+    assert build_llm_base_url("https://random.something/v1", 1) == "https://random.something/v1"
+    assert (
+        build_llm_base_url("https://api.example.com/openai/v1", 443)
+        == "https://api.example.com/openai/v1"
+    )
+    assert build_llm_base_url("http://10.0.0.5:8080", 1) == "http://10.0.0.5:8080/v1"
+    assert build_llm_base_url("https://gw.example.com:8443", 1234) == "https://gw.example.com:8443/v1"
+    # host:port in host field without scheme
+    assert build_llm_base_url("10.0.0.5:8080", 1234) == "http://10.0.0.5:8080/v1"
+
+
+def test_ui_settings_https_host(tmp_path: Path, monkeypatch):
+    p = tmp_path / "ui_settings.json"
+    monkeypatch.setattr("vulnforge.settings.UI_SETTINGS_PATH", p)
+    save_ui_settings(
+        {
+            "host": "https://random.something",
+            "port": 1234,
+            "model": "my-model",
+        }
+    )
+    ui = load_ui_settings()
+    assert ui["host"] == "https://random.something"
+    cfg = apply_ui_settings_to_cfg({"llm": {}, "run": {}}, ui)
+    assert cfg["llm"]["base_url"] == "https://random.something/v1"
+
+
+def test_api_key_blank_and_none_accepted(tmp_path: Path, monkeypatch):
+    assert normalize_api_key(None) == ""
+    assert normalize_api_key("") == ""
+    assert normalize_api_key("  ") == ""
+    assert normalize_api_key("none") == ""
+    assert normalize_api_key("None") == ""
+    assert normalize_api_key("null") == ""
+    assert normalize_api_key("n/a") == ""
+    assert normalize_api_key("blank") == ""
+    assert normalize_api_key("sk-live") == "sk-live"
+    assert normalize_api_key("  sk-live  ") == "sk-live"
+
+    p = tmp_path / "ui_settings.json"
+    monkeypatch.setattr("vulnforge.settings.UI_SETTINGS_PATH", p)
+    save_ui_settings({"api_key": "sk-keep"})
+    assert load_ui_settings()["api_key"] == "sk-keep"
+    # clear with explicit blank
+    save_ui_settings({"api_key": ""})
+    assert load_ui_settings()["api_key"] == ""
+    # clear with placeholder
+    save_ui_settings({"api_key": "sk-again"})
+    save_ui_settings({"api_key": "none"})
+    assert load_ui_settings()["api_key"] == ""
+
+    ui = load_ui_settings()
+    cfg = apply_ui_settings_to_cfg({"llm": {"api_key": "from-yaml"}, "run": {}}, ui)
+    assert cfg["llm"]["api_key"] == ""
+
+
+def test_llm_client_optional_api_key_headers():
+    from vulnforge.llm import LLMClient
+
+    c = LLMClient({"llm": {"base_url": "http://127.0.0.1:9/v1", "api_key": ""}})
+    try:
+        assert c.api_key == ""
+        assert "Authorization" not in c._client.headers
+    finally:
+        c.close()
+
+    c2 = LLMClient({"llm": {"base_url": "http://127.0.0.1:9/v1", "api_key": "none"}})
+    try:
+        assert c2.api_key == ""
+        assert "Authorization" not in c2._client.headers
+    finally:
+        c2.close()
+
+    c3 = LLMClient({"llm": {"base_url": "http://127.0.0.1:9/v1", "api_key": "secret"}})
+    try:
+        assert c3.api_key == "secret"
+        assert c3._client.headers.get("Authorization") == "Bearer secret"
+    finally:
+        c3.close()
+
+    # Omitted key keeps local OpenAI-compatible dummy
+    c4 = LLMClient({"llm": {"base_url": "http://127.0.0.1:9/v1"}})
+    try:
+        assert c4.api_key == "lm-studio"
+        assert c4._client.headers.get("Authorization") == "Bearer lm-studio"
+    finally:
+        c4.close()
 
 
 def test_api_mode_aliases_and_default(tmp_path: Path, monkeypatch):
@@ -76,6 +180,7 @@ def test_optimize_unreachable_endpoint(tmp_path: Path, monkeypatch):
             "port": 1,
             "model": "nope",
             "api_mode": "chat_completions",
+            "api_key": "",
             "max_concurrent_agents": 1,
             "context_tokens": 8192,
             "max_context_fraction": 0.25,
@@ -127,6 +232,6 @@ def test_loop_profile_default(tmp_path: Path, monkeypatch):
     listed = loop_profiles.list_profiles()
     assert any(x["id"] == "default-campaign" for x in listed)
     kw = loop_profiles.profile_to_start_kwargs(p)
-    assert kw["max_iterations"] == 200
+    assert kw["max_iterations"] == 10000
     assert kw["task_timeout"] == 900
     assert kw["loop_profile_id"] == "default-campaign"

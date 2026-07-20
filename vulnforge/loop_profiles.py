@@ -25,8 +25,9 @@ DEFAULT_PROFILE: dict[str, Any] = {
     "title": "Default Ralph campaign",
     "tags": ["default"],
     "loop": {
-        "max_iterations": 200,
-        "max_tasks": 50,
+        # Safety rail only — not a campaign budget. null max_tasks = run until idle.
+        "max_iterations": 10000,
+        "max_tasks": None,
         "task_timeout_s": 900,
         "max_wall_seconds": None,
         "sleep_seconds": 2.0,
@@ -172,12 +173,12 @@ def profile_to_start_kwargs(profile: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         task_timeout = 900.0
     try:
-        max_iterations = int(loop.get("max_iterations") or 200)
+        max_iterations = int(loop.get("max_iterations") or 10_000)
     except (TypeError, ValueError):
-        max_iterations = 200
+        max_iterations = 10_000
     return {
         "task_timeout": task_timeout,
-        "max_tasks": max_tasks,
+        "max_tasks": max_tasks,  # None = unlimited Ralph progress budget
         "max_iterations": max_iterations,
         "max_wall_seconds": max_wall,
         "workers": workers,

@@ -12,9 +12,14 @@ def compute_stable_key(profile: str, body: dict) -> str:
 
     P2.4: prefer explicit sink_path/sink_symbol; normalize path; do not rely
     solely on first citation when a primary sink is declared.
+
+    binary_re: include sink_address / binary sha when present so function-level
+    PE findings do not collide across addresses.
     """
     path = normalize_relpath(str(body.get("sink_path") or ""))
     symbol = str(body.get("sink_symbol") or "")
+    address = str(body.get("sink_address") or "").strip().lower()
+    binary_id = str(body.get("binary_sha256") or body.get("binary_id") or "").strip()
     citations = body.get("citations") or []
     if isinstance(citations, list):
         chosen = None
@@ -27,7 +32,7 @@ def compute_stable_key(profile: str, body: dict) -> str:
                     break
         if chosen is None:
             for c in citations:
-                if isinstance(c, dict) and c.get("path"):
+                if isinstance(c, dict) and (c.get("path") or c.get("address")):
                     chosen = c
                     break
         if chosen is not None:
@@ -35,11 +40,13 @@ def compute_stable_key(profile: str, body: dict) -> str:
                 path = normalize_relpath(str(chosen.get("path") or ""))
             if not symbol:
                 symbol = str(chosen.get("symbol") or "")
+            if not address:
+                address = str(chosen.get("address") or "").strip().lower()
     path = normalize_relpath(path)
     tm = body.get("threat_model") or {}
     attacker = str(tm.get("attacker") or body.get("attacker_capability") or "")
     weakness = str(body.get("weakness_class") or "")
     sink = str(body.get("sink_symbol") or symbol)
-    parts = [profile, path, symbol, weakness, attacker, sink]
+    parts = [profile, path, symbol, weakness, attacker, sink, address, binary_id]
     blob = "|".join(parts).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()[:32]

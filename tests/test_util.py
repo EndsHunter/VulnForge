@@ -6,6 +6,8 @@ from vulnforge.util import (
     build_target_manifest,
     hash_file,
     hash_prompt_bundle,
+    match_manifest_fingerprint,
+    meta_fingerprint,
     normalize_relpath,
     next_run_id,
     target_id_from_path,
@@ -44,6 +46,17 @@ def test_manifest_and_hash(toy_sqli: Path, tmp_path: Path):
     # hash_file works
     app = toy_sqli / "app.py"
     assert len(hash_file(app)) == 64
+
+
+def test_match_manifest_fingerprint_sha_and_meta(tmp_path: Path):
+    f = tmp_path / "x.txt"
+    f.write_text("hello", encoding="utf-8")
+    sha = hash_file(f)
+    meta = meta_fingerprint(f)
+    assert match_manifest_fingerprint(f, sha)
+    assert match_manifest_fingerprint(f, meta)
+    assert not match_manifest_fingerprint(f, "meta:0:0")
+    assert not match_manifest_fingerprint(f, "0" * 64)
 
 
 def test_hash_prompt_bundle(prompts_v1: Path):

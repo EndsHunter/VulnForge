@@ -1,6 +1,6 @@
 {
   "format": "vulnforge.recon_collection/v1",
-  "updated_at": "2026-07-14T12:00:00Z",
+  "updated_at": "2026-07-20T00:19:22Z",
   "seeded_from": "prompts/v1/recon_agents",
   "agents": [
     {
@@ -34,7 +34,7 @@
     {
       "id": "dependency-risk",
       "title": "Dependency risk",
-      "description": "Map third-party deps, supply-chain trust, install/update and secrets/config surfaces — not a CVE dump.",
+      "description": "Map third-party deps, supply-chain trust, install/update and secrets/config surfaces \u2014 not a CVE dump.",
       "active": false,
       "order": 30,
       "mode": "sequential",
@@ -57,6 +57,34 @@
       "max_tool_rounds": null,
       "output": "architecture",
       "body_file": "bodies/auth-model.md",
+      "source": "seed"
+    },
+    {
+      "id": "binary-surface",
+      "title": "Binary surface",
+      "description": "PE surface map via Ghidra metadata/imports/exports",
+      "active": false,
+      "order": 50,
+      "mode": "sequential",
+      "tools": null,
+      "temperature": null,
+      "max_tool_rounds": null,
+      "output": "architecture",
+      "body_file": "bodies/binary-surface.md",
+      "source": "seed"
+    },
+    {
+      "id": "binary-sink-map",
+      "title": "Binary sink map",
+      "description": "Dangerous API sinks and xrefs for PE binaries",
+      "active": false,
+      "order": 60,
+      "mode": "sequential",
+      "tools": null,
+      "temperature": null,
+      "max_tool_rounds": null,
+      "output": "architecture",
+      "body_file": "bodies/binary-sink-map.md",
       "source": "seed"
     }
   ]

@@ -79,6 +79,40 @@ def evidence_dir(ctx: dict, evidence_id: str | None = None) -> Path:
     return d
 
 
+def assert_evidence_disjoint_from_target(ctx: dict) -> None:
+    """Raise ValueError if evidence_root is missing or lands under target_root.
+
+    Agents must never write into the audit target tree. Evidence packs live under
+    run_dir/evidence only; mis-set ctx is rejected here rather than writing.
+    """
+    target_raw = ctx.get("target_root")
+    evidence_raw = ctx.get("evidence_root")
+    if not evidence_raw:
+        raise ValueError("evidence_root required")
+    if not target_raw:
+        # No target in ctx (unlikely for hunt/develop_poc) — still require a root.
+        return
+    target = Path(str(target_raw)).resolve()
+    evidence = Path(str(evidence_raw)).resolve()
+    if evidence == target:
+        raise ValueError("evidence_root must not equal target_root")
+    try:
+        evidence.relative_to(target)
+        raise ValueError("evidence_root must not be under target_root")
+    except ValueError as e:
+        if "must not" in str(e):
+            raise
+        # evidence is not under target — OK
+        pass
+    try:
+        target.relative_to(evidence)
+        raise ValueError("target_root must not be under evidence_root")
+    except ValueError as e:
+        if "must not" in str(e):
+            raise
+        pass
+
+
 def write_evidence(
     ctx: dict,
     relpath: str,
@@ -86,6 +120,7 @@ def write_evidence(
     evidence_id: str | None = None,
 ) -> dict[str, Any]:
     try:
+        assert_evidence_disjoint_from_target(ctx)
         rel = normalize_relpath(relpath)
         if not rel or rel.startswith("..") or ".." in Path(rel).parts:
             return {"ok": False, "error": "invalid relpath"}
@@ -123,6 +158,9 @@ def write_evidence(
         return {"ok": True, "path": rel, "evidence_id": d.name}
     except InvalidEvidenceId as e:
         return {"ok": False, "error": f"invalid evidence_id: {e}"}
+    except ValueError as e:
+        # Disjoint-root guard and other validation
+        return {"ok": False, "error": str(e)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

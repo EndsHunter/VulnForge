@@ -12,6 +12,44 @@ from vulnforge.ui import ops as dashops
 from vulnforge.util import build_target_manifest, utc_now_iso
 
 
+def _init_binary_run(tmp_path: Path, pe: Path) -> Path:
+    run = tmp_path / "runs" / "pe" / "run-001"
+    run.mkdir(parents=True)
+    (run / "evidence").mkdir()
+    db = Database.create(run / "harness.db")
+    db.insert_run(
+        "run-001",
+        str(pe.resolve()),
+        "binary_re",
+        "pin",
+        {"run": {"profile": "binary_re", "max_tasks": 50}},
+    )
+    db.close()
+    return run
+
+
+def test_target_list_single_pe(tmp_path: Path):
+    pe = tmp_path / "notepad.exe"
+    pe.write_bytes(b"MZ" + b"\x00" * 64)
+    run = _init_binary_run(tmp_path, pe)
+    r = dashops.target_list(run, path=".")
+    assert r.get("ok") is True, r
+    assert r.get("single_file") is True
+    assert r.get("kind") == "single_binary"
+    names = [e["name"] for e in r.get("entries") or []]
+    assert names == ["notepad.exe"]
+    # Parent directory contents must not leak (e.g. System32)
+    assert len(r["entries"]) == 1
+
+    bad = dashops.target_list(run, path="other")
+    assert bad.get("ok") is False
+
+    read = dashops.target_read(run, path="notepad.exe")
+    assert read.get("ok") is True
+    assert read.get("binary") is True
+    assert "PE binary" in (read.get("content") or "")
+
+
 def _init_run(tmp_path: Path, toy_sqli: Path) -> Path:
     run = tmp_path / "runs" / "t" / "run-001"
     run.mkdir(parents=True)
@@ -73,6 +111,27 @@ def test_cell_detail_reasons(tmp_path: Path, toy_sqli: Path):
     assert "shallow" in detail["depth_blurb"].lower()
     assert any("shallow" in r.lower() or "none" in r.lower() for r in detail["reasons"])
     assert detail["can_requeue"] is True
+
+
+def test_requeue_hunt_bulk(tmp_path: Path, toy_sqli: Path):
+    run = _init_run(tmp_path, toy_sqli)
+    r = dashops.requeue_hunt_bulk(
+        run,
+        cells=[
+            {"area": "app", "class": "injection"},
+            {"area": "app", "class": "access-control"},
+        ],
+        force_depth=True,
+        reason="test_bulk",
+        operator_notes="bulk notes",
+    )
+    assert r["ok"]
+    assert r["enqueued"] == 2
+    assert r["requested"] == 2
+    db = Database.open(run / "harness.db")
+    hunts = [t for t in db.list_tasks() if t.kind == "hunt" and t.state == "queued"]
+    assert len(hunts) >= 2
+    db.close()
 
 
 def test_requeue_hunt(tmp_path: Path, toy_sqli: Path):
@@ -269,8 +328,54 @@ def test_architecture_summary():
         }
     )
     assert s["has_architecture"] is True
+    assert s["mode"] == "source"
+    assert s["title"] == "Architecture"
     assert s["summary"] == "hello"
     assert s["components"][0]["name"] == "api"
+
+
+def test_architecture_summary_binary_mode():
+    s = dashops.architecture_summary(
+        {
+            "summary": "PE notepad",
+            "inventory": {"kind": "single_binary", "entrypoints": ["notepad.exe"]},
+            "binary": {"name": "notepad.exe", "function_count": 851, "arch": "x86:LE:64"},
+            "components": [
+                {"name": "CRT Memory", "description": "memcpy family"},
+            ],
+            "seed_sinks": [
+                {"symbol": "memcpy", "address": "0x1400274ac", "kind": "api"},
+            ],
+            "hunt_focus": [
+                {
+                    "area": "memory_safety",
+                    "class": "bin-memory-safety",
+                    "path_hints": ["0x1400274ac"],
+                }
+            ],
+            "imports": [{"name": "CreateProcessW"}, "ShellExecuteW"],
+            "trust_boundaries": [{"name": "user_input"}],
+        },
+        profile="binary_re",
+    )
+    assert s["mode"] == "binary"
+    assert s["title"] == "Binary map"
+    assert s["binary"]["name"] == "notepad.exe"
+    assert s["modules"][0]["name"] == "CRT Memory"
+    assert s["seed_sinks"][0]["symbol"] == "memcpy"
+    assert "CreateProcessW" in s["imports_preview"]
+    assert s["hunt_focus"][0]["path_hints"][0].startswith("0x")
+
+
+def test_architecture_summary_binary_by_address_hints():
+    """Even without profile flag, address path_hints imply binary mode."""
+    s = dashops.architecture_summary(
+        {
+            "summary": "map",
+            "hunt_focus": [{"area": "x", "class": "bin-dangerous-apis", "path_hints": ["0x401000"]}],
+        }
+    )
+    assert s["mode"] == "binary"
 
 
 def test_depth_reason_text():
@@ -315,6 +420,62 @@ def test_cancel_queued_task(tmp_path: Path, toy_sqli: Path):
     assert bad["ok"] is False
     assert "queued" in bad["error"]
     missing = dashops.cancel_queued_task(run, 999999)
+    assert missing["ok"] is False
+    assert "not found" in missing["error"]
+
+
+def test_pause_resume_halt_task(tmp_path: Path, toy_sqli: Path):
+    run = _init_run(tmp_path, toy_sqli)
+    db = Database.open(run / "harness.db")
+    try:
+        a = db.enqueue_task("hunt", {"area": "app", "class": "injection"}, priority=10)
+        b = db.enqueue_task("hunt", {"area": "app", "class": "auth"}, priority=20)
+        # Dead owner so kill is a no-op but lease path still exercised
+        leased = db.lease_next_task("vf-9999999-deadbeef", ttl_seconds=600)
+        assert leased is not None and leased.id == a
+    finally:
+        db.close()
+
+    # Pause leased A → frees slot; next lease is B
+    r = dashops.pause_task(run, a, reason="ui_pause")
+    assert r["ok"] is True
+    assert r["state"] == "paused"
+    assert r["prev_state"] == "leased"
+    assert r["task_id"] == a
+
+    db = Database.open(run / "harness.db")
+    try:
+        assert db.get_task(a).state == "paused"  # type: ignore[union-attr]
+        nxt = db.lease_next_task("w2", ttl_seconds=60)
+        assert nxt is not None and nxt.id == b
+        db.complete_task(b, {"ok": True})
+    finally:
+        db.close()
+
+    # Resume A to front of queue
+    r2 = dashops.resume_paused_task(run, a, tier="run_next")
+    assert r2["ok"] is True
+    assert r2["state"] == "queued"
+    assert r2["prev_state"] == "paused"
+
+    db = Database.open(run / "harness.db")
+    try:
+        ta = db.get_task(a)
+        assert ta is not None and ta.state == "queued"
+        # Pause queued then halt
+        assert dashops.pause_task(run, a)["ok"] is True
+    finally:
+        db.close()
+
+    r3 = dashops.halt_task(run, a, reason="ui_halt")
+    assert r3["ok"] is True
+    assert r3["state"] == "cancelled"
+    assert r3["prev_state"] == "paused"
+
+    # Errors
+    bad = dashops.pause_task(run, a)
+    assert bad["ok"] is False
+    missing = dashops.halt_task(run, 999999)
     assert missing["ok"] is False
     assert "not found" in missing["error"]
 

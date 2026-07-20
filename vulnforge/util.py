@@ -14,6 +14,24 @@ from typing import Any, Iterable
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._-]+")
 
+# PE extensions accepted by binary_re (v1)
+PE_EXTENSIONS = frozenset({".exe", ".dll"})
+
+
+def is_pe_file(path: Path) -> bool:
+    """True when path exists as a file with a PE extension (.exe/.dll)."""
+    try:
+        p = Path(path)
+        return p.is_file() and p.suffix.lower() in PE_EXTENSIONS
+    except OSError:
+        return False
+
+
+def target_tool_root(path: Path) -> Path:
+    """Directory agents list/read under. File targets use their parent."""
+    p = Path(path)
+    return p if p.is_dir() else p.parent
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -60,6 +78,32 @@ def hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def meta_fingerprint(path: Path) -> str:
+    """Size+mtime fingerprint used when full hashing is capped on large trees."""
+    st = path.stat()
+    return f"meta:{st.st_size}:{int(st.st_mtime)}"
+
+
+def match_manifest_fingerprint(path: Path, expected: str) -> bool:
+    """Compare a live file to a value stored in ``target_manifest.json``.
+
+    Manifest entries are either a content SHA-256 hex digest (first N files at
+    init) or ``meta:size:mtime`` when the hash budget was exceeded. Always
+    re-hashing a meta-fingerprinted path would false-positive as mutation.
+    """
+    if not expected:
+        return False
+    if expected.startswith("meta:"):
+        try:
+            return meta_fingerprint(path) == expected
+        except OSError:
+            return False
+    try:
+        return hash_file(path) == expected
+    except OSError:
+        return False
+
+
 def _ignored(rel: str, ignore_globs: Iterable[str]) -> bool:
     """Simple glob-ish ignore: ** and * support via pathlib match on rel and parts."""
     from fnmatch import fnmatch
@@ -82,6 +126,74 @@ def _ignored(rel: str, ignore_globs: Iterable[str]) -> bool:
     return False
 
 
+def build_single_file_manifest(target: Path, *, progress: Any = None) -> dict[str, Any]:
+    """Manifest for a single-file target (PE binary_re or single source file)."""
+    target = target.resolve()
+    if not target.is_file():
+        raise FileNotFoundError(f"target is not a file: {target}")
+
+    pe = target.suffix.lower() in PE_EXTENSIONS
+    kind = "single_binary" if pe else "single_file"
+    label = "binary" if pe else "file"
+
+    def _prog(**kw: Any) -> None:
+        if callable(progress):
+            try:
+                progress(kw)
+            except Exception:
+                pass
+
+    _prog(
+        phase="inventory",
+        status="running",
+        message=f"Hashing {label} {target.name}",
+        files_seen=0,
+        percent=10,
+    )
+    digest = hash_file(target)
+    name = target.name
+    _prog(
+        phase="inventory",
+        status="running",
+        message=f"{'Binary' if pe else 'File'} inventory done: {name}",
+        files_seen=1,
+        hashed=1,
+        percent=100,
+    )
+    try:
+        size = target.stat().st_size
+    except OSError:
+        size = None
+    out: dict[str, Any] = {
+        "target": str(target),
+        "kind": kind,
+        "generated_at": utc_now_iso(),
+        "file_count": 1,
+        "files": {name: digest},
+        "hashed_files": 1,
+        "incomplete": False,
+        "max_hash_files": 1,
+        "max_list_files": 1,
+    }
+    if pe:
+        out["binary"] = {
+            "name": name,
+            "path": str(target),
+            "sha256": digest,
+            "size": size,
+            "suffix": target.suffix.lower(),
+        }
+    else:
+        out["single_file"] = {
+            "name": name,
+            "path": str(target),
+            "sha256": digest,
+            "size": size,
+            "suffix": target.suffix.lower(),
+        }
+    return out
+
+
 def build_target_manifest(
     target: Path,
     ignore_globs: Iterable[str] | None = None,
@@ -101,8 +213,12 @@ def build_target_manifest(
 
     ``progress`` is an optional callable(dict) for status UI (phase, files_seen,
     percent, message). Incomplete manifests are honest for large targets.
+
+    Single files are supported: PE → kind=single_binary; other files → single_file.
     """
     target = target.resolve()
+    if target.is_file():
+        return build_single_file_manifest(target, progress=progress)
     globs = list(ignore_globs or [])
     files: dict[str, str] = {}
     if not target.is_dir():
@@ -171,8 +287,7 @@ def build_target_manifest(
                             files[rel] = hash_file(path)
                             hashed += 1
                         else:
-                            st = path.stat()
-                            files[rel] = f"meta:{st.st_size}:{int(st.st_mtime)}"
+                            files[rel] = meta_fingerprint(path)
                     except OSError:
                         continue
                     n = len(files)

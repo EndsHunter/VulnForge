@@ -1,6 +1,8 @@
 schema: harness.loop/v1
 id: quick-smoke
-title: Quick smoke (5 tasks)
+# Title shows in Harness dropdown — include hard stops so operators do not
+# mistake this for a real campaign (no separate "wall clock" Settings field).
+title: Quick smoke (5 tasks · 10m/task · 30m wall)
 tags:
   - smoke
   - test
@@ -8,6 +10,8 @@ loop:
   max_iterations: 20
   max_tasks: 5
   task_timeout_s: 600
+  # Hard stop for the whole Ralph process after this many seconds from start.
+  # null/omit = no wall limit (see default-campaign). Not exposed as Settings UI.
   max_wall_seconds: 1800
   sleep_seconds: 1.0
   max_infra_retries: 3

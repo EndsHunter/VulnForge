@@ -10,3 +10,13 @@ def search_users(db_cursor, q: str):
     # INTENTIONALLY VULNERABLE — fixture only
     sql = f"SELECT * FROM users WHERE name = '{q}'"
     return db_cursor.execute(sql)
+
+# mutated
+
+# mutated
+
+# mutated
+
+# mutated
+
+# mutated

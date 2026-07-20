@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from vulnforge.db import Database
 from vulnforge.stages.validate_mech import run as validate_run
-from vulnforge.util import build_target_manifest, write_json
+from vulnforge.util import build_target_manifest, meta_fingerprint, write_json
 
 
 def _setup_run(tmp_path: Path, toy_sqli: Path):
@@ -142,4 +143,50 @@ def test_poc_relpath_present_needs_human(tmp_path: Path, toy_sqli: Path):
     r = validate_run(T(fid), db, run_dir, {"stages": {}})
     assert r["verdict"] == "needs_human", r
     assert db.get_finding(fid).state == "needs_human"
+    db.close()
+
+
+def test_meta_fingerprint_not_false_mutated(tmp_path: Path, toy_sqli: Path):
+    """Large-tree manifests store meta:size:mtime — must not SHA-compare those."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    man_path = run_dir / "target_manifest.json"
+    man = json.loads(man_path.read_text(encoding="utf-8"))
+    app = toy_sqli / "app.py"
+    man["files"]["app.py"] = meta_fingerprint(app)
+    write_json(man_path, man)
+
+    body = _good_body()
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    _fix_citation_line(body, toy_sqli)
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    assert not any("target_mutated" in x for x in r.get("reasons") or []), r
+    db.close()
+
+
+def test_meta_fingerprint_detects_real_mutation(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    man_path = run_dir / "target_manifest.json"
+    man = json.loads(man_path.read_text(encoding="utf-8"))
+    app = toy_sqli / "app.py"
+    man["files"]["app.py"] = meta_fingerprint(app)
+    write_json(man_path, man)
+
+    # Mutate size (and typically mtime) after inventory
+    app.write_text(app.read_text(encoding="utf-8") + "\n# mutated\n", encoding="utf-8")
+
+    body = _good_body()
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    _fix_citation_line(body, toy_sqli)
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "rejected_mech"
+    assert any("target_mutated:app.py" in x for x in r.get("reasons") or []), r
     db.close()

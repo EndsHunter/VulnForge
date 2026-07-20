@@ -1,16 +1,12 @@
 /**
- * Harness mode — live agent graph + Ralph loop profile picker.
+ * Harness mode — live agent graph (operator).
+ * Loop profiles / wall budgets are dev/API only — not shown here.
  * Graph: pan (drag empty or background), zoom (wheel / buttons), click node → step I/O.
  */
 (function () {
   const $ = (sel, el = document) => el.querySelector(sel);
 
   let lastGraph = null;
-  let profiles = [];
-  let selectedProfileId =
-    (typeof localStorage !== "undefined" &&
-      localStorage.getItem("vf_loop_profile_id")) ||
-    "default-campaign";
   let typeView = false;
   let activated = false;
   let shellReady = false;
@@ -37,6 +33,7 @@
     const s = String(state || "");
     if (s === "succeeded") return "var(--good)";
     if (s === "leased") return "var(--info)";
+    if (s === "paused") return "var(--warn)";
     if (s === "queued") return "var(--muted)";
     if (s === "failed_task" || s === "deadletter" || s === "failed_infra")
       return "var(--bad)";
@@ -73,50 +70,6 @@
     );
   }
 
-  async function loadProfiles() {
-    try {
-      const data = await api("/api/loop-profiles");
-      profiles = data.profiles || [];
-      const sel = $("#harness-loop-select");
-      if (!sel) return;
-      if (!profiles.some((p) => p.id === selectedProfileId) && profiles[0]) {
-        selectedProfileId = profiles[0].id;
-      }
-      sel.innerHTML = profiles
-        .map(
-          (p) =>
-            `<option value="${esc(p.id)}" ${
-              p.id === selectedProfileId ? "selected" : ""
-            }>${esc(p.title || p.id)}</option>`
-        )
-        .join("");
-      renderLoopDetail();
-    } catch (e) {
-      console.warn("loop profiles", e);
-    }
-  }
-
-  function renderLoopDetail() {
-    const el = $("#harness-loop-detail");
-    if (!el) return;
-    const p = profiles.find((x) => x.id === selectedProfileId);
-    if (!p) {
-      el.textContent = "No profile selected.";
-      return;
-    }
-    const loop = p.loop || {};
-    el.innerHTML = `
-      <div><strong>${esc(p.title || p.id)}</strong> <code>${esc(p.id)}</code></div>
-      <div>max_tasks: ${esc(loop.max_tasks)} · iterations: ${esc(
-      loop.max_iterations
-    )}</div>
-      <div>task_timeout: ${esc(loop.task_timeout_s)}s · workers: ${esc(
-      loop.workers
-    )}</div>
-      <div class="controls-hint" style="margin-top:0.35rem">Used on Start / Resume from this page.</div>
-    `;
-  }
-
   function renderRunner(runner) {
     const el = $("#harness-runner");
     if (!el) return;
@@ -132,13 +85,7 @@
       <div class="harness-runner-row"><span>PIDs</span><code>${esc(
         (r.pids || []).join(", ") || "—"
       )}</code></div>
-      <div class="harness-runner-row"><span>Profile</span><code>${esc(
-        meta.loop_profile_id || "—"
-      )}</code></div>
-      <div class="harness-runner-row"><span>max_tasks</span><code>${esc(
-        meta.max_tasks ?? "—"
-      )}</code></div>
-      <div class="harness-runner-row"><span>timeout</span><code>${esc(
+      <div class="harness-runner-row"><span>task timeout</span><code>${esc(
         meta.task_timeout ?? "—"
       )}s</code></div>
     `;
@@ -599,10 +546,6 @@
     }
   }
 
-  function getSelectedLoopProfileId() {
-    return selectedProfileId || "default-campaign";
-  }
-
   function activate() {
     if (!activated) {
       activated = true;
@@ -610,27 +553,17 @@
         // Manual refresh keeps view unless Fit was last intent
         refreshGraph();
       });
-      $("#harness-loop-select")?.addEventListener("change", (e) => {
-        selectedProfileId = e.target.value;
-        try {
-          localStorage.setItem("vf_loop_profile_id", selectedProfileId);
-        } catch (_) {}
-        renderLoopDetail();
-      });
       $("#harness-type-view")?.addEventListener("change", (e) => {
         typeView = !!e.target.checked;
         hasUserView = false; // re-fit when switching view mode
         if (lastGraph) renderGraph(lastGraph);
       });
     }
-    loadProfiles();
     refreshGraph();
   }
 
   window.VulnForgeHarness = {
     activate,
     refreshGraph,
-    getSelectedLoopProfileId,
-    loadProfiles,
   };
 })();

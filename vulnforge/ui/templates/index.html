@@ -39,6 +39,17 @@
     <div class="stats" id="home-stats" style="display:none"></div>
 
     <div class="home-cta-row">
+      <div class="card home-ai-card home-ai-cta" id="home-ai">
+        <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.5rem;align-items:center">
+          <div style="flex:1;min-width:12rem">
+            <h2 style="margin:0">AI Chat</h2>
+            <p class="controls-hint" style="margin:0.35rem 0 0">
+              Fleet co-pilot: query results across runs, start and inspect hunts, init audits, control Ralph.
+            </p>
+          </div>
+          <a class="btn btn-primary" href="/chat" id="btn-open-ai-chat">Open AI Chat</a>
+        </div>
+      </div>
       <div class="card home-tool-gaps-card home-tool-gaps-cta" id="home-tool-gaps">
         <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.5rem;align-items:center">
           <div style="flex:1;min-width:12rem">
@@ -82,7 +93,7 @@
     <div class="modal modal-init" role="dialog" aria-labelledby="init-modal-title" aria-modal="true">
       <header class="modal-init-header">
         <h2 id="init-modal-title">New audit</h2>
-        <p class="modal-init-sub">Point VulnForge at a code tree and choose how to start. Hover <span class="init-help-inline" aria-hidden="true">?</span> for details.</p>
+        <p class="modal-init-sub">Point VulnForge at a code tree or a single PE binary and choose how to start. Hover <span class="init-help-inline" aria-hidden="true">?</span> for details.</p>
       </header>
       <form id="init-form" class="init-form">
 
@@ -91,12 +102,52 @@
           <h3 class="init-section-title" id="init-sec-target">Target</h3>
           <div class="field">
             <div class="field-label-row">
-              <label class="field-label-text" for="init-target">Directory</label>
-              <button type="button" class="init-help" data-tip="Read-only audit tree path. Agents never write into the target — evidence and run state live under the run directory." aria-label="Help: Target directory">?</button>
+              <label class="field-label-text" for="init-target">Path</label>
+              <button type="button" class="init-help" data-tip="Read-only audit path: a source directory (code_static) or a single PE file such as .exe/.dll (binary_re). Agents never write into the target — evidence and run state live under the run directory." aria-label="Help: Target path">?</button>
             </div>
             <div class="path-input-row">
-              <input id="init-target" name="target" required placeholder="C:\path\to\repo" autocomplete="off" spellcheck="false" />
-              <button type="button" class="btn" id="btn-browse-target" title="Browse for folder">Browse...</button>
+              <input id="init-target" name="target" required placeholder="C:\path\to\repo or app.exe" autocomplete="off" spellcheck="false" />
+              <button type="button" class="btn" id="btn-browse-target" title="Browse for folder or file">Browse...</button>
+            </div>
+            <p class="controls-hint init-hint" id="init-target-hint">Folder or single source file · .exe / .dll for binary_re</p>
+          </div>
+
+          <div class="field" id="init-profile-field">
+            <div class="field-label-row">
+              <span class="field-label-text" id="init-profile-label">Profile</span>
+              <button type="button" class="init-help" data-tip="code_static audits a source tree. binary_re audits a single PE via Ghidra MCP (authorized research only)." aria-label="Help: Profile">?</button>
+            </div>
+            <fieldset class="init-fieldset">
+              <legend class="visually-hidden">Audit profile</legend>
+              <div class="strategy-list" role="radiogroup" aria-labelledby="init-profile-label">
+                <label class="strategy-option">
+                  <input type="radio" name="init-profile" value="code_static" checked />
+                  <span class="strategy-option-main">
+                    <span class="strategy-option-title-row">
+                      <span class="strategy-option-title">code_static</span>
+                    </span>
+                    <span class="strategy-option-desc">Source tree — directory target.</span>
+                  </span>
+                </label>
+                <label class="strategy-option">
+                  <input type="radio" name="init-profile" value="binary_re" />
+                  <span class="strategy-option-main">
+                    <span class="strategy-option-title-row">
+                      <span class="strategy-option-title">binary_re</span>
+                    </span>
+                    <span class="strategy-option-desc">Single PE (.exe / .dll) via Ghidra MCP.</span>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+            <div class="field init-binary-auth" id="init-binary-auth-field" hidden>
+              <div class="init-check-row">
+                <label class="init-check">
+                  <input type="checkbox" id="init-binary-auth" />
+                  <span>I am authorized for binary reverse-engineering research on this target</span>
+                </label>
+                <button type="button" class="init-help" data-tip="Required for binary_re. Same gate as CLI --i-am-authorized-for-binary-re. Do not enable unless you have rights to analyze the binary." aria-label="Help: Binary RE authorization">?</button>
+              </div>
             </div>
           </div>
         </section>
@@ -105,7 +156,7 @@
         <section class="init-section" aria-labelledby="init-sec-strategy">
           <div class="field-label-row init-section-head">
             <h3 class="init-section-title" id="init-sec-strategy">Strategy</h3>
-            <button type="button" class="init-help" data-tip="How this run is planned. Discovery is the usual default; file-by-file is exhaustive; recon with docs steers mapping from design docs." aria-label="Help: Strategy">?</button>
+            <button type="button" class="init-help" data-tip="How this run is planned. Discovery is the usual default; file-by-file is exhaustive; recon with docs steers mapping from design docs. binary_re uses discovery only." aria-label="Help: Strategy">?</button>
           </div>
           <fieldset class="init-fieldset">
             <legend class="visually-hidden">Run strategy</legend>
@@ -312,6 +363,7 @@
         <li data-phase="queued" class="active">Queue</li>
         <li data-phase="inventory">Scan</li>
         <li data-phase="database">Database</li>
+        <li data-phase="ghidra" class="init-phase-ghidra" hidden>Ghidra</li>
         <li data-phase="ralph">Ralph</li>
         <li data-phase="done">Open</li>
       </ol>
@@ -328,6 +380,7 @@
           <span class="init-metric"><span class="init-metric-n" id="init-metric-elapsed">0s</span> elapsed</span>
         </div>
         <p class="controls-hint init-hint" id="init-loading-hint">Inventorying the target tree. Large folders take longer.</p>
+        <p class="controls-hint init-hint init-ghidra-detail" id="init-ghidra-detail" hidden></p>
       </div>
       <div class="modal-actions init-loading-actions" id="init-loading-actions" hidden>
         <button type="button" class="btn" id="init-loading-dismiss">Back</button>
@@ -335,23 +388,23 @@
     </div>
   </div>
 
-  <!-- Host path picker (target folder / docs file or folder) -->
+  <!-- Host path picker (target folder or file / docs file or folder) -->
   <div class="modal-backdrop" id="path-picker-modal">
     <div class="modal modal-path-picker" role="dialog" aria-labelledby="path-picker-title" aria-modal="true">
       <header class="path-picker-header">
         <h2 id="path-picker-title">Select path</h2>
-        <p class="controls-hint" id="path-picker-hint">Choose a folder on this machine.</p>
+        <p class="controls-hint" id="path-picker-hint">Choose a folder or file on this machine.</p>
       </header>
       <div class="path-picker-bar">
         <button type="button" class="btn" id="path-picker-up" title="Parent folder">Up</button>
         <input type="text" id="path-picker-path" class="path-picker-path" spellcheck="false" autocomplete="off" placeholder="Path or leave empty for drives" />
         <button type="button" class="btn" id="path-picker-go">Go</button>
       </div>
-      <div id="path-picker-list" class="path-picker-list" role="listbox" aria-label="Directory entries"></div>
+      <div id="path-picker-list" class="path-picker-list" role="listbox" aria-label="Filesystem entries"></div>
       <div id="path-picker-status" class="controls-hint path-picker-status"></div>
       <div class="modal-actions">
         <button type="button" class="btn" id="path-picker-cancel">Cancel</button>
-        <button type="button" class="btn btn-primary" id="path-picker-select">Select this folder</button>
+        <button type="button" class="btn btn-primary" id="path-picker-select">Select this path</button>
       </div>
     </div>
   </div>
@@ -369,17 +422,19 @@
             <div class="grid-2">
               <div class="field">
                 <label class="field-label" for="set-host">
-                  <span class="label-text">LM Studio host</span>
-                  <button type="button" class="info-tip" aria-label="Help: LM Studio host" tabindex="0">?
+                  <span class="label-text">Host or base URL</span>
+                  <button type="button" class="info-tip" aria-label="Help: Host or base URL" tabindex="0">?
                     <span class="info-bubble">
                       <strong>What it is</strong>
-                      Hostname or IP of the machine running LM Studio’s OpenAI-compatible server.
-                      <span class="impact-up">Up Remote host: run the model on another PC (e.g. 10.0.0.232).</span>
-                      <span class="impact-down">↓ Localhost (127.0.0.1): model must run on this same machine.</span>
+                      Model server endpoint. Bare host/IP (with Port) for local LM Studio, or a full
+                      <code>http://</code> / <code>https://</code> URL for remote gateways.
+                      <span class="impact-up">Up <code>https://api.example.com</code> or <code>https://api.example.com/v1</code>.</span>
+                      <span class="impact-up">Up Local: <code>10.0.0.232</code> + port 1234 → <code>http://…/v1</code>.</span>
+                      <span class="impact-down">↓ Full URLs ignore the Port field (put <code>:443</code> in the URL if needed).</span>
                     </span>
                   </button>
                 </label>
-                <input id="set-host" required placeholder="10.0.0.232" />
+                <input id="set-host" required placeholder="10.0.0.232 or https://api.example.com" />
               </div>
               <div class="field">
                 <label class="field-label" for="set-port">
@@ -387,9 +442,9 @@
                   <button type="button" class="info-tip" aria-label="Help: Port" tabindex="0">?
                     <span class="info-bubble">
                       <strong>What it is</strong>
-                      TCP port for LM Studio’s API (usually 1234).
-                      <span class="impact-up">Up Use whatever port LM Studio shows if you changed the default.</span>
-                      <span class="impact-down">↓ Wrong port -> connection errors / failed_infra on every task.</span>
+                      TCP port when Host is a bare name/IP (usually 1234 for LM Studio).
+                      <span class="impact-up">Up Ignored when Host is a full <code>http(s)://…</code> URL.</span>
+                      <span class="impact-down">↓ Wrong port → connection errors / failed_infra on every task.</span>
                     </span>
                   </button>
                 </label>
@@ -428,6 +483,20 @@
                   <option value="responses">responses (/v1/responses)</option>
                   <option value="messages">messages (/v1/messages)</option>
                 </select>
+              </div>
+              <div class="field" style="grid-column:1/-1">
+                <label class="field-label" for="set-api-key">
+                  <span class="label-text">API key</span>
+                  <button type="button" class="info-tip" aria-label="Help: API key" tabindex="0">?
+                    <span class="info-bubble">
+                      <strong>What it is</strong>
+                      Optional Bearer / x-api-key for the model server. Local LM Studio usually needs none.
+                      <span class="impact-up">Up Cloud / locked proxies: paste a real key.</span>
+                      <span class="impact-down">↓ Leave blank, or type <code>none</code>, when the server has no auth.</span>
+                    </span>
+                  </button>
+                </label>
+                <input id="set-api-key" type="password" autocomplete="off" placeholder="optional — blank or none is fine" />
               </div>
             </div>
           </div>

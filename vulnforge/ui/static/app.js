@@ -597,6 +597,67 @@ async function loadInitReconAgents() {
   }
 }
 
+function selectedInitProfile() {
+  const el = document.querySelector('input[name="init-profile"]:checked');
+  return (el?.value || "code_static").trim().toLowerCase();
+}
+
+function setInitProfile(profile) {
+  const id = (profile || "code_static").trim().toLowerCase();
+  const radio = document.querySelector(`input[name="init-profile"][value="${id}"]`);
+  if (radio) {
+    radio.checked = true;
+    syncInitProfileFields();
+  }
+}
+
+/** Show binary_re auth gate; soft-disable file_by_file for binary_re. */
+function syncInitProfileFields() {
+  const profile = selectedInitProfile();
+  const authField = $("#init-binary-auth-field");
+  if (authField) authField.hidden = profile !== "binary_re";
+  const fbf = document.querySelector('input[name="init-strategy"][value="file_by_file"]');
+  if (fbf) {
+    fbf.disabled = profile === "binary_re";
+    if (profile === "binary_re" && fbf.checked) {
+      const disc = document.querySelector('input[name="init-strategy"][value="discovery"]');
+      if (disc) disc.checked = true;
+      syncInitDocsField();
+      syncInitReconFields();
+    }
+  }
+  const hint = $("#init-target-hint");
+  if (hint) {
+    hint.textContent =
+      profile === "binary_re"
+        ? "Select a single .exe or .dll (authorized research only)"
+        : "Folder or single source file · .exe / .dll auto-selects binary_re";
+  }
+}
+
+/** Guess profile from target path extension (.exe/.dll → binary_re). */
+function suggestInitProfileFromPath(path) {
+  const p = String(path || "").trim();
+  if (!p) return;
+  const base = p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
+  const lower = base.toLowerCase();
+  const isPe = lower.endsWith(".exe") || lower.endsWith(".dll");
+  // Heuristic: path with an extension is treated as a file for suggestion.
+  const looksLikeFile = /\.[A-Za-z0-9]{1,8}$/.test(base);
+  if (isPe) {
+    setInitProfile("binary_re");
+    return;
+  }
+  if (looksLikeFile) {
+    // Non-PE file: keep profile, but do not force code_static over operator choice
+    return;
+  }
+  // Directory-looking path → default to code_static when currently binary_re was auto
+  if (selectedInitProfile() === "binary_re") {
+    setInitProfile("code_static");
+  }
+}
+
 function openInitModal() {
   $("#init-modal")?.classList.add("open");
   const disc = document.querySelector('input[name="init-strategy"][value="discovery"]');
@@ -611,8 +672,12 @@ function openInitModal() {
     'input[name="init-hunt-skill-mode"][value="all_active"]'
   );
   if (modeDefault) modeDefault.checked = true;
+  setInitProfile("code_static");
+  const auth = $("#init-binary-auth");
+  if (auth) auth.checked = false;
   syncInitDocsField();
   syncInitReconFields();
+  syncInitProfileFields();
   loadInitReconAgents();
   loadInitHuntSkills();
   wireHuntSkillModeRadios("init-hunt-skill-mode", "init-hunt-skill-picker");
@@ -748,13 +813,25 @@ let pathPicker = {
   targetId: null, // input element id to fill
   path: "",
   allowFiles: false,
+  selectedIsFile: false,
 };
+
+function _updatePathPickerSelectLabel() {
+  const selBtn = $("#path-picker-select");
+  if (!selBtn) return;
+  if (!pathPicker.allowFiles) {
+    selBtn.textContent = "Select this folder";
+    return;
+  }
+  selBtn.textContent = pathPicker.selectedIsFile ? "Select this file" : "Select this folder";
+}
 
 function openPathPicker({ mode, targetId, startPath, title, hint }) {
   pathPicker.mode = mode === "any" ? "any" : "dirs";
   pathPicker.allowFiles = pathPicker.mode === "any";
   pathPicker.targetId = targetId;
   pathPicker.path = (startPath || "").trim();
+  pathPicker.selectedIsFile = false;
   const modal = $("#path-picker-modal");
   if (!modal) return;
   const titleEl = $("#path-picker-title");
@@ -767,10 +844,7 @@ function openPathPicker({ mode, targetId, startPath, title, hint }) {
         ? "Double-click a folder to open it, or a file to select it. Or select the current folder."
         : "Double-click a folder to open it, then Select this folder.");
   }
-  const selBtn = $("#path-picker-select");
-  if (selBtn) {
-    selBtn.textContent = pathPicker.allowFiles ? "Select this path" : "Select this folder";
-  }
+  _updatePathPickerSelectLabel();
   modal.classList.add("open");
   loadPathPicker(pathPicker.path);
 }
@@ -778,6 +852,7 @@ function openPathPicker({ mode, targetId, startPath, title, hint }) {
 function closePathPicker() {
   $("#path-picker-modal")?.classList.remove("open");
   pathPicker.targetId = null;
+  pathPicker.selectedIsFile = false;
 }
 
 async function loadPathPicker(path) {
@@ -787,6 +862,8 @@ async function loadPathPicker(path) {
   if (!list) return;
   list.innerHTML = `<div class="empty" style="padding:0.75rem">Loading...</div>`;
   if (status) status.textContent = "";
+  pathPicker.selectedIsFile = false;
+  _updatePathPickerSelectLabel();
   try {
     const q = new URLSearchParams({
       path: path || "",
@@ -820,11 +897,22 @@ async function loadPathPicker(path) {
           btn.classList.add("selected");
           const p = btn.getAttribute("data-path") || "";
           const isDir = btn.getAttribute("data-dir") === "1";
+          const isFile = btn.getAttribute("data-file") === "1";
           if (pathInput) pathInput.value = p;
           if (isDir) {
             pathPicker.path = p;
-          } else if (pathPicker.allowFiles) {
+            pathPicker.selectedIsFile = false;
+          } else if (isFile && pathPicker.allowFiles) {
             pathPicker.path = p;
+            pathPicker.selectedIsFile = true;
+          }
+          _updatePathPickerSelectLabel();
+          if (status) {
+            status.textContent = isFile
+              ? `File: ${p}`
+              : isDir
+                ? `Folder: ${p}`
+                : "";
           }
         });
         btn.addEventListener("dblclick", () => {
@@ -842,7 +930,16 @@ async function loadPathPicker(path) {
     if (data.selected_file && pathPicker.allowFiles) {
       if (pathInput) pathInput.value = data.selected_file;
       pathPicker.path = data.selected_file;
+      pathPicker.selectedIsFile = true;
+      _updatePathPickerSelectLabel();
       if (status) status.textContent = `File: ${data.selected_file}`;
+      // Highlight matching entry when browse was opened on a file path
+      const sel = String(data.selected_file).toLowerCase();
+      list.querySelectorAll(".path-picker-item").forEach((btn) => {
+        if ((btn.getAttribute("data-path") || "").toLowerCase() === sel) {
+          btn.classList.add("selected");
+        }
+      });
     }
     const up = $("#path-picker-up");
     if (up) {
@@ -866,10 +963,19 @@ function applyPathPickerSelection(explicitPath) {
     closePathPicker();
     return;
   }
+  // dirs-only picker: reject file selection (defense in depth)
+  if (!pathPicker.allowFiles && pathPicker.selectedIsFile) {
+    toast("Select a folder", true);
+    return;
+  }
   const input = document.getElementById(pathPicker.targetId);
   if (input) {
     input.value = chosen;
     input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  if (pathPicker.targetId === "init-target") {
+    suggestInitProfileFromPath(chosen);
   }
   closePathPicker();
 }
@@ -877,11 +983,11 @@ function applyPathPickerSelection(explicitPath) {
 function wirePathPicker() {
   $("#btn-browse-target")?.addEventListener("click", () => {
     openPathPicker({
-      mode: "dirs",
+      mode: "any",
       targetId: "init-target",
       startPath: ($("#init-target")?.value || "").trim(),
-      title: "Select target directory",
-      hint: "Choose the code tree VulnForge should audit (read-only).",
+      title: "Select target",
+      hint: "Double-click a folder to open it, or a file (.exe/.dll) to select it. Select this folder uses the current directory.",
     });
   });
   $("#btn-browse-docs")?.addEventListener("click", () => {
@@ -911,6 +1017,22 @@ function wirePathPicker() {
     else if (parent) loadPathPicker(parent);
     else loadPathPicker("");
   });
+  // Profile radios + target path typing
+  document.querySelectorAll('input[name="init-profile"]').forEach((el) => {
+    el.addEventListener("change", () => syncInitProfileFields());
+  });
+  $("#init-target")?.addEventListener("change", () => {
+    suggestInitProfileFromPath(($("#init-target")?.value || "").trim());
+  });
+  // Debounced suggestion while typing a PE path
+  let _initTargetSuggestTimer = null;
+  $("#init-target")?.addEventListener("input", () => {
+    clearTimeout(_initTargetSuggestTimer);
+    _initTargetSuggestTimer = setTimeout(() => {
+      const v = ($("#init-target")?.value || "").trim();
+      if (/\.(exe|dll)$/i.test(v)) suggestInitProfileFromPath(v);
+    }, 400);
+  });
 }
 
 let _initElapsedTimer = null;
@@ -932,49 +1054,108 @@ function _fmtElapsed(ms) {
   return `${m}m ${r}s`;
 }
 
+function _isPePath(path) {
+  const s = String(path || "").trim().toLowerCase().replace(/\\/g, "/");
+  return s.endsWith(".exe") || s.endsWith(".dll");
+}
+
 function _mapInitPhase(phase, status) {
   const p = String(phase || "").toLowerCase();
   const st = String(status || "").toLowerCase();
   if (st === "done" || p === "done" || p === "complete") return "done";
-  if (p.includes("ralph") || p.includes("start")) return "ralph";
-  if (p.includes("db") || p.includes("database") || p.includes("harness") || p.includes("create"))
-    return "database";
-  if (p.includes("invent") || p.includes("scan") || p.includes("hash") || p.includes("index"))
+  // Ghidra headless: start / import / analyze (binary_re single-file)
+  if (
+    p === "ghidra" ||
+    p.includes("ghidra") ||
+    p.includes("decompile") ||
+    p.includes("auto-analysis") ||
+    p.includes("headless") ||
+    p.includes("importing binary") ||
+    (p.includes("loading ") && p.includes(".exe")) ||
+    (p.includes("loading ") && p.includes(".dll"))
+  )
+    return "ghidra";
+  if (p.includes("ralph")) return "ralph";
+  if (p.includes("db") || p.includes("database") || p.includes("harness")) return "database";
+  if (
+    p.includes("invent") ||
+    p.includes("scan") ||
+    p.includes("hash") ||
+    p.includes("index") ||
+    p.includes("prompt")
+  )
     return "inventory";
-  if (p.includes("queue") || p.includes("start") || p === "working") return "queued";
+  if (p.includes("queue") || p === "working" || p === "prepare") return "queued";
+  if (p.includes("start") && !p.includes("ghidra")) return "ralph";
   return "inventory";
 }
 
 function setInitPhase(phaseKey) {
   const steps = $$("#init-phase-steps li");
   if (!steps.length) return;
-  const order = ["queued", "inventory", "database", "ralph", "done"];
+  const modal = $("#init-loading-modal");
+  const binary = modal?.classList.contains("is-binary-re");
+  const order = binary
+    ? ["queued", "inventory", "database", "ghidra", "ralph", "done"]
+    : ["queued", "inventory", "database", "ralph", "done"];
   const idx = Math.max(0, order.indexOf(phaseKey));
   steps.forEach((li) => {
     const ph = li.getAttribute("data-phase");
+    if (ph === "ghidra" && !binary) {
+      li.classList.remove("active", "done");
+      return;
+    }
     const i = order.indexOf(ph);
     li.classList.toggle("active", i === idx);
     li.classList.toggle("done", i >= 0 && i < idx);
   });
+  modal?.classList.toggle("is-ghidra-active", phaseKey === "ghidra");
+  const detail = $("#init-ghidra-detail");
+  if (detail && phaseKey !== "ghidra") {
+    // keep last detail visible only during ghidra; clear after
+    if (phaseKey === "ralph" || phaseKey === "done") detail.hidden = true;
+  }
 }
 
-function openInitLoading(targetPath, { start } = {}) {
+function openInitLoading(targetPath, { start, binaryRe } = {}) {
   closeInitModal();
   const modal = $("#init-loading-modal");
   if (!modal) return;
+  const isBinary =
+    !!binaryRe || selectedInitProfile() === "binary_re" || _isPePath(targetPath);
   modal.classList.add("open");
   modal.classList.remove("is-success");
+  modal.classList.toggle("is-binary-re", isBinary);
   modal.setAttribute("aria-busy", "true");
+  const ghidraStep = $("#init-phase-steps li.init-phase-ghidra");
+  if (ghidraStep) ghidraStep.hidden = !isBinary;
   const title = $("#init-loading-title");
-  if (title) title.textContent = start ? "Starting audit run" : "Creating audit run";
+  if (title) {
+    title.textContent = isBinary
+      ? start
+        ? "Starting binary audit"
+        : "Creating binary audit"
+      : start
+        ? "Starting audit run"
+        : "Creating audit run";
+  }
   const tEl = $("#init-loading-target");
   if (tEl) tEl.textContent = targetPath || "";
   const hint = $("#init-loading-hint");
   if (hint) {
-    hint.textContent = start
-      ? "Inventory → harness.db → start Ralph. Large trees take longer."
-      : "Inventory → harness.db. Large trees take longer.";
+    hint.textContent = isBinary
+      ? start
+        ? "Hash PE → harness.db → start Ghidra headless → import & analyze → Ralph."
+        : "Hash PE → harness.db → start Ghidra headless → import & analyze."
+      : start
+        ? "Inventory → harness.db → start Ralph. Large trees take longer."
+        : "Inventory → harness.db. Large trees take longer.";
     hint.hidden = false;
+  }
+  const gDetail = $("#init-ghidra-detail");
+  if (gDetail) {
+    gDetail.hidden = true;
+    gDetail.textContent = "";
   }
   const actions = $("#init-loading-actions");
   if (actions) actions.hidden = true;
@@ -984,6 +1165,11 @@ function openInitLoading(targetPath, { start } = {}) {
   }
   const metrics = $("#init-metrics");
   if (metrics) metrics.hidden = false;
+  // Single-file PE: show "1 file" metric label as binary
+  const filesLabel = $("#init-metric-files")?.parentElement;
+  if (filesLabel && isBinary) {
+    // leave number as-is; copy in metric stays "files"
+  }
   _initStartedAt = Date.now();
   _initLastPct = 0;
   _clearInitElapsed();
@@ -994,7 +1180,11 @@ function openInitLoading(targetPath, { start } = {}) {
   tickElapsed();
   _initElapsedTimer = setInterval(tickElapsed, 500);
   setInitPhase("queued");
-  setInitStatus("Starting inventory…", null, { indeterminate: true });
+  setInitStatus(
+    isBinary ? "Preparing binary audit…" : "Starting inventory…",
+    null,
+    { indeterminate: true }
+  );
 }
 
 function closeInitLoading() {
@@ -1024,7 +1214,23 @@ function setInitStatus(msg, pct, { error, success, indeterminate, files, phase }
     const fEl = $("#init-metric-files");
     if (fEl) fEl.textContent = String(files);
   }
-  if (phase) setInitPhase(_mapInitPhase(phase, success ? "done" : error ? "error" : "running"));
+  const mapped = phase
+    ? _mapInitPhase(phase, success ? "done" : error ? "error" : "running")
+    : null;
+  if (mapped) setInitPhase(mapped);
+
+  // Live Ghidra sub-status line during binary_re init
+  const gDetail = $("#init-ghidra-detail");
+  if (gDetail && modal?.classList.contains("is-binary-re")) {
+    const m = String(msg || "");
+    const isG =
+      mapped === "ghidra" ||
+      /ghidra|headless|analy[sz]|import|load(ing)? .+\.(exe|dll)/i.test(m);
+    if (isG && m) {
+      gDetail.hidden = false;
+      gDetail.textContent = m;
+    }
+  }
 
   const knownPct = pct != null && Number.isFinite(Number(pct));
   let p = knownPct ? Math.max(0, Math.min(100, Number(pct))) : null;
@@ -1084,31 +1290,60 @@ function goToRunPage(targetId, runId) {
   }
 }
 
-async function pollInitJob(jobId, { start } = {}) {
-  const deadline = Date.now() + 30 * 60 * 1000; // 30 min max for huge trees
+async function pollInitJob(jobId, { start, binaryRe } = {}) {
+  // Binary/Ghidra analysis can exceed inventory-only timeouts (headless ~2–10+ min)
+  const deadline = Date.now() + (binaryRe ? 45 : 30) * 60 * 1000;
   while (Date.now() < deadline) {
     const job = await api(`/api/runs/init-jobs/${encodeURIComponent(jobId)}`);
     const pct = job.percent != null ? Number(job.percent) : null;
     const files = job.files_seen != null ? job.files_seen : null;
-    const phase = job.phase || "";
+    const phase = String(job.phase || "");
     const msg =
       job.message ||
       (phase
         ? `${phase}${files != null ? ` · ${files} files` : ""}`
         : "Working…");
-    // Map inventing phases; when start=true and job is finishing, show ralph step
+    // Prefer server phase (especially ghidra); only invent from percent when phase is weak
     let phaseKey = phase;
-    if (job.status === "done") phaseKey = "done";
-    else if (pct != null && pct >= 90 && start) phaseKey = "ralph";
-    else if (pct != null && pct >= 70) phaseKey = "database";
+    const phaseL = phase.toLowerCase();
+    if (job.status === "done") {
+      phaseKey = "done";
+    } else if (
+      phaseL.includes("ghidra") ||
+      /ghidra|headless|analy[sz]|importing binary|loading .+\.(exe|dll)/i.test(msg)
+    ) {
+      phaseKey = "ghidra";
+    } else if (phaseL.includes("ralph")) {
+      phaseKey = "ralph";
+    } else if (phaseL.includes("database") || phaseL.includes("prompt")) {
+      phaseKey = phaseL.includes("prompt") ? "inventory" : "database";
+    } else if (pct != null && pct >= 97 && start) {
+      phaseKey = "ralph";
+    } else if (pct != null && pct >= 88 && binaryRe) {
+      phaseKey = "ghidra";
+    } else if (pct != null && pct >= 70 && !binaryRe) {
+      phaseKey = "database";
+    } else if (pct != null && pct >= 70 && binaryRe && pct < 88) {
+      phaseKey = "database";
+    }
+    // During Ghidra, prefer determinate bar once we have percent (analysis can sit at ~75–90)
+    const ghidraActive = phaseKey === "ghidra";
     setInitStatus(msg, pct, {
       files,
       phase: phaseKey,
-      indeterminate: pct == null || (pct < 3 && job.status === "running"),
+      indeterminate:
+        !ghidraActive &&
+        (pct == null || (pct < 3 && job.status === "running")),
     });
     if (job.status === "done" && job.key) {
       setInitStatus(
-        start ? "Ralph starting — opening cockpit…" : "Run ready — opening cockpit…",
+        start
+          ? binaryRe
+            ? "Ghidra ready — starting Ralph…"
+            : "Ralph starting — opening cockpit…"
+          : binaryRe
+            ? "Ghidra ready — opening cockpit…"
+            : "Run ready — opening cockpit…",
         100,
         { success: true, files: files ?? undefined, phase: "done" }
       );
@@ -1120,9 +1355,13 @@ async function pollInitJob(jobId, { start } = {}) {
     if (job.status === "error") {
       throw new Error(job.error || job.message || "init failed");
     }
-    await new Promise((r) => setTimeout(r, 320));
+    await new Promise((r) => setTimeout(r, ghidraActive ? 500 : 320));
   }
-  throw new Error("Init timed out waiting for inventory (try a smaller target folder)");
+  throw new Error(
+    binaryRe
+      ? "Init timed out during Ghidra headless import/analyze (check ghidra/ + ghidra-mcp)"
+      : "Init timed out waiting for inventory (try a smaller target folder)"
+  );
 }
 
 async function submitInit(ev) {
@@ -1131,10 +1370,22 @@ async function submitInit(ev) {
   const start = $("#init-start").checked;
   const max_tasks = parseInt($("#init-max-tasks").value || "50", 10);
   const strategy = selectedInitStrategy();
+  // Sync profile from path before reading (paste + Create races the 400ms debounce)
+  suggestInitProfileFromPath(target);
+  const profile = selectedInitProfile();
   const docs_path = ($("#init-docs-path")?.value || "").trim();
   if (!target) {
-    toast("Target directory is required", true);
+    toast("Target path is required", true);
     $("#init-target")?.focus();
+    return;
+  }
+  if (profile === "binary_re" && !$("#init-binary-auth")?.checked) {
+    toast("binary_re requires authorization confirmation", true);
+    $("#init-binary-auth")?.focus();
+    return;
+  }
+  if (profile === "binary_re" && strategy === "file_by_file") {
+    toast("binary_re does not support file-by-file; use Discovery", true);
     return;
   }
   if (strategy === "recon_docs" && !docs_path) {
@@ -1144,14 +1395,19 @@ async function submitInit(ev) {
   }
   const btn = $("#init-submit");
   if (btn) btn.disabled = true;
-  openInitLoading(target, { start });
+  const binaryRe = profile === "binary_re" || _isPePath(target);
+  openInitLoading(target, { start, binaryRe });
   const body = {
     target,
+    profile,
     start,
     max_tasks,
     task_timeout: 900,
     strategy,
   };
+  if (profile === "binary_re") {
+    body.i_am_authorized_for_binary_re = true;
+  }
   if (docs_path) body.docs_path = docs_path;
   if (strategy === "discovery" || strategy === "recon_docs") {
     const agent_ids = selectedReconAgentIds($("#init-recon-agents"));
@@ -1188,7 +1444,7 @@ async function submitInit(ev) {
     });
     // Async job (default): poll status while inventory runs
     if (r.async && r.job_id) {
-      await pollInitJob(r.job_id, { start });
+      await pollInitJob(r.job_id, { start, binaryRe });
       return;
     }
     // Blocking response fallback
@@ -1265,6 +1521,7 @@ function liveTaskCounts(cardOrSnap) {
   const counts = {
     leased: 0,
     queued: 0,
+    paused: 0,
     succeeded: 0,
     failed_task: 0,
     deadletter: 0,
@@ -1330,7 +1587,7 @@ function liveTaskSig(cardOrSnap) {
   const total =
     cardOrSnap.total_tasks != null
       ? Number(cardOrSnap.total_tasks) || 0
-      : done + t.leased + t.queued;
+      : done + t.leased + t.queued + t.paused;
   // Do not include runner.state here — it can flip independently of task rows
   // and would thrash full reloads without changing the tasks table.
   return [
@@ -1338,6 +1595,7 @@ function liveTaskSig(cardOrSnap) {
     total,
     t.leased,
     t.queued,
+    t.paused,
     t.succeeded,
     t.failed_task,
     t.deadletter,
@@ -1561,42 +1819,347 @@ function renderStats(snap) {
   if (p) p.innerHTML = progressBar(snap.progress);
 }
 
+function usageKindLabel(kind) {
+  const k = String(kind || "");
+  if (k.startsWith("hunt:")) return k.slice(5) || "hunt";
+  if (k.startsWith("recon:")) return k.slice(6) || "recon";
+  return k;
+}
+
+function emptyUsageBucket() {
+  return {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    reasoning_tokens: 0,
+    llm_calls: 0,
+  };
+}
+
+function addUsageBucket(acc, v) {
+  if (!v) return acc;
+  acc.prompt_tokens += v.prompt_tokens || 0;
+  acc.completion_tokens += v.completion_tokens || 0;
+  acc.total_tokens += v.total_tokens || 0;
+  acc.reasoning_tokens += v.reasoning_tokens || 0;
+  acc.llm_calls += v.llm_calls || 0;
+  return acc;
+}
+
+/** Map a usage kind string to a top-level group: recon | hunt | other. */
+function usageStageGroup(kind) {
+  const k = String(kind || "").toLowerCase();
+  if (k === "recon" || k.startsWith("recon:") || k.startsWith("recon/")) return "recon";
+  if (k === "hunt" || k.startsWith("hunt:") || k.startsWith("hunt/")) return "hunt";
+  return "other";
+}
+
+/** Aggregate by_kind rows that are hunt / hunt:<class> into per-class totals. */
+function usageByHuntClass(byKind) {
+  const out = {};
+  for (const [k, v] of Object.entries(byKind || {})) {
+    if (!k || !v) continue;
+    let cls = null;
+    if (k.startsWith("hunt:")) cls = k.slice(5) || "hunt";
+    else if (k === "hunt") cls = "(unscoped)";
+    if (!cls) continue;
+    if (!out[cls]) out[cls] = emptyUsageBucket();
+    addUsageBucket(out[cls], v);
+  }
+  return out;
+}
+
+/** Aggregate recon kinds into per-agent totals (recon:agent-id → agent-id). */
+function usageByReconAgent(byKind) {
+  const out = {};
+  for (const [k, v] of Object.entries(byKind || {})) {
+    if (!k || !v) continue;
+    if (usageStageGroup(k) !== "recon") continue;
+    let agent = "(default)";
+    if (k.startsWith("recon:") && k.length > 6) agent = k.slice(6);
+    else if (k !== "recon") agent = k;
+    if (!out[agent]) out[agent] = emptyUsageBucket();
+    addUsageBucket(out[agent], v);
+  }
+  return out;
+}
+
+function usageTotalsFromKinds(byKind, group) {
+  const acc = emptyUsageBucket();
+  for (const [k, v] of Object.entries(byKind || {})) {
+    if (usageStageGroup(k) === group) addUsageBucket(acc, v);
+  }
+  return acc;
+}
+
+function usageTotalsFromTasks(tasks) {
+  const acc = emptyUsageBucket();
+  for (const t of tasks) {
+    addUsageBucket(acc, {
+      prompt_tokens: t.prompt,
+      completion_tokens: t.completion,
+      total_tokens: t.total,
+      reasoning_tokens: t.reasoning,
+      llm_calls: t.calls,
+    });
+  }
+  return acc;
+}
+
+function usageMetaLine(v) {
+  const tokens = fmtTokens(v.total_tokens || 0);
+  const calls = v.llm_calls || 0;
+  const p = v.prompt_tokens || 0;
+  const c = v.completion_tokens || 0;
+  const pc =
+    p || c
+      ? ` · <span class="llm-usage-pc">${fmtTokens(p)}/${fmtTokens(c)}</span>`
+      : "";
+  return `${tokens} <span class="llm-usage-calls">${calls} call${calls === 1 ? "" : "s"}</span>${pc}`;
+}
+
+function usageBreakdownRows(entries, { monoKey = true, limit = 24 } = {}) {
+  return Object.entries(entries || {})
+    .sort((a, b) => (b[1].total_tokens || 0) - (a[1].total_tokens || 0))
+    .slice(0, limit)
+    .map(([k, v]) => {
+      const keyClass = monoKey ? "mono" : "";
+      return (
+        `<div class="llm-usage-row">` +
+        `<div class="llm-usage-row-k ${keyClass}" title="${esc(k)}">${esc(k)}</div>` +
+        `<div class="llm-usage-row-v mono">${usageMetaLine(v)}</div>` +
+        `</div>`
+      );
+    })
+    .join("");
+}
+
+function usageTaskRows(tasks, { limit = 24 } = {}) {
+  return (tasks || [])
+    .slice(0, limit)
+    .map((t) => {
+      const title = `Open task #${t.tid} transcript`;
+      const meta = {
+        total_tokens: t.total,
+        llm_calls: t.calls,
+        prompt_tokens: t.prompt,
+        completion_tokens: t.completion,
+      };
+      return (
+        `<button type="button" class="llm-usage-row llm-usage-task" data-task-id="${esc(t.tid)}" title="${esc(title)}">` +
+        `<div class="llm-usage-row-k" title="task ${esc(t.tid)}">` +
+        `<span class="llm-usage-task-id">#${esc(t.tid)}</span>` +
+        (t.detail ? ` <span class="llm-usage-task-detail">${esc(t.detail)}</span>` : "") +
+        `</div>` +
+        `<div class="llm-usage-row-v mono">${usageMetaLine(meta)}</div>` +
+        `</button>`
+      );
+    })
+    .join("");
+}
+
+function usageSection(heading, bodyHtml) {
+  if (!bodyHtml) return "";
+  return (
+    `<div class="llm-usage-section">` +
+    `<div class="llm-usage-section-h">${esc(heading)}</div>` +
+    `<div class="llm-usage-section-body">${bodyHtml}</div>` +
+    `</div>`
+  );
+}
+
+/**
+ * Expandable stage group (Recon / Hunt / Other).
+ * openSet: Set of group ids that should stay open across re-renders.
+ */
+function usageGroupDetails(groupId, title, totals, sectionsHtml, openSet) {
+  if (!(totals.total_tokens || totals.llm_calls)) return "";
+  const isOpen = openSet && openSet.has(groupId);
+  return `
+    <details class="llm-usage-group" data-group="${esc(groupId)}"${isOpen ? " open" : ""}>
+      <summary class="llm-usage-group-sum">
+        <span class="llm-usage-group-title">${esc(title)}</span>
+        <span class="llm-usage-group-meta mono">${usageMetaLine(totals)}</span>
+        <span class="llm-usage-group-hint">details</span>
+      </summary>
+      <div class="llm-usage-group-body">
+        ${sectionsHtml || `<p class="controls-hint" style="margin:0">No per-task breakdown.</p>`}
+      </div>
+    </details>`;
+}
+
+function parseUsageTasks(byTask) {
+  return Object.entries(byTask || {}).map(([tid, v]) => {
+    const kind = v.kind || "";
+    const group = usageStageGroup(kind);
+    const cls =
+      v.class ||
+      (kind.startsWith("hunt:") ? kind.slice(5) : "") ||
+      (kind.startsWith("recon:") ? kind.slice(6) : "");
+    const area = v.area ? String(v.area) : "";
+    let detail = "";
+    if (group === "hunt") {
+      detail = [cls || "hunt", area].filter(Boolean).join(" · ");
+    } else if (group === "recon") {
+      detail = cls || usageKindLabel(kind) || "recon";
+    } else {
+      detail = usageKindLabel(kind) || kind || "task";
+    }
+    return {
+      tid,
+      group,
+      kind,
+      detail,
+      total: v.total_tokens || 0,
+      calls: v.llm_calls || 0,
+      prompt: v.prompt_tokens || 0,
+      completion: v.completion_tokens || 0,
+      reasoning: v.reasoning_tokens || 0,
+    };
+  });
+}
+
+function collectOpenUsageGroups() {
+  const open = new Set();
+  document.querySelectorAll(".llm-usage-group[open][data-group]").forEach((el) => {
+    const g = el.getAttribute("data-group");
+    if (g) open.add(g);
+  });
+  return open;
+}
+
+function bindLlmUsageCard(root) {
+  const el = root || document;
+  el.querySelectorAll(".llm-usage-task[data-task-id]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const id = btn.getAttribute("data-task-id");
+      if (!id) return;
+      if (typeof openTranscript === "function") {
+        openTranscript(id);
+      } else if (typeof window.openTranscript === "function") {
+        window.openTranscript(id);
+      }
+    });
+  });
+}
+
 function renderLlmUsageCard(snap) {
   const u = llmUsageOf(snap);
   const total = u.total_tokens || 0;
   const calls = u.llm_calls || 0;
   const byKind = u.by_kind || {};
   const byModel = u.by_model || {};
-  const kindRows = Object.entries(byKind)
+  const byTask = u.by_task || {};
+  const openSet = collectOpenUsageGroups();
+
+  const allTasks = parseUsageTasks(byTask).sort((a, b) => b.total - a.total);
+  const reconTasks = allTasks.filter((t) => t.group === "recon");
+  const huntTasks = allTasks.filter((t) => t.group === "hunt");
+  const otherTasks = allTasks.filter((t) => t.group === "other");
+
+  let reconTotals = usageTotalsFromKinds(byKind, "recon");
+  let huntTotals = usageTotalsFromKinds(byKind, "hunt");
+  let otherTotals = usageTotalsFromKinds(byKind, "other");
+  // Prefer kind rollups; fall back to task sums when by_kind is sparse
+  if (!reconTotals.total_tokens && !reconTotals.llm_calls && reconTasks.length) {
+    reconTotals = usageTotalsFromTasks(reconTasks);
+  }
+  if (!huntTotals.total_tokens && !huntTotals.llm_calls && huntTasks.length) {
+    huntTotals = usageTotalsFromTasks(huntTasks);
+  }
+  if (!otherTotals.total_tokens && !otherTotals.llm_calls && otherTasks.length) {
+    otherTotals = usageTotalsFromTasks(otherTasks);
+  }
+
+  const reconAgents = usageByReconAgent(byKind);
+  const huntClasses = usageByHuntClass(byKind);
+  const otherKinds = {};
+  for (const [k, v] of Object.entries(byKind)) {
+    if (usageStageGroup(k) === "other") otherKinds[k] = v;
+  }
+
+  const reconBody =
+    usageSection("By agent", usageBreakdownRows(reconAgents, { monoKey: true })) +
+    usageSection(
+      "By task",
+      usageTaskRows(reconTasks) ||
+        (reconTotals.total_tokens
+          ? `<p class="controls-hint" style="margin:0">No per-task rows (older run or missing task_id).</p>`
+          : "")
+    );
+
+  const huntBody =
+    usageSection("By hunt class", usageBreakdownRows(huntClasses, { monoKey: true })) +
+    usageSection(
+      "By task",
+      usageTaskRows(huntTasks) ||
+        (huntTotals.total_tokens
+          ? `<p class="controls-hint" style="margin:0">No per-task rows (older run or missing task_id).</p>`
+          : "")
+    );
+
+  const otherBody =
+    usageSection("By stage", usageBreakdownRows(otherKinds, { monoKey: false })) +
+    usageSection("By task", usageTaskRows(otherTasks));
+
+  const modelEntries = Object.entries(byModel)
     .sort((a, b) => (b[1].total_tokens || 0) - (a[1].total_tokens || 0))
-    .map(
-      ([k, v]) =>
-        `<div class="k">${esc(k)}</div><div class="v mono">${fmtTokens(v.total_tokens || 0)} <span style="color:var(--muted)">(${v.llm_calls || 0} calls)</span></div>`
-    )
-    .join("");
-  const modelRows = Object.entries(byModel)
-    .sort((a, b) => (b[1].total_tokens || 0) - (a[1].total_tokens || 0))
-    .slice(0, 6)
-    .map(
-      ([k, v]) =>
-        `<div class="k mono">${esc(k)}</div><div class="v mono">${fmtTokens(v.total_tokens || 0)}</div>`
-    )
-    .join("");
+    .slice(0, 6);
+  const modelBody = modelEntries.length
+    ? usageGroupDetails(
+        "models",
+        "Models",
+        modelEntries.reduce((acc, [, v]) => addUsageBucket(acc, v), emptyUsageBucket()),
+        usageSection("By model", usageBreakdownRows(Object.fromEntries(modelEntries), { monoKey: true })),
+        openSet
+      )
+    : "";
+
+  const hasAny =
+    total ||
+    calls ||
+    reconTotals.total_tokens ||
+    huntTotals.total_tokens ||
+    otherTotals.total_tokens ||
+    modelEntries.length;
+
   const source = u.source && u.source !== "none" ? u.source : "—";
+  const groupsHtml =
+    usageGroupDetails("recon", "Recon", reconTotals, reconBody, openSet) +
+    usageGroupDetails("hunt", "Hunt", huntTotals, huntBody, openSet) +
+    usageGroupDetails("other", "Other stages", otherTotals, otherBody, openSet) +
+    modelBody;
+
   return `
-    <div class="card" style="margin-top:1rem">
+    <div class="card llm-usage-card" style="margin-top:1rem">
       <h2>LLM usage</h2>
-      <div class="kv">
-        <div class="k">Total tokens</div><div class="v mono">${fmtTokens(total)} <span style="color:var(--muted)">(${calls} calls)</span></div>
-        <div class="k">Prompt / completion</div><div class="v mono">${fmtTokens(u.prompt_tokens || 0)} / ${fmtTokens(u.completion_tokens || 0)}</div>
-        <div class="k">Source</div><div class="v">${esc(source)}${u.reasoning_tokens ? ` · reasoning ${fmtTokens(u.reasoning_tokens)}` : ""}</div>
+      <div class="llm-usage-totals">
+        <div class="llm-usage-total-main">
+          <span class="llm-usage-total-n mono">${fmtTokens(total)}</span>
+          <span class="llm-usage-total-lbl">tokens</span>
+          <span class="llm-usage-total-sep">·</span>
+          <span class="mono">${calls}</span>
+          <span class="llm-usage-total-lbl">calls</span>
+        </div>
+        <div class="llm-usage-total-sub">
+          <span>Prompt / completion <span class="mono">${fmtTokens(u.prompt_tokens || 0)} / ${fmtTokens(u.completion_tokens || 0)}</span></span>
+          <span class="llm-usage-total-sep">·</span>
+          <span>Source <span class="mono">${esc(source)}</span></span>
+          ${
+            u.reasoning_tokens
+              ? `<span class="llm-usage-total-sep">·</span><span>Reasoning <span class="mono">${fmtTokens(u.reasoning_tokens)}</span></span>`
+              : ""
+          }
+        </div>
       </div>
       ${
-        kindRows
-          ? `<div class="kv" style="margin-top:0.75rem"><div class="k" style="grid-column:1/-1;color:var(--muted);font-size:0.85em">By stage</div>${kindRows}</div>`
+        hasAny
+          ? `<div class="llm-usage-groups">${groupsHtml || `<p class="controls-hint" style="margin:0.5rem 0 0">No stage breakdown yet.</p>`}</div>
+             <p class="controls-hint llm-usage-footer">Click <strong>Recon</strong> or <strong>Hunt</strong> for breakdowns. Task rows open the transcript.</p>`
           : `<p class="controls-hint" style="margin:0.5rem 0 0">No LLM calls recorded yet for this run.</p>`
       }
-      ${modelRows ? `<div class="kv" style="margin-top:0.75rem"><div class="k" style="grid-column:1/-1;color:var(--muted);font-size:0.85em">By model</div>${modelRows}</div>` : ""}
     </div>`;
 }
 
@@ -1664,7 +2227,7 @@ function renderOverview(snap) {
           <div class="k">Runner</div><div class="v">${badge(runnerState)}${runner.pid ? ` <span class="mono controls-hint">pid ${esc(String(runner.pid))}</span>` : ""}</div>
           <div class="k">Created</div><div class="v">${esc(snap.created_at || " - ")} | ${esc(relativeTime(snap.created_at || snap.mtime))}</div>
           <div class="k">Pin</div><div class="v mono">${esc(snap.prompt_pin || " - ")}</div>
-          <div class="k">Queue</div><div class="v">${snap.has_work ? "work remaining (queued/leased)" : "idle"} ${snap.incomplete ? badge("incomplete") : ""}</div>
+          <div class="k">Queue</div><div class="v">${snap.has_work ? "work remaining (queued/leased/paused)" : "idle"} ${snap.incomplete ? badge("incomplete") : ""}</div>
         </div>
       </div>
       <div class="card">
@@ -1712,6 +2275,7 @@ function renderOverview(snap) {
     </div>
   `;
   bindOperatorRerunHandlers();
+  bindLlmUsageCard(el);
   $("#overview-go-coverage")?.addEventListener("click", () => {
     window.VulnForgeModes?.goCoverage?.() || window.VulnForgeModes?.setMode?.("coverage");
   });
@@ -1750,12 +2314,50 @@ function reconFailureHint(snap) {
   return `<p class="controls-hint" style="margin:0.5rem 0 0;color:var(--danger, #c44)"><strong>Last recon:</strong> <span class="mono">${esc(String(err))}</span>${gen}.${tip}${retry}</p>`;
 }
 
+function isBinaryArchMode(archSum, snap) {
+  if (archSum && archSum.mode === "binary") return true;
+  if (archSum && archSum.mode === "source") return false;
+  const prof = String(snap?.profile || snap?.run?.profile || "").toLowerCase();
+  return prof === "binary_re";
+}
+
+function binaryArchMetaLine(archSum) {
+  const b = archSum?.binary || {};
+  const parts = [];
+  if (b.name) parts.push(String(b.name));
+  const archLabel = b.arch || b.architecture || b.language || "";
+  if (archLabel) parts.push(String(archLabel));
+  const fn =
+    b.function_count ?? b.total_functions ?? b.functions ?? null;
+  if (fn != null && fn !== "") parts.push(`${fn} functions`);
+  const sinks = Array.isArray(archSum?.seed_sinks) ? archSum.seed_sinks.length : 0;
+  const mods = Array.isArray(archSum?.modules)
+    ? archSum.modules.length
+    : Array.isArray(archSum?.components)
+      ? archSum.components.length
+      : 0;
+  const focus = Array.isArray(archSum?.hunt_focus) ? archSum.hunt_focus.length : 0;
+  if (mods) parts.push(`${mods} module(s)`);
+  if (sinks) parts.push(`${sinks} sink(s)`);
+  if (focus) parts.push(`${focus} hunt focus`);
+  else parts.push("no hunt focus yet");
+  return parts.join(" · ") || "binary map";
+}
+
 function renderArchitectureBriefCard(archText, archSum, snap) {
+  const binary = isBinaryArchMode(archSum, snap);
+  const title = binary
+    ? archSum?.title || "Binary map"
+    : archSum?.title || "Architecture";
   if (!archText && !(archSum && archSum.has_architecture)) {
     return `
     <div class="card" style="margin-top:1rem">
-      <h2>Architecture</h2>
-      <p class="controls-hint" style="margin:0">No architecture yet — run recon (or use Operator re-run below). Map lives under Mission → Architecture after recon succeeds. Architecture is stored in the run DB only (not under project/).</p>
+      <h2>${esc(title)}</h2>
+      <p class="controls-hint" style="margin:0">${
+        binary
+          ? "No binary map yet — run recon (binary-surface / sink-map). The map is stored in the run DB after submit_architecture (not under project/)."
+          : "No architecture yet — run recon (or use Operator re-run below). Map lives under Mission → Architecture after recon succeeds. Architecture is stored in the run DB only (not under project/)."
+      }</p>
       ${reconFailureHint(snap)}
     </div>`;
   }
@@ -1773,15 +2375,18 @@ function renderArchitectureBriefCard(archText, archSum, snap) {
     : "";
   const snippet = archText
     ? esc(archText.length > 420 ? archText.slice(0, 420) + "…" : archText)
-    : "<span class='controls-hint'>Architecture present (see Architecture tab).</span>";
+    : `<span class='controls-hint'>${binary ? "Binary map present" : "Architecture present"} (see Architecture tab).</span>`;
+  const meta = binary
+    ? binaryArchMetaLine(archSum)
+    : `${comps ? `${comps} component(s)` : "components n/a"} · ${focus ? `${focus} hunt_focus item(s)` : "no hunt_focus yet"}`;
   return `
     <div class="card" style="margin-top:1rem">
       <div class="toolbar" style="margin-bottom:0.35rem">
-        <h2 style="margin:0;flex:1">Architecture</h2>
-        <button type="button" class="btn btn-sm" id="overview-go-arch">Architecture tab</button>
+        <h2 style="margin:0;flex:1">${esc(title)}</h2>
+        <button type="button" class="btn btn-sm" id="overview-go-arch">${binary ? "Binary map tab" : "Architecture tab"}</button>
       </div>
       <p class="overview-arch-snippet">${snippet}</p>
-      <div class="controls-hint">${comps ? `${comps} component(s)` : "components n/a"} · ${focus ? `${focus} hunt_focus item(s)` : "no hunt_focus yet"}${agentsLabel ? ` · agents: <span class="mono">${esc(agentsLabel)}</span>` : ""}</div>
+      <div class="controls-hint">${esc(meta)}${agentsLabel ? ` · agents: <span class="mono">${esc(agentsLabel)}</span>` : ""}</div>
     </div>`;
 }
 
@@ -2139,10 +2744,11 @@ function priorityTierLabel(priority) {
   return { tier: "low", label: "low" };
 }
 
-/** Running (leased) | queue | terminal states — used for grouping + sort. */
+/** Running (leased) | paused | queue | terminal states — used for grouping + sort. */
 function taskListGroup(t) {
   const st = (t.state || "").toLowerCase();
   if (st === "leased") return "running";
+  if (st === "paused") return "paused";
   if (st === "queued") return "queued";
   return "done";
 }
@@ -2150,9 +2756,9 @@ function taskListGroup(t) {
 function taskMatchesFilter(t, ftr) {
   const st = (t.state || "").toLowerCase();
   if (ftr === "all") return true;
-  // Merged running + queue (legacy chip ids map here too)
+  // Merged running + paused + queue (legacy chip ids map here too)
   if (ftr === "active" || ftr === "queued" || ftr === "leased") {
-    return st === "queued" || st === "leased";
+    return st === "queued" || st === "leased" || st === "paused";
   }
   if (ftr === "done") {
     return (
@@ -2167,14 +2773,14 @@ function taskMatchesFilter(t, ftr) {
 
 function sortTasksForView(tasks, ftr) {
   const list = [...tasks];
-  const groupRank = { running: 0, queued: 1, done: 2 };
+  const groupRank = { running: 0, paused: 1, queued: 2, done: 3 };
   if (ftr === "active" || ftr === "queued" || ftr === "leased" || ftr === "all") {
-    // Running group first, then queued by priority, then (for All) done by id desc
+    // Running first, then paused, then queued by priority, then (for All) done
     list.sort((a, b) => {
       const ga = groupRank[taskListGroup(a)] ?? 9;
       const gb = groupRank[taskListGroup(b)] ?? 9;
       if (ga !== gb) return ga - gb;
-      if (taskListGroup(a) === "queued") {
+      if (taskListGroup(a) === "queued" || taskListGroup(a) === "paused") {
         return (
           (Number(a.priority) || 100) - (Number(b.priority) || 100) ||
           (Number(a.id) || 0) - (Number(b.id) || 0)
@@ -2261,6 +2867,115 @@ async function cancelQueuedTask(taskId, opts = {}) {
 }
 window.cancelQueuedTask = cancelQueuedTask;
 
+/**
+ * Pause a queued or leased task so the next queued can begin.
+ * @param {string|number} taskId
+ * @param {{ confirm?: boolean, reason?: string, silent?: boolean }} [opts]
+ * @returns {Promise<object|null>}
+ */
+async function pauseTask(taskId, opts = {}) {
+  const id = Number(taskId);
+  if (!Number.isFinite(id) || id <= 0) {
+    toast("Invalid task id", true);
+    return null;
+  }
+  if (opts.confirm !== false) {
+    const ok = window.confirm(
+      `Pause task #${id}?\n\n` +
+        `If it is running, the current agent is stopped and the next queued task can start.\n` +
+        `This task will run again when you Resume it, or when it is the last work left.`
+    );
+    if (!ok) return null;
+  }
+  try {
+    const r = await api(`${runApiBase()}/tasks/${encodeURIComponent(id)}/pause`, {
+      method: "POST",
+      body: JSON.stringify({ reason: opts.reason || "operator_pause" }),
+    });
+    if (!opts.silent) {
+      const killed = r.killed ? " (agent stopped)" : "";
+      toast(`Paused task #${id}${killed}`);
+    }
+    if (typeof loadRunFull === "function") await loadRunFull();
+    return r;
+  } catch (e) {
+    toast(e.message || String(e), true);
+    return null;
+  }
+}
+window.pauseTask = pauseTask;
+
+/**
+ * Resume a paused task back to the queue (default: run next).
+ * @param {string|number} taskId
+ * @param {{ confirm?: boolean, tier?: string, reason?: string, silent?: boolean }} [opts]
+ * @returns {Promise<object|null>}
+ */
+async function resumePausedTask(taskId, opts = {}) {
+  const id = Number(taskId);
+  if (!Number.isFinite(id) || id <= 0) {
+    toast("Invalid task id", true);
+    return null;
+  }
+  const tier = opts.tier || "run_next";
+  try {
+    const r = await api(`${runApiBase()}/tasks/${encodeURIComponent(id)}/resume`, {
+      method: "POST",
+      body: JSON.stringify({
+        tier,
+        reason: opts.reason || "operator_resume",
+      }),
+    });
+    if (!opts.silent) {
+      toast(`Resumed task #${id} → queue (${tier}, priority ${r.priority})`);
+    }
+    if (typeof loadRunFull === "function") await loadRunFull();
+    return r;
+  } catch (e) {
+    toast(e.message || String(e), true);
+    return null;
+  }
+}
+window.resumePausedTask = resumePausedTask;
+
+/**
+ * Halt (terminal cancel) a queued, paused, or leased task.
+ * @param {string|number} taskId
+ * @param {{ confirm?: boolean, reason?: string, silent?: boolean }} [opts]
+ * @returns {Promise<object|null>}
+ */
+async function haltTask(taskId, opts = {}) {
+  const id = Number(taskId);
+  if (!Number.isFinite(id) || id <= 0) {
+    toast("Invalid task id", true);
+    return null;
+  }
+  if (opts.confirm !== false) {
+    const ok = window.confirm(
+      `Halt task #${id}?\n\n` +
+        `This permanently cancels it. If running, the agent is stopped so the next queued task can start.\n` +
+        `Unlike Pause, it will not come back.`
+    );
+    if (!ok) return null;
+  }
+  try {
+    const r = await api(`${runApiBase()}/tasks/${encodeURIComponent(id)}/halt`, {
+      method: "POST",
+      body: JSON.stringify({ reason: opts.reason || "operator_halt" }),
+    });
+    if (!opts.silent) {
+      const killed = r.killed ? " (agent stopped)" : "";
+      toast(`Halted task #${id}${killed}`);
+    }
+    if (typeof loadRunFull === "function") await loadRunFull();
+    return r;
+  } catch (e) {
+    toast(e.message || String(e), true);
+    return null;
+  }
+}
+window.haltTask = haltTask;
+
 function renderTasks(tasks) {
   const tb = $("#tasks-body");
   if (!tb) return;
@@ -2299,6 +3014,7 @@ function renderTasks(tasks) {
     tasksFilter === "all";
   const groupLabels = {
     running: "Running",
+    paused: "Paused",
     queued: "Queued",
     done: "Done / failed",
   };
@@ -2320,22 +3036,36 @@ function renderTasks(tasks) {
     const st = (t.state || "").toLowerCase();
     const queued = st === "queued";
     const running = st === "leased";
+    const paused = st === "paused";
     const pos = posById.get(Number(t.id));
     const tier = priorityTierLabel(t.priority);
     const prioBadge = `<span class="prio-badge prio-${esc(tier.tier)}" title="priority ${esc(String(t.priority ?? ""))}">${esc(tier.label)} <span class="mono prio-num">${esc(String(t.priority ?? "—"))}</span></span>`;
-    const actions = queued
-      ? `<div class="task-prio-actions">
+    let actions = `<span class="controls-hint">—</span>`;
+    if (queued) {
+      actions = `<div class="task-prio-actions">
             <button type="button" class="btn btn-sm btn-primary task-prio-btn" data-tier="run_next" data-tid="${t.id}" title="Jump to front of queue">Run next</button>
             <button type="button" class="btn btn-sm task-prio-btn" data-tier="high" data-tid="${t.id}">High</button>
             <button type="button" class="btn btn-sm task-prio-btn" data-tier="normal" data-tid="${t.id}">Normal</button>
             <button type="button" class="btn btn-sm task-prio-btn" data-tier="low" data-tid="${t.id}">Low</button>
+            <button type="button" class="btn btn-sm task-pause-btn" data-tid="${t.id}" title="Park this task; next queued can run first">Pause</button>
             <button type="button" class="btn btn-sm btn-bad task-cancel-btn" data-tid="${t.id}" title="Remove from queue (cancel)">Remove</button>
-          </div>`
-      : `<span class="controls-hint">—</span>`;
+          </div>`;
+    } else if (running) {
+      actions = `<div class="task-prio-actions">
+            <button type="button" class="btn btn-sm task-pause-btn" data-tid="${t.id}" title="Stop this agent; next queued starts. Runs again when resumed or last left.">Pause</button>
+            <button type="button" class="btn btn-sm btn-bad task-halt-btn" data-tid="${t.id}" title="Stop and permanently cancel this lease">Halt</button>
+          </div>`;
+    } else if (paused) {
+      actions = `<div class="task-prio-actions">
+            <button type="button" class="btn btn-sm btn-primary task-resume-btn" data-tid="${t.id}" title="Return to queue (run next)">Resume</button>
+            <button type="button" class="btn btn-sm btn-bad task-halt-btn" data-tid="${t.id}" title="Permanently cancel">Halt</button>
+          </div>`;
+    }
     const rowClass = [
       "task-row",
       queued ? "is-queued" : "",
       running ? "is-running" : "",
+      paused ? "is-paused" : "",
     ]
       .filter(Boolean)
       .join(" ");
@@ -2367,6 +3097,27 @@ function renderTasks(tasks) {
       ev.stopPropagation();
       const tid = btn.getAttribute("data-tid");
       if (tid) cancelQueuedTask(tid);
+    });
+  });
+  tb.querySelectorAll(".task-pause-btn").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const tid = btn.getAttribute("data-tid");
+      if (tid) pauseTask(tid);
+    });
+  });
+  tb.querySelectorAll(".task-resume-btn").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const tid = btn.getAttribute("data-tid");
+      if (tid) resumePausedTask(tid);
+    });
+  });
+  tb.querySelectorAll(".task-halt-btn").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const tid = btn.getAttribute("data-tid");
+      if (tid) haltTask(tid);
     });
   });
   tb.querySelectorAll("tr.task-row").forEach((row) => {
@@ -2602,6 +3353,8 @@ async function openSettings() {
       apiModeEl.value = mode;
       if (apiModeEl.value !== mode) apiModeEl.value = "chat_completions";
     }
+    const apiKeyEl = $("#set-api-key");
+    if (apiKeyEl) apiKeyEl.value = s.api_key || "";
     $("#set-workers").value = s.max_concurrent_agents || 1;
     $("#set-ctx").value = s.context_tokens || 32768;
     $("#set-frac").value = s.max_context_fraction ?? 0.25;
@@ -2611,8 +3364,9 @@ async function openSettings() {
     $("#set-maxtasks").value = s.max_tasks || 50;
     const eff = data.effective || {};
     const dash = "-";
+    const keyNote = eff.api_key_set ? "api key set" : "no api key";
     $("#settings-effective").textContent =
-      `Effective: ${eff.base_url || dash} | model ${eff.model || dash} | api ${eff.api_mode || "chat_completions"} | concurrent agents ${eff.max_leases_parallel || 1} | ctx ${eff.context_tokens || dash} × ${eff.max_context_fraction ?? dash}`;
+      `Effective: ${eff.base_url || dash} | model ${eff.model || dash} | api ${eff.api_mode || "chat_completions"} | ${keyNote} | concurrent agents ${eff.max_leases_parallel || 1} | ctx ${eff.context_tokens || dash} × ${eff.max_context_fraction ?? dash}`;
     $("#settings-modal")?.classList.add("open");
   } catch (e) {
     toast(e.message, true);
@@ -2629,6 +3383,8 @@ function settingsFormBody() {
     port: parseInt($("#set-port").value, 10),
     model: $("#set-model").value.trim(),
     api_mode: $("#set-api-mode")?.value || "chat_completions",
+    // Always send (may be blank / "none") so Save can clear a stored key.
+    api_key: ($("#set-api-key")?.value ?? "").trim(),
     max_concurrent_agents: parseInt($("#set-workers").value, 10),
     context_tokens: parseInt($("#set-ctx").value, 10),
     max_context_fraction: parseFloat($("#set-frac").value),
@@ -2648,6 +3404,10 @@ function applyRecommendedToSettingsForm(rec) {
   if (apiModeEl && rec.api_mode) {
     apiModeEl.value = rec.api_mode;
     if (apiModeEl.value !== rec.api_mode) apiModeEl.value = "chat_completions";
+  }
+  // Preserve form key if optimize omitted; otherwise apply recommended (may be blank).
+  if (rec.api_key != null && $("#set-api-key")) {
+    $("#set-api-key").value = rec.api_key;
   }
   if (rec.max_concurrent_agents != null) $("#set-workers").value = rec.max_concurrent_agents;
   if (rec.context_tokens != null) $("#set-ctx").value = rec.context_tokens;
@@ -2706,6 +3466,7 @@ async function optimizeSettings() {
         host: form.host,
         port: form.port,
         model: form.model,
+        api_key: form.api_key,
         apply: false,
       }),
     });
@@ -2716,8 +3477,13 @@ async function optimizeSettings() {
       const eff = $("#settings-effective");
       if (eff && data.recommended) {
         const r = data.recommended;
+        const base =
+          data.base_url ||
+          (String(r.host || "").includes("://")
+            ? String(r.host).replace(/\/$/, "")
+            : `http://${r.host}:${r.port}/v1`);
         eff.textContent =
-          `Recommended: http://${r.host}:${r.port}/v1 | model ${r.model} | api ${r.api_mode} | ` +
+          `Recommended: ${base} | model ${r.model} | api ${r.api_mode} | ` +
           `agents ${r.max_concurrent_agents} | ctx ${r.context_tokens} × ${r.max_context_fraction} | ` +
           `tools ${data.tool_calls_ok ? "ok" : "weak"}`;
       }
@@ -2953,20 +3719,35 @@ function inlineMd(s) {
 
 /* ---------- Architecture (summary only) ---------- */
 
+function renderArchListItems(items, formatter) {
+  if (!items || !items.length) return "<li class='controls-hint'> — </li>";
+  return items.map(formatter).join("");
+}
+
 function renderArchitecture(arch, summary, snap) {
   const el = $("#arch-panel");
   if (!el) return;
   const s = summary || {};
+  const binary = isBinaryArchMode(s, snap);
+  const pageTitle = binary ? s.title || "Binary map" : s.title || "Architecture";
   const has = !!(s.has_architecture || arch);
   if (!has) {
     el.innerHTML = `<div class="card">
       <div class="empty empty-cta">
-        <p><strong>No architecture yet</strong></p>
-        <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored in the run DB after submit_architecture (or free-text salvage) — not under project/. Map the target first, then hunt from Explorer or Coverage.</p>
+        <p><strong>No ${binary ? "binary map" : "architecture"} yet</strong></p>
+        <p class="controls-hint">${
+          binary
+            ? "Recon has not finished (or has not run). The PE map is stored in the run DB after submit_architecture — modules, sinks, and address hunt focus — not under project/. Map the binary first, then hunt from Coverage."
+            : "Recon has not finished (or has not run). Architecture is stored in the run DB after submit_architecture (or free-text salvage) — not under project/. Map the target first, then hunt from Explorer or Coverage."
+        }</p>
         ${reconFailureHint(snap)}
         <div class="empty-cta-actions">
           <button type="button" class="btn btn-primary" id="arch-go-mission">Run recon with brief</button>
-          <button type="button" class="btn" id="arch-go-explorer">Open Explorer</button>
+          ${
+            binary
+              ? `<button type="button" class="btn" id="arch-go-coverage">Open Coverage</button>`
+              : `<button type="button" class="btn" id="arch-go-explorer">Open Explorer</button>`
+          }
         </div>
       </div>
     </div>`;
@@ -2979,13 +3760,19 @@ function renderArchitecture(arch, summary, snap) {
     $("#arch-go-explorer")?.addEventListener("click", () => {
       window.VulnForgeModes?.setMode?.("explorer");
     });
+    $("#arch-go-coverage")?.addEventListener("click", () => {
+      window.VulnForgeModes?.setMode?.("coverage");
+    });
     return;
   }
-  const comps = (s.components || [])
+  const compsSrc = binary
+    ? s.modules || s.components || []
+    : s.components || [];
+  const comps = (compsSrc || [])
     .map(
       (c) =>
         `<li><strong>${esc(c.name)}</strong>${
-          c.role ? `  -  ${esc(c.role)}` : ""
+          c.role ? `  —  ${esc(c.role)}` : ""
         }${
           (c.path_hints || []).length
             ? ` <span class="mono controls-hint">${esc((c.path_hints || []).slice(0, 3).join(", "))}</span>`
@@ -2997,7 +3784,47 @@ function renderArchitecture(arch, summary, snap) {
     .map((x) => `<li>${esc(typeof x === "string" ? x : JSON.stringify(x))}</li>`)
     .join("");
   const bounds = (s.trust_boundaries || [])
-    .map((x) => `<li>${esc(typeof x === "string" ? x : JSON.stringify(x))}</li>`)
+    .map((x) => {
+      if (typeof x === "string") return `<li>${esc(x)}</li>`;
+      if (x && typeof x === "object") {
+        const name = x.name || x.id || "";
+        const desc = x.description || x.role || "";
+        return `<li><strong>${esc(String(name))}</strong>${desc ? ` — ${esc(String(desc))}` : ""}</li>`;
+      }
+      return `<li>${esc(JSON.stringify(x))}</li>`;
+    })
+    .join("");
+  const sinks = (s.seed_sinks || [])
+    .map((sk) => {
+      const sym = esc(sk.symbol || sk.name || "sink");
+      const addr = sk.address
+        ? ` <span class="mono controls-hint">${esc(sk.address)}</span>`
+        : "";
+      const kind = sk.kind ? ` <span class="badge">${esc(sk.kind)}</span>` : "";
+      return `<li><strong>${sym}</strong>${addr}${kind}</li>`;
+    })
+    .join("");
+  const huntFocus = (s.hunt_focus || [])
+    .map((h) => {
+      if (!h || typeof h !== "object") {
+        return `<li>${esc(String(h))}</li>`;
+      }
+      const area = esc(h.area || h.name || "area");
+      const cls = h.class ? ` <span class="badge">${esc(h.class)}</span>` : "";
+      const hints = Array.isArray(h.path_hints) ? h.path_hints.slice(0, 4) : [];
+      const hintStr = hints.length
+        ? ` <span class="mono controls-hint">${esc(hints.join(", "))}</span>`
+        : "";
+      return `<li><strong>${area}</strong>${cls}${hintStr}</li>`;
+    })
+    .join("");
+  const importChips = (s.imports_preview || [])
+    .slice(0, 18)
+    .map((n) => `<span class="arch-chip mono">${esc(n)}</span>`)
+    .join("");
+  const exportChips = (s.exports_preview || [])
+    .slice(0, 12)
+    .map((n) => `<span class="arch-chip mono">${esc(n)}</span>`)
     .join("");
   const agentsRun = Array.isArray(s.recon_agents_run) ? s.recon_agents_run : [];
   const agentsHtml = agentsRun.length
@@ -3016,34 +3843,81 @@ function renderArchitecture(arch, summary, snap) {
     : "";
 
   const summaryHtml = renderMarkdown(s.summary || "(no summary)");
+  const bin = s.binary || {};
+  const binHeader = binary
+    ? `<div class="arch-binary-header">
+        <div class="arch-binary-chips">
+          ${bin.name ? `<span class="arch-chip"><strong>binary</strong> ${esc(String(bin.name))}</span>` : ""}
+          ${bin.arch || bin.architecture || bin.language ? `<span class="arch-chip"><strong>arch</strong> ${esc(String(bin.arch || bin.architecture || bin.language))}</span>` : ""}
+          ${bin.format ? `<span class="arch-chip"><strong>format</strong> ${esc(String(bin.format))}</span>` : ""}
+          ${
+            bin.function_count != null || bin.total_functions != null || bin.functions != null
+              ? `<span class="arch-chip"><strong>functions</strong> ${esc(String(bin.function_count ?? bin.total_functions ?? bin.functions))}</span>`
+              : ""
+          }
+          ${bin.sha256 ? `<span class="arch-chip mono" title="${esc(String(bin.sha256))}"><strong>sha256</strong> ${esc(String(bin.sha256).slice(0, 12))}…</span>` : ""}
+        </div>
+      </div>`
+    : "";
+
+  const metaGrid = binary
+    ? `<div class="arch-meta-grid">
+        <div>
+          <h3>Modules</h3>
+          <ul class="arch-list">${comps || "<li class='controls-hint'> — </li>"}</ul>
+        </div>
+        <div>
+          <h3>Dangerous sinks / APIs</h3>
+          <ul class="arch-list">${sinks || "<li class='controls-hint'> — </li>"}</ul>
+        </div>
+        <div>
+          <h3>Hunt focus (addresses)</h3>
+          <ul class="arch-list">${huntFocus || "<li class='controls-hint'> — </li>"}</ul>
+        </div>
+      </div>
+      ${
+        importChips || exportChips
+          ? `<div class="arch-symbol-row">
+              ${importChips ? `<div><h3>Imports (sample)</h3><div class="arch-chip-row">${importChips}</div></div>` : ""}
+              ${exportChips ? `<div><h3>Exports (sample)</h3><div class="arch-chip-row">${exportChips}</div></div>` : ""}
+            </div>`
+          : ""
+      }
+      ${
+        bounds
+          ? `<div style="margin-top:0.75rem"><h3>Trust edges</h3><ul class="arch-list">${bounds}</ul></div>`
+          : ""
+      }`
+    : `<div class="arch-meta-grid">
+        <div>
+          <h3>Components</h3>
+          <ul class="arch-list">${comps || "<li class='controls-hint'> — </li>"}</ul>
+        </div>
+        <div>
+          <h3>Input surfaces</h3>
+          <ul class="arch-list">${surfaces || "<li class='controls-hint'> — </li>"}</ul>
+        </div>
+        <div>
+          <h3>Trust boundaries</h3>
+          <ul class="arch-list">${bounds || "<li class='controls-hint'> — </li>"}</ul>
+        </div>
+      </div>`;
 
   el.innerHTML = `
-    <div class="card arch-summary-card">
+    <div class="card arch-summary-card${binary ? " arch-summary-binary" : ""}">
       <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.4rem">
-        <h2 style="margin:0;flex:1">Architecture</h2>
-        <button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit architecture</button>
+        <h2 style="margin:0;flex:1">${esc(pageTitle)}</h2>
+        <button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit ${binary ? "map" : "architecture"}</button>
         <button type="button" class="btn btn-sm" id="arch-history-toggle">History</button>
       </div>
+      ${binHeader}
       <div class="arch-summary-text md-prose">${summaryHtml}</div>
       ${
         agentsHtml
           ? `<div style="margin:0.65rem 0 0.25rem"><h3 style="margin:0 0 0.35rem">Recon agents (merged)</h3><ul class="arch-list">${agentsHtml}</ul></div>`
           : ""
       }
-      <div class="arch-meta-grid">
-        <div>
-          <h3>Components</h3>
-          <ul class="arch-list">${comps || "<li class='controls-hint'> - </li>"}</ul>
-        </div>
-        <div>
-          <h3>Input surfaces</h3>
-          <ul class="arch-list">${surfaces || "<li class='controls-hint'> - </li>"}</ul>
-        </div>
-        <div>
-          <h3>Trust boundaries</h3>
-          <ul class="arch-list">${bounds || "<li class='controls-hint'> - </li>"}</ul>
-        </div>
-      </div>
+      ${metaGrid}
       <details class="arch-raw">
         <summary>Raw architecture JSON</summary>
         <pre class="arch-box">${esc(JSON.stringify(arch || s, null, 2))}</pre>
@@ -3960,34 +4834,26 @@ function connectStream() {
 
 /**
  * Build start/resume ControlBody from dashboard UI settings.
- * - max_tasks: settings.max_tasks (fallback 50)
+ * Operator Mission Start/Resume (real audits):
+ * - no loop_profile_id (dev-only via API)
+ * - max_tasks: null → Ralph runs until idle / Pause (Settings max_tasks is
+ *   hunt *enqueue* planning only, not Ralph budget)
+ * - no wall clock
  * - workers: settings.max_concurrent_agents when set
- * - task_timeout: Ralph per-task budget (default 900). Not the same as
- *   settings.timeout_seconds (LLM HTTP timeout). No dedicated UI field yet.
+ * - task_timeout: 900 hung-task kill (not a campaign wall)
  *
  * Contract table (keep in sync): tests/test_control_body_contract.py
  */
 function controlBodyFromSettings(settings) {
   const s = settings || {};
-  // Prefer Harness loop profile when selected (Start/Resume)
-  const profileId =
-    (window.VulnForgeHarness &&
-      typeof window.VulnForgeHarness.getSelectedLoopProfileId === "function" &&
-      window.VulnForgeHarness.getSelectedLoopProfileId()) ||
-    (typeof localStorage !== "undefined" && localStorage.getItem("vf_loop_profile_id")) ||
-    null;
-  if (profileId) {
-    const body = { loop_profile_id: profileId };
-    // Optional worker override from settings still applies when set
-    const w = parseInt(s.max_concurrent_agents, 10);
-    if (Number.isFinite(w) && w > 0) {
-      body.workers = w;
-    }
-    return body;
-  }
-  const mt = parseInt(s.max_tasks, 10);
-  const max_tasks = Number.isFinite(mt) && mt > 0 ? mt : 50;
-  const body = { max_tasks, task_timeout: 900 };
+  // Real audits: unlimited Ralph progress budget, no wall, no loop profile.
+  // Settings.max_tasks remains for Coverage/init enqueue caps only.
+  const body = {
+    max_tasks: null,
+    max_wall_seconds: null,
+    task_timeout: 900,
+    max_iterations: 10000,
+  };
   const w = parseInt(s.max_concurrent_agents, 10);
   if (Number.isFinite(w) && w > 0) {
     body.workers = w;
@@ -4019,8 +4885,10 @@ async function control(action) {
         // workers let the server apply ui_settings (ControlBody default=None).
         opts.body = JSON.stringify({
           max_tasks: null,
+          max_wall_seconds: null,
           workers: null,
           task_timeout: 900,
+          max_iterations: 10000,
         });
         toast("Settings unavailable; using server defaults", true);
       }
@@ -4029,10 +4897,12 @@ async function control(action) {
     const workers = r.workers || r.status?.meta?.workers || 1;
     const note = r.note ? ` — ${r.note}` : "";
     if (action === "start" || action === "resume") {
+      const meta = r.status?.meta || r.meta || {};
+      const tto = meta.task_timeout != null ? ` · ${meta.task_timeout}s/task` : "";
       toast(
         workers > 1
-          ? `${action}: ${r.status?.state || "ok"} · ${workers} agents${note}`
-          : `${action}: ${r.status?.state || "ok"}${note}`
+          ? `${action}: ${r.status?.state || "ok"} · ${workers} agents${tto}${note}`
+          : `${action}: ${r.status?.state || "ok"}${tto}${note}`
       );
     } else {
       toast(`${action}: ${r.status?.state || "ok"}`);

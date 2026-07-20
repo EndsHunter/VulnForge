@@ -217,13 +217,334 @@ def _principles_without_hunt_tools(prompts_root: Path) -> str:
     return full[:cut_at].rstrip() + "\n"
 
 
+def _binary_re_tool_schemas(stage: str, fn, _finish) -> list[dict]:
+    """Curated Ghidra + submit tools for binary_re recon/hunt."""
+    ghidra = [
+        fn(
+            "ghidra_status",
+            "Check Ghidra MCP connection and current program readiness. "
+            "Call first if unsure the reverse-engineering backend is up.",
+            {},
+            [],
+        ),
+        fn(
+            "ghidra_metadata",
+            "Program metadata: format, architecture, image base, size. "
+            "Use early in recon to ground the architecture map.",
+            {},
+            [],
+        ),
+        fn(
+            "ghidra_list_functions",
+            "List functions (paginated). Optional filter substring on name. "
+            "Use offset/limit to page; do not dump the entire binary at once.",
+            {
+                "offset": {"type": "integer", "description": "Start offset (default 0)."},
+                "limit": {"type": "integer", "description": "Page size (capped by config)."},
+                "filter": {
+                    "type": "string",
+                    "description": "Optional name substring filter.",
+                },
+            },
+            [],
+        ),
+        fn(
+            "ghidra_decompile",
+            "Decompile a function by name or address to C-like pseudocode. "
+            "Primary evidence source for binary hunts. Prefer address when names are FUN_*. "
+            "Decompile CALLERS of dangerous APIs — not IAT/import thunk stubs. "
+            "Use ghidra_import_callers first to find those callers.",
+            {
+                "name": {"type": "string", "description": "Function name if known."},
+                "address": {
+                    "type": "string",
+                    "description": "Function entry address (e.g. 0x401000).",
+                },
+            },
+            [],
+        ),
+        fn(
+            "ghidra_disassemble",
+            "Disassemble a function by name or address (short listing). "
+            "Use when decompilation is weak or for precise instruction evidence. "
+            "Import/IAT addresses often are not functions — use ghidra_import_callers "
+            "or ghidra_xrefs(direction=to) instead.",
+            {
+                "name": {"type": "string"},
+                "address": {"type": "string"},
+            },
+            [],
+        ),
+        fn(
+            "ghidra_xrefs",
+            "Cross-references to/from an address. direction: to (default), from, or both. "
+            "Trace callers of dangerous imports and sinks. For imports prefer "
+            "ghidra_import_callers which resolves symbol → callers in one hop.",
+            {
+                "address": {
+                    "type": "string",
+                    "description": "Address to query (required).",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["to", "from", "both"],
+                    "description": "Xref direction (default to).",
+                },
+            },
+            ["address"],
+        ),
+        fn(
+            "ghidra_imports",
+            "List imported APIs/libraries (paginated). Core for dangerous-API hunts. "
+            "Optional filter/name_filter: case-insensitive substring on import name "
+            "(client-side scan capped). Prefer filter=memcpy over paging the full IAT.",
+            {
+                "offset": {"type": "integer"},
+                "limit": {"type": "integer"},
+                "filter": {
+                    "type": "string",
+                    "description": "Optional import-name substring (case-insensitive).",
+                },
+                "name_filter": {
+                    "type": "string",
+                    "description": "Alias for filter.",
+                },
+            },
+            [],
+        ),
+        fn(
+            "ghidra_import_callers",
+            "Resolve an imported API (symbol and/or import address) and list functions "
+            "that call it — one-hop import → callers. Prefer this for dangerous APIs "
+            "(memcpy, CreateProcessW, etc.). Then decompile the CALLER functions, "
+            "not the IAT stub. At least one of symbol or address required.",
+            {
+                "symbol": {
+                    "type": "string",
+                    "description": "Import name (e.g. memcpy, CreateProcessW).",
+                },
+                "address": {
+                    "type": "string",
+                    "description": "Import/IAT thunk address if known.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max callers to return (default 40, capped at 50).",
+                },
+            },
+            [],
+        ),
+        fn(
+            "ghidra_exports",
+            "List exported symbols (paginated).",
+            {
+                "offset": {"type": "integer"},
+                "limit": {"type": "integer"},
+            },
+            [],
+        ),
+        fn(
+            "ghidra_strings",
+            "List or search strings. Use filter for substring list, or pattern for regex search.",
+            {
+                "offset": {"type": "integer"},
+                "limit": {"type": "integer"},
+                "filter": {"type": "string"},
+                "pattern": {
+                    "type": "string",
+                    "description": "Optional regex/search pattern (search_memory_strings).",
+                },
+            },
+            [],
+        ),
+        fn(
+            "ghidra_call_graph",
+            "Callers, callees, or both for a function (name or address). "
+            "mode: both (default), callers, callees, graph. "
+            "For imports, ghidra_import_callers is usually better than call_graph on the thunk.",
+            {
+                "name": {"type": "string"},
+                "address": {"type": "string"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["both", "callers", "callees", "graph"],
+                },
+            },
+            [],
+        ),
+        fn(
+            "ghidra_search_bytes",
+            "Search for a byte pattern in the program (hex). Use sparingly.",
+            {
+                "pattern": {"type": "string", "description": "Byte pattern / hex string."},
+                "limit": {"type": "integer"},
+            },
+            ["pattern"],
+        ),
+        fn(
+            "ghidra_function_at",
+            "Resolve which function contains an address. "
+            "Fails for pure import/IAT addresses — use ghidra_import_callers or "
+            "ghidra_xrefs(direction=to) to find callers first.",
+            {
+                "address": {"type": "string", "description": "Address to resolve."},
+            },
+            ["address"],
+        ),
+        fn(
+            "write_evidence",
+            "Write a file into the evidence pack under evidence/ (not the binary). "
+            "Use for decompilation excerpts, xref notes, and analysis write-ups. "
+            "Include the returned evidence_id on submit_candidate.",
+            {
+                "relpath": {
+                    "type": "string",
+                    "description": "Path inside the pack, e.g. 'analysis.md'.",
+                },
+                "content": {"type": "string", "description": "UTF-8 file contents."},
+                "evidence_id": {
+                    "type": "string",
+                    "description": "Optional pack id; omit to create/use session pack.",
+                },
+            },
+            ["relpath", "content"],
+        ),
+        fn(
+            "note",
+            "Record a structured note (e.g. kind=codemap) for later packets.",
+            {
+                "kind": {"type": "string"},
+                "payload": {"type": "object"},
+            },
+            ["kind"],
+        ),
+    ]
+    if stage == "recon":
+        ghidra.append(
+            fn(
+                "submit_architecture",
+                "Finish recon with architecture JSON: binary metadata, imports summary, "
+                "areas (function/import families), seed_sinks (address + API), hunt_focus. "
+                "path_hints may be function addresses or names (e.g. 0x401000). "
+                "Do not file vulnerability candidates in recon.",
+                {
+                    "summary": {"type": "string"},
+                    "components": {"type": "array", "items": {"type": "object"}},
+                    "areas": {"type": "array", "items": {"type": "object"}},
+                    "entrypoints": {"type": "array", "items": {"type": "object"}},
+                    "trust_boundaries": {"type": "array", "items": {"type": "object"}},
+                    "inventory": {"type": "object"},
+                    "seed_sinks": {"type": "array", "items": {"type": "object"}},
+                    "hunt_focus": {"type": "array", "items": {"type": "object"}},
+                    "binary": {"type": "object"},
+                    "imports": {"type": "array", "items": {"type": "object"}},
+                    "exports": {"type": "array", "items": {"type": "object"}},
+                },
+                [],
+            )
+        )
+        return _finish(ghidra)
+    if stage == "hunt":
+        ghidra.extend(
+            [
+                fn(
+                    "submit_candidate",
+                    "Submit a vulnerability candidate. Citations may use path=binary name "
+                    "and address/symbol fields for PE locations. Always write_evidence first. "
+                    "threat_model.attacker/boundary/impact required.",
+                    {
+                        "title": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "weakness_class": {"type": "string"},
+                        "threat_model": {
+                            "type": "object",
+                            "properties": {
+                                "attacker": {"type": "string"},
+                                "boundary": {"type": "string"},
+                                "impact": {"type": "string"},
+                            },
+                        },
+                        "citations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {
+                                        "type": "string",
+                                        "description": "Binary file name or logical path.",
+                                    },
+                                    "address": {
+                                        "type": "string",
+                                        "description": "Function or sink address.",
+                                    },
+                                    "symbol": {"type": "string"},
+                                    "start_line": {"type": "integer"},
+                                    "end_line": {"type": "integer"},
+                                    "note": {"type": "string"},
+                                },
+                            },
+                        },
+                        "evidence_id": {"type": "string"},
+                        "sink_path": {"type": "string"},
+                        "sink_symbol": {"type": "string"},
+                        "sink_address": {
+                            "type": "string",
+                            "description": "Primary sink address for stable identity.",
+                        },
+                    },
+                    ["title", "summary", "weakness_class", "threat_model", "citations"],
+                ),
+                fn(
+                    "submit_none",
+                    "Finish hunt with no solid finding after a real RE search. "
+                    "reason must say what functions/APIs you checked.",
+                    {"reason": {"type": "string"}},
+                    ["reason"],
+                ),
+                fn(
+                    "list_hunt_profiles",
+                    "List hunt profile ids for request_hunt (binary skills + others).",
+                    {},
+                    [],
+                ),
+                fn(
+                    "request_hunt",
+                    "Queue a follow-up hunt (e.g. bin-follow-xref) without finishing this task. "
+                    "Use path_hints for function addresses/names. Still finish with "
+                    "submit_candidate or submit_none.",
+                    {
+                        "profile": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "area": {"type": "string"},
+                        "path_hints": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "force_depth": {"type": "boolean"},
+                    },
+                    ["profile", "reason"],
+                ),
+            ]
+        )
+        return _finish(ghidra)
+    # develop_poc / other: evidence only
+    return _finish(
+        [
+            t
+            for t in ghidra
+            if (t.get("function") or {}).get("name")
+            in ("write_evidence", "ghidra_decompile", "ghidra_disassemble", "ghidra_xrefs")
+        ]
+    )
+
+
 def tool_schemas_for(
     profile: str,
     stage: str,
     *,
     apply_defaults: bool = True,
 ) -> list[dict]:
-    """OpenAI-style tool schemas for code_static stages.
+    """OpenAI-style tool schemas for profile stages.
 
     When apply_defaults is True (runtime packets), operator global defaults from
     config/default_tools.json may narrow the set. Catalog / Dev UI should pass
@@ -246,6 +567,9 @@ def tool_schemas_for(
 
     def _finish(tools: list[dict]) -> list[dict]:
         if not apply_defaults or stage not in ("recon", "hunt", "develop_poc"):
+            return tools
+        # binary_re uses a fixed curated set — do not apply code_static defaults.
+        if str(profile or "") == "binary_re":
             return tools
         try:
             from vulnforge.tools.default_tools import resolve_stage_tools
@@ -270,97 +594,208 @@ def tool_schemas_for(
         except Exception:
             return tools
 
+    if str(profile or "") == "binary_re":
+        return _binary_re_tool_schemas(stage, fn, _finish)
+
     # Read-only target inspection (shared). Hunt-only tools added per stage.
+    # Descriptions are operator-facing AND model-facing: local models need
+    # when-to-use, path rules, and finish contracts in the tool schema itself.
     ro = [
         fn(
             "list_dir",
-            "List one directory level under the target (read-only). "
-            "Prefer file_inventory for a full subtree/tree in one call.",
-            {"path": {"type": "string", "description": "Relative path"}},
+            "List ONE directory level under the audit target (read-only). "
+            "Paths are relative to the target root (use '.' for root). "
+            "Returns names + is_dir only — not recursive. "
+            "Prefer file_inventory for a full subtree or tree in one call; "
+            "use list_dir when you only need children of a known folder.",
+            {
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Directory relative to target root. "
+                        "Default '.' if omitted. No leading slash; no '..'."
+                    ),
+                },
+                "max_entries": {
+                    "type": "integer",
+                    "description": (
+                        "Max children to return (default from config, often 200). "
+                        "If truncated is true, narrow path or raise cap carefully."
+                    ),
+                },
+            },
             [],
         ),
         fn(
             "file_inventory",
-            "Recursive file inventory / directory tree in one call (read-only). "
-            "Use instead of many list_dir rounds. Filter by extension (e.g. '.cu') "
-            "or glob to locate implementation files by name.",
+            "Recursive file inventory / directory tree under a path (read-only). "
+            "Prefer this over many list_dir rounds. "
+            "Filter with extension (e.g. '.c', 'py', '*.go') or glob ('**/pkcs11/*'). "
+            "format=tree for structure, list for paths, both for both. "
+            "If truncated, narrow path/depth or add extension/glob — do not re-walk "
+            "the whole tree with the same args.",
             {
                 "path": {
                     "type": "string",
-                    "description": "Subtree root relative to target (default '.')",
+                    "description": (
+                        "Subtree root relative to target (default '.'). "
+                        "E.g. 'src/libopensc' to inventory one package."
+                    ),
                 },
                 "max_depth": {
                     "type": "integer",
-                    "description": "Max directory depth to walk (default from config)",
+                    "description": (
+                        "Max directory depth from path (default from config, often 10). "
+                        "Lower depth for huge trees."
+                    ),
                 },
                 "max_entries": {
                     "type": "integer",
-                    "description": "Max files to return (default from config)",
+                    "description": (
+                        "Max files to return (default from config, often 2000). "
+                        "Response includes truncated=true when capped."
+                    ),
                 },
                 "extension": {
                     "type": "string",
-                    "description": "File extension filter: '.cu', 'cu', or '*.cu'",
+                    "description": (
+                        "Keep only this file extension: '.c', 'c', or '*.c' all work. "
+                        "Case-insensitive."
+                    ),
                 },
                 "glob": {
                     "type": "string",
-                    "description": "fnmatch filter on path or basename, e.g. '*.go'",
+                    "description": (
+                        "fnmatch on full relative path or basename, e.g. '*.go', "
+                        "'**/tools/*', 'Makefile*'."
+                    ),
                 },
                 "format": {
                     "type": "string",
                     "enum": ["tree", "list", "both"],
-                    "description": "tree (default), list of paths, or both",
+                    "description": (
+                        "tree (default): indented tree string; "
+                        "list: paths array; both: tree + paths."
+                    ),
                 },
             },
             [],
         ),
         fn(
             "read_file",
-            "Read a file slice from the target (read-only).",
+            "Read a text file (or line range) from the audit target (read-only). "
+            "path is relative to the target root. "
+            "start_line/end_line are 1-based inclusive line numbers "
+            "(omit both to read from the start, subject to max size). "
+            "Large files are truncated — use a line range for long sources. "
+            "Prefer grep to find a symbol, then read_file around that line. "
+            "Never invent path contents; only cite what this tool returns.",
             {
-                "path": {"type": "string"},
-                "start_line": {"type": "integer"},
-                "end_line": {"type": "integer"},
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "File path relative to target root, e.g. 'src/tools/opensc-tool.c'. "
+                        "Must be a file, not a directory."
+                    ),
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": (
+                        "First line to include (1-based). Default 1 if end_line is set. "
+                        "Omit both start and end to read from line 1 (may truncate)."
+                    ),
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": (
+                        "Last line to include (1-based, inclusive). "
+                        "Omit to read through end of file (or max bytes)."
+                    ),
+                },
             },
             ["path"],
         ),
         fn(
             "grep",
-            "Search target file contents for a regex. "
-            "Use extension/glob to limit by file type; files_only for path list; "
-            "match_path to match filenames. Empty pattern + extension lists files "
-            "of that type (prefer file_inventory for trees). "
-            "On 0 matches, read the hint — do not repeat the same empty query.",
+            "Search target files with a regex (read-only). "
+            "pattern is a Python/PCRE-style regex over file lines "
+            "(or over path/filename when match_path=true). "
+            "Narrow with extension and/or glob before broad searches on large trees. "
+            "files_only=true returns unique paths only (faster inventory of hits). "
+            "Empty pattern + extension or glob lists matching files by path "
+            "(prefer file_inventory for directory trees). "
+            "On 0 matches, read the response hint — do not repeat the same empty query. "
+            "Avoid catastrophic regex (nested quantifiers are rejected).",
             {
                 "pattern": {
                     "type": "string",
-                    "description": "Regex over file lines (or paths if match_path)",
+                    "description": (
+                        "Regex to match file lines (default mode). "
+                        "With match_path=true, also matches relative path/filename. "
+                        "Empty string allowed only with extension/glob/match_path "
+                        "for path-listing mode."
+                    ),
                 },
                 "glob": {
                     "type": "string",
-                    "description": "fnmatch on path/name, e.g. '*.py' or '**/auth/*'",
+                    "description": (
+                        "Limit scan to paths matching fnmatch, e.g. '*.py', "
+                        "'**/pkcs11/*', 'src/tools/*'."
+                    ),
                 },
                 "extension": {
                     "type": "string",
-                    "description": "File type filter: '.cu', 'cu', or '*.cu'",
+                    "description": (
+                        "Limit scan to this extension: '.c', 'c', or '*.c'."
+                    ),
                 },
                 "files_only": {
                     "type": "boolean",
-                    "description": "Return unique matching paths only (files-with-matches)",
+                    "description": (
+                        "If true, return unique matching paths only "
+                        "(no line text). Good for building a read list."
+                    ),
                 },
                 "match_path": {
                     "type": "boolean",
-                    "description": "Also match pattern against relative path/filename",
+                    "description": (
+                        "If true, also match pattern against relative path and "
+                        "basename (filename search)."
+                    ),
                 },
-                "max_matches": {"type": "integer"},
+                "max_matches": {
+                    "type": "integer",
+                    "description": (
+                        "Stop after this many hits (default from config). "
+                        "Lower on huge trees to keep responses small."
+                    ),
+                },
             },
             [],
         ),
         fn(
             "note",
-            "Record wishlist, sibling_seed, or codemap note.",
+            "Store a short operator-facing note (not a finding). "
+            "kind=codemap: interesting path/symbol for the project CODEMAP. "
+            "kind=wishlist: missing tool or capability you wished you had. "
+            "kind=sibling_seed: area/class/path idea for a future hunt sibling. "
+            "Does not finish the task — still call submit_* when done.",
             {
-                "kind": {"type": "string", "enum": ["wishlist", "sibling_seed", "codemap"]},
-                "payload": {},
+                "kind": {
+                    "type": "string",
+                    "enum": ["wishlist", "sibling_seed", "codemap"],
+                    "description": "Note category (see tool description).",
+                },
+                "payload": {
+                    "description": (
+                        "Object or string body. "
+                        "codemap: {\"path\": \"...\", \"symbol\": \"...\", \"note\": \"...\"} "
+                        "or a short string. "
+                        "wishlist: {\"need\": \"...\", \"why\": \"...\"} or string. "
+                        "sibling_seed: {\"area\": \"...\", \"class\": \"injection\", "
+                        "\"path_hints\": [\"...\"]}."
+                    ),
+                },
             },
             ["kind", "payload"],
         ),
@@ -370,34 +805,105 @@ def tool_schemas_for(
         ro.append(
             fn(
                 "submit_architecture",
-                "Submit recon architecture summary and hunt plan.",
+                "Finish recon: submit the architecture map (not vulnerabilities). "
+                "Call exactly once when done exploring. "
+                "summary is required and must be non-empty. "
+                "Prefer path-backed components, input_surfaces, and hunt_focus "
+                "from files you actually listed/read/grepped. "
+                "hunt_focus.class must be a registered hunt class id from the "
+                "prompt registry (never invent ids). "
+                "Do not call submit_candidate or submit_none in recon.",
                 {
-                    "summary": {"type": "string"},
-                    "trust_boundaries": {"type": "array", "items": {"type": "string"}},
+                    "summary": {
+                        "type": "string",
+                        "description": (
+                            "1–3 paragraphs: what the system is, main modules, "
+                            "and attacker-relevant shape. Non-empty required."
+                        ),
+                    },
+                    "trust_boundaries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Boundaries untrusted input crosses, e.g. "
+                            "'CLI argv → libopensc', 'PKCS#11 app → token', "
+                            "'config file → parser'."
+                        ),
+                    },
                     "components": {
                         "type": "array",
+                        "description": (
+                            "Major modules/packages with path_hints you inspected."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": {"type": "string"},
+                                "name": {
+                                    "type": "string",
+                                    "description": "Component name (e.g. pkcs11, tools)",
+                                },
                                 "path_hints": {
                                     "type": "array",
                                     "items": {"type": "string"},
+                                    "description": (
+                                        "Relative paths under the target "
+                                        "(dirs or key files)."
+                                    ),
+                                },
+                                "role": {
+                                    "type": "string",
+                                    "description": "Optional short role description.",
                                 },
                             },
                         },
                     },
-                    "input_surfaces": {"type": "array", "items": {"type": "string"}},
+                    "input_surfaces": {
+                        "type": "array",
+                        "description": (
+                            "Where untrusted data enters. Prefer short path-backed "
+                            "strings, or objects with name + path_hints."
+                        ),
+                        "items": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "path_hints": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                        },
+                                        "protocol": {"type": "string"},
+                                    },
+                                },
+                            ]
+                        },
+                    },
                     "hunt_focus": {
                         "type": "array",
+                        "description": (
+                            "Optional small set of area × registered class × path_hints "
+                            "for later hunts. Omit weak/generic focus."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
-                                "area": {"type": "string"},
-                                "class": {"type": "string"},
+                                "area": {
+                                    "type": "string",
+                                    "description": "Logical area name (often a component).",
+                                },
+                                "class": {
+                                    "type": "string",
+                                    "description": (
+                                        "Registered hunt class id only "
+                                        "(e.g. injection, memory-safety, cryptography)."
+                                    ),
+                                },
                                 "path_hints": {
                                     "type": "array",
                                     "items": {"type": "string"},
+                                    "description": "Paths to bound the hunt.",
                                 },
                             },
                         },
@@ -412,91 +918,203 @@ def tool_schemas_for(
             [
                 fn(
                     "write_evidence",
-                    "Write a file into the evidence pack (not the target).",
+                    "Write a text file into this task's evidence pack under evidence/ "
+                    "(never into the audit target). "
+                    "Use for notes, excerpts, or draft PoC material. "
+                    "relpath is relative to the pack root (e.g. 'notes.md', 'excerpt.c').",
                     {
-                        "relpath": {"type": "string"},
-                        "content": {"type": "string"},
+                        "relpath": {
+                            "type": "string",
+                            "description": (
+                                "Path inside the evidence pack only, e.g. 'notes.md'. "
+                                "No '..' or absolute paths."
+                            ),
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Full file contents to write (UTF-8 text).",
+                        },
                     },
                     ["relpath", "content"],
                 ),
                 fn(
                     "submit_candidate",
-                    "Submit a vulnerability candidate (not yet confirmed).",
+                    "Finish hunt with one vulnerability candidate (not confirmed). "
+                    "Requires path-backed citations from files you read. "
+                    "weakness_class should match this hunt's class when possible. "
+                    "threat_model must state attacker, boundary crossed, and impact. "
+                    "This is not exploit proof — human review decides confirmed. "
+                    "Do not call submit_none after a successful candidate.",
                     {
-                        "title": {"type": "string"},
-                        "summary": {"type": "string"},
-                        "weakness_class": {"type": "string"},
+                        "title": {
+                            "type": "string",
+                            "description": "Short specific title (not just the class name).",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": (
+                                "What is wrong, where, and why it matters. "
+                                "Ground in citations."
+                            ),
+                        },
+                        "weakness_class": {
+                            "type": "string",
+                            "description": (
+                                "Weakness / hunt class id, e.g. injection, "
+                                "access-control, memory-safety."
+                            ),
+                        },
                         "threat_model": {
                             "type": "object",
+                            "description": "Who attacks, what boundary, what impact.",
                             "properties": {
-                                "attacker": {"type": "string"},
-                                "boundary": {"type": "string"},
-                                "impact": {"type": "string"},
+                                "attacker": {
+                                    "type": "string",
+                                    "description": (
+                                        "Who can reach the sink "
+                                        "(e.g. local CLI user, remote PKCS#11 client)."
+                                    ),
+                                },
+                                "boundary": {
+                                    "type": "string",
+                                    "description": (
+                                        "Trust boundary crossed "
+                                        "(e.g. untrusted APDU → parser)."
+                                    ),
+                                },
+                                "impact": {
+                                    "type": "string",
+                                    "description": (
+                                        "Concrete impact if exploited "
+                                        "(RCE, auth bypass, secret leak, DoS…)."
+                                    ),
+                                },
                             },
                             "required": ["attacker", "boundary", "impact"],
                         },
                         "citations": {
                             "type": "array",
+                            "description": (
+                                "One or more code locations. path required; "
+                                "include start_line/end_line when known."
+                            ),
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "path": {"type": "string"},
-                                    "start_line": {"type": "integer"},
-                                    "end_line": {"type": "integer"},
-                                    "symbol": {"type": "string"},
+                                    "path": {
+                                        "type": "string",
+                                        "description": "Relative path under the target.",
+                                    },
+                                    "start_line": {
+                                        "type": "integer",
+                                        "description": "1-based start line.",
+                                    },
+                                    "end_line": {
+                                        "type": "integer",
+                                        "description": "1-based end line (inclusive).",
+                                    },
+                                    "symbol": {
+                                        "type": "string",
+                                        "description": "Optional function/type name.",
+                                    },
                                 },
                                 "required": ["path"],
                             },
                         },
-                        "evidence_id": {"type": "string"},
-                        "poc_relpath": {"type": "string"},
-                        "severity_claim": {"type": "string"},
+                        "evidence_id": {
+                            "type": "string",
+                            "description": (
+                                "Optional evidence pack id if you wrote supporting files."
+                            ),
+                        },
+                        "poc_relpath": {
+                            "type": "string",
+                            "description": (
+                                "Optional path of a PoC file inside the evidence pack."
+                            ),
+                        },
+                        "severity_claim": {
+                            "type": "string",
+                            "description": (
+                                "Optional brief claim of what a successful exploit would show."
+                            ),
+                        },
                     },
                     ["title", "summary", "weakness_class", "threat_model", "citations"],
                 ),
                 fn(
                     "submit_none",
-                    "No finding for this hunt task after real search.",
-                    {"reason": {"type": "string"}},
+                    "Finish hunt with no solid finding after a real search. "
+                    "reason must say what you checked and why nothing met the bar "
+                    "(not just 'looks fine'). "
+                    "Do not use submit_none to skip work; use tools first. "
+                    "Do not call submit_candidate after submit_none.",
+                    {
+                        "reason": {
+                            "type": "string",
+                            "description": (
+                                "Concrete negative result: paths/patterns checked "
+                                "and residual uncertainty if any."
+                            ),
+                        },
+                    },
                     ["reason"],
                 ),
                 fn(
                     "list_hunt_profiles",
-                    "List available hunt profiles (class ids) you may spawn with "
-                    "request_hunt. Prefer active profiles when unsure.",
+                    "List registered hunt profile ids (and titles) you may pass to "
+                    "request_hunt. Prefer active profiles. "
+                    "No arguments. Call before request_hunt if you are unsure of ids.",
                     {},
                     [],
                 ),
                 fn(
                     "request_hunt",
-                    "Queue a separate Ralph hunt for another registered hunt profile. "
-                    "Use when the current area needs a different class skill "
-                    "(e.g. you found auth code during injection and need access-control). "
-                    "Rejected if that profile is already queued/leased (under way), "
-                    "if the request would circularly re-queue a profile already on this "
-                    "spawn chain (A→B→A), or if spawn caps are hit. "
-                    "Do not use to re-run the same profile as this task.",
+                    "Queue a separate Ralph hunt for another registered profile "
+                    "(does not finish this task). "
+                    "Use when the current area clearly needs a different class skill "
+                    "(e.g. auth code found during injection → access-control). "
+                    "Rejected if that profile is already queued/leased, if it would "
+                    "circularly re-queue a profile on this spawn chain (A→B→A), "
+                    "or if spawn caps are hit. "
+                    "Do not re-run the same profile as this task. "
+                    "Still finish THIS hunt with submit_candidate or submit_none.",
                     {
                         "profile": {
                             "type": "string",
-                            "description": "Hunt profile id (e.g. injection, access-control)",
+                            "description": (
+                                "Registered hunt profile id "
+                                "(e.g. injection, access-control). "
+                                "Use list_hunt_profiles if unsure."
+                            ),
                         },
                         "reason": {
                             "type": "string",
-                            "description": "Why this profile should run (required)",
+                            "description": (
+                                "Why that class should run on this area "
+                                "(path or symbol evidence)."
+                            ),
                         },
                         "area": {
                             "type": "string",
-                            "description": "Optional area override (default: current area)",
+                            "description": (
+                                "Optional area override (default: this task's area)."
+                            ),
                         },
                         "path_hints": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Optional path hints (default: current hints)",
+                            "description": (
+                                "Optional paths to bound the spawned hunt "
+                                "(default: this task's path_hints)."
+                            ),
                         },
                         "force_depth": {
                             "type": "boolean",
-                            "description": "Require deeper tools before submit_none (default true)",
+                            "description": (
+                                "If true (default), spawned hunt must use deeper "
+                                "tools before submit_none."
+                            ),
                         },
                     },
                     ["profile", "reason"],
@@ -509,16 +1127,28 @@ def tool_schemas_for(
         ro.append(
             fn(
                 "write_evidence",
-                "Write a file into the evidence pack (not the target). "
+                "Write a file into the evidence pack (not the audit target). "
                 "Prefer runnable PoC scripts: poc.py, poc.sh, poc.ps1, or poc.c. "
-                "Also write/update hub poc_develop.md (run instructions only — "
-                "do not rewrite the finding narrative).",
+                "Also write/update hub poc_develop.md with run instructions only — "
+                "do not rewrite the finding narrative. "
+                "relpath is relative to the pack (or pack selected by evidence_id).",
                 {
-                    "relpath": {"type": "string"},
-                    "content": {"type": "string"},
+                    "relpath": {
+                        "type": "string",
+                        "description": (
+                            "Path inside the evidence pack, e.g. 'poc.py', "
+                            "'poc_develop.md'."
+                        ),
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full file contents (UTF-8 text).",
+                    },
                     "evidence_id": {
                         "type": "string",
-                        "description": "Evidence pack id (use the task pack id).",
+                        "description": (
+                            "Evidence pack id for this finding (use the task pack id)."
+                        ),
                     },
                 },
                 ["relpath", "content"],
@@ -637,12 +1267,29 @@ def pack_recon_agent(
             "Target is read-only. Use only provided tools.\n"
         )
     agent_label = (agent_id or "recon").strip() or "recon"
+    run_profile_early = str((cfg.get("run") or {}).get("profile") or "code_static")
+    if run_profile_early == "binary_re":
+        tool_hint = (
+            "Tools: use ghidra_* (imports, import_callers, strings, list_functions, decompile, xrefs). "
+            "For dangerous APIs: ghidra_imports(filter=...) then ghidra_import_callers — "
+            "decompile CALLERS, not IAT stubs. "
+            "The target is a single PE binary — no source tree. "
+            "path_hints should be function names or addresses. "
+            "Call submit_architecture once when done.\n"
+        )
+    else:
+        tool_hint = (
+            "Tools: prefer file_inventory over many list_dir; grep to find symbols; "
+            "read_file with 1-based line ranges for long files; paths are relative to "
+            "the target root. Call submit_architecture once when done.\n"
+        )
     system = (
         preamble
         + "\n## Stage: recon\n"
         + f"Recon agent: **{agent_label}**. "
         + "Map architecture only. Do **not** file vulnerability candidates. "
         + "Do not call submit_candidate or submit_none. Finish with submit_architecture.\n"
+        + tool_hint
     )
     recon = (agent_body or "").strip() + "\n"
     run_cfg = cfg.get("run") if isinstance(cfg.get("run"), dict) else {}
@@ -691,7 +1338,8 @@ def pack_recon_agent(
             + "\n"
             + "Incorporate this guidance into hunt_focus path_hints and architecture summary.\n"
         )
-    tools = tool_schemas_for("code_static", "recon")
+    run_profile = str((cfg.get("run") or {}).get("profile") or "code_static")
+    tools = tool_schemas_for(run_profile, "recon")
     tools = _filter_tools_by_allowlist(
         tools, tools_allowlist, always_keep=RECON_ALWAYS_KEEP_TOOLS
     )
@@ -707,6 +1355,7 @@ def pack_recon_agent(
             "budget": budget,
             "stage": "recon",
             "recon_agent_id": agent_label,
+            "profile": run_profile,
         },
         over_budget=over and total > budget * 1.5,
     )
@@ -850,10 +1499,22 @@ def pack_hunt(
         "Hard deny only outside the target tree. force_depth does not lift the soft jail.\n"
     )
     if force:
-        scope_note += (
-            "force_depth=true: must use read_file/grep before submit_none "
-            "(deeper tools required; soft path_hints jail still applies).\n"
-        )
+        prof = str(
+            (cfg.get("run") or {}).get("profile")
+            or cfg.get("profile")
+            or ""
+        ).strip().lower()
+        if prof == "binary_re":
+            scope_note += (
+                "force_depth=true: must use ghidra_decompile / ghidra_xrefs / "
+                "ghidra_call_graph / ghidra_import_callers / ghidra_function_at "
+                "before submit_none (deeper RE tools required).\n"
+            )
+        else:
+            scope_note += (
+                "force_depth=true: must use read_file/grep before submit_none "
+                "(deeper tools required; soft path_hints jail still applies).\n"
+            )
     op_notes = str(
         task_payload.get("operator_notes")
         or task_payload.get("operator_brief")
@@ -891,7 +1552,8 @@ def pack_hunt(
         "(one profile per call). If the tool says that profile is already under way "
         "or circular, do not retry the same profile — finish this task instead.\n"
     )
-    tools = tool_schemas_for("code_static", "hunt")
+    run_profile = str((cfg.get("run") or {}).get("profile") or "code_static")
+    tools = tool_schemas_for(run_profile, "hunt")
     # Optional per-hunt-profile tools allowlist (null = full hunt set).
     tools_allowlist = None
     try:

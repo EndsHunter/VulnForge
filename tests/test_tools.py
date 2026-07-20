@@ -314,3 +314,72 @@ def test_prepare_candidate_enforces_poc_relpath(tmp_path: Path):
     assert err2 is None, err2
     assert prepared2 is not None
     assert prepared2["evidence_id"] == "e1"
+
+
+def _hash_tree(root: Path) -> dict[str, str]:
+    from vulnforge.util import hash_file, normalize_relpath
+
+    out: dict[str, str] = {}
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            rel = normalize_relpath(str(p.relative_to(root)))
+            out[rel] = hash_file(p)
+    return out
+
+
+def test_agent_tools_do_not_mutate_target(tmp_path: Path):
+    """Built-in tools leave the audit target tree byte-identical."""
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("x = 1\n# SELECT users\n", encoding="utf-8")
+    (target / "sub").mkdir()
+    (target / "sub" / "b.py").write_text("print(2)\n", encoding="utf-8")
+    evidence = tmp_path / "evidence"
+    before = _hash_tree(target)
+    ctx = {
+        "target_root": str(target),
+        "evidence_root": str(evidence),
+        "task_id": 42,
+        "cfg": {"tools": {}, "run": {"ignore_globs": []}},
+        "session": {},
+    }
+    h = build_tool_handler(ctx)
+    assert h("list_dir", {"path": "."})["ok"]
+    assert h("file_inventory", {"path": ".", "format": "list"})["ok"]
+    assert h("read_file", {"path": "app.py"})["ok"]
+    assert h("grep", {"pattern": "SELECT"})["ok"]
+    assert h(
+        "write_evidence",
+        {"relpath": "note.txt", "content": "poc notes with enough bytes for gate"},
+    )["ok"]
+    assert h("note", {"kind": "wishlist", "payload": {"msg": "x"}})["ok"]
+    after = _hash_tree(target)
+    assert after == before
+    assert (evidence / "42" / "note.txt").is_file()
+
+
+def test_write_evidence_rejects_evidence_under_target(tmp_path: Path):
+    """Mis-set evidence_root inside target must not write into the audit tree."""
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "app.py").write_text("ok\n", encoding="utf-8")
+    nested = target / "evidence_oops"
+    nested.mkdir()
+    before = _hash_tree(target)
+    ctx = {
+        "target_root": str(target),
+        "evidence_root": str(nested),
+        "task_id": 1,
+        "cfg": {"tools": {}},
+        "session": {},
+    }
+    h = build_tool_handler(ctx)
+    r = h(
+        "write_evidence",
+        {"relpath": "evil.txt", "content": "should not land under target tree xx"},
+    )
+    assert not r["ok"]
+    assert "target" in (r.get("error") or "").lower() or "evidence_root" in (
+        r.get("error") or ""
+    ).lower()
+    assert _hash_tree(target) == before

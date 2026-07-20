@@ -315,6 +315,57 @@ def test_parse_architecture_merge_content_fenced():
     assert parse_architecture_merge_content('{"summary": ""}') is None
 
 
+def test_llm_merge_passes_timeout_and_capped_max_tokens():
+    """Post-agent merge must use a short timeout and capped max_tokens."""
+    from vulnforge.stages.recon import llm_merge_architectures
+
+    seen: dict = {}
+
+    class SpyClient:
+        def chat(self, messages, tools=None, temperature=0.3, max_tokens=None, timeout=None):
+            seen["max_tokens"] = max_tokens
+            seen["timeout"] = timeout
+            return LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content=(
+                    '{"summary": "merged", "components": [], "trust_boundaries": [],'
+                    ' "input_surfaces": [], "hunt_focus": []}'
+                ),
+                tool_calls=[],
+                raw=None,
+                model_id="spy",
+            )
+
+    prior = {
+        "summary": "prior",
+        "components": [],
+        "trust_boundaries": [],
+        "input_surfaces": [],
+        "hunt_focus": [],
+    }
+    incoming = {
+        "summary": "incoming",
+        "components": [],
+        "trust_boundaries": [],
+        "input_surfaces": [],
+        "hunt_focus": [],
+    }
+    cfg = {
+        "llm": {"max_tokens": 25089, "temperature_recon": 0.3},
+        "run": {
+            "architecture_merge_timeout_seconds": 90,
+            "architecture_merge_max_tokens": 2048,
+        },
+    }
+    part, res = llm_merge_architectures(SpyClient(), cfg, prior, incoming)
+    assert part is not None
+    assert part["summary"] == "merged"
+    assert seen["timeout"] == 90.0
+    # Cap is min(25089, 2048, 4096) == 2048
+    assert seen["max_tokens"] == 2048
+
+
 def test_merge_architectures_summary_concat_and_dedupe():
     a1 = {"summary": "Line one.\n\nLine two."}
     a2 = {"summary": "Line two.\n\nLine three."}  # Line two deduped

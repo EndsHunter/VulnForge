@@ -344,19 +344,44 @@ def llm_merge_architectures(
         {"role": "user", "content": user},
     ]
     llm_cfg = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+    run_cfg = cfg.get("run") if isinstance(cfg.get("run"), dict) else {}
     try:
         temp = float(llm_cfg.get("temperature_recon", 0.2))
     except (TypeError, ValueError):
         temp = 0.2
     # Slightly cooler than exploratory recon for structured merge
     temp = min(temp, 0.25)
+    # Cap merge completion size: large UI max_tokens (e.g. 25k) makes merge
+    # generations extremely slow and was hanging recon handoff on local models.
     try:
-        max_tokens = int(llm_cfg.get("max_tokens") or 4096)
+        default_mt = int(llm_cfg.get("max_tokens") or 4096)
     except (TypeError, ValueError):
-        max_tokens = 4096
+        default_mt = 4096
+    try:
+        merge_cap = int(
+            run_cfg.get("architecture_merge_max_tokens")
+            or llm_cfg.get("architecture_merge_max_tokens")
+            or 2048
+        )
+    except (TypeError, ValueError):
+        merge_cap = 2048
+    max_tokens = max(512, min(default_mt, merge_cap, 4096))
+    try:
+        merge_timeout = float(
+            run_cfg.get("architecture_merge_timeout_seconds")
+            or llm_cfg.get("architecture_merge_timeout_seconds")
+            or 120
+        )
+    except (TypeError, ValueError):
+        merge_timeout = 120.0
+    merge_timeout = max(15.0, min(merge_timeout, 600.0))
     try:
         result = client.chat(
-            messages, tools=None, temperature=temp, max_tokens=max_tokens
+            messages,
+            tools=None,
+            temperature=temp,
+            max_tokens=max_tokens,
+            timeout=merge_timeout,
         )
     except Exception:
         return None, None
@@ -712,20 +737,100 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         return {"status": "failed_task", "error": "no_run"}
     target = Path(run_row["target_path"])
     ignore = list((cfg.get("run") or {}).get("ignore_globs") or [])
-    inventory = build_file_index(target, ignore)
-    if inventory["file_count"] == 0:
-        return {"status": "failed_task", "error": "empty_inventory"}
-
-    # P2.1: mechanical sink preindex (also used for class routing / hunt seeds)
     try:
-        seed_sinks = build_sink_preindex(target, ignore)
-    except OSError:
-        seed_sinks = []
-    inventory["seed_sinks"] = seed_sinks
-    # Area names from stratified seed (full file_count remains authority for size).
-    inventory["dir_partitions"] = partition_by_top_dir(
-        inventory.get("sample_paths") or []
-    )
+        profile = str(run_row["profile"] or "")
+    except (KeyError, IndexError, TypeError):
+        profile = ""
+    if not profile:
+        profile = str((cfg.get("run") or {}).get("profile") or "code_static")
+
+    if profile == "binary_re":
+        # Single PE: synthetic inventory (no source tree walk).
+        from vulnforge.util import hash_file
+
+        name = target.name if target.is_file() else "binary"
+        try:
+            digest = hash_file(target) if target.is_file() else ""
+        except OSError:
+            digest = ""
+        seed_sinks: list = []
+        inventory = {
+            "file_count": 1 if target.is_file() else 0,
+            "kind": "single_binary",
+            "extensions": {target.suffix.lower(): 1} if target.is_file() else {},
+            "entrypoints": [name],
+            "sample_paths": [name],
+            "seed_sinks": seed_sinks,
+            "dir_partitions": {".": [name]},
+            "binary": {
+                "name": name,
+                "path": str(target),
+                "sha256": digest,
+            },
+        }
+        if inventory["file_count"] == 0:
+            return {"status": "failed_task", "error": "empty_inventory"}
+    elif target.is_file():
+        # Single source file (code_static): one-file inventory, tools use parent root.
+        from vulnforge.util import hash_file
+
+        name = target.name
+        try:
+            digest = hash_file(target)
+        except OSError:
+            digest = ""
+        # Scan only this file (never walk parent — may be Desktop / huge tree).
+        seed_sinks: list = []
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+            from vulnforge.tools.sink_preindex import _SINK_PATTERNS
+
+            for i, line in enumerate(text.splitlines(), 1):
+                ln = line[:400] if len(line) > 400 else line
+                for kind, rx in _SINK_PATTERNS:
+                    if rx.search(ln):
+                        seed_sinks.append(
+                            {
+                                "path": name,
+                                "line": i,
+                                "kind": kind,
+                                "text": ln.strip()[:160],
+                            }
+                        )
+                        break
+                if len(seed_sinks) >= 100:
+                    break
+        except OSError:
+            seed_sinks = []
+        inventory = {
+            "file_count": 1,
+            "kind": "single_file",
+            "extensions": {target.suffix.lower(): 1} if target.suffix else {},
+            "entrypoints": [name],
+            "sample_paths": [name],
+            "seed_sinks": seed_sinks,
+            "dir_partitions": {".": [name]},
+            "single_file": {
+                "name": name,
+                "path": str(target),
+                "sha256": digest,
+            },
+        }
+    else:
+        inventory = build_file_index(target, ignore)
+        if inventory["file_count"] == 0:
+            return {"status": "failed_task", "error": "empty_inventory"}
+
+        # P2.1: mechanical sink preindex (also used for class routing / hunt seeds)
+        try:
+            seed_sinks = build_sink_preindex(target, ignore)
+        except OSError:
+            seed_sinks = []
+        inventory["seed_sinks"] = seed_sinks
+        # Area names from stratified seed (full file_count remains authority for size).
+        inventory["dir_partitions"] = partition_by_top_dir(
+            inventory.get("sample_paths") or []
+        )
 
     session: dict = {
         "architecture": None,
@@ -737,14 +842,49 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         session["architecture"] = args
         return {"ok": True, "stored": "architecture"}
 
+    from vulnforge.util import target_tool_root
+
     ctx = {
-        "target_root": str(target),
+        "target_root": str(target_tool_root(target)),
         "evidence_root": str(run_dir / "evidence"),
         "task_id": task.id,
         "cfg": cfg,
         "session": session,
         "submit_architecture": submit_architecture,
+        "run_dir": run_dir,
+        "db": db,
     }
+    # Ensure packets see the correct run profile for tool schemas
+    if not isinstance(cfg.get("run"), dict):
+        cfg = dict(cfg)
+        cfg["run"] = {}
+    cfg["run"]["profile"] = profile
+
+    if profile == "binary_re":
+        # Hard requirement: headless Ghidra must be up with the PE loaded
+        # before recon/hunts call ghidra_* tools.
+        from vulnforge.ghidra.client import GhidraError
+        from vulnforge.ghidra.runtime import client_from_cfg, ensure_ghidra_for_run
+
+        try:
+            ensure_ghidra_for_run(run_dir, target, cfg)
+            ctx["ghidra_client"] = client_from_cfg(cfg)
+        except GhidraError as e:
+            return _failed_task_result(
+                task,
+                db,
+                cfg,
+                run_dir,
+                error=f"ghidra_not_ready: {e}",
+            )
+        except Exception as e:
+            return _failed_task_result(
+                task,
+                db,
+                cfg,
+                run_dir,
+                error=f"ghidra_not_ready: {e}",
+            )
     handler = build_tool_handler(ctx)
     prompts_root = PROJECT_ROOT / "prompts" / "v1"
     payload = task.payload if isinstance(getattr(task, "payload", None), dict) else {}
@@ -1684,9 +1824,19 @@ def _fallback_hunt_tasks(
         inventory.get("sample_paths") or []
     )
     if not areas:
-        if partitions:
-            areas = [p["dir"] for p in partitions[:6] if p.get("dir")]
+        # partition_by_top_dir returns list[{"dir","paths"}];
+        # inventory may store a plain dict {dir: [paths]} (binary/single-file).
+        if isinstance(partitions, list) and partitions:
+            areas = [
+                p["dir"]
+                for p in partitions[:6]
+                if isinstance(p, dict) and p.get("dir")
+            ]
+        elif isinstance(partitions, dict) and partitions:
+            areas = [str(k) for k in list(partitions.keys())[:6]]
         else:
+            areas = ["app"]
+        if not areas:
             areas = ["app"]
 
     mode, skill_ids = skill_policy_from_run_cfg(cfg or {})
