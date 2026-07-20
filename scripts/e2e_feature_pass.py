@@ -2,7 +2,7 @@
 """End-to-end feature pass for VulnForge (FakeLLM — no live model required).
 
 Exercises: init, recon, hunt, validate_mech, findings clusters/merge, chains,
-architecture history/edit, coverage modes, generate-skill enqueue, MAX Hunt,
+architecture history/edit, coverage modes, generate-skill enqueue,
 seed catalog, default tools.
 
 Exit 0 if all steps pass; 1 if any fail. Prints JSON summary on stdout last line
@@ -405,8 +405,8 @@ def main() -> int:
         )
         report.add("coverage_select", r_sel.get("ok") is True, f"enqueued={r_sel.get('enqueued_count')}")
 
-        # --- 8. Generate skill + MAX Hunt ---
-        print("\n== 8. Generate skill + MAX Hunt ==")
+        # --- 8. Generate skill ---
+        print("\n== 8. Generate skill ==")
         g = dashops.coverage_generate_skill(
             run_dir,
             brief="E2E generate skill focused on app.py SQLi",
@@ -416,26 +416,6 @@ def main() -> int:
             path_targets=[{"path": "app.py", "is_dir": False}],
         )
         report.add("coverage_generate_skill", g.get("ok") is True, f"task={g.get('task_id')}")
-
-        prev = dashops.preview_max_hunt(run_dir, scope="all", max_files=5)
-        report.add(
-            "max_hunt_preview",
-            prev.get("ok") is True and (prev.get("file_count") or 0) >= 1,
-            f"files={prev.get('file_count')} capped={prev.get('capped_to')}",
-        )
-        mx = dashops.enqueue_max_hunt(
-            run_dir,
-            scope="all",
-            max_files=2,
-            operator_notes="e2e max",
-            activate=False,
-            dry_run=False,
-        )
-        report.add(
-            "max_hunt_enqueue",
-            mx.get("ok") is True and (mx.get("enqueued_generate") or 0) >= 1,
-            f"n={mx.get('enqueued_generate')}",
-        )
 
         # Run one generate_skill with fakes
         db = Database.open(run_dir / "harness.db")

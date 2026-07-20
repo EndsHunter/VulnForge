@@ -8,10 +8,14 @@ Authority remains harness.db; these are control-plane clients like apply-candida
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
+import time
 from pathlib import Path
 from typing import Any, Optional
 
-from vulnforge.db import Database
+from vulnforge.db import Database, pid_from_lease_owner, process_pid_alive
 from vulnforge.hunt_profiles import (
     HUNT_SKILL_MODES,
     active_class_ids,
@@ -26,11 +30,22 @@ from vulnforge.util import append_event, normalize_relpath
 # Mirrors vh/tools/grep_index.build_file_index sample window.
 SAMPLE_PATHS_CAP = 500
 
+
+def _row_profile(row) -> str:
+    """Profile string from a run sqlite Row / mapping."""
+    if not row:
+        return ""
+    try:
+        return str(row["profile"] or "")
+    except (KeyError, IndexError, TypeError):
+        return ""
+
 DEPTH_BLURBS: dict[str, str] = {
     "": "No completed hunt depth recorded for this cell yet (planned or unvisited).",
     "planned": "Coverage fact created when the hunt was enqueued; visit not finished.",
     "shallow": (
-        "Hunt ended without substantial read_file/grep use (shallow). "
+        "Hunt ended without substantial analysis tools "
+        "(read_file/grep or ghidra decompile/xrefs) (shallow). "
         "Does not mean the area is safe - often requeued once with force_depth."
     ),
     "none": (
@@ -404,6 +419,267 @@ def cancel_queued_task(
         db.close()
 
 
+def _kill_lease_owner_pid(owner: str | None) -> dict[str, Any]:
+    """Best-effort kill of the run-once worker that holds a lease (``vf-{pid}-*``).
+
+    Ralph's parent process stays alive and will lease the next task on the
+    following iteration. Returns ``{killed, pid}``.
+    """
+    pid = pid_from_lease_owner(owner)
+    if pid is None:
+        return {"killed": False, "pid": None}
+    if not process_pid_alive(pid):
+        return {"killed": False, "pid": pid, "already_dead": True}
+    try:
+        if os.name == "nt":
+            tk_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+                creationflags=tk_flags,
+            )
+        else:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+            time.sleep(0.2)
+            if process_pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        # Brief settle so OS reaps children before the next lease
+        time.sleep(0.15)
+        return {"killed": True, "pid": pid}
+    except OSError as e:
+        return {"killed": False, "pid": pid, "error": str(e)}
+
+
+def pause_task(
+    run_dir: Path,
+    task_id: int,
+    *,
+    reason: str = "operator_pause",
+) -> dict[str, Any]:
+    """Pause a queued or leased task so the next queued item can start.
+
+    For a **leased** task: parks it as ``paused``, clears the lease slot, and
+    kills the run-once worker PID so Ralph can pick up the next queued task.
+    Paused tasks auto-run again when no ``queued`` work remains (last left),
+    or immediately after :func:`resume_paused_task`.
+    """
+    db = _open_db(run_dir)
+    try:
+        task = db.get_task(int(task_id))
+        if not task:
+            return {"ok": False, "error": f"task #{task_id} not found"}
+        if task.state not in ("queued", "leased"):
+            return {
+                "ok": False,
+                "error": (
+                    f"task #{task_id} is {task.state}; only queued or leased "
+                    "tasks can be paused"
+                ),
+            }
+        why = (reason or "operator_pause").strip() or "operator_pause"
+        info = db.pause_task(int(task_id), reason=why)
+        if not info:
+            return {
+                "ok": False,
+                "error": f"task #{task_id} could not be paused (state may have changed)",
+            }
+        kill_info: dict[str, Any] = {"killed": False, "pid": None}
+        if info.get("prev_state") == "leased":
+            kill_info = _kill_lease_owner_pid(info.get("lease_owner"))
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "dashboard",
+                    "event": "operator_pause_task",
+                    "task_id": int(task_id),
+                    "kind": info.get("kind"),
+                    "prev_state": info.get("prev_state"),
+                    "priority": info.get("priority"),
+                    "reason": why,
+                    "killed_pid": kill_info.get("pid"),
+                    "killed": bool(kill_info.get("killed")),
+                    "payload": info.get("payload"),
+                },
+            )
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "task_id": int(task_id),
+            "kind": info.get("kind"),
+            "state": "paused",
+            "prev_state": info.get("prev_state"),
+            "priority": info.get("priority"),
+            "reason": why,
+            "killed": bool(kill_info.get("killed")),
+            "killed_pid": kill_info.get("pid"),
+            "payload": info.get("payload"),
+            "note": (
+                "Paused; next queued task can lease. This task runs when resumed "
+                "or when it is the last remaining work."
+            ),
+        }
+    finally:
+        db.close()
+
+
+def resume_paused_task(
+    run_dir: Path,
+    task_id: int,
+    *,
+    tier: str = "run_next",
+    reason: str = "operator_resume",
+) -> dict[str, Any]:
+    """Resume a paused task back to the queue.
+
+    Default tier is ``run_next`` so it jumps ahead of residual work. Use
+    ``high`` / ``normal`` / ``low`` to keep its place-ish band, or pass
+    ``tier=\"keep\"`` to preserve the stored priority.
+    """
+    t = str(tier or "run_next").strip().lower().replace("-", "_")
+    if t in ("next", "runnext", "front"):
+        t = "run_next"
+    if t not in ("run_next", "high", "normal", "low", "keep"):
+        return {
+            "ok": False,
+            "error": f"invalid tier: {tier!r} (use run_next|high|normal|low|keep)",
+        }
+
+    db = _open_db(run_dir)
+    try:
+        task = db.get_task(int(task_id))
+        if not task:
+            return {"ok": False, "error": f"task #{task_id} not found"}
+        if task.state != "paused":
+            return {
+                "ok": False,
+                "error": f"task #{task_id} is {task.state}; only paused tasks can be resumed",
+            }
+
+        if t == "keep":
+            new_p: Optional[int] = None
+        elif t == "run_next":
+            mn = db.min_queued_priority()
+            new_p = (int(mn) if mn is not None else 0) - 1
+        else:
+            new_p = int(PRIORITY_TIERS[t])
+
+        why = (reason or "operator_resume").strip() or "operator_resume"
+        info = db.resume_paused_task(int(task_id), priority=new_p, reason=why)
+        if not info:
+            return {
+                "ok": False,
+                "error": f"task #{task_id} could not be resumed (state may have changed)",
+            }
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "dashboard",
+                    "event": "operator_resume_task",
+                    "task_id": int(task_id),
+                    "kind": info.get("kind"),
+                    "tier": t,
+                    "priority": info.get("priority"),
+                    "prev_priority": info.get("prev_priority"),
+                    "reason": why,
+                    "payload": info.get("payload"),
+                },
+            )
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "task_id": int(task_id),
+            "kind": info.get("kind"),
+            "state": "queued",
+            "prev_state": "paused",
+            "tier": t,
+            "priority": info.get("priority"),
+            "prev_priority": info.get("prev_priority"),
+            "reason": why,
+            "payload": info.get("payload"),
+        }
+    finally:
+        db.close()
+
+
+def halt_task(
+    run_dir: Path,
+    task_id: int,
+    *,
+    reason: str = "operator_halt",
+) -> dict[str, Any]:
+    """Permanently cancel a queued, paused, or leased task.
+
+    For a **leased** task: marks ``cancelled`` and kills the run-once worker so
+    the next queued item can start. Unlike pause, the task will not auto-return.
+    """
+    db = _open_db(run_dir)
+    try:
+        task = db.get_task(int(task_id))
+        if not task:
+            return {"ok": False, "error": f"task #{task_id} not found"}
+        if task.state not in ("queued", "paused", "leased"):
+            return {
+                "ok": False,
+                "error": (
+                    f"task #{task_id} is {task.state}; only queued, paused, or "
+                    "leased tasks can be halted"
+                ),
+            }
+        why = (reason or "operator_halt").strip() or "operator_halt"
+        info = db.halt_task(int(task_id), reason=why)
+        if not info:
+            return {
+                "ok": False,
+                "error": f"task #{task_id} could not be halted (state may have changed)",
+            }
+        kill_info: dict[str, Any] = {"killed": False, "pid": None}
+        if info.get("prev_state") == "leased":
+            kill_info = _kill_lease_owner_pid(info.get("lease_owner"))
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "dashboard",
+                    "event": "operator_halt_task",
+                    "task_id": int(task_id),
+                    "kind": info.get("kind"),
+                    "prev_state": info.get("prev_state"),
+                    "priority": info.get("priority"),
+                    "reason": why,
+                    "killed_pid": kill_info.get("pid"),
+                    "killed": bool(kill_info.get("killed")),
+                    "payload": info.get("payload"),
+                },
+            )
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "task_id": int(task_id),
+            "kind": info.get("kind"),
+            "state": "cancelled",
+            "prev_state": info.get("prev_state"),
+            "priority": info.get("priority"),
+            "reason": why,
+            "killed": bool(kill_info.get("killed")),
+            "killed_pid": kill_info.get("pid"),
+            "payload": info.get("payload"),
+        }
+    finally:
+        db.close()
+
+
 def requeue_hunt(
     run_dir: Path,
     *,
@@ -457,6 +733,66 @@ def requeue_hunt(
         return {"ok": True, "task_id": tid, "payload": payload}
     finally:
         db.close()
+
+
+# Cap bulk operator requeues so one click cannot flood the queue unbounded.
+REQUEUE_BULK_MAX_CELLS = 200
+
+
+def requeue_hunt_bulk(
+    run_dir: Path,
+    *,
+    cells: list[dict[str, Any]],
+    force_depth: bool = True,
+    reason: str = "operator_bulk_requeue",
+    operator_notes: str = "",
+) -> dict[str, Any]:
+    """Enqueue hunts for many area×class cells in one call.
+
+    Each cell: ``{"area": str, "class": str, "path_hints"?: list[str]}``.
+    Returns per-cell results; partial success is ok.
+    """
+    raw = list(cells or [])[:REQUEUE_BULK_MAX_CELLS]
+    if not raw:
+        return {"ok": False, "error": "no_cells", "enqueued": 0, "results": []}
+    results: list[dict[str, Any]] = []
+    enqueued = 0
+    for item in raw:
+        if not isinstance(item, dict):
+            results.append({"ok": False, "error": "cell_not_object"})
+            continue
+        area = str(item.get("area") or "").strip()
+        cls = str(item.get("class") or item.get("attack_class") or "").strip()
+        if not area or not cls:
+            results.append(
+                {"ok": False, "error": "missing_area_or_class", "area": area, "class": cls}
+            )
+            continue
+        hints = item.get("path_hints")
+        if hints is not None and not isinstance(hints, list):
+            hints = [hints]
+        try:
+            r = requeue_hunt(
+                run_dir,
+                area=area,
+                attack_class=cls,
+                path_hints=hints,
+                force_depth=force_depth,
+                reason=reason,
+                operator_notes=operator_notes,
+            )
+        except Exception as e:
+            r = {"ok": False, "error": str(e), "area": area, "class": cls}
+        if r.get("ok"):
+            enqueued += 1
+        results.append({**r, "area": area, "class": cls})
+    return {
+        "ok": enqueued > 0,
+        "enqueued": enqueued,
+        "requested": len(raw),
+        "results": results,
+        "truncated": len(cells or []) > REQUEUE_BULK_MAX_CELLS,
+    }
 
 
 def requeue_recon(
@@ -940,28 +1276,6 @@ def apply_coverage_mode(
         db.close()
 
 
-# Hard ceiling for MAX Hunt fan-out (safety; UI also confirms).
-MAX_MAX_HUNT_HARD = 200
-
-
-def _run_target_and_ignore(db: Database, run_dir: Path) -> tuple[Optional[Path], list[str]]:
-    """Return (target_path, ignore globs) from run row / config."""
-    row = db.get_run()
-    if not row:
-        return None, []
-    target = Path(str(row["target_path"] or "")).resolve()
-    if not target.is_dir():
-        return None, []
-    cfg = get_run_config(db)
-    ignore: list[str] = []
-    tools = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
-    inv = tools.get("file_inventory") if isinstance(tools.get("file_inventory"), dict) else {}
-    raw = inv.get("ignore") or cfg.get("ignore") or []
-    if isinstance(raw, list):
-        ignore = [str(x) for x in raw if str(x).strip()]
-    elif isinstance(raw, str) and raw.strip():
-        ignore = [raw.strip()]
-    return target, ignore
 
 
 def _norm_path_targets(
@@ -1120,234 +1434,63 @@ def coverage_generate_skill(
         db.close()
 
 
-def _max_hunt_file_list(
-    run_dir: Path,
-    *,
-    scope: str = "all",
-    path_targets: Optional[list[Any]] = None,
-    max_files: int = 50,
-) -> dict[str, Any]:
-    """Resolve capped source-file list for MAX Hunt (preview + enqueue)."""
-    from vulnforge.strategies import list_source_files
-
-    db = _open_db(run_dir)
-    try:
-        target, ignore = _run_target_and_ignore(db, run_dir)
-        if target is None:
-            return {"ok": False, "error": "target missing or no run"}
-        cfg = get_run_config(db)
-        try:
-            max_tasks = max(1, int((cfg.get("run") or {}).get("max_tasks") or 50))
-        except (TypeError, ValueError):
-            max_tasks = 50
-        try:
-            want = int(max_files) if max_files is not None else max_tasks
-        except (TypeError, ValueError):
-            want = max_tasks
-        want = max(1, want)
-        hard = MAX_MAX_HUNT_HARD
-        cap = min(want, max_tasks, hard)
-
-        scope_n = str(scope or "all").strip().lower()
-        if scope_n not in ("all", "paths"):
-            scope_n = "all"
-
-        files: list[str] = []
-        if scope_n == "paths":
-            norm = _norm_path_targets(run_dir, path_targets)
-            if not norm:
-                return {
-                    "ok": False,
-                    "error": "scope=paths requires path_targets",
-                    "file_count": 0,
-                    "files": [],
-                    "capped_to": cap,
-                }
-            # Expand folders to source files; keep files as-is
-            all_src = list_source_files(target, ignore=ignore)
-            all_set = set(all_src)
-            picked: list[str] = []
-            for pt in norm:
-                p = pt["path"]
-                if pt.get("is_dir"):
-                    # Target root: all source files
-                    if p in (".", ""):
-                        for f in all_src:
-                            if f not in picked:
-                                picked.append(f)
-                        continue
-                    prefix = p.rstrip("/") + "/"
-                    for f in all_src:
-                        if f == p or f.startswith(prefix):
-                            if f not in picked:
-                                picked.append(f)
-                else:
-                    # exact file or any source under that path
-                    if p in all_set:
-                        if p not in picked:
-                            picked.append(p)
-                    else:
-                        # allow non-indexed path if it exists as file
-                        if (target / p).is_file() and p not in picked:
-                            picked.append(p)
-            files = picked
-        else:
-            files = list_source_files(target, ignore=ignore)
-
-        total = len(files)
-        files_capped = files[:cap]
-        return {
-            "ok": True,
-            "scope": scope_n,
-            "file_count": total,
-            "files": files_capped,
-            "files_sample": files_capped[:20],
-            "capped_to": cap,
-            "max_tasks": max_tasks,
-            "max_files_requested": want,
-            "hard_ceiling": hard,
-            "estimated_generate_tasks": len(files_capped),
-            "estimated_hunts": len(files_capped),  # one hunt per generate when enqueue_hunts
-            "truncated": total > cap,
-            "target": str(target),
-        }
-    finally:
-        db.close()
-
-
-def preview_max_hunt(
-    run_dir: Path,
-    *,
-    scope: str = "all",
-    path_targets: Optional[list[Any]] = None,
-    max_files: int = 50,
-) -> dict[str, Any]:
-    """Dry-run MAX Hunt file enumeration (no enqueue)."""
-    return _max_hunt_file_list(
-        run_dir, scope=scope, path_targets=path_targets, max_files=max_files
-    )
-
-
-def enqueue_max_hunt(
-    run_dir: Path,
-    *,
-    scope: str = "all",
-    path_targets: Optional[list[Any]] = None,
-    max_files: int = 50,
-    operator_notes: str = "",
-    activate: bool = False,
-    dry_run: bool = False,
-) -> dict[str, Any]:
-    """
-    Enqueue one ``generate_skill`` (enqueue_hunts=true) per source file for MAX Hunt.
-
-    activate defaults False so bulk does not rewrite Dev active set.
-    Skills are saved as source=generated (inactive); hunts use class_body_override.
-    """
-    preview = _max_hunt_file_list(
-        run_dir, scope=scope, path_targets=path_targets, max_files=max_files
-    )
-    if not preview.get("ok"):
-        return preview
-    if dry_run:
-        return {**preview, "dry_run": True, "enqueued_generate": 0, "task_ids": []}
-
-    files: list[str] = list(preview.get("files") or [])
-    if not files:
-        return {
-            **preview,
-            "ok": False,
-            "error": "no source files matched scope",
-            "enqueued_generate": 0,
-            "task_ids": [],
-        }
-
-    notes = (operator_notes or "").strip()
-    arch_summary = ""
-    db = _open_db(run_dir)
-    try:
-        arch = db.get_architecture() or {}
-        if isinstance(arch, dict):
-            arch_summary = str(arch.get("summary") or "").strip()[:600]
-
-        task_ids: list[int] = []
-        from vulnforge.hunt_profiles.generate import slugify_profile_id
-
-        for rel in files:
-            rel_n = normalize_relpath(rel)
-            parts = rel_n.split("/")
-            area = parts[0] if len(parts) > 1 else rel_n
-            # Slug from path for suggested skill id
-            base = rel_n.replace("/", "-").replace(".", "-")
-            suggested = slugify_profile_id(base, fallback="file-hunt")
-            brief_parts = [
-                f"Author a focused hunt skill for the single source file `{rel_n}` only.",
-                "Map sinks, trust edges, input surfaces, and abuse cases in this file "
-                "and its direct callees/callers when needed.",
-                "Do not expand into unrelated modules except for minimal context.",
-            ]
-            if arch_summary:
-                brief_parts.append(f"Architecture context: {arch_summary}")
-            if notes:
-                brief_parts.append(f"Operator notes: {notes}")
-            brief = "\n".join(brief_parts)
-            payload: dict[str, Any] = {
-                "brief": brief[:6000],
-                "operator_brief": brief[:6000],
-                "suggested_id": suggested,
-                "activate": bool(activate),
-                "enqueue_hunts": True,
-                "area": area,
-                "path_hints": [rel_n],
-                "path_targets": [{"path": rel_n, "is_dir": False}],
-                "reason": "coverage_max_hunt",
-                "operator_requested": True,
-                "max_hunts": 1,
-            }
-            tid = db.enqueue_task("generate_skill", payload, priority=28)
-            task_ids.append(int(tid))
-
-        try:
-            append_event(
-                run_dir,
-                {
-                    "source": "dashboard",
-                    "event": "coverage_max_hunt",
-                    "enqueued_generate": len(task_ids),
-                    "scope": preview.get("scope"),
-                    "capped_to": preview.get("capped_to"),
-                    "file_count": preview.get("file_count"),
-                    "activate": bool(activate),
-                    "task_ids": task_ids[:50],
-                },
-            )
-        except OSError:
-            pass
-
-        return {
-            **preview,
-            "ok": True,
-            "dry_run": False,
-            "enqueued_generate": len(task_ids),
-            "task_ids": task_ids,
-            "activate": bool(activate),
-            "message": (
-                f"Queued {len(task_ids)} generate_skill task(s) "
-                f"(~{len(task_ids)} hunts after generation). "
-                "Start/Resume Ralph. Generated skills default inactive in Dev."
-            ),
-        }
-    finally:
-        db.close()
-
-
 def target_list(run_dir: Path, path: str = ".", max_entries: int = 200) -> dict[str, Any]:
+    """List target tree for Explorer. Supports directory roots and single-file (PE) runs."""
+    from vulnforge.util import is_pe_file, normalize_relpath
+
     db = _open_db(run_dir)
     try:
         row = db.get_run()
         if not row:
             return {"ok": False, "error": "no run"}
         target = Path(row["target_path"])
+        if not target.exists():
+            return {"ok": False, "error": "target missing"}
+
+        # Single-file / binary_re: virtual root contains only the target file.
+        # Do NOT list the parent directory (e.g. System32).
+        if target.is_file():
+            name = target.name
+            rel = normalize_relpath(path or ".")
+            if rel not in ("", ".", name):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"single-file target: only '{name}' is in scope "
+                        f"(got {path!r})"
+                    ),
+                }
+            try:
+                size = target.stat().st_size
+            except OSError:
+                size = None
+            pe = is_pe_file(target)
+            return {
+                "ok": True,
+                "path": ".",
+                "entries": [
+                    {
+                        "name": name,
+                        "is_dir": False,
+                        "is_file": True,
+                        "size": size,
+                    }
+                ],
+                "total": 1,
+                "truncated": False,
+                "max_entries": max_entries,
+                "single_file": True,
+                "kind": "single_binary" if pe else "single_file",
+                "profile": _row_profile(row),
+                "target_path": str(target.resolve()),
+                "hint": (
+                    "PE binary target — use Ghidra tools for decompilation; "
+                    "text view shows a short header only."
+                    if pe
+                    else "Single-file target."
+                ),
+            }
+
         if not target.is_dir():
             return {"ok": False, "error": "target missing"}
         ctx = {"target_root": str(target), "cfg": get_run_config(db) or {}, "session": {}}
@@ -1362,12 +1505,80 @@ def target_read(
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
 ) -> dict[str, Any]:
+    """Read a target path for Explorer. PE/binary files return a safe header, not raw bytes."""
+    from vulnforge.util import is_pe_file, normalize_relpath
+
     db = _open_db(run_dir)
     try:
         row = db.get_run()
         if not row:
             return {"ok": False, "error": "no run"}
         target = Path(row["target_path"])
+        if not target.exists():
+            return {"ok": False, "error": "target missing"}
+
+        if target.is_file():
+            name = target.name
+            rel = normalize_relpath(path or name)
+            if rel not in ("", ".", name):
+                return {
+                    "ok": False,
+                    "error": f"single-file target: only '{name}' is readable",
+                }
+            try:
+                size = target.stat().st_size
+            except OSError as e:
+                return {"ok": False, "error": str(e)}
+            pe = is_pe_file(target)
+            # Never dump raw PE into the Explorer text view
+            if pe or size > 512_000:
+                profile = ""
+                try:
+                    profile = str(row["profile"] or "")
+                except (KeyError, IndexError, TypeError):
+                    profile = ""
+                lines = [
+                    f"# {name}",
+                    f"path: {target}",
+                    f"size: {size} bytes",
+                    f"kind: {'PE binary' if pe else 'binary/large file'}",
+                ]
+                if pe:
+                    lines.extend(
+                        [
+                            "",
+                            "This run targets a PE binary (binary_re).",
+                            "Explorer cannot show source; use Mission architecture",
+                            "and agent ghidra_* tools (decompile, xrefs, imports).",
+                            "",
+                            "Hunt skills: bin-memory-safety, bin-dangerous-apis, bin-follow-xref.",
+                        ]
+                    )
+                    if profile:
+                        lines.append(f"profile: {profile}")
+                content = "\n".join(lines) + "\n"
+                return {
+                    "ok": True,
+                    "path": name,
+                    "content": content,
+                    "start_line": 1,
+                    "end_line": content.count("\n") or 1,
+                    "binary": True,
+                    "single_file": True,
+                    "size": size,
+                }
+            # Small text single-file: read via parent root
+            from vulnforge.util import target_tool_root
+
+            ctx = {
+                "target_root": str(target_tool_root(target)),
+                "cfg": get_run_config(db) or {},
+                "session": {},
+            }
+            return tool_read_file(
+                ctx, path=name, start_line=start_line, end_line=end_line
+            )
+
         ctx = {"target_root": str(target), "cfg": get_run_config(db) or {}, "session": {}}
         return tool_read_file(
             ctx, path=path, start_line=start_line, end_line=end_line
@@ -1403,12 +1614,21 @@ def hunt_from_selection(
 
     db = _open_db(run_dir)
     try:
-        # Validate path is under target
+        # Validate path is under target (directory root or single-file PE)
         row = db.get_run()
         if not row:
             return {"ok": False, "error": "no run"}
+        target = Path(row["target_path"])
         try:
-            resolve_target_path(Path(row["target_path"]), rel)
+            if target.is_file():
+                if rel not in (target.name, ".", ""):
+                    return {
+                        "ok": False,
+                        "error": f"single-file target: path must be {target.name!r}",
+                    }
+                rel = target.name
+            else:
+                resolve_target_path(target, rel)
         except (PermissionError, OSError) as e:
             return {"ok": False, "error": str(e)}
 
@@ -1453,33 +1673,180 @@ def hunt_from_selection(
         db.close()
 
 
-def architecture_summary(arch: Optional[dict]) -> dict[str, Any]:
-    """Compact fields for Overview Architecture tab."""
-    if not arch:
+def _is_binary_architecture(
+    arch: Optional[dict],
+    *,
+    profile: Optional[str] = None,
+) -> bool:
+    """True when the map should use binary RE preview labels/layout."""
+    if str(profile or "").strip().lower() == "binary_re":
+        return True
+    if not isinstance(arch, dict) or not arch:
+        return False
+    inv = arch.get("inventory") if isinstance(arch.get("inventory"), dict) else {}
+    if str(inv.get("kind") or "") == "single_binary":
+        return True
+    if isinstance(arch.get("binary"), dict) and arch.get("binary"):
+        return True
+    # Hunt focus with hex address hints is a strong binary signal
+    hf = arch.get("hunt_focus")
+    if isinstance(hf, list):
+        for item in hf[:8]:
+            if not isinstance(item, dict):
+                continue
+            hints = item.get("path_hints") or []
+            if not isinstance(hints, list):
+                continue
+            for h in hints[:4]:
+                s = str(h or "").strip().lower()
+                if s.startswith("0x") and len(s) >= 5:
+                    return True
+    return False
+
+
+def _compact_component(c: Any) -> Optional[dict[str, Any]]:
+    if not c:
+        return None
+    if isinstance(c, dict):
+        name = str(c.get("name") or c.get("id") or "").strip()
+        if not name:
+            return None
+        role = str(
+            c.get("role") or c.get("description") or c.get("summary") or ""
+        ).strip()
+        hints = c.get("path_hints") if isinstance(c.get("path_hints"), list) else []
         return {
-            "summary": "",
-            "components": [],
-            "trust_boundaries": [],
-            "input_surfaces": [],
-            "hunt_focus": [],
-            "has_architecture": False,
-            "recon_agents_run": [],
+            "name": name[:120],
+            "path_hints": [str(h)[:80] for h in hints[:12] if h is not None],
+            "role": role[:400],
         }
-    comps = arch.get("components") if isinstance(arch.get("components"), list) else []
+    return {"name": str(c)[:120], "path_hints": [], "role": ""}
+
+
+def _compact_sink(s: Any) -> Optional[dict[str, Any]]:
+    if not s:
+        return None
+    if isinstance(s, dict):
+        symbol = str(s.get("symbol") or s.get("name") or s.get("api") or "").strip()
+        address = str(s.get("address") or s.get("addr") or "").strip()
+        kind = str(s.get("kind") or s.get("family") or "").strip()
+        if not symbol and not address:
+            return None
+        return {
+            "symbol": symbol[:120],
+            "address": address[:64],
+            "kind": kind[:64],
+        }
+    text = str(s).strip()
+    if not text:
+        return None
+    return {"symbol": text[:120], "address": "", "kind": ""}
+
+
+def _compact_symbol_list(raw: Any, *, limit: int = 24) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw[: limit * 2]:
+        if isinstance(item, dict):
+            name = str(
+                item.get("name")
+                or item.get("symbol")
+                or item.get("api")
+                or item.get("label")
+                or ""
+            ).strip()
+        else:
+            name = str(item or "").strip()
+        if name and name not in out:
+            out.append(name[:120])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def architecture_summary(
+    arch: Optional[dict],
+    *,
+    profile: Optional[str] = None,
+) -> dict[str, Any]:
+    """Compact fields for Overview / Architecture tab.
+
+    ``mode`` is ``binary`` for PE reverse-engineering maps and ``source`` otherwise.
+    Binary mode adds modules/sinks/import previews; ``components`` remains populated
+    for Coverage compatibility.
+    """
+    empty: dict[str, Any] = {
+        "mode": "binary" if str(profile or "").strip().lower() == "binary_re" else "source",
+        "title": "Binary map"
+        if str(profile or "").strip().lower() == "binary_re"
+        else "Architecture",
+        "summary": "",
+        "components": [],
+        "modules": [],
+        "trust_boundaries": [],
+        "input_surfaces": [],
+        "hunt_focus": [],
+        "seed_sinks": [],
+        "imports_preview": [],
+        "exports_preview": [],
+        "binary": {},
+        "has_architecture": False,
+        "recon_agents_run": [],
+        "inventory": {},
+    }
+    if not arch:
+        return empty
+
+    binary_mode = _is_binary_architecture(arch, profile=profile)
+    comps_raw = arch.get("components") if isinstance(arch.get("components"), list) else []
+    comps = [c for c in (_compact_component(x) for x in comps_raw[:40]) if c]
     agents_run = arch.get("recon_agents_run")
     if not isinstance(agents_run, list):
         agents_run = []
-    return {
+
+    inv = arch.get("inventory") if isinstance(arch.get("inventory"), dict) else {}
+    sinks_raw = arch.get("seed_sinks")
+    if not isinstance(sinks_raw, list):
+        sinks_raw = inv.get("seed_sinks") if isinstance(inv.get("seed_sinks"), list) else []
+    seed_sinks = [s for s in (_compact_sink(x) for x in sinks_raw[:40]) if s]
+
+    bin_meta: dict[str, Any] = {}
+    if isinstance(arch.get("binary"), dict):
+        bin_meta.update({k: v for k, v in arch["binary"].items() if v is not None})
+    inv_bin = inv.get("binary") if isinstance(inv.get("binary"), dict) else {}
+    if inv_bin:
+        for k, v in inv_bin.items():
+            if v is not None and k not in bin_meta:
+                bin_meta[k] = v
+    if not bin_meta.get("name"):
+        entry = ""
+        if isinstance(inv.get("entrypoints"), list) and inv["entrypoints"]:
+            entry = str(inv["entrypoints"][0] or "")
+        bin_meta["name"] = entry or str(inv.get("name") or "")
+    if not bin_meta.get("path") and inv.get("path"):
+        bin_meta["path"] = inv.get("path")
+    if not bin_meta.get("sha256") and inv.get("sha256"):
+        bin_meta["sha256"] = inv.get("sha256")
+
+    # Pull function count from metadata-ish fields when present
+    for key in ("function_count", "functions", "total_functions"):
+        if bin_meta.get(key) is not None:
+            continue
+        if inv.get(key) is not None:
+            bin_meta[key] = inv.get(key)
+        elif isinstance(arch.get("metrics"), dict) and arch["metrics"].get(key) is not None:
+            bin_meta[key] = arch["metrics"].get(key)
+
+    imports_preview = _compact_symbol_list(arch.get("imports"), limit=24)
+    exports_preview = _compact_symbol_list(arch.get("exports"), limit=16)
+
+    base: dict[str, Any] = {
+        "mode": "binary" if binary_mode else "source",
+        "title": "Binary map" if binary_mode else "Architecture",
         "summary": str(arch.get("summary") or "")[:4000],
-        "components": [
-            {
-                "name": c.get("name") if isinstance(c, dict) else str(c),
-                "path_hints": (c.get("path_hints") if isinstance(c, dict) else None) or [],
-                "role": (c.get("role") if isinstance(c, dict) else None) or "",
-            }
-            for c in comps[:40]
-            if c
-        ],
+        "components": comps,
+        "modules": comps,  # same list; UI labels differ by mode
         "trust_boundaries": list(arch.get("trust_boundaries") or [])[:30]
         if isinstance(arch.get("trust_boundaries"), list)
         else [],
@@ -1489,10 +1856,29 @@ def architecture_summary(arch: Optional[dict]) -> dict[str, Any]:
         "hunt_focus": list(arch.get("hunt_focus") or [])[:40]
         if isinstance(arch.get("hunt_focus"), list)
         else [],
+        "seed_sinks": seed_sinks,
+        "imports_preview": imports_preview,
+        "exports_preview": exports_preview,
+        "binary": {
+            k: bin_meta.get(k)
+            for k in (
+                "name",
+                "path",
+                "sha256",
+                "format",
+                "arch",
+                "architecture",
+                "language",
+                "function_count",
+                "functions",
+                "total_functions",
+                "size",
+                "suffix",
+            )
+            if bin_meta.get(k) not in (None, "")
+        },
         "has_architecture": True,
-        "inventory": arch.get("inventory")
-        if isinstance(arch.get("inventory"), dict)
-        else {},
+        "inventory": inv,
         "recon_agents_run": [
             {
                 "id": a.get("id") if isinstance(a, dict) else str(a),
@@ -1503,6 +1889,7 @@ def architecture_summary(arch: Optional[dict]) -> dict[str, Any]:
             if a
         ],
     }
+    return base
 
 
 # ---------------------------------------------------------------------------

@@ -86,3 +86,65 @@ def test_lease_serial_default_allows_one(tmp_path: Path, toy_sqli: Path):
     assert a is not None
     assert b is None
     db.close()
+
+
+def test_reclaim_all_leased_tasks(tmp_path: Path, toy_sqli: Path):
+    _run, db = _db(tmp_path, toy_sqli)
+    db.enqueue_task("recon", {"agent_ids": ["default-map"]}, priority=10)
+    db.enqueue_task("recon", {"agent_ids": ["surface-mapper"]}, priority=11)
+    t1 = db.lease_next_task("w1", ttl_seconds=600, max_parallel=2)
+    t2 = db.lease_next_task("w2", ttl_seconds=600, max_parallel=2)
+    assert t1 and t2
+    assert db.count_leased_tasks() == 2
+    n = db.reclaim_all_leased_tasks(reason="pause_kill_orphan")
+    assert n == 2
+    assert db.count_leased_tasks() == 0
+    states = {r.id: r.state for r in db.list_tasks()}
+    assert states[t1.id] == "queued"
+    assert states[t2.id] == "queued"
+    db.close()
+
+
+def test_reclaim_dead_owner_leases(tmp_path: Path, toy_sqli: Path):
+    """Hard-killed worker leaves vf-{pid}-* lease; dead PID must requeue immediately."""
+    from vulnforge.db import pid_from_lease_owner
+
+    assert pid_from_lease_owner("vf-17332-31bdfad0") == 17332
+    assert pid_from_lease_owner("not-a-worker") is None
+
+    _run, db = _db(tmp_path, toy_sqli)
+    db.enqueue_task("recon", {"agent_ids": ["auth-model"]}, priority=13)
+    # Use a PID that cannot be alive on this machine
+    dead_owner = "vf-9999999-deadbeef"
+    leased = db.lease_next_task(dead_owner, ttl_seconds=1800, max_parallel=1)
+    assert leased is not None
+    assert db.count_leased_tasks() == 1
+    n = db.reclaim_dead_owner_leases()
+    assert n == 1
+    assert db.count_leased_tasks() == 0
+    assert db.list_tasks()[0].state == "queued"
+    # Live owner must not be reclaimed
+    db.enqueue_task("recon", {"agent_ids": ["x"]}, priority=14)
+    import os
+
+    live = f"vf-{os.getpid()}-alive001"
+    t2 = db.lease_next_task(live, ttl_seconds=1800, max_parallel=1)
+    assert t2 is not None
+    assert db.reclaim_dead_owner_leases() == 0
+    assert db.count_leased_tasks() == 1
+    db.close()
+
+
+def test_control_start_kwargs_caps_workers_to_lease_cap():
+    from vulnforge.ui.app import ControlBody, control_start_kwargs
+
+    ui = {"max_concurrent_agents": 1, "max_tasks": 50}
+    # Client asks for 4 workers but lease cap is 1
+    body = ControlBody(workers=4, max_tasks=50)
+    kw = control_start_kwargs(body, ui)
+    assert kw["workers"] == 1
+
+    ui2 = {"max_concurrent_agents": 3, "max_tasks": 50}
+    body2 = ControlBody(workers=2, max_tasks=50)
+    kw2 = control_start_kwargs(body2, ui2)
+    assert kw2["workers"] == 2

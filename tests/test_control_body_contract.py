@@ -1,7 +1,10 @@
-"""Contract mirror for vh/ui/static/app.js controlBodyFromSettings.
+"""Contract mirror for vulnforge/ui/static/app.js controlBodyFromSettings.
 
 Keep this table in sync with the JS helper. JS has no unit-test runner here;
 this file documents and locks the rules the dashboard client must implement.
+
+Operator Mission Start/Resume: no loop profile, no wall, unlimited Ralph
+progress budget (max_tasks null). Settings max_tasks is enqueue planning only.
 """
 
 from __future__ import annotations
@@ -16,7 +19,6 @@ def control_body_from_settings(settings: Optional[dict[str, Any]]) -> dict[str, 
     s = settings or {}
 
     def _parse_int(val: Any) -> Optional[int]:
-        # JS parseInt(x, 10): undefined/null/"" → NaN; "12px" → 12; floats truncated
         if val is None or val is True or val is False:
             return None
         if isinstance(val, bool):
@@ -26,11 +28,10 @@ def control_body_from_settings(settings: Optional[dict[str, Any]]) -> dict[str, 
         if isinstance(val, float):
             if val != val:  # NaN
                 return None
-            return int(val)  # toward zero like parseInt of number string path
+            return int(val)
         text = str(val).strip()
         if not text:
             return None
-        # mimic parseInt: leading digits only
         sign = 1
         i = 0
         if text[0] in "+-":
@@ -45,9 +46,12 @@ def control_body_from_settings(settings: Optional[dict[str, Any]]) -> dict[str, 
             return None
         return sign * int("".join(digits))
 
-    mt = _parse_int(s.get("max_tasks"))
-    max_tasks = mt if mt is not None and mt > 0 else 50
-    body: dict[str, Any] = {"max_tasks": max_tasks, "task_timeout": 900}
+    body: dict[str, Any] = {
+        "max_tasks": None,
+        "max_wall_seconds": None,
+        "task_timeout": 900,
+        "max_iterations": 10000,
+    }
     w = _parse_int(s.get("max_concurrent_agents"))
     if w is not None and w > 0:
         body["workers"] = w
@@ -57,39 +61,72 @@ def control_body_from_settings(settings: Optional[dict[str, Any]]) -> dict[str, 
 @pytest.mark.parametrize(
     "settings,expected",
     [
-        # happy path
         (
             {"max_tasks": 12, "max_concurrent_agents": 3, "timeout_seconds": 30},
-            {"max_tasks": 12, "task_timeout": 900, "workers": 3},
-        ),
-        # missing keys → defaults; workers omitted when not set
-        ({}, {"max_tasks": 50, "task_timeout": 900}),
-        (None, {"max_tasks": 50, "task_timeout": 900}),
-        # invalid / NaN max_tasks → 50
-        ({"max_tasks": "nope"}, {"max_tasks": 50, "task_timeout": 900}),
-        ({"max_tasks": 0}, {"max_tasks": 50, "task_timeout": 900}),
-        ({"max_tasks": -3}, {"max_tasks": 50, "task_timeout": 900}),
-        # workers omitted when missing, zero, or invalid
-        ({"max_tasks": 8}, {"max_tasks": 8, "task_timeout": 900}),
-        (
-            {"max_tasks": 8, "max_concurrent_agents": 0},
-            {"max_tasks": 8, "task_timeout": 900},
+            {
+                "max_tasks": None,
+                "max_wall_seconds": None,
+                "task_timeout": 900,
+                "max_iterations": 10000,
+                "workers": 3,
+            },
         ),
         (
-            {"max_tasks": 8, "max_concurrent_agents": "x"},
-            {"max_tasks": 8, "task_timeout": 900},
+            {},
+            {
+                "max_tasks": None,
+                "max_wall_seconds": None,
+                "task_timeout": 900,
+                "max_iterations": 10000,
+            },
         ),
-        # timeout_seconds must never become task_timeout
         (
-            {"max_tasks": 5, "timeout_seconds": 30},
-            {"max_tasks": 5, "task_timeout": 900},
+            None,
+            {
+                "max_tasks": None,
+                "max_wall_seconds": None,
+                "task_timeout": 900,
+                "max_iterations": 10000,
+            },
         ),
-        # string ints ok (parseInt)
+        # Settings max_tasks is ignored for Ralph start body
         (
-            {"max_tasks": "25", "max_concurrent_agents": "2"},
-            {"max_tasks": 25, "task_timeout": 900, "workers": 2},
+            {"max_tasks": 50},
+            {
+                "max_tasks": None,
+                "max_wall_seconds": None,
+                "task_timeout": 900,
+                "max_iterations": 10000,
+            },
+        ),
+        (
+            {"max_concurrent_agents": "2"},
+            {
+                "max_tasks": None,
+                "max_wall_seconds": None,
+                "task_timeout": 900,
+                "max_iterations": 10000,
+                "workers": 2,
+            },
+        ),
+        # workers omitted when zero or invalid
+        (
+            {"max_concurrent_agents": 0},
+            {
+                "max_tasks": None,
+                "max_wall_seconds": None,
+                "task_timeout": 900,
+                "max_iterations": 10000,
+            },
         ),
     ],
 )
 def test_control_body_from_settings_table(settings, expected):
     assert control_body_from_settings(settings) == expected
+
+
+def test_control_body_never_sends_loop_profile():
+    body = control_body_from_settings({"max_tasks": 50, "max_concurrent_agents": 1})
+    assert "loop_profile_id" not in body
+    assert body["max_wall_seconds"] is None
+    assert body["max_tasks"] is None

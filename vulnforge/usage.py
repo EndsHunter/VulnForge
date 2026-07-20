@@ -31,6 +31,8 @@ def _empty_summary() -> dict[str, Any]:
         "source": "none",
         "by_kind": {},
         "by_model": {},
+        # task_id → bucket + optional kind label (for UI “per hunt” rows)
+        "by_task": {},
         "updated_at": None,
     }
 
@@ -112,6 +114,8 @@ def load_usage_summary(run_dir: Union[str, Path]) -> dict[str, Any]:
         base["by_kind"] = {}
     if not isinstance(base.get("by_model"), dict):
         base["by_model"] = {}
+    if not isinstance(base.get("by_task"), dict):
+        base["by_task"] = {}
     return base
 
 
@@ -176,9 +180,21 @@ def record_usage(
         summary["source"] = _merge_source(
             str(summary.get("source") or "none"), parts["source"]
         )
-        _bump_bucket(summary["by_kind"], str(kind or "unknown"), parts)
+        kind_s = str(kind or "unknown")
+        _bump_bucket(summary["by_kind"], kind_s, parts)
         if model_id:
             _bump_bucket(summary["by_model"], str(model_id), parts)
+        if task_id is not None:
+            tid_key = str(int(task_id))
+            _bump_bucket(summary["by_task"], tid_key, parts)
+            # Keep last kind on the row so UI can label hunts without a DB join
+            row = summary["by_task"].get(tid_key) or {}
+            row["kind"] = kind_s
+            if extra and isinstance(extra, dict):
+                for ek in ("area", "class", "profile"):
+                    if extra.get(ek) is not None:
+                        row[ek] = extra.get(ek)
+            summary["by_task"][tid_key] = row
         summary["updated_at"] = event["ts"]
         try:
             tmp = summary_path.with_suffix(".json.tmp")
@@ -255,6 +271,71 @@ def llm_usage_for_card(run_dir: Union[str, Path]) -> dict[str, Any]:
     }
 
 
+def hunt_class_from_kind(kind: str | None) -> str | None:
+    """Extract hunt profile id from kinds like ``hunt:injection``."""
+    if not kind or not isinstance(kind, str):
+        return None
+    k = kind.strip()
+    if k.startswith("hunt:") and len(k) > 5:
+        return k[5:].strip() or None
+    if k == "hunt":
+        return "hunt"
+    return None
+
+
+def rebuild_by_task_from_jsonl(run_dir: Union[str, Path]) -> dict[str, Any]:
+    """Rebuild by_task (and refresh by_kind hunt rows) from jsonl for older runs.
+
+    Used when summary lacks by_task but llm_usage.jsonl has per-task events.
+    Does not rewrite the summary file (read-path enrichment only).
+    """
+    path = Path(run_dir) / JSONL_NAME
+    by_task: dict[str, Any] = {}
+    if not path.is_file():
+        return by_task
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                tid = row.get("task_id")
+                if tid is None:
+                    continue
+                try:
+                    tid_key = str(int(tid))
+                except (TypeError, ValueError):
+                    continue
+                parts = {
+                    "prompt_tokens": int(row.get("prompt_tokens") or 0),
+                    "completion_tokens": int(row.get("completion_tokens") or 0),
+                    "total_tokens": int(row.get("total_tokens") or 0),
+                    "reasoning_tokens": int(row.get("reasoning_tokens") or 0),
+                    "source": str(row.get("source") or "none"),
+                    "llm_calls": int(row.get("llm_calls") or 1),
+                }
+                _bump_bucket(by_task, tid_key, parts)
+                kind_s = str(row.get("kind") or "unknown")
+                by_task[tid_key]["kind"] = kind_s
+                extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+                for ek in ("area", "class", "profile"):
+                    if extra.get(ek) is not None:
+                        by_task[tid_key][ek] = extra.get(ek)
+                    elif ek == "class":
+                        hc = hunt_class_from_kind(kind_s)
+                        if hc and hc != "hunt":
+                            by_task[tid_key]["class"] = hc
+    except OSError:
+        return by_task
+    return by_task
+
+
 def record_llm_result(
     run_dir: Union[str, Path],
     *,
@@ -262,6 +343,7 @@ def record_llm_result(
     kind: str,
     model_id: Optional[str],
     result: Any,
+    extra: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Record usage from an LLMResult (or similar) and return fields for task results."""
     usage = getattr(result, "usage", None)
@@ -271,5 +353,6 @@ def record_llm_result(
         kind=kind,
         model_id=model_id or getattr(result, "model_id", None),
         usage=usage,
+        extra=extra,
     )
     return usage_fields_for_result(usage)

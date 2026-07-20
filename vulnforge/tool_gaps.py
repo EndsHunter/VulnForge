@@ -15,11 +15,14 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from vulnforge.profiles.binary_re import BinaryReProfile
 from vulnforge.profiles.code_static import CodeStaticProfile
 from vulnforge.util import utc_now_iso, write_json
 
-# Allowlist for code_static (primary profile).
-KNOWN_TOOLS: frozenset[str] = frozenset(CodeStaticProfile().allowed_tools())
+# Allowlist for code_static + binary_re (so profile tools are not false gaps).
+KNOWN_TOOLS: frozenset[str] = frozenset(
+    CodeStaticProfile().allowed_tools() + BinaryReProfile().allowed_tools()
+)
 
 # Free-text / wishlist keywords -> capability id (not necessarily a tool name).
 # First matching group wins per keyword hit; multiple keywords may map to same cap.

@@ -73,6 +73,69 @@ def test_cancel_queued_task(tmp_path: Path):
     db.close()
 
 
+def test_pause_resume_halt_and_lease_prefers_queued(tmp_path: Path):
+    """Pause parks work; next queued leases; paused auto-leases when last left."""
+    db = Database.create(tmp_path / "harness.db")
+    db.insert_run("run-001", str(tmp_path / "tgt"), "code_static", "pin", {})
+
+    a = db.enqueue_task("hunt", {"class": "a"}, priority=10)
+    b = db.enqueue_task("hunt", {"class": "b"}, priority=20)
+    c = db.enqueue_task("hunt", {"class": "c"}, priority=30)
+
+    leased = db.lease_next_task("w1", ttl_seconds=60, max_parallel=1)
+    assert leased is not None and leased.id == a
+    assert db.count_leased_tasks() == 1
+
+    info = db.pause_task(a, reason="operator_pause")
+    assert info is not None
+    assert info["prev_state"] == "leased"
+    assert info["lease_owner"] == "w1"
+    ta = db.get_task(a)
+    assert ta is not None and ta.state == "paused"
+    assert ta.lease_owner is None
+    assert db.count_leased_tasks() == 0
+    assert db.has_queued_or_leased() is True
+
+    # Next lease must take queued B, not paused A
+    nxt = db.lease_next_task("w2", ttl_seconds=60, max_parallel=1)
+    assert nxt is not None and nxt.id == b
+
+    # Pause B as well; C should run next
+    assert db.pause_task(b) is not None
+    nxt2 = db.lease_next_task("w3", ttl_seconds=60, max_parallel=1)
+    assert nxt2 is not None and nxt2.id == c
+    db.complete_task(c, {"ok": True})
+
+    # Only paused remain → auto-lease A (priority 10 before B)
+    last = db.lease_next_task("w4", ttl_seconds=60, max_parallel=1)
+    assert last is not None and last.id == a
+    assert last.state == "leased"
+
+    # Resume path: park again, resume to front of queue
+    assert db.pause_task(a) is not None
+    r = db.resume_paused_task(a, priority=5, reason="operator_resume")
+    assert r is not None and r["priority"] == 5
+    ra = db.get_task(a)
+    assert ra is not None and ra.state == "queued" and ra.priority == 5
+
+    # Halt terminal-cancels paused/queued/leased
+    assert db.pause_task(a) is not None
+    h = db.halt_task(a, reason="operator_halt")
+    assert h is not None and h["prev_state"] == "paused"
+    assert db.get_task(a).state == "cancelled"  # type: ignore[union-attr]
+    assert db.halt_task(a) is None  # already terminal
+
+    # Halt leased frees slot
+    leased_b = db.lease_next_task("w5", ttl_seconds=60, max_parallel=1)
+    assert leased_b is not None and leased_b.id == b
+    h2 = db.halt_task(b, reason="operator_halt")
+    assert h2 is not None and h2["prev_state"] == "leased"
+    assert db.count_leased_tasks() == 0
+    assert db.get_task(b).state == "cancelled"  # type: ignore[union-attr]
+    assert db.has_queued_or_leased() is False
+    db.close()
+
+
 def test_reclaim_expired_lease(tmp_path: Path):
     db = Database.create(tmp_path / "harness.db")
     db.insert_run("r", "/t", "code_static", "pin", {})

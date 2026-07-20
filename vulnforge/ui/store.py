@@ -241,7 +241,11 @@ def run_card(run: RunRef) -> dict[str, Any]:
             )
         )
         progress = (done / total_tasks) if total_tasks else 0.0
-        active = tasks.get("leased", 0) > 0 or locked
+        active = (
+            tasks.get("leased", 0) > 0
+            or tasks.get("paused", 0) > 0
+            or locked
+        )
         has_work = bool(s.get("has_work"))
         return {
             "key": run.key,
@@ -286,12 +290,21 @@ except Exception:  # pragma: no cover
 
 def _llm_usage_card(run: RunRef) -> dict[str, Any]:
     try:
-        from vulnforge.usage import llm_usage_for_card, load_usage_summary
+        from vulnforge.usage import (
+            llm_usage_for_card,
+            load_usage_summary,
+            rebuild_by_task_from_jsonl,
+        )
 
         card = llm_usage_for_card(run.path)
         summary = load_usage_summary(run.path)
         card["by_kind"] = summary.get("by_kind") or {}
         card["by_model"] = summary.get("by_model") or {}
+        by_task = summary.get("by_task") or {}
+        if not by_task:
+            # Older runs recorded usage before by_task existed
+            by_task = rebuild_by_task_from_jsonl(run.path)
+        card["by_task"] = by_task
         return card
     except Exception:
         return {
@@ -303,6 +316,7 @@ def _llm_usage_card(run: RunRef) -> dict[str, Any]:
             "source": "none",
             "by_kind": {},
             "by_model": {},
+            "by_task": {},
         }
 
 
@@ -517,13 +531,35 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
             cov_policy = coverage_policy_from_config(run_cfg)
         finally:
             db2.close()
-        arch_summary = architecture_summary(arch if isinstance(arch, dict) else None)
+        run_profile = ""
+        try:
+            run_profile = str(card.get("profile") or "")
+        except Exception:
+            run_profile = ""
+        if not run_profile and isinstance(run_cfg, dict):
+            run_profile = str((run_cfg.get("run") or {}).get("profile") or "")
+        arch_summary = architecture_summary(
+            arch if isinstance(arch, dict) else None,
+            profile=run_profile or None,
+        )
         hunt_classes = hunt_class_catalog()
     except Exception:
         cov_policy = {"mode": "auto", "areas": [], "classes": []}
+        prof = ""
+        try:
+            prof = str(card.get("profile") or "")
+        except Exception:
+            prof = ""
         arch_summary = {
+            "mode": "binary" if prof == "binary_re" else "source",
+            "title": "Binary map" if prof == "binary_re" else "Architecture",
             "summary": "",
             "components": [],
+            "modules": [],
+            "seed_sinks": [],
+            "imports_preview": [],
+            "exports_preview": [],
+            "binary": {},
             "has_architecture": bool(arch),
         }
         hunt_classes = {"all": [], "active": []}

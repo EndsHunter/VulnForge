@@ -87,6 +87,18 @@ def build_parser() -> argparse.ArgumentParser:
     init_p.add_argument("--target", type=Path, required=True)
     init_p.add_argument("--profile", default=None, help="Profile (default from config)")
     init_p.add_argument(
+        "--i-am-authorized-for-binary-re",
+        action="store_true",
+        default=False,
+        help="Required when --profile binary_re (authorized research only)",
+    )
+    init_p.add_argument(
+        "--skip-ghidra-init",
+        action="store_true",
+        default=False,
+        help="binary_re: skip eager Ghidra import/analyze during init (lazy on recon)",
+    )
+    init_p.add_argument(
         "--runs-root",
         type=Path,
         default=None,
@@ -303,9 +315,46 @@ def resolve_run_dir(args, cfg: dict) -> Path:
 
 
 def cmd_init(args, cfg: dict) -> int:
+    from vulnforge.util import is_pe_file
+
     target = Path(args.target).resolve()
-    if not target.is_dir():
-        print(f"target not found or not a directory: {target}", file=sys.stderr)
+    profile = str(
+        args.profile or cfg.get("run", {}).get("profile", "code_static")
+    ).strip().lower() or "code_static"
+
+    # PE path with code_static (common GUI default) → binary_re
+    if is_pe_file(target) and profile == "code_static":
+        profile = "binary_re"
+        args.profile = profile
+
+    # binary_re: single PE file; code_static: directory or single source file
+    if not target.exists():
+        print(f"target not found: {target}", file=sys.stderr)
+        return EXIT_CONFIG
+    if str(profile) == "binary_re":
+        from vulnforge.profiles.binary_re import BinaryReProfile, ConfigError
+
+        br_prof = BinaryReProfile()
+        # Overlay CLI authorization into cfg for this process
+        if getattr(args, "i_am_authorized_for_binary_re", False):
+            br_cfg = dict(cfg.get("binary_re") or {})
+            br_cfg["i_am_authorized"] = True
+            cfg = dict(cfg)
+            cfg["binary_re"] = br_cfg
+            run_cfg = dict(cfg.get("run") or {})
+            run_cfg["binary_re_authorized"] = True
+            cfg["run"] = run_cfg
+        try:
+            br_prof.require_authorization_flag(cfg)
+        except ConfigError as e:
+            print(str(e), file=sys.stderr)
+            return EXIT_CONFIG
+        terr = br_prof.validate_target(target, cfg)
+        if terr:
+            print(terr, file=sys.stderr)
+            return EXIT_CONFIG
+    elif not target.is_dir() and not target.is_file():
+        print(f"target not found or not a directory/file: {target}", file=sys.stderr)
         return EXIT_CONFIG
 
     strategy = str(getattr(args, "strategy", None) or "discovery").strip().lower()
@@ -328,6 +377,13 @@ def cmd_init(args, cfg: dict) -> int:
         )
         return EXIT_CONFIG
 
+    if str(profile) == "binary_re" and strategy == STRATEGY_FILE_BY_FILE:
+        print(
+            "binary_re does not support file_by_file strategy; use discovery",
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG
+
     if strategy == STRATEGY_RECON_DOCS:
         if docs_path is None:
             print(
@@ -338,8 +394,6 @@ def cmd_init(args, cfg: dict) -> int:
         if not docs_path.exists():
             print(f"docs-path not found: {docs_path}", file=sys.stderr)
             return EXIT_CONFIG
-
-    profile = args.profile or cfg.get("run", {}).get("profile", "code_static")
     runs_root = resolve_runs_root(cfg, getattr(args, "runs_root", None))
     tid = target_id_from_path(target)
     rid = next_run_id(runs_root, tid)
@@ -467,6 +521,15 @@ def cmd_init(args, cfg: dict) -> int:
     # Default True (auto-queue). Explicit False = architecture-only / manual hunts.
     init_enqueue_hunts = bool(getattr(args, "enqueue_hunts", True))
 
+    # binary_re default hunt skills when operator did not pin a set
+    if str(profile) == "binary_re" and init_hunt_mode == "all_active" and not init_hunt_ids:
+        init_hunt_mode = "ids"
+        init_hunt_ids = [
+            "bin-memory-safety",
+            "bin-dangerous-apis",
+            "bin-follow-xref",
+        ]
+
     cfg_store = {
         "llm": cfg.get("llm", {}),
         "run": {
@@ -481,10 +544,15 @@ def cmd_init(args, cfg: dict) -> int:
             "hunt_skill_mode": init_hunt_mode,
             "hunt_skill_ids": init_hunt_ids,
             "enqueue_hunts": init_enqueue_hunts,
+            "binary_re_authorized": bool(
+                getattr(args, "i_am_authorized_for_binary_re", False)
+                or (cfg.get("binary_re") or {}).get("i_am_authorized")
+            ),
         },
         "stages": cfg.get("stages", {}),
         "packet": cfg.get("packet", {}),
         "tools": cfg.get("tools", {}),
+        "binary_re": cfg.get("binary_re", {}),
     }
     db.insert_run(
         run_id=rid,
@@ -494,12 +562,97 @@ def cmd_init(args, cfg: dict) -> int:
         config=cfg_store,
     )
 
+    # binary_re: eager Ghidra project import + analyze (unless skipped)
+    if str(profile) == "binary_re" and not getattr(args, "skip_ghidra_init", False):
+        def _ghidra_progress(ev: dict) -> None:
+            """Map GhidraRuntime progress into the New-audit phase rail (UI polls job)."""
+            if not callable(progress):
+                return
+            msg = str(ev.get("message") or "Ghidra…")
+            raw_pct = ev.get("percent")
+            # Runtime uses 40–96; compress into 72–94 so Scan/DB stay earlier on the bar
+            try:
+                rp = float(raw_pct) if raw_pct is not None else 80.0
+            except (TypeError, ValueError):
+                rp = 80.0
+            # 40→72, 96→94 linear-ish
+            ui_pct = 72.0 + (max(0.0, min(100.0, rp)) / 100.0) * 22.0
+            progress(
+                {
+                    "phase": "ghidra",
+                    "status": "running",
+                    "message": msg,
+                    "percent": int(ui_pct),
+                    "files_seen": 1,
+                }
+            )
+
+        progress(
+            {
+                "phase": "ghidra",
+                "status": "running",
+                "message": "Starting Ghidra headless MCP…",
+                "percent": 72,
+                "files_seen": 1,
+            }
+        )
+        try:
+            from vulnforge.ghidra.runtime import ensure_ghidra_for_run
+
+            # Prefer full cfg (paths/defaults) merged with stored run cfg
+            ghidra_cfg = dict(cfg)
+            ghidra_cfg["binary_re"] = {
+                **(cfg.get("binary_re") or {}),
+                **(cfg_store.get("binary_re") or {}),
+            }
+            ghidra_cfg["run"] = cfg_store.get("run") or cfg.get("run") or {}
+            ensure_ghidra_for_run(
+                run_dir, target, ghidra_cfg, progress=_ghidra_progress
+            )
+            write_json(
+                run_dir / "ghidra_project" / "init_ok.json",
+                {"ok": True, "message": "Ghidra headless ready with program loaded"},
+            )
+            progress(
+                {
+                    "phase": "ghidra",
+                    "status": "running",
+                    "message": "Ghidra ready — PE loaded and analyzed",
+                    "percent": 95,
+                    "files_seen": 1,
+                }
+            )
+        except Exception as e:
+            # Still allow run creation so Ralph can retry on recon, but mark failure.
+            write_json(
+                run_dir / "ghidra" / "init_error.json",
+                {
+                    "error": str(e),
+                    "hint": (
+                        "binary_re requires ./ghidra + ghidra-mcp jar. "
+                        "Recon will retry ensure_ghidra_for_run and fail until ready."
+                    ),
+                },
+            )
+            progress(
+                {
+                    "phase": "ghidra",
+                    "status": "running",
+                    "message": f"Ghidra setup failed (recon will retry): {e}",
+                    "percent": 95,
+                    "files_seen": 1,
+                }
+            )
+
     # Optional operator recon selection / brief (UI + CLI)
     init_agent_ids = [
         str(a).strip().lower()
         for a in (getattr(args, "agent_ids", None) or [])
         if str(a).strip()
     ][:32]
+    # binary_re default recon agents when none selected
+    if str(profile) == "binary_re" and not init_agent_ids:
+        init_agent_ids = ["binary-surface", "binary-sink-map"]
     init_operator_notes = str(getattr(args, "operator_notes", None) or "").strip()[:6000]
 
     def _attach_dynamic_skills(recon_pl: dict[str, Any]) -> None:
@@ -710,7 +863,17 @@ def cmd_run_once(args, cfg: dict) -> int:
     db: Optional[Database] = None
     try:
         db = Database.open(db_path)
-        db.reclaim_expired_leases()
+        # TTL expiry + dead worker PIDs (hard stop can leave leases for 30m)
+        reclaimed = db.reclaim_stale_leases()
+        if reclaimed:
+            append_event(
+                run_dir,
+                {
+                    "source": "vf",
+                    "event": "reclaim_stale_leases",
+                    "reclaimed": reclaimed,
+                },
+            )
         if not db.has_queued_or_leased():
             # Project projection on idle (idempotent, no LLM)
             # Only one worker should render: skip if others may still be leased.

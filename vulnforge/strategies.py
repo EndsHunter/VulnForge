@@ -215,6 +215,14 @@ def list_source_files(
 ) -> list[str]:
     """Return normalized relative paths of hunt-worthy source files, priority-sorted."""
     target = Path(target).resolve()
+    # Single-file target: just that file (when it looks like source)
+    if target.is_file():
+        name = normalize_relpath(target.name)
+        if _is_source_candidate(target, name):
+            return [name]
+        # Still return the basename so file_by_file can queue something
+        return [name]
+
     inv = build_file_index(target, list(ignore or []))
     # Prefer full walk over sample_paths (sample is capped at 500)
     globs = list(ignore or [])

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from vulnforge.tools.evidence_write import evidence_exists
-from vulnforge.util import hash_file, normalize_relpath, read_json
+from vulnforge.util import match_manifest_fingerprint, normalize_relpath, read_json
 
 
 def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
@@ -104,15 +104,47 @@ def check_citations_resolve(finding, run_dir: Path, cfg: dict, db) -> tuple[bool
     if not run:
         return False, "no_run"
     target = Path(run["target_path"])
+    try:
+        profile = str(run["profile"] or "")
+    except (KeyError, IndexError, TypeError):
+        profile = ""
+    binary_mode = profile == "binary_re"
+    # Directory agents resolve under; for a single-file target use parent.
+    root = target if target.is_dir() else target.parent
+
     for c in finding.body.get("citations") or []:
         if not isinstance(c, dict):
             return False, "citation_not_object"
+        if binary_mode:
+            # PE findings: require path (binary name) and/or address/symbol.
+            has_addr = bool(str(c.get("address") or "").strip())
+            has_sym = bool(str(c.get("symbol") or "").strip())
+            has_path = bool(str(c.get("path") or "").strip())
+            if not (has_addr or has_sym or has_path):
+                return False, "binary_citation_needs_address_or_symbol_or_path"
+            # If path is the binary basename or absolute match, ok.
+            if has_path:
+                rel = normalize_relpath(str(c.get("path") or ""))
+                if target.is_file():
+                    if rel not in (target.name, normalize_relpath(target.name), str(target)):
+                        # allow basename-only citations
+                        if Path(rel).name != target.name:
+                            return False, f"binary_citation_path_mismatch:{rel}"
+                continue
+            continue
+
         rel = normalize_relpath(str(c.get("path") or ""))
-        p = (target / rel).resolve()
-        try:
-            p.relative_to(target.resolve())
-        except ValueError:
-            return False, f"citation_escape:{rel}"
+        if target.is_file() and (
+            rel in (target.name, normalize_relpath(target.name))
+            or Path(rel).name == target.name
+        ):
+            p = target.resolve()
+        else:
+            p = (root / rel).resolve()
+            try:
+                p.relative_to(root.resolve())
+            except ValueError:
+                return False, f"citation_escape:{rel}"
         if not p.is_file():
             return False, f"missing_path:{rel}"
         if c.get("start_line") is not None:
@@ -169,19 +201,43 @@ def check_target_unmodified(finding, run_dir: Path, cfg: dict, db) -> tuple[bool
     files = man.get("files") or {}
     run = db.get_run()
     target = Path(run["target_path"])
+
+    # Single file / binary: verify the target file itself has not changed.
+    kind = str(man.get("kind") or "")
+    if kind in ("single_binary", "single_file") or target.is_file():
+        if not target.is_file():
+            return False, "binary_missing" if kind == "single_binary" else "file_missing"
+        expected = None
+        if isinstance(man.get("binary"), dict) and man["binary"].get("sha256"):
+            expected = man["binary"]["sha256"]
+        elif isinstance(man.get("single_file"), dict) and man["single_file"].get("sha256"):
+            expected = man["single_file"]["sha256"]
+        elif files:
+            expected = next(iter(files.values()), None)
+        if expected:
+            try:
+                ok = match_manifest_fingerprint(target, str(expected))
+            except OSError:
+                return False, "binary_hash_fail" if kind == "single_binary" else "hash_fail"
+            if not ok:
+                label = "binary" if kind == "single_binary" else "file"
+                return False, f"target_mutated:{label}"
+        return True, ""
+
     for c in finding.body.get("citations") or []:
         rel = normalize_relpath(str(c.get("path") or ""))
         if rel not in files:
-            # file might have been outside manifest (ignored) â€” allow if still exists
+            # file might have been outside manifest (ignored) — allow if still exists
             continue
         p = target / rel
         if not p.is_file():
             return False, f"cited_missing:{rel}"
+        expected = files[rel]
         try:
-            h = hash_file(p)
+            ok = match_manifest_fingerprint(p, str(expected))
         except OSError:
             return False, f"hash_fail:{rel}"
-        if h != files[rel]:
+        if not ok:
             return False, f"target_mutated:{rel}"
     return True, ""
 
@@ -211,6 +267,28 @@ def check_severity_claim(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, s
     return True, ""
 
 
+def check_binary_address_present(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, str]:
+    """binary_re: require sink_address or citation address when profile is binary_re."""
+    run = db.get_run()
+    if not run:
+        return True, ""
+    try:
+        profile = str(run["profile"] or "")
+    except (KeyError, IndexError, TypeError):
+        profile = ""
+    if profile != "binary_re":
+        return True, ""
+    body = finding.body or {}
+    if str(body.get("sink_address") or "").strip():
+        return True, ""
+    for c in body.get("citations") or []:
+        if isinstance(c, dict) and (
+            str(c.get("address") or "").strip() or str(c.get("symbol") or "").strip()
+        ):
+            return True, ""
+    return False, "binary_missing_address_or_symbol"
+
+
 CHECKS: list[Callable] = [
     check_schema,
     check_citations_resolve,
@@ -218,4 +296,5 @@ CHECKS: list[Callable] = [
     check_target_unmodified,
     check_non_vacuous,
     check_severity_claim,
+    check_binary_address_present,
 ]

@@ -1,4 +1,4 @@
-/* VulnForge mode navigation — Mission / Coverage / Explorer / Report / Evidence / Tasks / Harness.
+/* VulnForge mode navigation — Mission / Coverage / Explorer / Report / Evidence / Tasks / AI / Harness.
  * Develop POC is an on-demand modal (Report → Develop POC), not a top-level mode tab.
  */
 
@@ -13,6 +13,7 @@
     report: "report",
     evidence: "evidence",
     audit: "tasks", // UI label: Tasks
+    ai: "ai",
     harness: "harness",
   };
 
@@ -23,6 +24,10 @@
     if (mode === "poc") {
       // POC is no longer a workspace mode — open workshop modal if finding id present.
       return { mode: "report", tab: "report", pocFindingId: tab || null };
+    }
+    // Experimental Coverage1/2/3 deep links → single Coverage tab
+    if (mode === "coverage1" || mode === "coverage2" || mode === "coverage3") {
+      return { mode: "coverage", tab: "coverage" };
     }
     if (mode !== "research") return { mode, tab };
     if (tab === "coverage") return { mode: "coverage", tab: "coverage" };
@@ -71,6 +76,9 @@
     if (mode === "evidence" && typeof window.renderEvidence === "function") {
       const packs = window.__VF_last_snap?.evidence;
       if (packs) window.renderEvidence(packs);
+    }
+    if (mode === "ai" && window.VulnForgeChat?.ensureMounted) {
+      window.VulnForgeChat.ensureMounted();
     }
     if (mode === "coverage" && window.VulnForgeCoverage?.render) {
       const snap = window.__VF_last_snap;

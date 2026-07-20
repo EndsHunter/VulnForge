@@ -31,6 +31,12 @@ VulnForge-main.zip
 .vscode/
 *.swp
 
+# External deps at repo root only (not part of VulnForge package).
+# Recipients place Ghidra distro at ./ghidra and build ghidra-mcp locally.
+# Leading slash = root only so vulnforge/ghidra/ (our client) is still tracked.
+/ghidra-mcp/
+/ghidra/
+
 # Unrelated siblings in this workspace (not part of VulnForge package)
 katie/
 ornith.py

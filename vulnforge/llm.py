@@ -227,15 +227,24 @@ class LLMClient:
         llm = cfg.get("llm") or {}
         self.base_url = str(llm.get("base_url", "http://127.0.0.1:1234/v1")).rstrip("/")
         self.model = llm.get("model") or ""
-        self.api_key = llm.get("api_key") or "lm-studio"
+        from vulnforge.settings import normalize_api_key, normalize_api_mode
+
+        # Optional. Blank / none / null → no auth headers (local LM Studio, etc.).
+        # When the key is omitted entirely from config, keep a harmless local default
+        # for OpenAI-compatible servers that require a Bearer token string.
+        if "api_key" in llm:
+            self.api_key = normalize_api_key(llm.get("api_key"))
+        else:
+            self.api_key = "lm-studio"
         self.timeout = float(llm.get("timeout_seconds", 600))
         # Reasoning models (e.g. Ornith) spend tokens on reasoning_content first;
         # a low max_tokens yields empty content + finish_reason=length.
         self.default_max_tokens = int(llm.get("max_tokens", 4096))
-        from vulnforge.settings import normalize_api_mode
 
         self.api_mode = normalize_api_mode(llm.get("api_mode"))
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         if self.api_mode == "messages":
             # Anthropic Messages API often requires a version header (proxies may ignore).
             headers["anthropic-version"] = str(
@@ -278,22 +287,40 @@ class LLMClient:
         tools: Optional[list[dict]] = None,
         temperature: float = 0.3,
         max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
     ) -> LLMResult:
         model = self._resolved_model or self.model or self.fingerprint_model()
         mt = max_tokens if max_tokens is not None else self.default_max_tokens
         if self.api_mode == "responses":
-            return self._chat_responses(model, messages, tools, temperature, mt)
+            return self._chat_responses(
+                model, messages, tools, temperature, mt, timeout=timeout
+            )
         if self.api_mode == "messages":
-            return self._chat_messages(model, messages, tools, temperature, mt)
-        return self._chat_completions(model, messages, tools, temperature, mt)
+            return self._chat_messages(
+                model, messages, tools, temperature, mt, timeout=timeout
+            )
+        return self._chat_completions(
+            model, messages, tools, temperature, mt, timeout=timeout
+        )
 
-    def _post_json(self, path: str, payload: dict[str, Any], model: str) -> LLMResult | dict:
+    def _post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        model: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> LLMResult | dict:
         """POST JSON; on transport failure return LLMResult, else parsed body dict + status via tuple.
 
         Returns either an error LLMResult or a dict with keys status_code, body.
+        Optional ``timeout`` overrides the client default for this request only.
         """
         try:
-            r = self._client.post(path, json=payload)
+            if timeout is not None:
+                r = self._client.post(path, json=payload, timeout=float(timeout))
+            else:
+                r = self._client.post(path, json=payload)
         except Exception as e:
             return LLMResult(
                 ok=False,
@@ -325,6 +352,8 @@ class LLMClient:
         tools: Optional[list[dict]],
         temperature: float,
         max_tokens: int,
+        *,
+        timeout: Optional[float] = None,
     ) -> LLMResult:
         payload: dict[str, Any] = {
             "model": model,
@@ -335,7 +364,7 @@ class LLMClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        out = self._post_json("/chat/completions", payload, model)
+        out = self._post_json("/chat/completions", payload, model, timeout=timeout)
         if isinstance(out, LLMResult):
             return out
         return classify_response(out["status_code"], out["body"], model=model)
@@ -347,6 +376,8 @@ class LLMClient:
         tools: Optional[list[dict]],
         temperature: float,
         max_tokens: int,
+        *,
+        timeout: Optional[float] = None,
     ) -> LLMResult:
         payload: dict[str, Any] = {
             "model": model,
@@ -358,7 +389,7 @@ class LLMClient:
         if tools:
             payload["tools"] = openai_tools_to_responses(tools)
             payload["tool_choice"] = "auto"
-        out = self._post_json("/responses", payload, model)
+        out = self._post_json("/responses", payload, model, timeout=timeout)
         if isinstance(out, LLMResult):
             return out
         return classify_responses_api(out["status_code"], out["body"], model=model)
@@ -370,6 +401,8 @@ class LLMClient:
         tools: Optional[list[dict]],
         temperature: float,
         max_tokens: int,
+        *,
+        timeout: Optional[float] = None,
     ) -> LLMResult:
         system, anth_messages = chat_messages_to_anthropic(messages)
         payload: dict[str, Any] = {
@@ -382,7 +415,7 @@ class LLMClient:
             payload["system"] = system
         if tools:
             payload["tools"] = openai_tools_to_anthropic(tools)
-        out = self._post_json("/messages", payload, model)
+        out = self._post_json("/messages", payload, model, timeout=timeout)
         if isinstance(out, LLMResult):
             return out
         return classify_messages_api(out["status_code"], out["body"], model=model)
@@ -421,24 +454,34 @@ class LLMClient:
                 last.transcript = list(messages)
                 return _with_acc(last)
 
-            # Validate LLM compliance: check if tool_calls contain valid submit_* calls
+            # Warn only for tool names not present in this stage's schema
+            # (or terminal submit_* tools). Recon tools like read_file/grep are
+            # legitimate when offered — do not treat them as non-compliance.
             if last.tool_calls:
-                # Check for compliance with expected tool names
-                valid_tools = {"submit_candidate", "submit_none", "submit_architecture"}
-                invalid_calls = []
-
-                for tc in last.tool_calls:
-                    name = tc["name"]
-                    if name not in valid_tools and name != "grep_index" and name != "fs_read" and name != "scope_widen":
-                        invalid_calls.append(name)
-
-                # If LLM calls unknown tools, log a warning but continue
+                schema_names: set[str] = {
+                    "submit_candidate",
+                    "submit_none",
+                    "submit_architecture",
+                }
+                for t in tools or []:
+                    if not isinstance(t, dict):
+                        continue
+                    fn = t.get("function") if isinstance(t.get("function"), dict) else t
+                    if isinstance(fn, dict) and fn.get("name"):
+                        schema_names.add(str(fn["name"]))
+                invalid_calls = [
+                    tc["name"]
+                    for tc in last.tool_calls
+                    if tc.get("name") and str(tc["name"]) not in schema_names
+                ]
                 if invalid_calls:
                     import logging
+
                     logger = logging.getLogger(__name__)
                     logger.warning(
-                        f"LLM called unknown tools: {invalid_calls}. "
-                        f"This may indicate non-compliance with expected tool schema."
+                        "LLM called unknown tools: %s. "
+                        "This may indicate non-compliance with expected tool schema.",
+                        invalid_calls,
                     )
 
                 asst: dict[str, Any] = {
@@ -572,7 +615,14 @@ class FakeLLMClient:
     def close(self) -> None:
         pass
 
-    def chat(self, messages, tools=None, temperature=0.3, max_tokens=None) -> LLMResult:
+    def chat(
+        self,
+        messages,
+        tools=None,
+        temperature=0.3,
+        max_tokens=None,
+        timeout=None,
+    ) -> LLMResult:
         if self._i >= len(self.responses):
             return LLMResult(
                 ok=False,

@@ -88,8 +88,15 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         return {"ok": True, "stored": "none"}
 
     path_hints = list(payload.get("path_hints") or [])
+    try:
+        profile = str(run_row["profile"] or "")
+    except (KeyError, IndexError, TypeError):
+        profile = ""
+    if not profile:
+        profile = str((cfg.get("run") or {}).get("profile") or "code_static")
+    target_root = str(target if target.is_dir() else target.parent)
     ctx = {
-        "target_root": str(target),
+        "target_root": target_root,
         "evidence_root": str(run_dir / "evidence"),
         "run_dir": run_dir,
         "task_id": task.id,
@@ -109,6 +116,25 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "widened": False,
         },
     }
+    if profile == "binary_re":
+        # Hunts require headless Ghidra with the PE loaded (same as recon).
+        from vulnforge.ghidra.client import GhidraError
+        from vulnforge.ghidra.runtime import client_from_cfg, ensure_ghidra_for_run
+
+        try:
+            ensure_ghidra_for_run(run_dir, target, cfg)
+            ctx["ghidra_client"] = client_from_cfg(cfg)
+        except GhidraError as e:
+            return {"status": "failed_task", "error": f"ghidra_not_ready: {e}"}
+        except Exception as e:
+            return {"status": "failed_task", "error": f"ghidra_not_ready: {e}"}
+    # Ensure pack_hunt sees run profile for tool schemas
+    if isinstance(cfg.get("run"), dict):
+        cfg.setdefault("run", {})
+        cfg["run"]["profile"] = profile
+    else:
+        cfg = dict(cfg)
+        cfg["run"] = {**(cfg.get("run") or {}), "profile": profile}
     handler = build_tool_handler(ctx)
     prompts_root = PROJECT_ROOT / "prompts" / "v1"
     packet = pack_hunt(
@@ -137,12 +163,17 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         result = client.run_tool_loop(
             packet, handler, max_rounds=max_rounds, temperature=temp
         )
+        hunt_class = str(payload.get("class") or "wildcard").strip() or "wildcard"
         usage_fields = record_llm_result(
             run_dir,
             task_id=task.id,
-            kind="hunt",
+            kind=f"hunt:{hunt_class}",
             model_id=model_id,
             result=result,
+            extra={
+                "class": hunt_class,
+                "area": payload.get("area"),
+            },
         )
         try:
             evidence_ids = list(session.get("evidence_ids_written") or [])
@@ -216,7 +247,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             return out
 
         flush_notes_to_db(ctx, db)
-        shallow = is_shallow(session)
+        shallow = is_shallow(session, profile=profile)
         spawned_hunts = list(session.get("spawned_hunts") or [])
 
         if session.get("none_reason") is not None:
@@ -632,8 +663,15 @@ def validate_candidate_shape(body: dict) -> list[str]:
         errs.append("citations required")
     else:
         for i, c in enumerate(cits):
-            if not isinstance(c, dict) or not c.get("path"):
-                errs.append(f"citations[{i}].path required")
+            if not isinstance(c, dict):
+                errs.append(f"citations[{i}] must be object")
+                continue
+            # Source: path required. Binary: path OR address OR symbol.
+            if c.get("path"):
+                continue
+            if c.get("address") or c.get("symbol"):
+                continue
+            errs.append(f"citations[{i}].path required (or address/symbol for binary)")
     return errs
 
 
@@ -767,6 +805,18 @@ def _pick_primary_sink_from_citations(cits: list) -> tuple[str, str]:
     ).strip()
 
 
-def is_shallow(session: dict) -> bool:
+BINARY_DEEP_TOOLS = frozenset({
+    "ghidra_decompile",
+    "ghidra_disassemble",
+    "ghidra_xrefs",
+    "ghidra_call_graph",
+    "ghidra_function_at",
+    "ghidra_import_callers",  # include even if tool not yet merged
+})
+
+
+def is_shallow(session: dict, *, profile: str = "") -> bool:
     used = set(session.get("tools_used") or [])
-    return not (used & {"read_file", "grep"})
+    if str(profile or "").strip().lower() == "binary_re":
+        return not bool(used & BINARY_DEEP_TOOLS)
+    return not bool(used & {"read_file", "grep"})

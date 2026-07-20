@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from vulnforge.cli import EXIT_PROGRESS, main
+from vulnforge.db import Database
 from vulnforge.ui import runner as runctl
 from vulnforge.ui import store
 from vulnforge.ui.app import ControlBody, control_start_kwargs, incomplete_from_flags, with_runner_flags
@@ -215,6 +216,31 @@ def test_pause_creates_stop(tmp_path: Path, toy_sqli: Path):
     assert st["stop"] is True
 
 
+def test_pause_reclaims_orphaned_leases(tmp_path: Path, toy_sqli: Path):
+    """Pause kills workers and requeues leased tasks so the queue is not stuck."""
+    runs = tmp_path / "runs"
+    main(["init", "--target", str(toy_sqli), "--runs-root", str(runs)])
+    run_dir = next(next(runs.iterdir()).iterdir())
+    db = Database.open(run_dir / "harness.db")
+    try:
+        db.enqueue_task("recon", {"agent_ids": ["surface-mapper"]}, priority=11)
+        leased = db.lease_next_task("orphan-worker", ttl_seconds=1800, max_parallel=1)
+        assert leased is not None
+        assert db.count_leased_tasks() == 1
+    finally:
+        db.close()
+    r = runctl.pause_run(run_dir)
+    assert r["ok"]
+    assert r.get("reclaimed_leases", 0) >= 1
+    db = Database.open(run_dir / "harness.db")
+    try:
+        assert db.count_leased_tasks() == 0
+        states = {t.id: t.state for t in db.list_tasks() if t.id == leased.id}
+        assert states.get(leased.id) == "queued"
+    finally:
+        db.close()
+
+
 @pytest.mark.parametrize(
     "has_work,runner_state,expected",
     [
@@ -269,10 +295,9 @@ _CONTROL_KW_KEYS = {
 
 
 def test_control_start_kwargs_prefers_body_over_ui():
-    """Start/resume kwargs: explicit body wins; None falls back to UI settings.
+    """Start/resume: explicit max_tasks wins; None stays unlimited (not UI enqueue cap).
 
-    ControlBody.max_tasks defaults to None so empty POST â†’ UI settings â†’ 50.
-    Dashboard client still sends Settings values when available.
+    UI settings max_tasks is hunt enqueue planning only — not Ralph budget.
     """
     ui = {"max_tasks": 12, "max_concurrent_agents": 3}
     body = ControlBody(max_tasks=25, workers=2, task_timeout=600)
@@ -281,38 +306,41 @@ def test_control_start_kwargs_prefers_body_over_ui():
     assert kw["max_tasks"] == 25
     assert kw["workers"] == 2
     assert kw["task_timeout"] == 600
-    assert kw["max_iterations"] == 200
+    assert kw["max_iterations"] == 10_000
     assert kw["max_wall_seconds"] is None
 
-    # Omit workers â†’ UI max_concurrent_agents; keep body max_tasks
+    # Omit workers → UI max_concurrent_agents; keep body max_tasks
     body2 = ControlBody(max_tasks=7, task_timeout=900)
     kw2 = control_start_kwargs(body2, ui=ui)
     assert kw2["max_tasks"] == 7
     assert kw2["workers"] == 3
 
-    # max_tasks=None â†’ UI
+    # max_tasks=None → unlimited Ralph (UI enqueue cap ignored)
     body3 = ControlBody(max_tasks=None)
     kw3 = control_start_kwargs(body3, ui=ui)
-    assert kw3["max_tasks"] == 12
+    assert kw3["max_tasks"] is None
     assert kw3["workers"] == 3
+    assert kw3["max_wall_seconds"] is None
 
 
-def test_control_start_kwargs_default_body_uses_ui():
-    """Empty ControlBody() must not hardcode max_tasks=50 over UI settings."""
+def test_control_start_kwargs_default_body_unlimited():
+    """Empty ControlBody() → no Ralph max_tasks / wall; workers from UI agents."""
     ui = {"max_tasks": 12, "max_concurrent_agents": 3}
     kw = control_start_kwargs(ControlBody(), ui=ui)
     assert set(kw.keys()) == _CONTROL_KW_KEYS
-    assert kw["max_tasks"] == 12
+    assert kw["max_tasks"] is None
     assert kw["workers"] == 3
     assert kw["task_timeout"] == 900
+    assert kw["max_iterations"] == 10_000
+    assert kw["max_wall_seconds"] is None
 
 
 def test_control_start_kwargs_empty_ui_fallbacks():
-    """Missing UI keys â†’ last-resort max_tasks=50, workers=1."""
+    """Missing UI keys → unlimited max_tasks, workers=1, no wall."""
     kw = control_start_kwargs(ControlBody(), ui={})
     assert set(kw.keys()) == _CONTROL_KW_KEYS
-    assert kw["max_tasks"] == 50
+    assert kw["max_tasks"] is None
     assert kw["workers"] == 1
     assert kw["task_timeout"] == 900
-    assert kw["max_iterations"] == 200
+    assert kw["max_iterations"] == 10_000
     assert kw["max_wall_seconds"] is None

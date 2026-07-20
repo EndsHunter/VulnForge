@@ -189,7 +189,19 @@
       });
       state.treeLoaded = true;
       window.explorerTreeLoaded = true;
+      // Single-file / PE binary runs: only one leaf — open it automatically
+      if (data.single_file && state.entries.length === 1 && !state.entries[0].is_dir) {
+        const only = state.entries[0].name;
+        if (!state.openFile || normalize(state.openFile) !== normalize(only)) {
+          state.openFile = only;
+          loadFile(only);
+        }
+      }
       renderTreeList();
+      if (data.hint && list) {
+        // soft banner above tree when re-rendered empty is handled in renderTreeList
+        state._targetHint = data.hint || "";
+      }
     } catch (e) {
       list.innerHTML = `<div class="empty" style="color:var(--bad)">${esc(e.message)}</div>`;
     }
@@ -207,6 +219,9 @@
       list.innerHTML = `<div class="empty" style="padding:0.5rem">${q ? "No matches" : "Empty folder"}</div>`;
       return;
     }
+    const hintHtml = state._targetHint
+      ? `<div class="controls-hint" style="padding:0.4rem 0.5rem;margin-bottom:0.25rem">${esc(state._targetHint)}</div>`
+      : "";
     const dirs = entries.filter((e) => e.is_dir);
     const files = entries.filter((e) => !e.is_dir);
     const row = (e) => {
@@ -230,7 +245,7 @@
           <span class="tree-name">${esc(e.name)}</span>
         </button>`;
     };
-    let html = "";
+    let html = hintHtml || "";
     if (dirs.length) {
       html += `<div class="tree-section-label">Folders (${dirs.length})</div>`;
       html += dirs.map(row).join("");

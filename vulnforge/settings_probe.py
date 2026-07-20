@@ -15,7 +15,13 @@ from typing import Any, Optional
 
 import httpx
 
-from vulnforge.settings import DEFAULT_UI_SETTINGS, load_ui_settings, normalize_api_mode
+from vulnforge.settings import (
+    DEFAULT_UI_SETTINGS,
+    build_llm_base_url,
+    load_ui_settings,
+    normalize_api_key,
+    normalize_api_mode,
+)
 
 # Tiny tool schema for compliance probe (OpenAI-style).
 _PROBE_TOOL = {
@@ -35,7 +41,8 @@ _PROBE_TOOL = {
 
 
 def _base_url(host: str, port: int) -> str:
-    return f"http://{host.strip()}:{int(port)}/v1"
+    """OpenAI-compatible root; supports https://host and host+port forms."""
+    return build_llm_base_url(host, port)
 
 
 def model_candidates(requested: str, listed: list[str]) -> list[str]:
@@ -207,6 +214,7 @@ def optimize_ui_settings(
     host: Optional[str] = None,
     port: Optional[int] = None,
     model: Optional[str] = None,
+    api_key: Optional[str] = None,
     apply: bool = False,
     timeout_seconds: float = 90.0,
 ) -> dict[str, Any]:
@@ -214,8 +222,9 @@ def optimize_ui_settings(
 
     Parameters
     ----------
-    host, port, model
+    host, port, model, api_key
         Form overrides; defaults from current ui_settings.
+        api_key blank/none is fine (no Authorization header).
     apply
         If True, save recommended settings (still returns full report).
     """
@@ -226,6 +235,9 @@ def optimize_ui_settings(
     except (TypeError, ValueError):
         port = 1234
     model_req = (model if model is not None else current.get("model") or "").strip()
+    key = normalize_api_key(
+        api_key if api_key is not None else current.get("api_key")
+    )
 
     tests: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -234,6 +246,7 @@ def optimize_ui_settings(
     recommended["host"] = host
     recommended["port"] = port
     recommended["model"] = model_req or recommended["model"]
+    recommended["api_key"] = key  # never invent a key; preserve form/current
     recommended["max_tasks"] = int(current.get("max_tasks") or 50)
     recommended["max_concurrent_agents"] = 1  # safe default for local GPUs
 
@@ -247,7 +260,11 @@ def optimize_ui_settings(
     latencies: list[float] = []
     reasoning_heavy = False
 
-    with httpx.Client(timeout=timeout_seconds) as client:
+    probe_headers: dict[str, str] = {}
+    if key:
+        probe_headers["Authorization"] = f"Bearer {key}"
+
+    with httpx.Client(timeout=timeout_seconds, headers=probe_headers) as client:
         # ---- 1. /v1/models ----
         t0 = time.perf_counter()
         try:
@@ -591,14 +608,20 @@ def optimize_ui_settings(
             }
         )
 
-    # Diff vs current
+    # Diff vs current (never echo raw api_key secrets)
     changes: dict[str, dict[str, Any]] = {}
     for k, v in recommended.items():
         if k not in DEFAULT_UI_SETTINGS:
             continue
         cur = current.get(k)
         if cur != v:
-            changes[k] = {"from": cur, "to": v}
+            if k == "api_key":
+                changes[k] = {
+                    "from": "(set)" if normalize_api_key(cur) else "(empty)",
+                    "to": "(set)" if normalize_api_key(v) else "(empty)",
+                }
+            else:
+                changes[k] = {"from": cur, "to": v}
 
     applied = False
     if apply:

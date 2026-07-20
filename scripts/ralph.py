@@ -76,6 +76,20 @@ def log(msg: str, *, verbose: bool = True) -> None:
         print(f"[ralph {utc_now()}] {msg}", flush=True)
 
 
+def _subprocess_no_window_kwargs() -> dict:
+    """
+    On Windows, hide console windows for child python.exe / console apps.
+
+    CREATE_NO_WINDOW prevents the brief CMD flash when Ralph spawns
+    ``vf run-once`` / ``vf project`` from a detached dashboard worker.
+    No-op on non-Windows.
+    """
+    if os.name != "nt":
+        return {}
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return {"creationflags": flags}
+
+
 def default_vf_command() -> list[str]:
     """
     Prefer the same interpreter running ralph, so venv is respected.
@@ -223,11 +237,13 @@ def config_from_args(args: argparse.Namespace) -> RalphConfig:
 
 
 def build_run_once_argv(cfg: RalphConfig) -> list[str]:
-    argv = list(cfg.vf_command) + ["run-once"]
-    if cfg.run_dir is not None:
-        argv += ["--run-dir", str(cfg.run_dir)]
+    # --config is a global argparse option and must precede the subcommand.
+    argv = list(cfg.vf_command)
     if cfg.config_path is not None:
         argv += ["--config", str(cfg.config_path)]
+    argv += ["run-once"]
+    if cfg.run_dir is not None:
+        argv += ["--run-dir", str(cfg.run_dir)]
     return argv
 
 
@@ -259,9 +275,10 @@ def project_on_stop(cfg: RalphConfig, reason: str) -> None:
     """
     if cfg.run_dir is None:
         return
-    argv = list(cfg.vf_command) + ["project", "--run-dir", str(cfg.run_dir)]
+    argv = list(cfg.vf_command)
     if cfg.config_path is not None:
         argv += ["--config", str(cfg.config_path)]
+    argv += ["project", "--run-dir", str(cfg.run_dir)]
     PROJECT_ROOT = Path(__file__).resolve().parent.parent
     log(f"project-on-stop ({reason}): {argv!r}", verbose=cfg.verbose)
     try:
@@ -274,6 +291,7 @@ def project_on_stop(cfg: RalphConfig, reason: str) -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
+            **_subprocess_no_window_kwargs(),
         )
         append_ralph_event(
             cfg,
@@ -319,6 +337,7 @@ def invoke_run_once(cfg: RalphConfig) -> int:
             text=True,
             encoding="utf-8",
             errors="replace",
+            **_subprocess_no_window_kwargs(),
         )
     except FileNotFoundError as e:
         log(f"vf command not found: {e}", verbose=True)

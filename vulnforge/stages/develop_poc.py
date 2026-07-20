@@ -116,7 +116,10 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     pkt_cfg = cfg.get("packet") or {}
     per_slice = int(pkt_cfg.get("max_file_slice_chars", 4000))
     max_chars = max(per_slice, min(per_slice * 4, 24_000))
-    slices = load_citation_slices(finding, target, max_chars=max_chars)
+    from vulnforge.util import target_tool_root
+
+    tool_root = target_tool_root(target)
+    slices = load_citation_slices(finding, tool_root, max_chars=max_chars)
 
     session: dict = {
         "tools_used": [],
@@ -125,7 +128,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         "evidence_files": [],
     }
     ctx = {
-        "target_root": str(target),
+        "target_root": str(tool_root),
         "evidence_root": str(run_dir / "evidence"),
         "task_id": task.id,
         "cfg": cfg,

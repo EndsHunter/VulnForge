@@ -88,35 +88,56 @@ class InitBody(BaseModel):
     hunt_skill_ids: Optional[list[str]] = None
     # After recon (or at file_by_file init), enqueue hunt tasks. False = map only / manual.
     enqueue_hunts: bool = True
+    # binary_re: authorization + optional skip of eager Ghidra import (tests / lazy)
+    i_am_authorized_for_binary_re: bool = False
+    skip_ghidra_init: bool = False
 
 
 class ControlBody(BaseModel):
-    # None -> control_start_kwargs falls back to UI settings, then 50
+    # None = no Ralph --max-tasks (run until idle / STOP). Explicit int caps progress.
+    # UI settings max_tasks is hunt *enqueue* planning only — not applied here.
     max_tasks: Optional[int] = Field(default=None)
     task_timeout: float = 900
-    max_iterations: int = 200
-    max_wall_seconds: Optional[float] = None
+    # Safety rail for Ralph outer loop (not a campaign wall). High for real audits.
+    max_iterations: int = 10_000
+    max_wall_seconds: Optional[float] = None  # None = no wall clock
     workers: Optional[int] = None  # defaults from UI settings
-    # Named Ralph loop profile under config/harnesses/ (overrides knobs when set)
+    # Dev/API only: named profile under config/harnesses/ (not operator UI)
     loop_profile_id: Optional[str] = None
+
+
+class ChatTurnBody(BaseModel):
+    message: str = ""
+    session_id: Optional[str] = None
+
+
+class ChatConfirmBody(BaseModel):
+    token: str
+    session_id: str
 
 
 def control_start_kwargs(body: ControlBody, ui: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Merge ControlBody with UI settings for start/resume.
 
-    Client contract (app.js controlBodyFromSettings): dashboard Start/Resume
-    should send max_tasks (and workers) from Settings. Empty body / null fields
-    fall back to UI settings, then max_tasks=50 / workers=1. task_timeout has no
-    Settings field yet (Ralph default 900; distinct from LLM timeout_seconds).
+    Operator Mission Start/Resume (app.js controlBodyFromSettings):
+      - never sends loop_profile_id (dev-only via API)
+      - max_tasks=None → no Ralph --max-tasks (run until idle / Pause)
+      - max_wall_seconds=None → no wall clock
+      - max_iterations defaults high (safety rail only)
+      - workers from Settings max_concurrent_agents
+      - task_timeout default 900 (hung-task kill; not a campaign wall)
 
-    When loop_profile_id is set, load config/harnesses/<id>.yaml and use it as
-    the base; explicit ControlBody fields still win when non-default is hard —
-    profile supplies all start_run kwargs, then UI workers/max_tasks only fill
-    gaps left null by the profile.
+    UI settings ``max_tasks`` is the **hunt enqueue** planning cap (Coverage /
+    init), not the Ralph outer-loop budget — do not apply it to start_run.
+
+    When loop_profile_id is set (dev/smoke API), load config/harnesses/<id>.yaml
+    as the base; explicit body fields override when provided.
     """
     if ui is None:
         ui = load_ui_settings()
     kwargs: dict[str, Any] = {}
+    lease_cap = max(1, int(ui.get("max_concurrent_agents") or 1))
+
     if body.loop_profile_id:
         from vulnforge.loop_profiles import load_profile, profile_to_start_kwargs
 
@@ -131,20 +152,27 @@ def control_start_kwargs(body: ControlBody, ui: Optional[dict[str, Any]] = None)
             kwargs["workers"] = body.workers
         if body.max_wall_seconds is not None:
             kwargs["max_wall_seconds"] = body.max_wall_seconds
+        # Cap workers to lease cap (profile + body can both request too many)
+        raw_w = int(kwargs.get("workers") or lease_cap)
+        kwargs["workers"] = max(1, min(raw_w, lease_cap))
         # Prefer profile knobs for timeout/iterations when loop_profile_id is set.
         return kwargs
 
-    workers = body.workers if body.workers is not None else int(
-        ui.get("max_concurrent_agents") or 1
-    )
-    max_tasks = body.max_tasks if body.max_tasks is not None else int(
-        ui.get("max_tasks") or 50
-    )
+    raw_workers = body.workers if body.workers is not None else lease_cap
+    # Never spawn more Ralph processes than concurrent leases allow
+    workers = max(1, min(int(raw_workers), lease_cap))
+    # None = unlimited Ralph progress budget (omit --max-tasks). Explicit body
+    # max_tasks still honored for API clients that want a cap.
+    max_tasks = body.max_tasks
+    # High safety rail so a runaway loop still eventually stops; not a campaign budget.
+    max_iterations = int(body.max_iterations) if body.max_iterations else 10_000
+    if max_iterations < 1:
+        max_iterations = 10_000
     return {
         "task_timeout": body.task_timeout,
         "max_tasks": max_tasks,
-        "max_iterations": body.max_iterations,
-        "max_wall_seconds": body.max_wall_seconds,
+        "max_iterations": max_iterations,
+        "max_wall_seconds": body.max_wall_seconds,  # None = no wall
         "workers": workers,
     }
 
@@ -154,6 +182,8 @@ class SettingsBody(BaseModel):
     port: Optional[int] = None
     model: Optional[str] = None
     api_mode: Optional[str] = None  # chat_completions | responses | messages
+    # Optional; blank / "none" / "null" clear the key (local servers need none).
+    api_key: Optional[str] = None
     max_concurrent_agents: Optional[int] = None
     context_tokens: Optional[int] = None
     max_context_fraction: Optional[float] = None
@@ -169,6 +199,7 @@ class SettingsOptimizeBody(BaseModel):
     host: Optional[str] = None
     port: Optional[int] = None
     model: Optional[str] = None
+    api_key: Optional[str] = None
     apply: bool = False
 
 
@@ -316,6 +347,15 @@ class CoverageRequeueBody(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class CoverageRequeueBulkBody(BaseModel):
+    """Multi-cell residual requeue (Coverage2 multi-select / residual repair)."""
+
+    cells: list[dict]  # [{area, class, path_hints?}]
+    force_depth: bool = True
+    reason: str = "operator_bulk_requeue"
+    operator_notes: str = ""
+
+
 class CoverageModeBody(BaseModel):
     mode: str = "auto"  # auto | all | select
     areas: Optional[list[str]] = None
@@ -335,17 +375,6 @@ class CoverageGenerateSkillBody(BaseModel):
     path_targets: Optional[list[dict]] = None
 
 
-class CoverageMaxHuntBody(BaseModel):
-    """MAX Hunt: per-file generate_skill (+ hunt) fan-out. dry_run previews only."""
-
-    scope: str = "all"  # all | paths
-    path_targets: Optional[list[dict]] = None
-    max_files: int = 50
-    operator_notes: str = ""
-    activate: bool = False
-    dry_run: bool = False
-
-
 class TaskPriorityBody(BaseModel):
     """Operator queue reorder — tiers map to priority integers (lower = sooner)."""
 
@@ -356,6 +385,25 @@ class TaskCancelBody(BaseModel):
     """Operator queue removal — only queued tasks."""
 
     reason: str = "operator_cancel"
+
+
+class TaskPauseBody(BaseModel):
+    """Park a queued/leased task so the next queued can run."""
+
+    reason: str = "operator_pause"
+
+
+class TaskResumeBody(BaseModel):
+    """Return a paused task to the queue (default: run next)."""
+
+    tier: str = "run_next"  # run_next | high | normal | low | keep
+    reason: str = "operator_resume"
+
+
+class TaskHaltBody(BaseModel):
+    """Terminal-cancel a queued, paused, or leased task."""
+
+    reason: str = "operator_halt"
 
 
 class SelectionHuntBody(BaseModel):
@@ -532,6 +580,169 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             {"runs_root": str(app.state.runs_root)},
         )
 
+    @app.get("/chat", response_class=HTMLResponse)
+    def chat_page(request: Request):
+        """Home AI operator chat (fleet co-pilot)."""
+        return TEMPLATES.TemplateResponse(
+            request,
+            "chat.html",
+            {"runs_root": str(app.state.runs_root)},
+        )
+
+    # ---------- API: operator AI chat ----------
+
+    @app.get("/api/chat/sessions")
+    def api_chat_sessions_home():
+        from vulnforge.operator_chat import list_sessions as oc_list
+
+        return {
+            "sessions": oc_list(
+                "home",
+                project_root=Path(app.state.project_root),
+            )
+        }
+
+    @app.get("/api/chat/sessions/{session_id}")
+    def api_chat_session_home(session_id: str):
+        from vulnforge.operator_chat import load_session as oc_load
+
+        data = oc_load(
+            "home",
+            session_id,
+            project_root=Path(app.state.project_root),
+        )
+        if not data:
+            raise HTTPException(404, "session not found")
+        return data
+
+    @app.delete("/api/chat/sessions/{session_id}")
+    def api_chat_session_home_delete(session_id: str):
+        from vulnforge.operator_chat import delete_session as oc_del
+
+        ok = oc_del(
+            "home",
+            session_id,
+            project_root=Path(app.state.project_root),
+        )
+        if not ok:
+            raise HTTPException(404, "session not found")
+        return {"ok": True}
+
+    @app.post("/api/chat")
+    def api_chat_home(body: ChatTurnBody):
+        from vulnforge.operator_chat import handle_turn
+
+        cfg = load_config()
+        r = handle_turn(
+            scope="home",
+            message=body.message,
+            session_id=body.session_id,
+            project_root=Path(app.state.project_root),
+            runs_root=Path(app.state.runs_root),
+            cfg=cfg,
+        )
+        if not r.get("ok") and r.get("error") == "empty message":
+            raise HTTPException(400, r["error"])
+        return r
+
+    @app.post("/api/chat/confirm")
+    def api_chat_home_confirm(body: ChatConfirmBody):
+        from vulnforge.operator_chat import confirm_pending
+
+        cfg = load_config()
+        r = confirm_pending(
+            token=body.token,
+            session_id=body.session_id,
+            scope="home",
+            project_root=Path(app.state.project_root),
+            runs_root=Path(app.state.runs_root),
+            cfg=cfg,
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "confirm failed")
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/chat/sessions")
+    def api_chat_sessions_run(target_id: str, run_id: str):
+        from vulnforge.operator_chat import list_sessions as oc_list
+
+        run = _get_run(target_id, run_id)
+        return {
+            "sessions": oc_list(
+                "run",
+                project_root=Path(app.state.project_root),
+                run_dir=run.path,
+            )
+        }
+
+    @app.get("/api/runs/{target_id}/{run_id}/chat/sessions/{session_id}")
+    def api_chat_session_run(target_id: str, run_id: str, session_id: str):
+        from vulnforge.operator_chat import load_session as oc_load
+
+        run = _get_run(target_id, run_id)
+        data = oc_load(
+            "run",
+            session_id,
+            project_root=Path(app.state.project_root),
+            run_dir=run.path,
+        )
+        if not data:
+            raise HTTPException(404, "session not found")
+        return data
+
+    @app.delete("/api/runs/{target_id}/{run_id}/chat/sessions/{session_id}")
+    def api_chat_session_run_delete(target_id: str, run_id: str, session_id: str):
+        from vulnforge.operator_chat import delete_session as oc_del
+
+        run = _get_run(target_id, run_id)
+        ok = oc_del(
+            "run",
+            session_id,
+            project_root=Path(app.state.project_root),
+            run_dir=run.path,
+        )
+        if not ok:
+            raise HTTPException(404, "session not found")
+        return {"ok": True}
+
+    @app.post("/api/runs/{target_id}/{run_id}/chat")
+    def api_chat_run(target_id: str, run_id: str, body: ChatTurnBody):
+        from vulnforge.operator_chat import handle_turn
+
+        run = _get_run(target_id, run_id)
+        cfg = load_config()
+        r = handle_turn(
+            scope="run",
+            message=body.message,
+            session_id=body.session_id,
+            project_root=Path(app.state.project_root),
+            runs_root=Path(app.state.runs_root),
+            cfg=cfg,
+            run=run,
+        )
+        if not r.get("ok") and r.get("error") == "empty message":
+            raise HTTPException(400, r["error"])
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/chat/confirm")
+    def api_chat_run_confirm(target_id: str, run_id: str, body: ChatConfirmBody):
+        from vulnforge.operator_chat import confirm_pending
+
+        run = _get_run(target_id, run_id)
+        cfg = load_config()
+        r = confirm_pending(
+            token=body.token,
+            session_id=body.session_id,
+            scope="run",
+            project_root=Path(app.state.project_root),
+            runs_root=Path(app.state.runs_root),
+            cfg=cfg,
+            run=run,
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "confirm failed")
+        return r
+
     # ---------- API: inventory ----------
 
     @app.get("/api/health")
@@ -614,9 +825,18 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         class Args:
             pass
 
+        from vulnforge.util import is_pe_file
+
         args = Args()
         args.target = Path(body.target)
-        args.profile = body.profile
+        profile_raw = (body.profile or "").strip() or None
+        # Auto binary_re for PE files when profile blank or still code_static
+        # (GUI defaults to code_static; typing a path can race the client hint).
+        if is_pe_file(args.target) and (
+            profile_raw is None or profile_raw.strip().lower() == "code_static"
+        ):
+            profile_raw = "binary_re"
+        args.profile = profile_raw
         args.runs_root = app.state.runs_root
         args.strategy = (body.strategy or "discovery").strip().lower()
         args.docs_path = Path(body.docs_path) if body.docs_path else None
@@ -646,9 +866,29 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         ][:64]
         args.hunt_skill_ids = skill_ids or None
         args.enqueue_hunts = bool(body.enqueue_hunts)
+        args.i_am_authorized_for_binary_re = bool(body.i_am_authorized_for_binary_re)
+        args.skip_ghidra_init = bool(body.skip_ghidra_init)
 
-        if not args.target.is_dir():
-            raise HTTPException(400, f"target not a directory: {body.target}")
+        profile_n = (args.profile or "code_static").strip().lower()
+        if not args.target.exists():
+            raise HTTPException(400, f"target not found: {body.target}")
+        if profile_n == "binary_re":
+            if not args.target.is_file():
+                raise HTTPException(
+                    400,
+                    f"binary_re target must be a single file (.exe/.dll): {body.target}",
+                )
+        elif not args.target.is_dir() and not args.target.is_file():
+            raise HTTPException(
+                400,
+                f"target must be a directory or a single file: {body.target}",
+            )
+        elif args.target.is_file() and is_pe_file(args.target):
+            # Should have been auto-upgraded above; belt-and-suspenders
+            raise HTTPException(
+                400,
+                f"PE file requires profile binary_re: {body.target}",
+            )
         if args.strategy == "recon_docs" and args.docs_path is None:
             raise HTTPException(400, "recon_docs strategy requires docs_path")
         if args.strategy == "recon_docs" and not args.docs_path.exists():
@@ -995,6 +1235,57 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             raise HTTPException(400, r.get("error") or "cancel failed")
         return r
 
+    @app.post("/api/runs/{target_id}/{run_id}/tasks/{task_id}/pause")
+    def api_task_pause(
+        target_id: str,
+        run_id: str,
+        task_id: int,
+        body: TaskPauseBody = Body(default_factory=TaskPauseBody),
+    ):
+        """Pause a queued or leased task so the next queued can begin.
+
+        Leased: frees the lease slot and stops the run-once worker. The paused
+        task re-runs when resumed or when it is the last remaining work.
+        """
+        run = _get_run(target_id, run_id)
+        r = dashops.pause_task(run.path, task_id, reason=body.reason or "operator_pause")
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "pause failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/tasks/{task_id}/resume")
+    def api_task_resume(
+        target_id: str,
+        run_id: str,
+        task_id: int,
+        body: TaskResumeBody = Body(default_factory=TaskResumeBody),
+    ):
+        """Resume a paused task back to the queue (default priority: run next)."""
+        run = _get_run(target_id, run_id)
+        r = dashops.resume_paused_task(
+            run.path,
+            task_id,
+            tier=body.tier or "run_next",
+            reason=body.reason or "operator_resume",
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "resume failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/tasks/{task_id}/halt")
+    def api_task_halt(
+        target_id: str,
+        run_id: str,
+        task_id: int,
+        body: TaskHaltBody = Body(default_factory=TaskHaltBody),
+    ):
+        """Halt (terminal cancel) a queued, paused, or leased task."""
+        run = _get_run(target_id, run_id)
+        r = dashops.halt_task(run.path, task_id, reason=body.reason or "operator_halt")
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "halt failed")
+        return r
+
     @app.get("/api/runs/{target_id}/{run_id}/transcripts")
     def api_list_transcripts(target_id: str, run_id: str):
         run = _get_run(target_id, run_id)
@@ -1163,6 +1454,22 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         )
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "requeue failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/coverage/requeue-bulk")
+    def api_coverage_requeue_bulk(
+        target_id: str, run_id: str, body: CoverageRequeueBulkBody
+    ):
+        run = _get_run(target_id, run_id)
+        r = dashops.requeue_hunt_bulk(
+            run.path,
+            cells=list(body.cells or []),
+            force_depth=body.force_depth,
+            reason=body.reason,
+            operator_notes=body.operator_notes or "",
+        )
+        if not r.get("ok") and not r.get("enqueued"):
+            raise HTTPException(400, r.get("error") or "bulk requeue failed")
         return r
 
     @app.post("/api/runs/{target_id}/{run_id}/recon/rerun")
@@ -1340,27 +1647,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         )
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "generate-skill failed")
-        return r
-
-    @app.post("/api/runs/{target_id}/{run_id}/coverage/max-hunt")
-    def api_coverage_max_hunt(target_id: str, run_id: str, body: CoverageMaxHuntBody):
-        """MAX Hunt: dry_run preview or enqueue per-file generate_skill tasks."""
-        run = _get_run(target_id, run_id)
-        try:
-            max_files = max(1, int(body.max_files or 50))
-        except (TypeError, ValueError):
-            max_files = 50
-        r = dashops.enqueue_max_hunt(
-            run.path,
-            scope=body.scope or "all",
-            path_targets=body.path_targets,
-            max_files=max_files,
-            operator_notes=body.operator_notes or "",
-            activate=bool(body.activate),
-            dry_run=bool(body.dry_run),
-        )
-        if not r.get("ok"):
-            raise HTTPException(400, r.get("error") or "max-hunt failed")
         return r
 
     @app.get("/api/runs/{target_id}/{run_id}/target/list")
@@ -1558,17 +1844,22 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
     @app.get("/api/settings")
     def api_get_settings():
+        from vulnforge.settings import normalize_api_key
+
         ui = load_ui_settings()
         # effective config after merge
         eff = load_config()
         llm = eff.get("llm") or {}
         run = eff.get("run") or {}
+        key = normalize_api_key(llm.get("api_key") if "api_key" in llm else ui.get("api_key"))
         return {
             "settings": ui,
             "effective": {
                 "base_url": llm.get("base_url"),
                 "model": llm.get("model"),
                 "api_mode": llm.get("api_mode") or "chat_completions",
+                # Do not echo secrets; only whether a key is configured.
+                "api_key_set": bool(key),
                 "context_tokens": llm.get("context_tokens"),
                 "max_context_fraction": llm.get("max_context_fraction"),
                 "max_tokens": llm.get("max_tokens"),
@@ -1580,7 +1871,11 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
     @app.put("/api/settings")
     def api_put_settings(body: SettingsBody):
+        # Include api_key even when "" so operators can clear it (exclude_none alone
+        # would drop None but keep ""; we still pass explicit clears).
         updates = body.model_dump(exclude_none=True)
+        if "api_key" in body.model_fields_set:
+            updates["api_key"] = body.api_key if body.api_key is not None else ""
         saved = save_ui_settings(updates)
         # refresh app config for init paths in this process
         app.state.config = load_config()
@@ -1600,6 +1895,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 host=body.host,
                 port=body.port,
                 model=body.model,
+                api_key=body.api_key,
                 apply=bool(body.apply),
             )
         except Exception as e:

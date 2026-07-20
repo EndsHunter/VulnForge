@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Chat | VulnForge</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="apple-touch-icon" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body data-page="chat" data-chat-scope="home">
+  <header class="app-header">
+    <div class="brand">
+      <a href="/" class="home-link" title="Home  -  all runs">
+        <img class="logo" src="/static/logo-128.png" width="32" height="32" alt="" />
+        <div>
+          VulnForge
+          <div class="sub">Home AI — fleet co-pilot</div>
+        </div>
+      </a>
+    </div>
+    <div class="header-actions">
+      <a class="btn btn-ghost home-btn" href="/" title="Home">Home</a>
+      <a class="btn btn-primary" href="/chat" title="AI Chat">AI</a>
+      <button class="btn" id="btn-settings" type="button">⚙ Settings</button>
+      <span class="controls-hint mono">{{ runs_root }}</span>
+    </div>
+  </header>
+
+  <main class="main chat-page-main">
+    <div class="page-hero chat-hero">
+      <div>
+        <h1>AI Chat</h1>
+        <p>
+          Query results across all runs, start and inspect hunts, init audits, and control Ralph.
+          Mutating actions require your confirmation. Uses the same LLM as Settings.
+        </p>
+      </div>
+    </div>
+    <div id="operator-chat-root" class="operator-chat-root"></div>
+  </main>
+
+  <!-- Settings modal reused from home/run via app.js patterns: minimal stub -->
+  <dialog id="settings-modal" class="modal">
+    <form method="dialog" class="modal-card settings-form" id="settings-form">
+      <header class="modal-head">
+        <h2>LLM settings</h2>
+        <button type="submit" class="btn btn-ghost" value="cancel">Close</button>
+      </header>
+      <p class="controls-hint">Open Settings from Home for the full editor, or use the run page Settings.</p>
+      <p><a class="btn" href="/">Back to Home → Settings</a></p>
+    </form>
+  </dialog>
+
+  <script src="/static/chat.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      window.VulnForgeChat?.mount(document.getElementById("operator-chat-root"), {
+        scope: "home",
+        chips: [
+          "List all runs",
+          "What needs_human findings exist across all runs?",
+          "Summarize results across runs",
+          "What hunts are queued or aborted?",
+          "Explain VulnForge honesty rules",
+        ],
+      });
+    });
+  </script>
+</body>
+</html>

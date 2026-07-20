@@ -108,12 +108,46 @@ def test_fake_tool_loop_sums_usage(tmp_path: Path):
     record_usage(
         tmp_path,
         task_id=1,
-        kind="hunt",
+        kind="hunt:injection",
         model_id="fake",
         usage=result.usage,
+        extra={"class": "injection", "area": "api"},
     )
     summary = load_usage_summary(tmp_path)
     assert summary["total_tokens"] == 14
-    assert summary["by_kind"]["hunt"]["total_tokens"] == 14
+    assert summary["by_kind"]["hunt:injection"]["total_tokens"] == 14
+    assert summary["by_task"]["1"]["total_tokens"] == 14
+    assert summary["by_task"]["1"]["kind"] == "hunt:injection"
+    assert summary["by_task"]["1"]["class"] == "injection"
+    assert summary["by_task"]["1"]["area"] == "api"
     fields = usage_fields_for_result(result.usage)
     assert fields["total_tokens"] == 14
+
+
+def test_rebuild_by_task_from_jsonl(tmp_path: Path):
+    from vulnforge.usage import rebuild_by_task_from_jsonl
+
+    record_usage(
+        tmp_path,
+        task_id=7,
+        kind="hunt:memory-safety",
+        model_id="m",
+        usage=TokenUsage(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            source="provider",
+            llm_calls=3,
+        ),
+        extra={"class": "memory-safety", "area": "libopensc"},
+    )
+    # Drop by_task from summary as if older format
+    summary_path = tmp_path / "llm_usage_summary.json"
+    data = load_usage_summary(tmp_path)
+    data.pop("by_task", None)
+    summary_path.write_text(__import__("json").dumps(data), encoding="utf-8")
+    rebuilt = rebuild_by_task_from_jsonl(tmp_path)
+    assert "7" in rebuilt
+    assert rebuilt["7"]["total_tokens"] == 120
+    assert rebuilt["7"]["kind"] == "hunt:memory-safety"
+    assert rebuilt["7"]["class"] == "memory-safety"

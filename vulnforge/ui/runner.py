@@ -196,12 +196,23 @@ def _ralph_cmd(
     return cmd
 
 
+def _max_leases_from_settings() -> int:
+    """Effective concurrent-lease cap from UI settings (fallback 1)."""
+    try:
+        from vulnforge.settings import load_ui_settings
+
+        ui = load_ui_settings()
+        return max(1, int(ui.get("max_concurrent_agents") or 1))
+    except Exception:
+        return 1
+
+
 def start_run(
     run_dir: Path,
     *,
     task_timeout: float = 900,
-    max_tasks: Optional[int] = 50,
-    max_iterations: int = 200,
+    max_tasks: Optional[int] = None,
+    max_iterations: int = 10_000,
     max_wall_seconds: Optional[float] = None,
     config: Optional[Path] = None,
     workers: int = 1,
@@ -215,6 +226,9 @@ def start_run(
     ``run.max_leases_parallel`` > 1 (set from Settings max concurrent agents),
     run-once skips exclusive run.lock and SQLite caps concurrent leases so
     agents truly run in parallel.
+
+    Worker count is capped to the lease cap so spare Ralph processes cannot
+    busy-spin on EXIT_BUSY while a single lease is held.
     """
     run_dir = Path(run_dir).resolve()
     if not (run_dir / "harness.db").is_file():
@@ -230,7 +244,8 @@ def start_run(
     except OSError:
         pass
 
-    workers = max(1, int(workers))
+    lease_cap = _max_leases_from_settings()
+    workers = max(1, min(int(workers), lease_cap))
     cmd = _ralph_cmd(
         run_dir,
         task_timeout=task_timeout,
@@ -250,9 +265,10 @@ def start_run(
 
     creationflags = 0
     if os.name == "nt":
-        # detach from console; new process group
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        # Hide console + new process group. CREATE_NO_WINDOW avoids the CMD
+        # flash that DETACHED_PROCESS alone does not suppress for python.exe.
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
     pids: list[int] = []
     try:
@@ -330,9 +346,49 @@ def start_run(
     }
 
 
+def _clear_run_lock(run_dir: Path) -> bool:
+    """Remove run.lock when missing, corrupt, or holder PID is dead."""
+    lock_path = run_dir / "run.lock"
+    if not lock_path.is_file():
+        return False
+    try:
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        pid = int(data.get("pid", -1))
+        if _pid_alive(pid):
+            return False
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        pass
+    try:
+        lock_path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _reclaim_leases_on_stop(run_dir: Path) -> int:
+    """Requeue leased tasks after workers are killed (orphan cleanup)."""
+    db_path = run_dir / "harness.db"
+    if not db_path.is_file():
+        return 0
+    try:
+        from vulnforge.db import Database
+
+        db = Database.open(db_path)
+        try:
+            return int(db.reclaim_all_leased_tasks(reason="pause_kill_orphan") or 0)
+        finally:
+            db.close()
+    except Exception:
+        return 0
+
+
 def pause_run(run_dir: Path) -> dict[str, Any]:
     """
-    Cooperative pause: write STOP. Ralph exits after current run-once.
+    Pause the runner: write STOP, kill Ralph workers (and children), reclaim
+    orphaned leases, clear stale run.lock.
+
+    In-flight LLM calls are terminated so recon handoff cannot leave a leased
+    task forever while the dashboard shows "paused".
     """
     run_dir = Path(run_dir).resolve()
     if not (run_dir / "harness.db").is_file():
@@ -343,8 +399,44 @@ def pause_run(run_dir: Path) -> dict[str, Any]:
         )
     except OSError as e:
         return {"ok": False, "error": str(e)}
-    append_event(run_dir, {"source": "ui", "event": "runner_pause"})
-    return {"ok": True, "status": runner_status(run_dir)}
+
+    pids = _read_worker_pids(run_dir)
+    killed_any = False
+    for pid in pids:
+        if _kill_pid(pid):
+            killed_any = True
+    try:
+        _pid_path(run_dir).unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        (run_dir / "ralph_workers.json").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    # Brief settle so OS reaps children before lease reclaim
+    if killed_any:
+        time.sleep(0.3)
+    reclaimed = _reclaim_leases_on_stop(run_dir)
+    lock_cleared = _clear_run_lock(run_dir)
+
+    append_event(
+        run_dir,
+        {
+            "source": "ui",
+            "event": "runner_pause",
+            "pids": pids,
+            "killed": killed_any,
+            "reclaimed_leases": reclaimed,
+            "lock_cleared": lock_cleared,
+        },
+    )
+    return {
+        "ok": True,
+        "killed": killed_any,
+        "reclaimed_leases": reclaimed,
+        "status": runner_status(run_dir),
+    }
 
 
 def resume_run(
@@ -357,6 +449,30 @@ def resume_run(
         _stop_path(run_dir).unlink(missing_ok=True)
     except OSError as e:
         return {"ok": False, "error": str(e)}
+    # Free ghost leases (dead worker PID / expired TTL) before Ralph starts.
+    # Does NOT reclaim live workers — only stale owners.
+    try:
+        from vulnforge.db import Database
+
+        db_path = run_dir / "harness.db"
+        if db_path.is_file():
+            db = Database.open(db_path)
+            try:
+                stale = db.reclaim_stale_leases()
+            finally:
+                db.close()
+            if stale:
+                append_event(
+                    run_dir,
+                    {
+                        "source": "ui",
+                        "event": "resume_reclaim_stale",
+                        "reclaimed": stale,
+                    },
+                )
+    except Exception:
+        pass
+    _clear_run_lock(run_dir)
     append_event(run_dir, {"source": "ui", "event": "runner_resume"})
     st = runner_status(run_dir)
     if st["alive"]:
@@ -372,10 +488,12 @@ def _kill_pid(pid: int) -> bool:
         return False
     try:
         if os.name == "nt":
+            tk_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
             subprocess.run(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 check=False,
+                creationflags=tk_flags,
             )
         else:
             os.kill(pid, signal.SIGTERM)
@@ -389,37 +507,25 @@ def _kill_pid(pid: int) -> bool:
 
 def stop_run_hard(run_dir: Path) -> dict[str, Any]:
     """
-    Hard stop: STOP + terminate all Ralph worker processes if alive.
-    Use when cooperative pause is not enough.
+    Hard stop: same as pause_run (STOP + kill workers + reclaim leases).
+
+    Kept as a separate API for dashboard "Force stop" actions.
     """
     run_dir = Path(run_dir).resolve()
-    pause_run(run_dir)
-    pids = _read_worker_pids(run_dir)
-    killed_any = False
-    for pid in pids:
-        if _kill_pid(pid):
-            killed_any = True
-    try:
-        _pid_path(run_dir).unlink(missing_ok=True)
-    except OSError:
-        pass
-    try:
-        (run_dir / "ralph_workers.json").unlink(missing_ok=True)
-    except OSError:
-        pass
+    result = pause_run(run_dir)
     append_event(
         run_dir,
         {
             "source": "ui",
             "event": "runner_stop_hard",
-            "pid": pids[0] if pids else None,
-            "pids": pids,
-            "killed": killed_any,
+            "killed": result.get("killed"),
+            "reclaimed_leases": result.get("reclaimed_leases"),
         },
     )
     return {
-        "ok": True,
-        "killed": killed_any,
-        "pids": pids,
-        "status": runner_status(run_dir),
+        "ok": bool(result.get("ok")),
+        "killed": result.get("killed"),
+        "reclaimed_leases": result.get("reclaimed_leases"),
+        "status": result.get("status") or runner_status(run_dir),
+        "error": result.get("error"),
     }

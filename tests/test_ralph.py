@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,27 +25,15 @@ def _load_ralph():
     return mod
 
 
-def test_project_on_stop_invokes_vf_project(tmp_path: Path, monkeypatch):
-    """P0.4: halt paths call vf project best-effort."""
-    ralph = _load_ralph()
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    calls: list[list[str]] = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(list(argv))
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    cfg = ralph.RalphConfig(
+def _base_cfg(ralph, *, run_dir: Path | None, **overrides):
+    base = dict(
         run_dir=run_dir,
         max_iterations=10,
         max_infra_retries=5,
         sleep_seconds=0,
         infra_backoff_base=1.0,
         vf_command=[sys.executable, "-m", "vulnforge.cli"],
-        stop_file=run_dir / "STOP",
+        stop_file=(run_dir / "STOP") if run_dir is not None else None,
         config_path=None,
         dry_run=False,
         verbose=False,
@@ -52,14 +41,75 @@ def test_project_on_stop_invokes_vf_project(tmp_path: Path, monkeypatch):
         max_wall_seconds=None,
         max_tasks=None,
     )
+    base.update(overrides)
+    return ralph.RalphConfig(**base)
+
+
+def test_project_on_stop_invokes_vf_project(tmp_path: Path, monkeypatch):
+    """P0.4: halt paths call vf project best-effort."""
+    ralph = _load_ralph()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    calls: list[list[str]] = []
+    kwargs_list: list[dict] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        kwargs_list.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    cfg = _base_cfg(ralph, run_dir=run_dir)
     ralph.project_on_stop(cfg, "infra_give_up")
     assert calls, "expected subprocess.run for vf project"
     assert "project" in calls[0]
     assert "--run-dir" in calls[0]
     assert str(run_dir) in calls[0]
+    if os.name == "nt":
+        flags = kwargs_list[0].get("creationflags", 0)
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        assert flags & no_win, "Windows project-on-stop should hide console"
+    else:
+        assert "creationflags" not in kwargs_list[0]
     events = (run_dir / "events.jsonl").read_text(encoding="utf-8")
     assert "project_on_stop" in events
     assert "infra_give_up" in events
+
+
+def test_invoke_run_once_hides_console_on_windows(tmp_path: Path, monkeypatch):
+    """Each vf run-once child should use CREATE_NO_WINDOW on Windows."""
+    ralph = _load_ralph()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    kwargs_list: list[dict] = []
+
+    def fake_run(argv, **kwargs):
+        kwargs_list.append(kwargs)
+        return SimpleNamespace(returncode=ralph.EXIT_IDLE, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    cfg = _base_cfg(ralph, run_dir=run_dir, task_timeout=30.0)
+    code = ralph.invoke_run_once(cfg)
+    assert code == ralph.EXIT_IDLE
+    assert kwargs_list, "expected subprocess.run"
+    if os.name == "nt":
+        flags = kwargs_list[0].get("creationflags", 0)
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        assert flags & no_win
+    else:
+        assert "creationflags" not in kwargs_list[0]
+
+
+def test_subprocess_no_window_kwargs_shape(monkeypatch):
+    ralph = _load_ralph()
+    monkeypatch.setattr(ralph.os, "name", "nt")
+    kw = ralph._subprocess_no_window_kwargs()
+    assert "creationflags" in kw
+    no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    assert kw["creationflags"] & no_win
+    monkeypatch.setattr(ralph.os, "name", "posix")
+    assert ralph._subprocess_no_window_kwargs() == {}
 
 
 def test_project_on_stop_skips_without_run_dir(monkeypatch):
