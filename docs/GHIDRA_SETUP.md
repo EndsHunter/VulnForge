@@ -74,22 +74,26 @@ Unpack a `VulnForge-offline-*.zip` from `scripts/package_offline_release.ps1`. I
 
 ## 3. Get GhidraMCP (`./ghidra-mcp`)
 
-### Option A — Clone next to VulnForge
+### Option A — Already in this repo (default)
+
+Recent VulnForge trees **vendor** [bethington/ghidra-mcp](https://github.com/bethington/ghidra-mcp) under `./ghidra-mcp/` (pinned for Ghidra **12.2** / Java **25** when present). Check for a prebuilt jar:
+
+```powershell
+Get-ChildItem .\ghidra-mcp\build\libs\GhidraMCP*.jar
+```
+
+If the jar is present, you can skip the build step and go to smoke-test.
+
+### Option B — Clone next to VulnForge
 
 ```powershell
 cd C:\path\to\VulnForge
 git clone https://github.com/bethington/ghidra-mcp.git ghidra-mcp
 ```
 
-### Option B — Offline zip / vendor tree
+### Option C — Offline zip
 
-If `ghidra-mcp/` is already present (offline bundle or vendored tree), skip clone. Prefer a tree that still has:
-
-```text
-ghidra-mcp/build/libs/GhidraMCP-*.jar
-```
-
-or be prepared to build (next section).
+If you received a `VulnForge-offline-*.zip`, `ghidra-mcp/` (and usually the jar) is already inside.
 
 ---
 
