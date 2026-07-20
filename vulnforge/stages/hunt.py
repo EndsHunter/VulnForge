@@ -712,6 +712,12 @@ def prepare_candidate_submission(
     if errs:
         return None, {"ok": False, "errors": errs}
 
+    # Optional severity_claim: canonicalize aliases or soft-drop free-text so
+    # validate_mech does not reject solid candidates for a mis-filled enum.
+    from vulnforge.findings.severity import apply_severity_claim
+
+    body, _sev_action = apply_severity_claim(body)
+
     eid = body.get("evidence_id")
     if not eid:
         return None, {

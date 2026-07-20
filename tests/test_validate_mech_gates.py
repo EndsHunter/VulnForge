@@ -168,6 +168,44 @@ def test_meta_fingerprint_not_false_mutated(tmp_path: Path, toy_sqli: Path):
     db.close()
 
 
+def test_severity_alias_info_needs_human(tmp_path: Path, toy_sqli: Path):
+    """Aliases like info canonicalize to INFORMATIONAL."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    body["severity_claim"] = "info"
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    _fix_citation_line(body, toy_sqli)
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    assert db.get_finding(fid).body.get("severity_claim") == "INFORMATIONAL"
+    db.close()
+
+
+def test_severity_free_text_soft_drop_needs_human(tmp_path: Path, toy_sqli: Path):
+    """Free-text severity_claim is soft-dropped; no bad_severity reject."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    free = "what a successful exploit would show"
+    body["severity_claim"] = free
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    _fix_citation_line(body, toy_sqli)
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    assert not any("bad_severity" in str(x) for x in (r.get("reasons") or [])), r
+    f = db.get_finding(fid)
+    assert f.body.get("severity_claim_dropped") == free
+    assert not f.body.get("severity_claim")
+    db.close()
+
+
 def test_meta_fingerprint_detects_real_mutation(tmp_path: Path, toy_sqli: Path):
     run_dir, db = _setup_run(tmp_path, toy_sqli)
     man_path = run_dir / "target_manifest.json"

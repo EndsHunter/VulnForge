@@ -55,7 +55,8 @@ Before `submit_candidate`, gate the claim. Fail any → drop or `submit_none`.
 | **IN SCOPE** | Does not match exclusion A–E. |
 | **CITED** | Real file:line (or path+symbol) citations you read. Source and sink when both exist; single-site issues may reuse one ref. No line-level proof of flow → do not emit. |
 
-**Severity sanity:** stack many "must already have X" preconditions, or non-prod-only impact → cap MEDIUM or below.
+**Severity sanity:** stack many "must already have X" preconditions, or non-prod-only impact → cap MEDIUM or below.  
+`severity_claim` (optional) is a rating only: `CRITICAL` | `HIGH` | `MEDIUM` | `LOW` | `INFORMATIONAL` — not free-text impact (use `threat_model.impact`).
 
 ## Evidence rules (`evidence_id`)
 

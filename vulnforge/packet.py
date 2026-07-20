@@ -1035,8 +1035,17 @@ def tool_schemas_for(
                         },
                         "severity_claim": {
                             "type": "string",
+                            "enum": [
+                                "CRITICAL",
+                                "HIGH",
+                                "MEDIUM",
+                                "LOW",
+                                "INFORMATIONAL",
+                            ],
                             "description": (
-                                "Optional brief claim of what a successful exploit would show."
+                                "Optional severity rating only — one of CRITICAL, HIGH, "
+                                "MEDIUM, LOW, INFORMATIONAL. Not free-text impact prose "
+                                "(put impact in threat_model.impact / summary)."
                             ),
                         },
                     },

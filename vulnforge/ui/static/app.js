@@ -75,7 +75,8 @@ function humanizeValidationReason(raw) {
     vacuous_impact: "Threat model impact looks vacuous / circular.",
     vacuous_boundary: "Threat model boundary is empty or placeholder (n/a, none, unknown).",
     title_too_short: "Finding title is too short.",
-    bad_severity: "severity_claim is not an allowed value.",
+    bad_severity:
+      "severity_claim must be CRITICAL, HIGH, MEDIUM, LOW, or INFORMATIONAL (not free text).",
     no_run: "Run row missing in harness.db.",
     schema: "Candidate body failed schema checks.",
   };

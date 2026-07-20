@@ -18,6 +18,24 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     if not finding:
         return {"status": "failed_task", "error": "finding_not_found"}
 
+    import json
+    from vulnforge.findings.severity import apply_severity_claim
+    from vulnforge.util import utc_now_iso
+
+    # Optional severity_claim: canonicalize aliases or soft-drop free-text before
+    # gates so bad_severity alone never discards an otherwise solid candidate.
+    body0 = dict(finding.body or {})
+    body0, sev_action = apply_severity_claim(body0)
+    if sev_action is not None or body0 != dict(finding.body or {}):
+        db.conn.execute(
+            "UPDATE findings SET body_json=?, updated_at=? WHERE id=?",
+            (json.dumps(body0), utc_now_iso(), finding.id),
+        )
+        db.conn.commit()
+        finding = db.get_finding(int(fid))
+        if not finding:
+            return {"status": "failed_task", "error": "finding_not_found"}
+
     reasons: list[str] = []
     for check in CHECKS:
         ok, reason = check(finding, run_dir, cfg, db)
@@ -27,8 +45,6 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     if reasons:
         body = dict(finding.body)
         body["validation_reasons"] = reasons
-        import json
-        from vulnforge.util import utc_now_iso
 
         db.conn.execute(
             "UPDATE findings SET state=?, body_json=?, updated_at=? WHERE id=?",
@@ -41,9 +57,6 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "reasons": reasons,
             "finding_id": finding.id,
         }
-
-    import json
-    from vulnforge.util import utc_now_iso
 
     # Mech passed → never auto-confirm. Confirmed is a human decision.
     # Optional validate_llm may still demote/reject; stand/hold also land as needs_human.
@@ -258,11 +271,15 @@ def check_non_vacuous(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, str]
 
 
 def check_severity_claim(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, str]:
+    """severity_claim optional; run() already normalized/soft-dropped before CHECKS."""
+    from vulnforge.findings.severity import ALLOWED_SEVERITY_CLAIMS, normalize_severity_claim
+
     sev = finding.body.get("severity_claim")
-    if sev is None:
+    if sev is None or (isinstance(sev, str) and not sev.strip()):
         return True, ""
-    allowed = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"}
-    if str(sev).upper() not in allowed:
+    canon = normalize_severity_claim(sev)
+    if canon is None or canon not in ALLOWED_SEVERITY_CLAIMS:
+        # Soft-drop should have removed this in run(); if it remains, reject.
         return False, f"bad_severity:{sev}"
     return True, ""
 
