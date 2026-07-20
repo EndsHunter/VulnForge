@@ -21,6 +21,12 @@ Automation never auto-confirms. Prefer honest `submit_none` over inventing findi
 
 Optional for full campaigns: a loaded local model (e.g. Ornith / other coding model). The dashboard works without a model; recon/hunt tasks need one.
 
+### Binary reverse-engineering (optional)
+
+To audit **PE binaries** (`.exe` / `.dll`) with the `binary_re` profile you also need **Ghidra** and **Ghidra MCP** under the repo root (`./ghidra`, `./ghidra-mcp`).
+
+**Setup guide:** [docs/GHIDRA_SETUP.md](docs/GHIDRA_SETUP.md) — install Java, place Ghidra, build GhidraMCP, smoke-test headless MCP, and run a PE audit.
+
 ---
 
 ## Project layout (this tree)
@@ -33,6 +39,9 @@ Run commands from the **repo root** (the directory that contains both `vulnforge
 ├── prompts/v1/          # Prompt pin + hunt class seeds
 ├── config/              # default.yaml, hunt_profiles/, recon_agents/
 ├── scripts/ralph.py     # Outer loop
+├── docs/                # Setup guides (e.g. GHIDRA_SETUP.md)
+├── ghidra/              # Optional: Ghidra distro for binary_re (see docs/GHIDRA_SETUP.md)
+├── ghidra-mcp/          # Optional: GhidraMCP source + jar for binary_re
 ├── fixtures/            # Toy targets for tests / first run
 ├── skill/SKILL.md       # Optional agent skill for coding agents
 ├── tests/
