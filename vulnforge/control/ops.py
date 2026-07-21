@@ -45,7 +45,7 @@ DEPTH_BLURBS: dict[str, str] = {
     "planned": "Coverage fact created when the hunt was enqueued; visit not finished.",
     "shallow": (
         "Hunt ended without substantial analysis tools "
-        "(read_file/grep or ghidra decompile/xrefs) (shallow). "
+        "(read_file/grep) (shallow). "
         "Does not mean the area is safe - often requeued once with force_depth."
     ),
     "none": (
@@ -1447,8 +1447,8 @@ def target_list(run_dir: Path, path: str = ".", max_entries: int = 200) -> dict[
         if not target.exists():
             return {"ok": False, "error": "target missing"}
 
-        # Single-file / binary_re: virtual root contains only the target file.
-        # Do NOT list the parent directory (e.g. System32).
+        # Single-file: virtual root contains only the target file.
+        # Do NOT list the parent directory (e.g. a huge Desktop tree).
         if target.is_file():
             name = target.name
             rel = normalize_relpath(path or ".")
@@ -1480,12 +1480,11 @@ def target_list(run_dir: Path, path: str = ".", max_entries: int = 200) -> dict[
                 "truncated": False,
                 "max_entries": max_entries,
                 "single_file": True,
-                "kind": "single_binary" if pe else "single_file",
+                "kind": "single_file",
                 "profile": _row_profile(row),
                 "target_path": str(target.resolve()),
                 "hint": (
-                    "PE binary target — use Ghidra tools for decompilation; "
-                    "text view shows a short header only."
+                    "PE binary path (not a supported audit target)."
                     if pe
                     else "Single-file target."
                 ),
@@ -1547,11 +1546,8 @@ def target_read(
                     lines.extend(
                         [
                             "",
-                            "This run targets a PE binary (binary_re).",
-                            "Explorer cannot show source; use Mission architecture",
-                            "and agent ghidra_* tools (decompile, xrefs, imports).",
-                            "",
-                            "Hunt skills: bin-memory-safety, bin-dangerous-apis, bin-follow-xref.",
+                            "This path is a PE binary. VulnForge is source-code analysis only;",
+                            "point the audit at a source tree instead.",
                         ]
                     )
                     if profile:
@@ -1673,37 +1669,6 @@ def hunt_from_selection(
         db.close()
 
 
-def _is_binary_architecture(
-    arch: Optional[dict],
-    *,
-    profile: Optional[str] = None,
-) -> bool:
-    """True when the map should use binary RE preview labels/layout."""
-    if str(profile or "").strip().lower() == "binary_re":
-        return True
-    if not isinstance(arch, dict) or not arch:
-        return False
-    inv = arch.get("inventory") if isinstance(arch.get("inventory"), dict) else {}
-    if str(inv.get("kind") or "") == "single_binary":
-        return True
-    if isinstance(arch.get("binary"), dict) and arch.get("binary"):
-        return True
-    # Hunt focus with hex address hints is a strong binary signal
-    hf = arch.get("hunt_focus")
-    if isinstance(hf, list):
-        for item in hf[:8]:
-            if not isinstance(item, dict):
-                continue
-            hints = item.get("path_hints") or []
-            if not isinstance(hints, list):
-                continue
-            for h in hints[:4]:
-                s = str(h or "").strip().lower()
-                if s.startswith("0x") and len(s) >= 5:
-                    return True
-    return False
-
-
 def _compact_component(c: Any) -> Optional[dict[str, Any]]:
     if not c:
         return None
@@ -1770,17 +1735,11 @@ def architecture_summary(
     *,
     profile: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compact fields for Overview / Architecture tab.
-
-    ``mode`` is ``binary`` for PE reverse-engineering maps and ``source`` otherwise.
-    Binary mode adds modules/sinks/import previews; ``components`` remains populated
-    for Coverage compatibility.
-    """
+    """Compact fields for Overview / Architecture tab (source analysis)."""
+    del profile  # retained for call-site compatibility
     empty: dict[str, Any] = {
-        "mode": "binary" if str(profile or "").strip().lower() == "binary_re" else "source",
-        "title": "Binary map"
-        if str(profile or "").strip().lower() == "binary_re"
-        else "Architecture",
+        "mode": "source",
+        "title": "Architecture",
         "summary": "",
         "components": [],
         "modules": [],
@@ -1798,7 +1757,6 @@ def architecture_summary(
     if not arch:
         return empty
 
-    binary_mode = _is_binary_architecture(arch, profile=profile)
     comps_raw = arch.get("components") if isinstance(arch.get("components"), list) else []
     comps = [c for c in (_compact_component(x) for x in comps_raw[:40]) if c]
     agents_run = arch.get("recon_agents_run")
@@ -1819,34 +1777,16 @@ def architecture_summary(
         for k, v in inv_bin.items():
             if v is not None and k not in bin_meta:
                 bin_meta[k] = v
-    if not bin_meta.get("name"):
-        entry = ""
-        if isinstance(inv.get("entrypoints"), list) and inv["entrypoints"]:
-            entry = str(inv["entrypoints"][0] or "")
-        bin_meta["name"] = entry or str(inv.get("name") or "")
-    if not bin_meta.get("path") and inv.get("path"):
-        bin_meta["path"] = inv.get("path")
-    if not bin_meta.get("sha256") and inv.get("sha256"):
-        bin_meta["sha256"] = inv.get("sha256")
-
-    # Pull function count from metadata-ish fields when present
-    for key in ("function_count", "functions", "total_functions"):
-        if bin_meta.get(key) is not None:
-            continue
-        if inv.get(key) is not None:
-            bin_meta[key] = inv.get(key)
-        elif isinstance(arch.get("metrics"), dict) and arch["metrics"].get(key) is not None:
-            bin_meta[key] = arch["metrics"].get(key)
 
     imports_preview = _compact_symbol_list(arch.get("imports"), limit=24)
     exports_preview = _compact_symbol_list(arch.get("exports"), limit=16)
 
     base: dict[str, Any] = {
-        "mode": "binary" if binary_mode else "source",
-        "title": "Binary map" if binary_mode else "Architecture",
+        "mode": "source",
+        "title": "Architecture",
         "summary": str(arch.get("summary") or "")[:4000],
         "components": comps,
-        "modules": comps,  # same list; UI labels differ by mode
+        "modules": comps,
         "trust_boundaries": list(arch.get("trust_boundaries") or [])[:30]
         if isinstance(arch.get("trust_boundaries"), list)
         else [],

@@ -744,33 +744,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     if not profile:
         profile = str((cfg.get("run") or {}).get("profile") or "code_static")
 
-    if profile == "binary_re":
-        # Single PE: synthetic inventory (no source tree walk).
-        from vulnforge.util import hash_file
-
-        name = target.name if target.is_file() else "binary"
-        try:
-            digest = hash_file(target) if target.is_file() else ""
-        except OSError:
-            digest = ""
-        seed_sinks: list = []
-        inventory = {
-            "file_count": 1 if target.is_file() else 0,
-            "kind": "single_binary",
-            "extensions": {target.suffix.lower(): 1} if target.is_file() else {},
-            "entrypoints": [name],
-            "sample_paths": [name],
-            "seed_sinks": seed_sinks,
-            "dir_partitions": {".": [name]},
-            "binary": {
-                "name": name,
-                "path": str(target),
-                "sha256": digest,
-            },
-        }
-        if inventory["file_count"] == 0:
-            return {"status": "failed_task", "error": "empty_inventory"}
-    elif target.is_file():
+    if target.is_file():
         # Single source file (code_static): one-file inventory, tools use parent root.
         from vulnforge.util import hash_file
 
@@ -860,31 +834,6 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         cfg["run"] = {}
     cfg["run"]["profile"] = profile
 
-    if profile == "binary_re":
-        # Hard requirement: headless Ghidra must be up with the PE loaded
-        # before recon/hunts call ghidra_* tools.
-        from vulnforge.ghidra.client import GhidraError
-        from vulnforge.ghidra.runtime import client_from_cfg, ensure_ghidra_for_run
-
-        try:
-            ensure_ghidra_for_run(run_dir, target, cfg)
-            ctx["ghidra_client"] = client_from_cfg(cfg)
-        except GhidraError as e:
-            return _failed_task_result(
-                task,
-                db,
-                cfg,
-                run_dir,
-                error=f"ghidra_not_ready: {e}",
-            )
-        except Exception as e:
-            return _failed_task_result(
-                task,
-                db,
-                cfg,
-                run_dir,
-                error=f"ghidra_not_ready: {e}",
-            )
     handler = build_tool_handler(ctx)
     prompts_root = PROJECT_ROOT / "prompts" / "v1"
     payload = task.payload if isinstance(getattr(task, "payload", None), dict) else {}

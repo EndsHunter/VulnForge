@@ -116,18 +116,6 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "widened": False,
         },
     }
-    if profile == "binary_re":
-        # Hunts require headless Ghidra with the PE loaded (same as recon).
-        from vulnforge.ghidra.client import GhidraError
-        from vulnforge.ghidra.runtime import client_from_cfg, ensure_ghidra_for_run
-
-        try:
-            ensure_ghidra_for_run(run_dir, target, cfg)
-            ctx["ghidra_client"] = client_from_cfg(cfg)
-        except GhidraError as e:
-            return {"status": "failed_task", "error": f"ghidra_not_ready: {e}"}
-        except Exception as e:
-            return {"status": "failed_task", "error": f"ghidra_not_ready: {e}"}
     # Ensure pack_hunt sees run profile for tool schemas
     if isinstance(cfg.get("run"), dict):
         cfg.setdefault("run", {})
@@ -811,18 +799,8 @@ def _pick_primary_sink_from_citations(cits: list) -> tuple[str, str]:
     ).strip()
 
 
-BINARY_DEEP_TOOLS = frozenset({
-    "ghidra_decompile",
-    "ghidra_disassemble",
-    "ghidra_xrefs",
-    "ghidra_call_graph",
-    "ghidra_function_at",
-    "ghidra_import_callers",  # include even if tool not yet merged
-})
-
-
 def is_shallow(session: dict, *, profile: str = "") -> bool:
+    """True when the hunt did not use deeper source tools (read_file/grep)."""
+    del profile  # reserved for future profile-specific depth rules
     used = set(session.get("tools_used") or [])
-    if str(profile or "").strip().lower() == "binary_re":
-        return not bool(used & BINARY_DEEP_TOOLS)
     return not bool(used & {"read_file", "grep"})

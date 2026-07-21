@@ -13,8 +13,8 @@ def compute_stable_key(profile: str, body: dict) -> str:
     P2.4: prefer explicit sink_path/sink_symbol; normalize path; do not rely
     solely on first citation when a primary sink is declared.
 
-    binary_re: include sink_address / binary sha when present so function-level
-    PE findings do not collide across addresses.
+    Optional sink_address / binary id fields are included when present so
+    identity stays stable if callers still populate them.
     """
     path = normalize_relpath(str(body.get("sink_path") or ""))
     symbol = str(body.get("sink_symbol") or "")

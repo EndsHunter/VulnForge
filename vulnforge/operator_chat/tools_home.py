@@ -233,13 +233,12 @@ def schemas() -> list[dict]:
         ),
         openai_tool(
             "init_run",
-            "Create a new audit run for a target directory or PE file (confirm required). "
-            "Use profile binary_re for a single .exe/.dll (requires i_am_authorized_for_binary_re). "
-            "Optional start Ralph.",
+            "Create a new audit run for a source directory or single source file "
+            "(confirm required). Source-code analysis only (code_static). Optional start Ralph.",
             {
                 "target": {
                     "type": "string",
-                    "description": "Absolute path to codebase directory or PE file",
+                    "description": "Absolute path to source codebase directory or source file",
                 },
                 "strategy": {
                     "type": "string",
@@ -250,15 +249,7 @@ def schemas() -> list[dict]:
                 "enqueue_hunts": {"type": "boolean"},
                 "profile": {
                     "type": "string",
-                    "description": "code_static (default) or binary_re",
-                },
-                "i_am_authorized_for_binary_re": {
-                    "type": "boolean",
-                    "description": "Required when profile is binary_re",
-                },
-                "skip_ghidra_init": {
-                    "type": "boolean",
-                    "description": "binary_re: skip eager Ghidra import during init",
+                    "description": "code_static (default; only supported profile)",
                 },
             },
             ["target"],
@@ -395,19 +386,18 @@ def _init_run(args: dict, *, runs_root: Path, project_root: Path) -> dict[str, A
     target = Path(str(args.get("target") or ""))
     if not target.exists():
         return {"ok": False, "error": f"target not found: {target}"}
-    profile = str(args.get("profile") or "").strip().lower()
-    # PE path: auto binary_re when blank or still code_static (GUI default)
-    if is_pe_file(target) and (not profile or profile == "code_static"):
-        profile = "binary_re"
-    if not profile:
-        profile = "code_static"
+    profile = str(args.get("profile") or "code_static").strip().lower() or "code_static"
     if profile == "binary_re":
-        if not target.is_file():
-            return {
-                "ok": False,
-                "error": f"binary_re target must be a single file: {target}",
-            }
-    elif not target.is_dir() and not target.is_file():
+        return {
+            "ok": False,
+            "error": "profile binary_re was removed; use code_static on a source tree",
+        }
+    if is_pe_file(target):
+        return {
+            "ok": False,
+            "error": f"PE binaries are not supported (source analysis only): {target}",
+        }
+    if not target.is_dir() and not target.is_file():
         return {
             "ok": False,
             "error": f"target must be a directory or a single file: {target}",
@@ -429,8 +419,6 @@ def _init_run(args: dict, *, runs_root: Path, project_root: Path) -> dict[str, A
     a.hunt_skill_mode = str(args.get("hunt_skill_mode") or "all_active")
     a.hunt_skill_ids = None
     a.enqueue_hunts = bool(args.get("enqueue_hunts", True))
-    a.i_am_authorized_for_binary_re = bool(args.get("i_am_authorized_for_binary_re"))
-    a.skip_ghidra_init = bool(args.get("skip_ghidra_init"))
     a.progress = None
     a.job_id = None
 

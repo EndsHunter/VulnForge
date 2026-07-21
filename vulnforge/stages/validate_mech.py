@@ -117,34 +117,12 @@ def check_citations_resolve(finding, run_dir: Path, cfg: dict, db) -> tuple[bool
     if not run:
         return False, "no_run"
     target = Path(run["target_path"])
-    try:
-        profile = str(run["profile"] or "")
-    except (KeyError, IndexError, TypeError):
-        profile = ""
-    binary_mode = profile == "binary_re"
     # Directory agents resolve under; for a single-file target use parent.
     root = target if target.is_dir() else target.parent
 
     for c in finding.body.get("citations") or []:
         if not isinstance(c, dict):
             return False, "citation_not_object"
-        if binary_mode:
-            # PE findings: require path (binary name) and/or address/symbol.
-            has_addr = bool(str(c.get("address") or "").strip())
-            has_sym = bool(str(c.get("symbol") or "").strip())
-            has_path = bool(str(c.get("path") or "").strip())
-            if not (has_addr or has_sym or has_path):
-                return False, "binary_citation_needs_address_or_symbol_or_path"
-            # If path is the binary basename or absolute match, ok.
-            if has_path:
-                rel = normalize_relpath(str(c.get("path") or ""))
-                if target.is_file():
-                    if rel not in (target.name, normalize_relpath(target.name), str(target)):
-                        # allow basename-only citations
-                        if Path(rel).name != target.name:
-                            return False, f"binary_citation_path_mismatch:{rel}"
-                continue
-            continue
 
         rel = normalize_relpath(str(c.get("path") or ""))
         if target.is_file() and (
@@ -284,28 +262,6 @@ def check_severity_claim(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, s
     return True, ""
 
 
-def check_binary_address_present(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, str]:
-    """binary_re: require sink_address or citation address when profile is binary_re."""
-    run = db.get_run()
-    if not run:
-        return True, ""
-    try:
-        profile = str(run["profile"] or "")
-    except (KeyError, IndexError, TypeError):
-        profile = ""
-    if profile != "binary_re":
-        return True, ""
-    body = finding.body or {}
-    if str(body.get("sink_address") or "").strip():
-        return True, ""
-    for c in body.get("citations") or []:
-        if isinstance(c, dict) and (
-            str(c.get("address") or "").strip() or str(c.get("symbol") or "").strip()
-        ):
-            return True, ""
-    return False, "binary_missing_address_or_symbol"
-
-
 CHECKS: list[Callable] = [
     check_schema,
     check_citations_resolve,
@@ -313,5 +269,4 @@ CHECKS: list[Callable] = [
     check_target_unmodified,
     check_non_vacuous,
     check_severity_claim,
-    check_binary_address_present,
 ]

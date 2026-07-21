@@ -100,32 +100,3 @@ tools:
   max_grep_pattern_len: 200
   grep_timeout_seconds: 8
   max_grep_files: 8000
-
-# Binary reverse-engineering (profile binary_re) — PE only in v1.
-# Requires --i-am-authorized-for-binary-re or i_am_authorized: true.
-# Ghidra MCP: https://github.com/bethington/ghidra-mcp (HTTP on :8089 by default).
-#
-# Portable layout (paths relative to the VulnForge project root / VULNFORGE_ROOT):
-#   ghidra/           Ghidra distribution (ghidraRun.bat, Ghidra/, support/)
-#   ghidra-mcp/       clone + build of bethington/ghidra-mcp
-#   scripts/start_ghidra_mcp_headless.ps1
-# headless_command is auto-built when null — no absolute machine paths needed.
-binary_re:
-  i_am_authorized: false
-  ghidra_install_dir: "ghidra"
-  mcp_base_url: "http://127.0.0.1:8089"
-  headless_command: null
-  headless_script: "scripts/start_ghidra_mcp_headless.ps1"
-  headless_cwd: null
-  ghidra_mcp_repo: "ghidra-mcp"
-  ghidra_mcp_jar: null
-  start_timeout_seconds: 180
-  analyze_timeout_seconds: 600
-  # Per-run Ghidra project dir under the run folder (not the Ghidra install)
-  project_subdir: "ghidra_project"
-  allowed_extensions:
-    - ".exe"
-    - ".dll"
-  max_decompile_chars: 24000
-  max_list_page: 100
-  request_timeout_seconds: 45

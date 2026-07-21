@@ -103,19 +103,19 @@
           <div class="field">
             <div class="field-label-row">
               <label class="field-label-text" for="init-target">Path</label>
-              <button type="button" class="init-help" data-tip="Read-only audit path: a source directory (code_static) or a single PE file such as .exe/.dll (binary_re). Agents never write into the target — evidence and run state live under the run directory." aria-label="Help: Target path">?</button>
+              <button type="button" class="init-help" data-tip="Read-only audit path: a source directory or single source file. Agents never write into the target — evidence and run state live under the run directory. PE binaries are not supported." aria-label="Help: Target path">?</button>
             </div>
             <div class="path-input-row">
-              <input id="init-target" name="target" required placeholder="C:\path\to\repo or app.exe" autocomplete="off" spellcheck="false" />
+              <input id="init-target" name="target" required placeholder="C:\path\to\source-repo" autocomplete="off" spellcheck="false" />
               <button type="button" class="btn" id="btn-browse-target" title="Browse for folder or file">Browse...</button>
             </div>
-            <p class="controls-hint init-hint" id="init-target-hint">Folder or single source file · .exe / .dll for binary_re</p>
+            <p class="controls-hint init-hint" id="init-target-hint">Source folder or single source file (source analysis only)</p>
           </div>
 
           <div class="field" id="init-profile-field">
             <div class="field-label-row">
               <span class="field-label-text" id="init-profile-label">Profile</span>
-              <button type="button" class="init-help" data-tip="code_static audits a source tree. binary_re audits a single PE via Ghidra MCP (authorized research only)." aria-label="Help: Profile">?</button>
+              <button type="button" class="init-help" data-tip="code_static audits a source tree with read-only tools (list/read/grep). VulnForge is source-code analysis only." aria-label="Help: Profile">?</button>
             </div>
             <fieldset class="init-fieldset">
               <legend class="visually-hidden">Audit profile</legend>
@@ -126,29 +126,11 @@
                     <span class="strategy-option-title-row">
                       <span class="strategy-option-title">code_static</span>
                     </span>
-                    <span class="strategy-option-desc">Source tree — directory target.</span>
-                  </span>
-                </label>
-                <label class="strategy-option">
-                  <input type="radio" name="init-profile" value="binary_re" />
-                  <span class="strategy-option-main">
-                    <span class="strategy-option-title-row">
-                      <span class="strategy-option-title">binary_re</span>
-                    </span>
-                    <span class="strategy-option-desc">Single PE (.exe / .dll) via Ghidra MCP.</span>
+                    <span class="strategy-option-desc">Source tree — directory or single source file.</span>
                   </span>
                 </label>
               </div>
             </fieldset>
-            <div class="field init-binary-auth" id="init-binary-auth-field" hidden>
-              <div class="init-check-row">
-                <label class="init-check">
-                  <input type="checkbox" id="init-binary-auth" />
-                  <span>I am authorized for binary reverse-engineering research on this target</span>
-                </label>
-                <button type="button" class="init-help" data-tip="Required for binary_re. Same gate as CLI --i-am-authorized-for-binary-re. Do not enable unless you have rights to analyze the binary." aria-label="Help: Binary RE authorization">?</button>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -156,7 +138,7 @@
         <section class="init-section" aria-labelledby="init-sec-strategy">
           <div class="field-label-row init-section-head">
             <h3 class="init-section-title" id="init-sec-strategy">Strategy</h3>
-            <button type="button" class="init-help" data-tip="How this run is planned. Discovery is the usual default; file-by-file is exhaustive; recon with docs steers mapping from design docs. binary_re uses discovery only." aria-label="Help: Strategy">?</button>
+            <button type="button" class="init-help" data-tip="How this run is planned. Discovery is the usual default; file-by-file is exhaustive; recon with docs steers mapping from design docs." aria-label="Help: Strategy">?</button>
           </div>
           <fieldset class="init-fieldset">
             <legend class="visually-hidden">Run strategy</legend>
@@ -363,7 +345,6 @@
         <li data-phase="queued" class="active">Queue</li>
         <li data-phase="inventory">Scan</li>
         <li data-phase="database">Database</li>
-        <li data-phase="ghidra" class="init-phase-ghidra" hidden>Ghidra</li>
         <li data-phase="ralph">Ralph</li>
         <li data-phase="done">Open</li>
       </ol>
@@ -380,7 +361,6 @@
           <span class="init-metric"><span class="init-metric-n" id="init-metric-elapsed">0s</span> elapsed</span>
         </div>
         <p class="controls-hint init-hint" id="init-loading-hint">Inventorying the target tree. Large folders take longer.</p>
-        <p class="controls-hint init-hint init-ghidra-detail" id="init-ghidra-detail" hidden></p>
       </div>
       <div class="modal-actions init-loading-actions" id="init-loading-actions" hidden>
         <button type="button" class="btn" id="init-loading-dismiss">Back</button>

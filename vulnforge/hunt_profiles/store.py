@@ -177,37 +177,6 @@ SEED_PROFILE_META: dict[str, dict[str, Any]] = {
         "specificity": 18,
         "version": PROFILE_META_VERSION,
     },
-    # binary_re profile skills (PE via Ghidra)
-    "bin-memory-safety": {
-        "description": "PE memory corruption via Ghidra decompilation and sink xrefs",
-        "tags": ["binary", "memory", "overflow", "pe", "ghidra"],
-        "languages": ["pe", "native"],
-        "cwe": ["CWE-119", "CWE-120", "CWE-787", "CWE-134"],
-        "angle_ids": [1, 2, 6, 7],
-        "sink_families": [],
-        "specificity": 22,
-        "version": PROFILE_META_VERSION,
-    },
-    "bin-dangerous-apis": {
-        "description": "PE process/library/path/command sinks via imports and callers",
-        "tags": ["binary", "win32", "process", "dll", "pe", "ghidra"],
-        "languages": ["pe", "native"],
-        "cwe": ["CWE-78", "CWE-427", "CWE-426", "CWE-22"],
-        "angle_ids": [3, 8, 9, 11],
-        "sink_families": ["exec", "path"],
-        "specificity": 22,
-        "version": PROFILE_META_VERSION,
-    },
-    "bin-follow-xref": {
-        "description": "Deep follow-up on a PE function/address chain (multi-layer hunt)",
-        "tags": ["binary", "xref", "follow-up", "pe", "ghidra"],
-        "languages": ["pe", "native"],
-        "cwe": [],
-        "angle_ids": [1, 3, 7, 9],
-        "sink_families": [],
-        "specificity": 8,
-        "version": PROFILE_META_VERSION,
-    },
 }
 
 

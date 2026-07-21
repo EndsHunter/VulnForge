@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._-]+")
 
-# PE extensions accepted by binary_re (v1)
+# Common binary extensions (used to reject non-source targets at init)
 PE_EXTENSIONS = frozenset({".exe", ".dll"})
 
 
@@ -127,14 +127,13 @@ def _ignored(rel: str, ignore_globs: Iterable[str]) -> bool:
 
 
 def build_single_file_manifest(target: Path, *, progress: Any = None) -> dict[str, Any]:
-    """Manifest for a single-file target (PE binary_re or single source file)."""
+    """Manifest for a single source-file target."""
     target = target.resolve()
     if not target.is_file():
         raise FileNotFoundError(f"target is not a file: {target}")
 
-    pe = target.suffix.lower() in PE_EXTENSIONS
-    kind = "single_binary" if pe else "single_file"
-    label = "binary" if pe else "file"
+    kind = "single_file"
+    label = "file"
 
     def _prog(**kw: Any) -> None:
         if callable(progress):
@@ -155,7 +154,7 @@ def build_single_file_manifest(target: Path, *, progress: Any = None) -> dict[st
     _prog(
         phase="inventory",
         status="running",
-        message=f"{'Binary' if pe else 'File'} inventory done: {name}",
+        message=f"File inventory done: {name}",
         files_seen=1,
         hashed=1,
         percent=100,
@@ -174,23 +173,14 @@ def build_single_file_manifest(target: Path, *, progress: Any = None) -> dict[st
         "incomplete": False,
         "max_hash_files": 1,
         "max_list_files": 1,
+        "single_file": {
+            "name": name,
+            "path": str(target),
+            "sha256": digest,
+            "size": size,
+            "suffix": target.suffix.lower(),
+        },
     }
-    if pe:
-        out["binary"] = {
-            "name": name,
-            "path": str(target),
-            "sha256": digest,
-            "size": size,
-            "suffix": target.suffix.lower(),
-        }
-    else:
-        out["single_file"] = {
-            "name": name,
-            "path": str(target),
-            "sha256": digest,
-            "size": size,
-            "suffix": target.suffix.lower(),
-        }
     return out
 
 

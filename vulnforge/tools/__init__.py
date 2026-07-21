@@ -8,7 +8,6 @@ from typing import Any, Callable
 from vulnforge.tools.evidence_write import write_evidence
 from vulnforge.tools.extra_registry import get_extra_spec
 from vulnforge.tools.fs_read import file_inventory, list_dir, read_file
-from vulnforge.tools.ghidra_tools import GHIDRA_TOOL_FUNCS
 from vulnforge.tools.grep_index import grep
 from vulnforge.tools.queue_note import note
 from vulnforge.tools.request_hunt import list_hunt_profiles, request_hunt
@@ -135,19 +134,6 @@ def build_tool_handler(ctx: dict) -> Callable[[str, dict], dict]:
                 if not fn:
                     return {"ok": False, "error": "submit_none not available"}
                 return fn(args)
-            if name in GHIDRA_TOOL_FUNCS:
-                result = GHIDRA_TOOL_FUNCS[name](ctx, **(args or {}))
-                # Depth tracking for binary_re is_shallow (decompile/xrefs/…)
-                sess = ctx.get("session")
-                if (
-                    isinstance(sess, dict)
-                    and isinstance(result, dict)
-                    and result.get("ok")
-                ):
-                    used = sess.setdefault("tools_used", [])
-                    if name not in used:
-                        used.append(name)
-                return result
             extra = _dispatch_extra(name, ctx, args)
             if extra is not None:
                 return extra

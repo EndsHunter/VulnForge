@@ -23,8 +23,8 @@ Single control plane. CLI (`vf`), skill, Ralph, and the dashboard are clients of
 ## CLI surface
 
 ```
-vf init --target PATH [--profile code_static|binary_re] [--config PATH]
-# binary_re: PATH is a single .exe/.dll; requires --i-am-authorized-for-binary-re
+vf init --target PATH [--profile code_static] [--config PATH]
+# source tree or single source file only (no PE / reverse engineering)
 vf run-once [--run-dir PATH]
 vf status [--run-dir PATH]
 vf project [--run-dir PATH]
@@ -132,32 +132,7 @@ Schemas live in `vulnforge/packet.py` → `tool_schemas_for` (OpenAI function to
 - **Paths** are always relative to the audit target root (or evidence pack for `write_evidence`). No shell, no target writes on `code_static`.
 - **grep** — empty pattern + `extension`/`glob` lists files by path; prefer `file_inventory` for trees. On 0 hits, follow the response hint — do not repeat the same empty query.
 - **develop_poc** — read tools + `write_evidence` only (no `submit_*`).
-
-## Tools (`binary_re`)
-
-Single PE target via Ghidra MCP HTTP (read-only analysis). Schemas: `tool_schemas_for("binary_re", stage)`.
-
-| Tool | Role |
-|------|------|
-| `ghidra_status` / `ghidra_metadata` | Connection + program info |
-| `ghidra_list_functions` / `ghidra_function_at` | Function inventory / resolve address |
-| `ghidra_decompile` / `ghidra_disassemble` | Primary evidence sources (decompile **callers**, not IAT stubs) |
-| `ghidra_xrefs` / `ghidra_call_graph` | Callers/callees and cross-refs |
-| `ghidra_imports` | Imported APIs (optional `filter` / `name_filter` substring) |
-| `ghidra_import_callers` | One-hop import symbol/address → calling functions |
-| `ghidra_exports` / `ghidra_strings` | Exports and strings |
-| `ghidra_search_bytes` | Optional pattern search |
-| `write_evidence` / `note` | Evidence packs only (not the PE) |
-| `submit_architecture` | recon finish |
-| `submit_candidate` / `submit_none` / `list_hunt_profiles` / `request_hunt` | hunt finish + multi-layer spawn |
-
-- **No** Ghidra rename/type/script endpoints. **No** execution of the target binary.
-- For dangerous APIs: `ghidra_imports` (filter) → `ghidra_import_callers` → decompile **callers**.
-- **Depth:** binary hunts count as deep when tools include decompile / xrefs / call_graph / function_at / import_callers (not source `read_file`/`grep`).
-- Hunt and recon both call `ensure_ghidra_for_run` so a dead MCP can be restarted mid-campaign.
-- Research fixture: `fixtures/binary_vuln/vuln_copy.exe` (intentional strcpy sink).
-- Citations may use `path` (binary name) + `address` / `symbol` instead of source line ranges.
-- Auth: `binary_re.i_am_authorized` or CLI `--i-am-authorized-for-binary-re`.
+- **Scope:** source-code analysis only. PE / reverse-engineering profiles and `ghidra_*` tools are not part of the product.
 
 ## Operator guidance
 

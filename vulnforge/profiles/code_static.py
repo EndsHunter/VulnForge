@@ -37,5 +37,8 @@ class CodeStaticProfile:
         source_exts = {".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".rb"}
         src_count = sum(ext.get(e, 0) for e in source_exts)
         if bin_count / total > 0.7 and src_count == 0:
-            return "tree looks binary-heavy; consider binary_re profile later"
+            return (
+                "tree looks binary-heavy with little source; "
+                "VulnForge is source-code analysis only — point at a source tree"
+            )
         return None

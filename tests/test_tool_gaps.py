@@ -142,10 +142,6 @@ def test_known_tools_include_static_allowlist():
         "submit_candidate",
         "submit_none",
         "submit_architecture",
-        # binary_re curated tools (union into KNOWN_TOOLS)
-        "ghidra_imports",
-        "ghidra_import_callers",
-        "ghidra_decompile",
     ):
         assert name in KNOWN_TOOLS
 

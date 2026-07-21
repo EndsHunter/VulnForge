@@ -88,9 +88,6 @@ class InitBody(BaseModel):
     hunt_skill_ids: Optional[list[str]] = None
     # After recon (or at file_by_file init), enqueue hunt tasks. False = map only / manual.
     enqueue_hunts: bool = True
-    # binary_re: authorization + optional skip of eager Ghidra import (tests / lazy)
-    i_am_authorized_for_binary_re: bool = False
-    skip_ghidra_init: bool = False
 
 
 class ControlBody(BaseModel):
@@ -830,12 +827,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         args = Args()
         args.target = Path(body.target)
         profile_raw = (body.profile or "").strip() or None
-        # Auto binary_re for PE files when profile blank or still code_static
-        # (GUI defaults to code_static; typing a path can race the client hint).
-        if is_pe_file(args.target) and (
-            profile_raw is None or profile_raw.strip().lower() == "code_static"
-        ):
-            profile_raw = "binary_re"
         args.profile = profile_raw
         args.runs_root = app.state.runs_root
         args.strategy = (body.strategy or "discovery").strip().lower()
@@ -866,28 +857,24 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         ][:64]
         args.hunt_skill_ids = skill_ids or None
         args.enqueue_hunts = bool(body.enqueue_hunts)
-        args.i_am_authorized_for_binary_re = bool(body.i_am_authorized_for_binary_re)
-        args.skip_ghidra_init = bool(body.skip_ghidra_init)
 
         profile_n = (args.profile or "code_static").strip().lower()
         if not args.target.exists():
             raise HTTPException(400, f"target not found: {body.target}")
         if profile_n == "binary_re":
-            if not args.target.is_file():
-                raise HTTPException(
-                    400,
-                    f"binary_re target must be a single file (.exe/.dll): {body.target}",
-                )
-        elif not args.target.is_dir() and not args.target.is_file():
+            raise HTTPException(
+                400,
+                "profile binary_re was removed; VulnForge is source-code analysis only",
+            )
+        if is_pe_file(args.target):
+            raise HTTPException(
+                400,
+                f"PE binaries are not supported (source analysis only): {body.target}",
+            )
+        if not args.target.is_dir() and not args.target.is_file():
             raise HTTPException(
                 400,
                 f"target must be a directory or a single file: {body.target}",
-            )
-        elif args.target.is_file() and is_pe_file(args.target):
-            # Should have been auto-upgraded above; belt-and-suspenders
-            raise HTTPException(
-                400,
-                f"PE file requires profile binary_re: {body.target}",
             )
         if args.strategy == "recon_docs" and args.docs_path is None:
             raise HTTPException(400, "recon_docs strategy requires docs_path")

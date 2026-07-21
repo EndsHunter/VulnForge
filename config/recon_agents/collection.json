@@ -58,34 +58,6 @@
       "output": "architecture",
       "body_file": "bodies/auth-model.md",
       "source": "seed"
-    },
-    {
-      "id": "binary-surface",
-      "title": "Binary surface",
-      "description": "PE surface map via Ghidra metadata/imports/exports",
-      "active": false,
-      "order": 50,
-      "mode": "sequential",
-      "tools": null,
-      "temperature": null,
-      "max_tool_rounds": null,
-      "output": "architecture",
-      "body_file": "bodies/binary-surface.md",
-      "source": "seed"
-    },
-    {
-      "id": "binary-sink-map",
-      "title": "Binary sink map",
-      "description": "Dangerous API sinks and xrefs for PE binaries",
-      "active": false,
-      "order": 60,
-      "mode": "sequential",
-      "tools": null,
-      "temperature": null,
-      "max_tool_rounds": null,
-      "output": "architecture",
-      "body_file": "bodies/binary-sink-map.md",
-      "source": "seed"
     }
   ]
 }

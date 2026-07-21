@@ -159,75 +159,9 @@ Ralph can pick up a no-LLM task if enqueued:
 
 Optional: set `run.auto_tool_gaps: true` in config so idle `run-once` writes gaps after render (default false).
 
-## Binary reverse-engineering (`binary_re`)
+## Scope
 
-Audit a **single PE** (`.exe` / `.dll`) via **Ghidra MCP** ([bethington/ghidra-mcp](https://github.com/bethington/ghidra-mcp)) as the sole target of a run.
-
-**Setup (Java, Ghidra, build MCP, smoke-test):** see **[docs/GHIDRA_SETUP.md](docs/GHIDRA_SETUP.md)**.
-
-```powershell
-# 1) Build/deploy ghidra-mcp against your Ghidra install (config paths only — not vendored).
-# 2) Set binary_re.headless_command in config/default.yaml OR start GhidraMCP on :8089.
-# 3) Init with authorization flag:
-
-vf init --target C:\path\to\app.exe --profile binary_re --i-am-authorized-for-binary-re
-# optional: --skip-ghidra-init  (lazy import on first recon)
-
-python scripts/ralph.py --run-dir runs\<target_id>\run-001 --task-timeout 900 --max-tasks 50
-```
-
-| Piece | Notes |
-|-------|--------|
-| Profile | `binary_re` — curated `ghidra_*` tools only (read-only Ghidra; no rename/script) |
-| Auth | Hard gate: `binary_re.i_am_authorized` or `--i-am-authorized-for-binary-re` |
-| Recon | Agents `binary-surface`, `binary-sink-map` (seeded; selected on binary_re init) |
-| Hunts | `bin-memory-safety`, `bin-dangerous-apis`, `bin-follow-xref` (multi-layer via `request_hunt`) |
-| Key tools | `ghidra_imports` (`filter`), **`ghidra_import_callers`** (import→callers), decompile **callers** not IAT stubs |
-| Depth | Hunt is **not** shallow when agent used decompile/xrefs/call_graph/function_at/import_callers (not `read_file`/`grep`) |
-| Lifecycle | Hunt **and** recon call `ensure_ghidra_for_run` so MCP can restart mid-campaign |
-| Config | `binary_re.*` in `config/default.yaml` — `ghidra_install_dir`, `mcp_base_url`, `headless_command` |
-| Fixture | `fixtures/binary_vuln/vuln_copy.exe` — intentional `strcpy` sink for pipeline smoke (rebuild: `scripts/build_binary_vuln_fixture.ps1`) |
-| Live LLM tests | Use local Ornith (e.g. `http://10.0.0.232` + `mlx-community/ornith-1.0-35b`) — not cloud Grok for MCP smoke |
-
-**Portable binary_re layout** (paths relative to the VulnForge project root):
-
-```
-VulnForge/
-  ghidra/                 # Full Ghidra distro (large; usually not in git)
-  ghidra-mcp/             # GhidraMCP source + build/libs/GhidraMCP-*.jar
-  scripts/start_ghidra_mcp_headless.ps1
-  scripts/package_offline_release.ps1
-  config/default.yaml     # binary_re.ghidra_install_dir: ghidra
-```
-
-On `vf init --profile binary_re`, VulnForge starts headless MCP when `:8089` is down.
-
-### Offline developer release (zip of everything)
-
-Ship a USB / air-gapped handoff that includes VulnForge **plus** Ghidra **plus** ghidra-mcp:
-
-```powershell
-# From a machine that already has ./ghidra and a built MCP jar:
-powershell -ExecutionPolicy Bypass -File scripts\package_offline_release.ps1
-# Optional: bake pip wheels for fully offline Python install
-powershell -File scripts\package_offline_release.ps1 -IncludeWheelhouse
-
-# Output: dist/VulnForge-offline-<version>-<date>.zip
-# Recipient: unpack → read OFFLINE_README.md inside the zip
-```
-
-```powershell
-# After unpack on the offline machine:
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-# if wheelhouse present:
-pip install --no-index --find-links=wheelhouse -e ".[dev]"
-vf dashboard
-```
-
-Honesty unchanged: `needs_human` ≠ exploit proof; never execute the target binary in v1.
-
-**Limits (v1):** PE only; static RE only (no debugger/exec). Prefer symbol/caller path_hints over raw IAT VAs. Campaigns still need a capable LLM + stable Ghidra; offline tests use FakeLLM + fake Ghidra client.
+VulnForge is **source-code analysis only** (`code_static`). PE / binary reverse-engineering (Ghidra, `binary_re`) has been removed.
 
 ## Honesty rules
 

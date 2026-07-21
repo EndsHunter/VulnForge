@@ -217,327 +217,6 @@ def _principles_without_hunt_tools(prompts_root: Path) -> str:
     return full[:cut_at].rstrip() + "\n"
 
 
-def _binary_re_tool_schemas(stage: str, fn, _finish) -> list[dict]:
-    """Curated Ghidra + submit tools for binary_re recon/hunt."""
-    ghidra = [
-        fn(
-            "ghidra_status",
-            "Check Ghidra MCP connection and current program readiness. "
-            "Call first if unsure the reverse-engineering backend is up.",
-            {},
-            [],
-        ),
-        fn(
-            "ghidra_metadata",
-            "Program metadata: format, architecture, image base, size. "
-            "Use early in recon to ground the architecture map.",
-            {},
-            [],
-        ),
-        fn(
-            "ghidra_list_functions",
-            "List functions (paginated). Optional filter substring on name. "
-            "Use offset/limit to page; do not dump the entire binary at once.",
-            {
-                "offset": {"type": "integer", "description": "Start offset (default 0)."},
-                "limit": {"type": "integer", "description": "Page size (capped by config)."},
-                "filter": {
-                    "type": "string",
-                    "description": "Optional name substring filter.",
-                },
-            },
-            [],
-        ),
-        fn(
-            "ghidra_decompile",
-            "Decompile a function by name or address to C-like pseudocode. "
-            "Primary evidence source for binary hunts. Prefer address when names are FUN_*. "
-            "Decompile CALLERS of dangerous APIs — not IAT/import thunk stubs. "
-            "Use ghidra_import_callers first to find those callers.",
-            {
-                "name": {"type": "string", "description": "Function name if known."},
-                "address": {
-                    "type": "string",
-                    "description": "Function entry address (e.g. 0x401000).",
-                },
-            },
-            [],
-        ),
-        fn(
-            "ghidra_disassemble",
-            "Disassemble a function by name or address (short listing). "
-            "Use when decompilation is weak or for precise instruction evidence. "
-            "Import/IAT addresses often are not functions — use ghidra_import_callers "
-            "or ghidra_xrefs(direction=to) instead.",
-            {
-                "name": {"type": "string"},
-                "address": {"type": "string"},
-            },
-            [],
-        ),
-        fn(
-            "ghidra_xrefs",
-            "Cross-references to/from an address. direction: to (default), from, or both. "
-            "Trace callers of dangerous imports and sinks. For imports prefer "
-            "ghidra_import_callers which resolves symbol → callers in one hop.",
-            {
-                "address": {
-                    "type": "string",
-                    "description": "Address to query (required).",
-                },
-                "direction": {
-                    "type": "string",
-                    "enum": ["to", "from", "both"],
-                    "description": "Xref direction (default to).",
-                },
-            },
-            ["address"],
-        ),
-        fn(
-            "ghidra_imports",
-            "List imported APIs/libraries (paginated). Core for dangerous-API hunts. "
-            "Optional filter/name_filter: case-insensitive substring on import name "
-            "(client-side scan capped). Prefer filter=memcpy over paging the full IAT.",
-            {
-                "offset": {"type": "integer"},
-                "limit": {"type": "integer"},
-                "filter": {
-                    "type": "string",
-                    "description": "Optional import-name substring (case-insensitive).",
-                },
-                "name_filter": {
-                    "type": "string",
-                    "description": "Alias for filter.",
-                },
-            },
-            [],
-        ),
-        fn(
-            "ghidra_import_callers",
-            "Resolve an imported API (symbol and/or import address) and list functions "
-            "that call it — one-hop import → callers. Prefer this for dangerous APIs "
-            "(memcpy, CreateProcessW, etc.). Then decompile the CALLER functions, "
-            "not the IAT stub. At least one of symbol or address required.",
-            {
-                "symbol": {
-                    "type": "string",
-                    "description": "Import name (e.g. memcpy, CreateProcessW).",
-                },
-                "address": {
-                    "type": "string",
-                    "description": "Import/IAT thunk address if known.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Max callers to return (default 40, capped at 50).",
-                },
-            },
-            [],
-        ),
-        fn(
-            "ghidra_exports",
-            "List exported symbols (paginated).",
-            {
-                "offset": {"type": "integer"},
-                "limit": {"type": "integer"},
-            },
-            [],
-        ),
-        fn(
-            "ghidra_strings",
-            "List or search strings. Use filter for substring list, or pattern for regex search.",
-            {
-                "offset": {"type": "integer"},
-                "limit": {"type": "integer"},
-                "filter": {"type": "string"},
-                "pattern": {
-                    "type": "string",
-                    "description": "Optional regex/search pattern (search_memory_strings).",
-                },
-            },
-            [],
-        ),
-        fn(
-            "ghidra_call_graph",
-            "Callers, callees, or both for a function (name or address). "
-            "mode: both (default), callers, callees, graph. "
-            "For imports, ghidra_import_callers is usually better than call_graph on the thunk.",
-            {
-                "name": {"type": "string"},
-                "address": {"type": "string"},
-                "mode": {
-                    "type": "string",
-                    "enum": ["both", "callers", "callees", "graph"],
-                },
-            },
-            [],
-        ),
-        fn(
-            "ghidra_search_bytes",
-            "Search for a byte pattern in the program (hex). Use sparingly.",
-            {
-                "pattern": {"type": "string", "description": "Byte pattern / hex string."},
-                "limit": {"type": "integer"},
-            },
-            ["pattern"],
-        ),
-        fn(
-            "ghidra_function_at",
-            "Resolve which function contains an address. "
-            "Fails for pure import/IAT addresses — use ghidra_import_callers or "
-            "ghidra_xrefs(direction=to) to find callers first.",
-            {
-                "address": {"type": "string", "description": "Address to resolve."},
-            },
-            ["address"],
-        ),
-        fn(
-            "write_evidence",
-            "Write a file into the evidence pack under evidence/ (not the binary). "
-            "Use for decompilation excerpts, xref notes, and analysis write-ups. "
-            "Include the returned evidence_id on submit_candidate.",
-            {
-                "relpath": {
-                    "type": "string",
-                    "description": "Path inside the pack, e.g. 'analysis.md'.",
-                },
-                "content": {"type": "string", "description": "UTF-8 file contents."},
-                "evidence_id": {
-                    "type": "string",
-                    "description": "Optional pack id; omit to create/use session pack.",
-                },
-            },
-            ["relpath", "content"],
-        ),
-        fn(
-            "note",
-            "Record a structured note (e.g. kind=codemap) for later packets.",
-            {
-                "kind": {"type": "string"},
-                "payload": {"type": "object"},
-            },
-            ["kind"],
-        ),
-    ]
-    if stage == "recon":
-        ghidra.append(
-            fn(
-                "submit_architecture",
-                "Finish recon with architecture JSON: binary metadata, imports summary, "
-                "areas (function/import families), seed_sinks (address + API), hunt_focus. "
-                "path_hints may be function addresses or names (e.g. 0x401000). "
-                "Do not file vulnerability candidates in recon.",
-                {
-                    "summary": {"type": "string"},
-                    "components": {"type": "array", "items": {"type": "object"}},
-                    "areas": {"type": "array", "items": {"type": "object"}},
-                    "entrypoints": {"type": "array", "items": {"type": "object"}},
-                    "trust_boundaries": {"type": "array", "items": {"type": "object"}},
-                    "inventory": {"type": "object"},
-                    "seed_sinks": {"type": "array", "items": {"type": "object"}},
-                    "hunt_focus": {"type": "array", "items": {"type": "object"}},
-                    "binary": {"type": "object"},
-                    "imports": {"type": "array", "items": {"type": "object"}},
-                    "exports": {"type": "array", "items": {"type": "object"}},
-                },
-                [],
-            )
-        )
-        return _finish(ghidra)
-    if stage == "hunt":
-        ghidra.extend(
-            [
-                fn(
-                    "submit_candidate",
-                    "Submit a vulnerability candidate. Citations may use path=binary name "
-                    "and address/symbol fields for PE locations. Always write_evidence first. "
-                    "threat_model.attacker/boundary/impact required.",
-                    {
-                        "title": {"type": "string"},
-                        "summary": {"type": "string"},
-                        "weakness_class": {"type": "string"},
-                        "threat_model": {
-                            "type": "object",
-                            "properties": {
-                                "attacker": {"type": "string"},
-                                "boundary": {"type": "string"},
-                                "impact": {"type": "string"},
-                            },
-                        },
-                        "citations": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {
-                                        "type": "string",
-                                        "description": "Binary file name or logical path.",
-                                    },
-                                    "address": {
-                                        "type": "string",
-                                        "description": "Function or sink address.",
-                                    },
-                                    "symbol": {"type": "string"},
-                                    "start_line": {"type": "integer"},
-                                    "end_line": {"type": "integer"},
-                                    "note": {"type": "string"},
-                                },
-                            },
-                        },
-                        "evidence_id": {"type": "string"},
-                        "sink_path": {"type": "string"},
-                        "sink_symbol": {"type": "string"},
-                        "sink_address": {
-                            "type": "string",
-                            "description": "Primary sink address for stable identity.",
-                        },
-                    },
-                    ["title", "summary", "weakness_class", "threat_model", "citations"],
-                ),
-                fn(
-                    "submit_none",
-                    "Finish hunt with no solid finding after a real RE search. "
-                    "reason must say what functions/APIs you checked.",
-                    {"reason": {"type": "string"}},
-                    ["reason"],
-                ),
-                fn(
-                    "list_hunt_profiles",
-                    "List hunt profile ids for request_hunt (binary skills + others).",
-                    {},
-                    [],
-                ),
-                fn(
-                    "request_hunt",
-                    "Queue a follow-up hunt (e.g. bin-follow-xref) without finishing this task. "
-                    "Use path_hints for function addresses/names. Still finish with "
-                    "submit_candidate or submit_none.",
-                    {
-                        "profile": {"type": "string"},
-                        "reason": {"type": "string"},
-                        "area": {"type": "string"},
-                        "path_hints": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                        "force_depth": {"type": "boolean"},
-                    },
-                    ["profile", "reason"],
-                ),
-            ]
-        )
-        return _finish(ghidra)
-    # develop_poc / other: evidence only
-    return _finish(
-        [
-            t
-            for t in ghidra
-            if (t.get("function") or {}).get("name")
-            in ("write_evidence", "ghidra_decompile", "ghidra_disassemble", "ghidra_xrefs")
-        ]
-    )
-
-
 def tool_schemas_for(
     profile: str,
     stage: str,
@@ -568,9 +247,6 @@ def tool_schemas_for(
     def _finish(tools: list[dict]) -> list[dict]:
         if not apply_defaults or stage not in ("recon", "hunt", "develop_poc"):
             return tools
-        # binary_re uses a fixed curated set — do not apply code_static defaults.
-        if str(profile or "") == "binary_re":
-            return tools
         try:
             from vulnforge.tools.default_tools import resolve_stage_tools
 
@@ -593,9 +269,6 @@ def tool_schemas_for(
             return _filter_tools_by_allowlist(tools, resolved, always_keep=always)
         except Exception:
             return tools
-
-    if str(profile or "") == "binary_re":
-        return _binary_re_tool_schemas(stage, fn, _finish)
 
     # Read-only target inspection (shared). Hunt-only tools added per stage.
     # Descriptions are operator-facing AND model-facing: local models need
@@ -1276,22 +949,11 @@ def pack_recon_agent(
             "Target is read-only. Use only provided tools.\n"
         )
     agent_label = (agent_id or "recon").strip() or "recon"
-    run_profile_early = str((cfg.get("run") or {}).get("profile") or "code_static")
-    if run_profile_early == "binary_re":
-        tool_hint = (
-            "Tools: use ghidra_* (imports, import_callers, strings, list_functions, decompile, xrefs). "
-            "For dangerous APIs: ghidra_imports(filter=...) then ghidra_import_callers — "
-            "decompile CALLERS, not IAT stubs. "
-            "The target is a single PE binary — no source tree. "
-            "path_hints should be function names or addresses. "
-            "Call submit_architecture once when done.\n"
-        )
-    else:
-        tool_hint = (
-            "Tools: prefer file_inventory over many list_dir; grep to find symbols; "
-            "read_file with 1-based line ranges for long files; paths are relative to "
-            "the target root. Call submit_architecture once when done.\n"
-        )
+    tool_hint = (
+        "Tools: prefer file_inventory over many list_dir; grep to find symbols; "
+        "read_file with 1-based line ranges for long files; paths are relative to "
+        "the target root. Call submit_architecture once when done.\n"
+    )
     system = (
         preamble
         + "\n## Stage: recon\n"
@@ -1513,17 +1175,10 @@ def pack_hunt(
             or cfg.get("profile")
             or ""
         ).strip().lower()
-        if prof == "binary_re":
-            scope_note += (
-                "force_depth=true: must use ghidra_decompile / ghidra_xrefs / "
-                "ghidra_call_graph / ghidra_import_callers / ghidra_function_at "
-                "before submit_none (deeper RE tools required).\n"
-            )
-        else:
-            scope_note += (
-                "force_depth=true: must use read_file/grep before submit_none "
-                "(deeper tools required; soft path_hints jail still applies).\n"
-            )
+        scope_note += (
+            "force_depth=true: must use read_file/grep before submit_none "
+            "(deeper tools required; soft path_hints jail still applies).\n"
+        )
     op_notes = str(
         task_payload.get("operator_notes")
         or task_payload.get("operator_brief")

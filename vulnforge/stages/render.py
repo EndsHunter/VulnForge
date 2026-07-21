@@ -172,7 +172,7 @@ def write_report_md(path: Path, db) -> None:
         lines.extend(["## Coverage matrix (area x class)", ""])
         lines.append(
             "_Depth: empty=planned, shallow=no substantial tools "
-            "(read/grep or ghidra decompile/xrefs), none=honest miss, "
+            "(read_file/grep), none=honest miss, "
             "candidate=filed. Shallow/aborted != safe._"
         )
         lines.append("")

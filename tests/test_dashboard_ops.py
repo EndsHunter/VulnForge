@@ -12,42 +12,40 @@ from vulnforge.ui import ops as dashops
 from vulnforge.util import build_target_manifest, utc_now_iso
 
 
-def _init_binary_run(tmp_path: Path, pe: Path) -> Path:
-    run = tmp_path / "runs" / "pe" / "run-001"
+def _init_single_file_run(tmp_path: Path, target: Path, *, profile: str = "code_static") -> Path:
+    run = tmp_path / "runs" / "single" / "run-001"
     run.mkdir(parents=True)
     (run / "evidence").mkdir()
     db = Database.create(run / "harness.db")
     db.insert_run(
         "run-001",
-        str(pe.resolve()),
-        "binary_re",
+        str(target.resolve()),
+        profile,
         "pin",
-        {"run": {"profile": "binary_re", "max_tasks": 50}},
+        {"run": {"profile": profile, "max_tasks": 50}},
     )
     db.close()
     return run
 
 
-def test_target_list_single_pe(tmp_path: Path):
-    pe = tmp_path / "notepad.exe"
-    pe.write_bytes(b"MZ" + b"\x00" * 64)
-    run = _init_binary_run(tmp_path, pe)
+def test_target_list_single_file(tmp_path: Path):
+    src = tmp_path / "lonely.py"
+    src.write_text("print('hi')\n", encoding="utf-8")
+    run = _init_single_file_run(tmp_path, src)
     r = dashops.target_list(run, path=".")
     assert r.get("ok") is True, r
     assert r.get("single_file") is True
-    assert r.get("kind") == "single_binary"
     names = [e["name"] for e in r.get("entries") or []]
-    assert names == ["notepad.exe"]
-    # Parent directory contents must not leak (e.g. System32)
+    assert names == ["lonely.py"]
+    # Parent directory contents must not leak
     assert len(r["entries"]) == 1
 
     bad = dashops.target_list(run, path="other")
     assert bad.get("ok") is False
 
-    read = dashops.target_read(run, path="notepad.exe")
+    read = dashops.target_read(run, path="lonely.py")
     assert read.get("ok") is True
-    assert read.get("binary") is True
-    assert "PE binary" in (read.get("content") or "")
+    assert "print" in (read.get("content") or "")
 
 
 def _init_run(tmp_path: Path, toy_sqli: Path) -> Path:
@@ -334,48 +332,23 @@ def test_architecture_summary():
     assert s["components"][0]["name"] == "api"
 
 
-def test_architecture_summary_binary_mode():
+def test_architecture_summary_always_source_mode():
+    """Legacy binary-shaped maps still render as source architecture."""
     s = dashops.architecture_summary(
         {
-            "summary": "PE notepad",
+            "summary": "legacy binary map",
             "inventory": {"kind": "single_binary", "entrypoints": ["notepad.exe"]},
-            "binary": {"name": "notepad.exe", "function_count": 851, "arch": "x86:LE:64"},
-            "components": [
-                {"name": "CRT Memory", "description": "memcpy family"},
-            ],
-            "seed_sinks": [
-                {"symbol": "memcpy", "address": "0x1400274ac", "kind": "api"},
-            ],
+            "binary": {"name": "notepad.exe"},
+            "components": [{"name": "CRT Memory", "description": "memcpy family"}],
             "hunt_focus": [
-                {
-                    "area": "memory_safety",
-                    "class": "bin-memory-safety",
-                    "path_hints": ["0x1400274ac"],
-                }
+                {"area": "x", "class": "memory-safety", "path_hints": ["0x401000"]}
             ],
-            "imports": [{"name": "CreateProcessW"}, "ShellExecuteW"],
-            "trust_boundaries": [{"name": "user_input"}],
         },
         profile="binary_re",
     )
-    assert s["mode"] == "binary"
-    assert s["title"] == "Binary map"
-    assert s["binary"]["name"] == "notepad.exe"
-    assert s["modules"][0]["name"] == "CRT Memory"
-    assert s["seed_sinks"][0]["symbol"] == "memcpy"
-    assert "CreateProcessW" in s["imports_preview"]
-    assert s["hunt_focus"][0]["path_hints"][0].startswith("0x")
-
-
-def test_architecture_summary_binary_by_address_hints():
-    """Even without profile flag, address path_hints imply binary mode."""
-    s = dashops.architecture_summary(
-        {
-            "summary": "map",
-            "hunt_focus": [{"area": "x", "class": "bin-dangerous-apis", "path_hints": ["0x401000"]}],
-        }
-    )
-    assert s["mode"] == "binary"
+    assert s["mode"] == "source"
+    assert s["title"] == "Architecture"
+    assert s["components"][0]["name"] == "CRT Memory"
 
 
 def test_depth_reason_text():

@@ -612,51 +612,19 @@ function setInitProfile(profile) {
   }
 }
 
-/** Show binary_re auth gate; soft-disable file_by_file for binary_re. */
+/** Keep target hint in sync with the (source-only) profile. */
 function syncInitProfileFields() {
-  const profile = selectedInitProfile();
-  const authField = $("#init-binary-auth-field");
-  if (authField) authField.hidden = profile !== "binary_re";
-  const fbf = document.querySelector('input[name="init-strategy"][value="file_by_file"]');
-  if (fbf) {
-    fbf.disabled = profile === "binary_re";
-    if (profile === "binary_re" && fbf.checked) {
-      const disc = document.querySelector('input[name="init-strategy"][value="discovery"]');
-      if (disc) disc.checked = true;
-      syncInitDocsField();
-      syncInitReconFields();
-    }
-  }
   const hint = $("#init-target-hint");
   if (hint) {
-    hint.textContent =
-      profile === "binary_re"
-        ? "Select a single .exe or .dll (authorized research only)"
-        : "Folder or single source file · .exe / .dll auto-selects binary_re";
+    hint.textContent = "Source folder or single source file (source analysis only)";
   }
+  const fbf = document.querySelector('input[name="init-strategy"][value="file_by_file"]');
+  if (fbf) fbf.disabled = false;
 }
 
-/** Guess profile from target path extension (.exe/.dll → binary_re). */
-function suggestInitProfileFromPath(path) {
-  const p = String(path || "").trim();
-  if (!p) return;
-  const base = p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
-  const lower = base.toLowerCase();
-  const isPe = lower.endsWith(".exe") || lower.endsWith(".dll");
-  // Heuristic: path with an extension is treated as a file for suggestion.
-  const looksLikeFile = /\.[A-Za-z0-9]{1,8}$/.test(base);
-  if (isPe) {
-    setInitProfile("binary_re");
-    return;
-  }
-  if (looksLikeFile) {
-    // Non-PE file: keep profile, but do not force code_static over operator choice
-    return;
-  }
-  // Directory-looking path → default to code_static when currently binary_re was auto
-  if (selectedInitProfile() === "binary_re") {
-    setInitProfile("code_static");
-  }
+/** Source-only profile: always code_static. */
+function suggestInitProfileFromPath(_path) {
+  setInitProfile("code_static");
 }
 
 function openInitModal() {
@@ -674,8 +642,6 @@ function openInitModal() {
   );
   if (modeDefault) modeDefault.checked = true;
   setInitProfile("code_static");
-  const auth = $("#init-binary-auth");
-  if (auth) auth.checked = false;
   syncInitDocsField();
   syncInitReconFields();
   syncInitProfileFields();
@@ -1055,27 +1021,10 @@ function _fmtElapsed(ms) {
   return `${m}m ${r}s`;
 }
 
-function _isPePath(path) {
-  const s = String(path || "").trim().toLowerCase().replace(/\\/g, "/");
-  return s.endsWith(".exe") || s.endsWith(".dll");
-}
-
 function _mapInitPhase(phase, status) {
   const p = String(phase || "").toLowerCase();
   const st = String(status || "").toLowerCase();
   if (st === "done" || p === "done" || p === "complete") return "done";
-  // Ghidra headless: start / import / analyze (binary_re single-file)
-  if (
-    p === "ghidra" ||
-    p.includes("ghidra") ||
-    p.includes("decompile") ||
-    p.includes("auto-analysis") ||
-    p.includes("headless") ||
-    p.includes("importing binary") ||
-    (p.includes("loading ") && p.includes(".exe")) ||
-    (p.includes("loading ") && p.includes(".dll"))
-  )
-    return "ghidra";
   if (p.includes("ralph")) return "ralph";
   if (p.includes("db") || p.includes("database") || p.includes("harness")) return "database";
   if (
@@ -1087,76 +1036,43 @@ function _mapInitPhase(phase, status) {
   )
     return "inventory";
   if (p.includes("queue") || p === "working" || p === "prepare") return "queued";
-  if (p.includes("start") && !p.includes("ghidra")) return "ralph";
+  if (p.includes("start")) return "ralph";
   return "inventory";
 }
 
 function setInitPhase(phaseKey) {
   const steps = $$("#init-phase-steps li");
   if (!steps.length) return;
-  const modal = $("#init-loading-modal");
-  const binary = modal?.classList.contains("is-binary-re");
-  const order = binary
-    ? ["queued", "inventory", "database", "ghidra", "ralph", "done"]
-    : ["queued", "inventory", "database", "ralph", "done"];
+  const order = ["queued", "inventory", "database", "ralph", "done"];
   const idx = Math.max(0, order.indexOf(phaseKey));
   steps.forEach((li) => {
     const ph = li.getAttribute("data-phase");
-    if (ph === "ghidra" && !binary) {
-      li.classList.remove("active", "done");
-      return;
-    }
     const i = order.indexOf(ph);
     li.classList.toggle("active", i === idx);
     li.classList.toggle("done", i >= 0 && i < idx);
   });
-  modal?.classList.toggle("is-ghidra-active", phaseKey === "ghidra");
-  const detail = $("#init-ghidra-detail");
-  if (detail && phaseKey !== "ghidra") {
-    // keep last detail visible only during ghidra; clear after
-    if (phaseKey === "ralph" || phaseKey === "done") detail.hidden = true;
-  }
 }
 
-function openInitLoading(targetPath, { start, binaryRe } = {}) {
+function openInitLoading(targetPath, { start } = {}) {
   closeInitModal();
   const modal = $("#init-loading-modal");
   if (!modal) return;
-  const isBinary =
-    !!binaryRe || selectedInitProfile() === "binary_re" || _isPePath(targetPath);
   modal.classList.add("open");
   modal.classList.remove("is-success");
-  modal.classList.toggle("is-binary-re", isBinary);
+  modal.classList.remove("is-binary-re");
   modal.setAttribute("aria-busy", "true");
-  const ghidraStep = $("#init-phase-steps li.init-phase-ghidra");
-  if (ghidraStep) ghidraStep.hidden = !isBinary;
   const title = $("#init-loading-title");
   if (title) {
-    title.textContent = isBinary
-      ? start
-        ? "Starting binary audit"
-        : "Creating binary audit"
-      : start
-        ? "Starting audit run"
-        : "Creating audit run";
+    title.textContent = start ? "Starting audit run" : "Creating audit run";
   }
   const tEl = $("#init-loading-target");
   if (tEl) tEl.textContent = targetPath || "";
   const hint = $("#init-loading-hint");
   if (hint) {
-    hint.textContent = isBinary
-      ? start
-        ? "Hash PE → harness.db → start Ghidra headless → import & analyze → Ralph."
-        : "Hash PE → harness.db → start Ghidra headless → import & analyze."
-      : start
-        ? "Inventory → harness.db → start Ralph. Large trees take longer."
-        : "Inventory → harness.db. Large trees take longer.";
+    hint.textContent = start
+      ? "Inventory → harness.db → start Ralph. Large trees take longer."
+      : "Inventory → harness.db. Large trees take longer.";
     hint.hidden = false;
-  }
-  const gDetail = $("#init-ghidra-detail");
-  if (gDetail) {
-    gDetail.hidden = true;
-    gDetail.textContent = "";
   }
   const actions = $("#init-loading-actions");
   if (actions) actions.hidden = true;
@@ -1166,11 +1082,6 @@ function openInitLoading(targetPath, { start, binaryRe } = {}) {
   }
   const metrics = $("#init-metrics");
   if (metrics) metrics.hidden = false;
-  // Single-file PE: show "1 file" metric label as binary
-  const filesLabel = $("#init-metric-files")?.parentElement;
-  if (filesLabel && isBinary) {
-    // leave number as-is; copy in metric stays "files"
-  }
   _initStartedAt = Date.now();
   _initLastPct = 0;
   _clearInitElapsed();
@@ -1181,11 +1092,7 @@ function openInitLoading(targetPath, { start, binaryRe } = {}) {
   tickElapsed();
   _initElapsedTimer = setInterval(tickElapsed, 500);
   setInitPhase("queued");
-  setInitStatus(
-    isBinary ? "Preparing binary audit…" : "Starting inventory…",
-    null,
-    { indeterminate: true }
-  );
+  setInitStatus("Starting inventory…", null, { indeterminate: true });
 }
 
 function closeInitLoading() {
@@ -1219,19 +1126,6 @@ function setInitStatus(msg, pct, { error, success, indeterminate, files, phase }
     ? _mapInitPhase(phase, success ? "done" : error ? "error" : "running")
     : null;
   if (mapped) setInitPhase(mapped);
-
-  // Live Ghidra sub-status line during binary_re init
-  const gDetail = $("#init-ghidra-detail");
-  if (gDetail && modal?.classList.contains("is-binary-re")) {
-    const m = String(msg || "");
-    const isG =
-      mapped === "ghidra" ||
-      /ghidra|headless|analy[sz]|import|load(ing)? .+\.(exe|dll)/i.test(m);
-    if (isG && m) {
-      gDetail.hidden = false;
-      gDetail.textContent = m;
-    }
-  }
 
   const knownPct = pct != null && Number.isFinite(Number(pct));
   let p = knownPct ? Math.max(0, Math.min(100, Number(pct))) : null;
@@ -1291,9 +1185,8 @@ function goToRunPage(targetId, runId) {
   }
 }
 
-async function pollInitJob(jobId, { start, binaryRe } = {}) {
-  // Binary/Ghidra analysis can exceed inventory-only timeouts (headless ~2–10+ min)
-  const deadline = Date.now() + (binaryRe ? 45 : 30) * 60 * 1000;
+async function pollInitJob(jobId, { start } = {}) {
+  const deadline = Date.now() + 30 * 60 * 1000;
   while (Date.now() < deadline) {
     const job = await api(`/api/runs/init-jobs/${encodeURIComponent(jobId)}`);
     const pct = job.percent != null ? Number(job.percent) : null;
@@ -1304,47 +1197,27 @@ async function pollInitJob(jobId, { start, binaryRe } = {}) {
       (phase
         ? `${phase}${files != null ? ` · ${files} files` : ""}`
         : "Working…");
-    // Prefer server phase (especially ghidra); only invent from percent when phase is weak
     let phaseKey = phase;
     const phaseL = phase.toLowerCase();
     if (job.status === "done") {
       phaseKey = "done";
-    } else if (
-      phaseL.includes("ghidra") ||
-      /ghidra|headless|analy[sz]|importing binary|loading .+\.(exe|dll)/i.test(msg)
-    ) {
-      phaseKey = "ghidra";
     } else if (phaseL.includes("ralph")) {
       phaseKey = "ralph";
     } else if (phaseL.includes("database") || phaseL.includes("prompt")) {
       phaseKey = phaseL.includes("prompt") ? "inventory" : "database";
     } else if (pct != null && pct >= 97 && start) {
       phaseKey = "ralph";
-    } else if (pct != null && pct >= 88 && binaryRe) {
-      phaseKey = "ghidra";
-    } else if (pct != null && pct >= 70 && !binaryRe) {
-      phaseKey = "database";
-    } else if (pct != null && pct >= 70 && binaryRe && pct < 88) {
+    } else if (pct != null && pct >= 70) {
       phaseKey = "database";
     }
-    // During Ghidra, prefer determinate bar once we have percent (analysis can sit at ~75–90)
-    const ghidraActive = phaseKey === "ghidra";
     setInitStatus(msg, pct, {
       files,
       phase: phaseKey,
-      indeterminate:
-        !ghidraActive &&
-        (pct == null || (pct < 3 && job.status === "running")),
+      indeterminate: pct == null || (pct < 3 && job.status === "running"),
     });
     if (job.status === "done" && job.key) {
       setInitStatus(
-        start
-          ? binaryRe
-            ? "Ghidra ready — starting Ralph…"
-            : "Ralph starting — opening cockpit…"
-          : binaryRe
-            ? "Ghidra ready — opening cockpit…"
-            : "Run ready — opening cockpit…",
+        start ? "Ralph starting — opening cockpit…" : "Run ready — opening cockpit…",
         100,
         { success: true, files: files ?? undefined, phase: "done" }
       );
@@ -1356,13 +1229,9 @@ async function pollInitJob(jobId, { start, binaryRe } = {}) {
     if (job.status === "error") {
       throw new Error(job.error || job.message || "init failed");
     }
-    await new Promise((r) => setTimeout(r, ghidraActive ? 500 : 320));
+    await new Promise((r) => setTimeout(r, 320));
   }
-  throw new Error(
-    binaryRe
-      ? "Init timed out during Ghidra headless import/analyze (check ghidra/ + ghidra-mcp)"
-      : "Init timed out waiting for inventory (try a smaller target folder)"
-  );
+  throw new Error("Init timed out waiting for inventory (try a smaller target folder)");
 }
 
 async function submitInit(ev) {
@@ -1380,13 +1249,9 @@ async function submitInit(ev) {
     $("#init-target")?.focus();
     return;
   }
-  if (profile === "binary_re" && !$("#init-binary-auth")?.checked) {
-    toast("binary_re requires authorization confirmation", true);
-    $("#init-binary-auth")?.focus();
-    return;
-  }
-  if (profile === "binary_re" && strategy === "file_by_file") {
-    toast("binary_re does not support file-by-file; use Discovery", true);
+  if (/\.(exe|dll)$/i.test(target.replace(/[\\/]+$/, ""))) {
+    toast("PE binaries are not supported — choose a source tree", true);
+    $("#init-target")?.focus();
     return;
   }
   if (strategy === "recon_docs" && !docs_path) {
@@ -1396,19 +1261,15 @@ async function submitInit(ev) {
   }
   const btn = $("#init-submit");
   if (btn) btn.disabled = true;
-  const binaryRe = profile === "binary_re" || _isPePath(target);
-  openInitLoading(target, { start, binaryRe });
+  openInitLoading(target, { start });
   const body = {
     target,
-    profile,
+    profile: profile || "code_static",
     start,
     max_tasks,
     task_timeout: 900,
     strategy,
   };
-  if (profile === "binary_re") {
-    body.i_am_authorized_for_binary_re = true;
-  }
   if (docs_path) body.docs_path = docs_path;
   if (strategy === "discovery" || strategy === "recon_docs") {
     const agent_ids = selectedReconAgentIds($("#init-recon-agents"));
@@ -1445,7 +1306,7 @@ async function submitInit(ev) {
     });
     // Async job (default): poll status while inventory runs
     if (r.async && r.job_id) {
-      await pollInitJob(r.job_id, { start, binaryRe });
+      await pollInitJob(r.job_id, { start });
       return;
     }
     // Blocking response fallback
@@ -2315,50 +2176,21 @@ function reconFailureHint(snap) {
   return `<p class="controls-hint" style="margin:0.5rem 0 0;color:var(--danger, #c44)"><strong>Last recon:</strong> <span class="mono">${esc(String(err))}</span>${gen}.${tip}${retry}</p>`;
 }
 
-function isBinaryArchMode(archSum, snap) {
-  if (archSum && archSum.mode === "binary") return true;
-  if (archSum && archSum.mode === "source") return false;
-  const prof = String(snap?.profile || snap?.run?.profile || "").toLowerCase();
-  return prof === "binary_re";
+function isBinaryArchMode(_archSum, _snap) {
+  return false;
 }
 
-function binaryArchMetaLine(archSum) {
-  const b = archSum?.binary || {};
-  const parts = [];
-  if (b.name) parts.push(String(b.name));
-  const archLabel = b.arch || b.architecture || b.language || "";
-  if (archLabel) parts.push(String(archLabel));
-  const fn =
-    b.function_count ?? b.total_functions ?? b.functions ?? null;
-  if (fn != null && fn !== "") parts.push(`${fn} functions`);
-  const sinks = Array.isArray(archSum?.seed_sinks) ? archSum.seed_sinks.length : 0;
-  const mods = Array.isArray(archSum?.modules)
-    ? archSum.modules.length
-    : Array.isArray(archSum?.components)
-      ? archSum.components.length
-      : 0;
-  const focus = Array.isArray(archSum?.hunt_focus) ? archSum.hunt_focus.length : 0;
-  if (mods) parts.push(`${mods} module(s)`);
-  if (sinks) parts.push(`${sinks} sink(s)`);
-  if (focus) parts.push(`${focus} hunt focus`);
-  else parts.push("no hunt focus yet");
-  return parts.join(" · ") || "binary map";
+function binaryArchMetaLine(_archSum) {
+  return "";
 }
 
 function renderArchitectureBriefCard(archText, archSum, snap) {
-  const binary = isBinaryArchMode(archSum, snap);
-  const title = binary
-    ? archSum?.title || "Binary map"
-    : archSum?.title || "Architecture";
+  const title = archSum?.title || "Architecture";
   if (!archText && !(archSum && archSum.has_architecture)) {
     return `
     <div class="card" style="margin-top:1rem">
       <h2>${esc(title)}</h2>
-      <p class="controls-hint" style="margin:0">${
-        binary
-          ? "No binary map yet — run recon (binary-surface / sink-map). The map is stored in the run DB after submit_architecture (not under project/)."
-          : "No architecture yet — run recon (or use Operator re-run below). Map lives under Mission → Architecture after recon succeeds. Architecture is stored in the run DB only (not under project/)."
-      }</p>
+      <p class="controls-hint" style="margin:0">No architecture yet — run recon (or use Operator re-run below). Map lives under Mission → Architecture after recon succeeds. Architecture is stored in the run DB only (not under project/).</p>
       ${reconFailureHint(snap)}
     </div>`;
   }
@@ -2376,15 +2208,13 @@ function renderArchitectureBriefCard(archText, archSum, snap) {
     : "";
   const snippet = archText
     ? esc(archText.length > 420 ? archText.slice(0, 420) + "…" : archText)
-    : `<span class='controls-hint'>${binary ? "Binary map present" : "Architecture present"} (see Architecture tab).</span>`;
-  const meta = binary
-    ? binaryArchMetaLine(archSum)
-    : `${comps ? `${comps} component(s)` : "components n/a"} · ${focus ? `${focus} hunt_focus item(s)` : "no hunt_focus yet"}`;
+    : `<span class='controls-hint'>Architecture present (see Architecture tab).</span>`;
+  const meta = `${comps ? `${comps} component(s)` : "components n/a"} · ${focus ? `${focus} hunt_focus item(s)` : "no hunt_focus yet"}`;
   return `
     <div class="card" style="margin-top:1rem">
       <div class="toolbar" style="margin-bottom:0.35rem">
         <h2 style="margin:0;flex:1">${esc(title)}</h2>
-        <button type="button" class="btn btn-sm" id="overview-go-arch">${binary ? "Binary map tab" : "Architecture tab"}</button>
+        <button type="button" class="btn btn-sm" id="overview-go-arch">Architecture tab</button>
       </div>
       <p class="overview-arch-snippet">${snippet}</p>
       <div class="controls-hint">${esc(meta)}${agentsLabel ? ` · agents: <span class="mono">${esc(agentsLabel)}</span>` : ""}</div>

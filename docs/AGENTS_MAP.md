@@ -756,7 +756,7 @@ flowchart TD
 | Profile | Exec | Intent |
 |---------|------|--------|
 | **`code_static`** (default) | No | Source audit, read-only target |
-| `binary_re` | (scaffold) | Binary-heavy trees |
+
 | `code_exec` | (scaffold) | Future sandboxed exec |
 
 `CodeStaticProfile.allowed_tools()` is the allowlist seed; packet schemas + stage filter enforce model surface.

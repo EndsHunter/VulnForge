@@ -551,8 +551,8 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         except Exception:
             prof = ""
         arch_summary = {
-            "mode": "binary" if prof == "binary_re" else "source",
-            "title": "Binary map" if prof == "binary_re" else "Architecture",
+            "mode": "source",
+            "title": "Architecture",
             "summary": "",
             "components": [],
             "modules": [],
