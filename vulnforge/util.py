@@ -325,13 +325,20 @@ def build_target_manifest(
 
 
 def hash_prompt_bundle(prompts_root: Path) -> str:
-    """Pin prompts/v1 content via sorted file hashes."""
+    """Pin package seed content via sorted relative file hashes.
+
+    Pass ``paths.effective_prompt_pin_root()`` (``seeds/`` when present) so
+    prompt_pin tracks system + hunt_classes + recon_agents seeds.
+    """
     prompts_root = prompts_root.resolve()
     h = hashlib.sha256()
     if not prompts_root.is_dir():
         raise FileNotFoundError(prompts_root)
     for path in sorted(prompts_root.rglob("*")):
         if not path.is_file():
+            continue
+        # Skip README noise so pin tracks prompt bodies primarily.
+        if path.name.upper() == "README.MD":
             continue
         rel = normalize_relpath(str(path.relative_to(prompts_root)))
         h.update(rel.encode("utf-8"))

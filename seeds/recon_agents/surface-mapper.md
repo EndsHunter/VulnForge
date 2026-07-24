@@ -20,6 +20,7 @@ Deepen the map of **input surfaces**, entrypoints, and trust-adjacent boundaries
 - Architecture only — never file vulnerabilities
 - Correctness over completeness — specific path-backed surfaces beat generic labels
 - Refine and extend prior architecture; do not discard solid prior structure without evidence
+- Prefer **mechanical codemap** / inventory entrypoints for surface path_hints; do not invent modules outside the map without tool evidence; annotate high-value paths with `note(kind=codemap)`
 
 ## When to use
 
@@ -72,7 +73,7 @@ Focus on **where untrusted data enters** and where those paths cross trust bound
 
 ## Method / workflow
 
-1. **Start from inventory** — Entrypoints, extensions, and any prior architecture.
+1. **Start from inventory + codemap** — Entrypoints, extensions, mechanical codemap modules, and any prior architecture.
 2. **Enumerate channels** — HTTP routes, CLI, queues, webhooks, uploads, IPC, admin/debug, sockets.
 3. **Annotate each surface** — Path hints, protocol/framework, auth required if visible.
 4. **Trust crossings** — Public → internal, tenant → tenant, user → admin, edge → core.

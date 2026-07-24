@@ -1,6 +1,6 @@
 """Recon agent collection — runtime authority for recon agent ids and bodies.
 
-Package prompts under prompts/v1/recon_agents/ are a seed library only.
+Package prompts under seeds/recon_agents/ are a seed library only.
 After first ensure_collection(), operators edit config/recon_agents/.
 """
 

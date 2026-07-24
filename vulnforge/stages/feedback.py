@@ -17,7 +17,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
       - read rejected_mech / rejected_llm reasons
       - propose parameter tweaks (class weights, path focus)
       - write PromptPatch proposal file — human applies to prompts/v2
-      - never mutate prompts/v1 in place during a run
+      - never mutate seeds/ in place during a run
     """
     raise NotImplementedError("TODO: feedback.run — deferred")
 

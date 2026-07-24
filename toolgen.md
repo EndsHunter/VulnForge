@@ -137,7 +137,7 @@ python scripts/validate_tool.py config/tool_drafts/<id> --integrate
 ```
 You are adding a VulnForge code_static agent tool.
 
-Rules: read toolgen.md and prompts/v1/toolgen_validation.md.
+Rules: read toolgen.md and seeds/system/toolgen_validation.md.
 Target is read-only. Return {"ok": bool}. No subprocess/network.
 Paths use resolve_target_path.
 

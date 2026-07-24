@@ -1,6 +1,6 @@
 """Hunt profile collection — runtime authority for hunt class ids and bodies.
 
-Package prompts under prompts/v1/hunt_classes/ are a seed library only.
+Package prompts under seeds/hunt_classes/ are a seed library only.
 After first ensure_collection(), operators edit config/hunt_profiles/.
 """
 

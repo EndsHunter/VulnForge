@@ -408,7 +408,9 @@ def cmd_init(args, cfg: dict) -> int:
             "percent": 70,
         }
     )
-    prompts_root = PROJECT_ROOT / "prompts" / "v1"
+    from vulnforge.paths import effective_prompt_pin_root
+
+    prompts_root = effective_prompt_pin_root()
     prompt_pin = hash_prompt_bundle(prompts_root)
 
     max_tasks = int(cfg.get("run", {}).get("max_tasks") or 50)

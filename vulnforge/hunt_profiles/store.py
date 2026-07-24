@@ -34,7 +34,7 @@ SEED_ACTIVE_IDS = frozenset(
 )
 
 # Seed metadata for package hunt classes (backward-compatible optional fields).
-# angle_ids: 1-based indices into prompts/v1/hunting_angles.md
+# angle_ids: 1-based indices into seeds/system/hunting_angles.md
 # sink_families: kinds from tools/sink_preindex._SINK_PATTERNS
 # specificity: higher wins in stages/dedup cross-class merge
 SEED_PROFILE_META: dict[str, dict[str, Any]] = {
@@ -491,7 +491,7 @@ def _empty_collection() -> dict[str, Any]:
     return {
         "format": COLLECTION_FORMAT,
         "updated_at": utc_now_iso(),
-        "seeded_from": "prompts/v1/hunt_classes",
+        "seeded_from": "seeds/hunt_classes",
         "profiles": [],
     }
 
@@ -532,7 +532,7 @@ def _normalize_collection(raw: dict[str, Any]) -> dict[str, Any]:
             raise HuntProfileError(f"unsupported collection format: {raw.get('format')}")
     out["format"] = COLLECTION_FORMAT
     out["updated_at"] = str(raw.get("updated_at") or utc_now_iso())
-    out["seeded_from"] = str(raw.get("seeded_from") or "prompts/v1/hunt_classes")
+    out["seeded_from"] = str(raw.get("seeded_from") or "seeds/hunt_classes")
     profiles: list[dict[str, Any]] = []
     seen: set[str] = set()
     for p in raw.get("profiles") or []:

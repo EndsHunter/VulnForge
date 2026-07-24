@@ -109,7 +109,7 @@ def _empty_collection() -> dict[str, Any]:
     return {
         "format": COLLECTION_FORMAT,
         "updated_at": utc_now_iso(),
-        "seeded_from": "prompts/v1/recon_agents",
+        "seeded_from": "seeds/recon_agents",
         "agents": [],
     }
 
@@ -208,7 +208,7 @@ def _normalize_collection(raw: dict[str, Any]) -> dict[str, Any]:
             raise ReconAgentError(f"unsupported collection format: {raw.get('format')}")
     out["format"] = COLLECTION_FORMAT
     out["updated_at"] = str(raw.get("updated_at") or utc_now_iso())
-    out["seeded_from"] = str(raw.get("seeded_from") or "prompts/v1/recon_agents")
+    out["seeded_from"] = str(raw.get("seeded_from") or "seeds/recon_agents")
     agents: list[dict[str, Any]] = []
     seen: set[str] = set()
     for p in raw.get("agents") or []:
@@ -225,7 +225,7 @@ def _normalize_collection(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _default_map_body_fallback() -> str:
-    """Embed current prompts/v1/recon.md when seed dir lacks default-map."""
+    """Embed current seeds/system/recon.md when seed dir lacks default-map."""
     if LEGACY_RECON_PROMPT.is_file():
         return LEGACY_RECON_PROMPT.read_text(encoding="utf-8")
     return (

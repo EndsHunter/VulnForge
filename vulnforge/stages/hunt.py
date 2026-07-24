@@ -12,9 +12,8 @@ from vulnforge.tools import build_tool_handler
 from vulnforge.tools.queue_note import flush_notes_to_db
 from vulnforge.transcript import save_transcript
 from vulnforge.usage import record_llm_result
+from vulnforge.paths import system_prompts_root
 from vulnforge.util import append_event, normalize_relpath
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Abort errors that free the queue and may trigger auto-split (not infra).
 ABORT_ERRORS = frozenset({"max_tool_rounds", "no_submit", "aborted_scope"})
@@ -124,7 +123,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         cfg = dict(cfg)
         cfg["run"] = {**(cfg.get("run") or {}), "profile": profile}
     handler = build_tool_handler(ctx)
-    prompts_root = PROJECT_ROOT / "prompts" / "v1"
+    prompts_root = system_prompts_root()
     packet = pack_hunt(
         cfg,
         prompts_root,

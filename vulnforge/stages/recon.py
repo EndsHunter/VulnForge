@@ -33,9 +33,8 @@ from vulnforge.tools.sink_preindex import (
 )
 from vulnforge.transcript import save_transcript
 from vulnforge.usage import record_llm_result
+from vulnforge.paths import system_prompts_root
 from vulnforge.util import append_event, normalize_relpath
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Recoverable recon failures: parent stays failed_task but a child recon is
 # enqueued so Ralph keeps looping (mirrors hunt shallow requeue).
@@ -286,7 +285,7 @@ def llm_merge_architectures(
     Returns (merged_structure_or_None, LLMResult_or_None).
     On failure returns (None, result_or_None); caller should fall back mechanically.
     """
-    root = prompts_root or (PROJECT_ROOT / "prompts" / "v1")
+    root = prompts_root or system_prompts_root()
     try:
         prompt_body = (root / "architecture_merge.md").read_text(
             encoding="utf-8", errors="replace"
@@ -835,7 +834,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     cfg["run"]["profile"] = profile
 
     handler = build_tool_handler(ctx)
-    prompts_root = PROJECT_ROOT / "prompts" / "v1"
+    prompts_root = system_prompts_root()
     payload = task.payload if isinstance(getattr(task, "payload", None), dict) else {}
     # Prior architecture: operator re-run, batch siblings, or any existing map.
     # Always inject when DB already has architecture so agents refine (not replace-all).

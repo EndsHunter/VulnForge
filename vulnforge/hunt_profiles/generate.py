@@ -87,7 +87,7 @@ def allocate_free_id(preferred: str) -> str:
 def required_sections_missing(body_md: str) -> list[str]:
     """Return names of required Cloudflare-style sections missing from body_md.
 
-    Required (aligned with prompts/v1/generate_skill.md):
+    Required (aligned with seeds/system/generate_skill.md):
       Mission **or** Principles,
       Method | Hunt workflow | Workflow,
       Anti-patterns,
@@ -423,7 +423,7 @@ def generate_hunt_skill(
     tags, cwe, angle_ids, sink_families. May include model_id and usage fields
     when recording is available.
 
-    Does **not** write to prompts/v1. Persistence is via save_generated_profile
+    Does **not** write to seeds/. Persistence is via save_generated_profile
     / save_profile (callers).
     """
     brief_s = str(brief or "").strip()

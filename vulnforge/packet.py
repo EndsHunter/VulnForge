@@ -31,8 +31,23 @@ def estimate_tokens(text: str) -> int:
 
 
 def load_prompt_slice(prompts_root: Path, relative: str) -> str:
+    """Load a markdown slice under ``prompts_root``.
+
+    For simple basenames (no ``/``), prefer ``config/prompts/overrides/<name>``
+    when present so operators can override system prompts without editing seeds.
+    """
+    rel = str(relative or "").replace("\\", "/").lstrip("/")
+    if rel and ".." not in rel.split("/") and "/" not in rel:
+        try:
+            from vulnforge.paths import prompt_overrides_root
+
+            ov = prompt_overrides_root() / rel
+            if ov.is_file():
+                return ov.read_text(encoding="utf-8")
+        except Exception:
+            pass
     root = prompts_root.resolve()
-    path = (root / relative).resolve()
+    path = (root / rel).resolve()
     if root not in path.parents and path != root:
         raise PermissionError(f"path escape: {relative}")
     if not path.is_file():
@@ -321,7 +336,7 @@ def pack_recon(
     focus_paths: list | None = None,
     codemap: dict | None = None,
 ) -> Packet:
-    """Legacy single-packet recon using prompts/v1/recon.md (default-map equivalent)."""
+    """Legacy single-packet recon using seeds/system/recon.md (default-map equivalent)."""
     try:
         recon = load_prompt_slice(prompts_root, "recon.md")
     except FileNotFoundError:
@@ -724,7 +739,7 @@ def pack_disprove(
 ) -> Packet:
     """Build adversarial disprove packet.
 
-    ``perspective`` is a prompts/v1-relative path (e.g. ``disprove_threat.md``)
+    ``perspective`` is a system-prompts-relative path (e.g. ``disprove_threat.md``)
     appended after the shared ``disprove.md`` contract. Omitted when missing.
     """
     # Severity + exclusion gates without hunt Evidence/Tools sections.

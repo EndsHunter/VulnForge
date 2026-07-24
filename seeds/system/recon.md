@@ -18,6 +18,7 @@ You map the application so hunt tasks are grounded in real structure.
 - Architecture only — never file vulnerabilities
 - Correctness over completeness
 - Trust the **mechanical inventory** (file counts, extensions, entrypoints) over guesswork; sample real paths with tools
+- Use the **mechanical codemap** (modules, package roots, path signals) as ground truth for components/`path_hints`; do not invent modules outside the map without tool evidence; annotate high-value paths with `note(kind=codemap)`
 
 ## When to use
 
@@ -64,6 +65,7 @@ Use **short class id strings** from the **Registered hunt classes** section inje
 | Rule | Summary |
 |------|---------|
 | Evidence first | Inventory + tools beat inventing topology |
+| Codemap ground truth | Prefer mechanical codemap modules for components/`path_hints`; annotate with `note(kind=codemap)` |
 | Cite paths | Prefer paths you actually read |
 | Architecture only | Do not file vulnerability findings in recon |
 | Registered class ids | Never invent class ids outside the registered list |
@@ -76,8 +78,8 @@ Use **short class id strings** from the **Registered hunt classes** section inje
 
 ## Method / workflow
 
-1. Skim inventory extensions and entrypoints; open a few real paths.
-2. Name major components with path hints you actually saw.
+1. Skim inventory extensions and entrypoints; align components with the mechanical codemap; open a few real paths.
+2. Name major components with path hints you actually saw (prefer codemap module paths; do not invent modules outside the map without tool evidence).
 3. List trust boundaries and input surfaces grounded in code.
 4. Note comparables (similar systems for baseline — not to dismiss bugs) in `summary` if useful.
 5. Suggest a small `hunt_focus` set (area × class) or omit for active fallback.

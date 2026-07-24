@@ -29,7 +29,7 @@ from vulnforge.llm import InfraError, classify_llm_failure, make_client, message
 from vulnforge.packet import pack_disprove
 from vulnforge.transcript import save_transcript
 from vulnforge.usage import record_llm_result
-from vulnforge.paths import PROJECT_ROOT
+from vulnforge.paths import system_prompts_root
 from vulnforge.util import append_event, utc_now_iso
 
 # Full pack_disprove + dual LLM path is implemented.
@@ -208,7 +208,7 @@ def _run_disprove(
     max_chars = max(per_slice, min(per_slice * 4, 24_000))
 
     slices = load_citation_slices(finding, target, max_chars=max_chars)
-    prompts_root = PROJECT_ROOT / "prompts" / "v1"
+    prompts_root = system_prompts_root()
     body = dict(finding.body or {})
     verifiers = resolve_disprove_verifiers(cfg)
 

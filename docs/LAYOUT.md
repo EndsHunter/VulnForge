@@ -13,11 +13,11 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Extra tools (toolgen integrate) | `vulnforge/tools/extra_registry.py` + optional `tools/extra/` |
 | Stage / task kind | `vulnforge/stages/<kind>.py` |
 | Packet builders + prompt packing | `vulnforge/packet.py` (schemas live on tool SPECs; **`packets/` package split deferred**) |
-| System / stage markdown prompts | Prefer `seeds/system/` when present; else `prompts/v1/` (legacy) — see `paths.system_prompts_root()` |
+| System / stage markdown prompts | `seeds/system/` — see `paths.system_prompts_root()` |
 | Hunt skill **runtime** authority | `config/hunt_profiles/` (collection + bodies) |
-| Hunt skill **package seeds** (reseed only) | `seeds/hunt_classes/` or `prompts/v1/hunt_classes/` |
+| Hunt skill **package seeds** (reseed only) | `seeds/hunt_classes/` |
 | Recon agent **runtime** | `config/recon_agents/` |
-| Recon agent **seeds** | `seeds/recon_agents/` or `prompts/v1/recon_agents/` |
+| Recon agent **seeds** | `seeds/recon_agents/` |
 | Config knobs (yaml) | `config/default.yaml` |
 | UI / runtime overrides | `config/ui_settings.json` (+ env `VF_*`) |
 | Load path helpers | `vulnforge/paths.py` |
@@ -56,9 +56,9 @@ are **separate** concerns — not folded into one mega-yaml.
 
 | Kind | Runtime authority | Package seed (reseed / first open) |
 |------|-------------------|-------------------------------------|
-| Hunt skills | `config/hunt_profiles/` | `seeds/hunt_classes/` or `prompts/v1/hunt_classes/` |
-| Recon agents | `config/recon_agents/` | `seeds/recon_agents/` or `prompts/v1/recon_agents/` |
-| System prompts | optional `config/prompts/overrides/` then package | `seeds/system/` or `prompts/v1/` |
+| Hunt skills | `config/hunt_profiles/` | `seeds/hunt_classes/` |
+| Recon agents | `config/recon_agents/` | `seeds/recon_agents/` |
+| System prompts | optional `config/prompts/overrides/<name>.md` then package | `seeds/system/` |
 
 **Edit runtime collections** for live campaigns. Edit package seeds only when changing the library that Dev **Reseed** copies from.
 
@@ -76,7 +76,18 @@ Wire-up checklist (historical multi-touch path): see `toolgen.md`.
 | Item | Status |
 |------|--------|
 | Split `packet.py` → `vulnforge/packets/` package with re-export shim | **Deferred** — schemas already left for SPECs; further split is opportunistic polish |
-| Mass move `prompts/v1` → `seeds/` | Dual-read via `paths.system_prompts_root()` etc.; forced move later if needed |
+
+## Package seeds (`seeds/`)
+
+```text
+seeds/
+  README.md           # edit rules
+  system/*.md         # PRINCIPLES, preamble, disprove*, toolgen*, recon.md, …
+  hunt_classes/*.md   # reseed → config/hunt_profiles
+  recon_agents/*.md   # reseed → config/recon_agents
+```
+
+Legacy `prompts/` holds only a redirect README. Loaders fall back to `prompts/v1` only if `seeds/system` is missing.
 
 ## Dead / out-of-scope paths
 

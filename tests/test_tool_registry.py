@@ -228,7 +228,10 @@ def test_paths_and_load_config_smoke(tmp_path: Path, monkeypatch):
     from vulnforge.paths import (
         CONFIG_ROOT,
         PROJECT_ROOT,
+        SEEDS_ROOT,
+        effective_prompt_pin_root,
         hunt_class_seeds_root,
+        recon_agent_seeds_root,
         system_prompts_root,
     )
     from vulnforge.settings.load import load_config
@@ -236,7 +239,13 @@ def test_paths_and_load_config_smoke(tmp_path: Path, monkeypatch):
     assert PROJECT_ROOT.is_dir()
     assert CONFIG_ROOT == PROJECT_ROOT / "config"
     assert system_prompts_root().is_dir()
+    assert (system_prompts_root() / "PRINCIPLES.md").is_file()
     assert hunt_class_seeds_root().is_dir()
+    assert recon_agent_seeds_root().is_dir()
+    # Prefer seeds/ package library when populated
+    assert system_prompts_root() == SEEDS_ROOT / "system"
+    assert hunt_class_seeds_root() == SEEDS_ROOT / "hunt_classes"
+    assert effective_prompt_pin_root() == SEEDS_ROOT
 
     # env override wins last
     monkeypatch.setenv("VF_MODEL", "registry-test-model")

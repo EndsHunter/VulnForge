@@ -1,6 +1,6 @@
 """Stage: generate_skill — author a custom hunt profile from an operator brief.
 
-Never writes to prompts/v1. Profiles land in the operator collection
+Never writes to seeds/. Profiles land in the operator collection
 (config/hunt_profiles/) via save_profile(source=\"generated\").
 """
 

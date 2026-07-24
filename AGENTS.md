@@ -87,9 +87,9 @@ Hunt skills live in the **operator collection** (`config/hunt_profiles/`), not h
 1. Dashboard: **Home → Open Dev** (`/dev`)
 2. **+ New profile** (id slug + markdown body), or **Import** a collection JSON
 3. Toggle **Active** for bulk enqueue (recon `active_fallback`, Coverage “all”, `file_by_file`)
-4. **Export** to share a collection; **Reseed from package** restores seed library from `prompts/v1/hunt_classes/`
+4. **Export** to share a collection; **Reseed from package** restores seed library from `seeds/hunt_classes/`
 
-Package markdown under `prompts/v1/hunt_classes/` is a **seed library** only (first open / reseed). Runtime authority is the collection.
+Package markdown under `seeds/hunt_classes/` is a **seed library** only (first open / reseed). Runtime authority is the collection. See [`seeds/README.md`](seeds/README.md).
 
 ### New mech gate
 

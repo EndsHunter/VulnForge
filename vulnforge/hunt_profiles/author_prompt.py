@@ -1,6 +1,6 @@
 """Operator-editable hunt skill generator prompt (generate_skill.md).
 
-Package seed: prompts/v1/generate_skill.md
+Package seed: seeds/system/generate_skill.md
 Operator override: config/prompts/generate_skill.md
 """
 

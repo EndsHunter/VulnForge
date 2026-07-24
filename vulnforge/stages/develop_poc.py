@@ -18,7 +18,7 @@ from vulnforge.packet import pack_develop_poc, refuse_if_over_budget
 from vulnforge.tools import build_tool_handler
 from vulnforge.transcript import save_transcript
 from vulnforge.usage import record_llm_result
-from vulnforge.paths import PROJECT_ROOT
+from vulnforge.paths import system_prompts_root
 from vulnforge.util import append_event, utc_now_iso
 
 
@@ -144,7 +144,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             args["evidence_id"] = eid
         return orig_handler(name, args)
 
-    prompts_root = PROJECT_ROOT / "prompts" / "v1"
+    prompts_root = system_prompts_root()
     try:
         packet = pack_develop_poc(
             cfg,

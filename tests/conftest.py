@@ -6,10 +6,12 @@ from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+from vulnforge.paths import PROJECT_ROOT, system_prompts_root
+
 FIXTURES = PROJECT_ROOT / "fixtures"
 TOY_SQLI = FIXTURES / "toy_sqli"
-PROMPTS_V1 = PROJECT_ROOT / "prompts" / "v1"
+# Effective system prompts root (seeds/system when present).
+PROMPTS_V1 = system_prompts_root()
 CONFIG_DEFAULT = PROJECT_ROOT / "config" / "default.yaml"
 
 
