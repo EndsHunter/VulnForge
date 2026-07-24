@@ -29,7 +29,6 @@ from vulnforge.util import (
 )
 
 from vulnforge.control.exit_codes import (
-    DEFERRED_TASK_KINDS,
     EXIT_BUSY,
     EXIT_CONFIG,
     EXIT_IDLE,
@@ -292,14 +291,6 @@ def cmd_init(args, cfg: dict) -> int:
 
     if not target.exists():
         print(f"target not found: {target}", file=sys.stderr)
-        return EXIT_CONFIG
-
-    if str(profile) == "binary_re":
-        print(
-            "profile binary_re was removed; VulnForge is source-code analysis only "
-            "(use code_static on a source tree)",
-            file=sys.stderr,
-        )
         return EXIT_CONFIG
 
     if is_pe_file(target):
@@ -818,9 +809,8 @@ def cmd_run_once(args, cfg: dict) -> int:
         try:
             result = dispatch_task(task, db, run_dir, cfg)
         except NotImplementedError as e:
-            # Incomplete optional stages must not EXIT_CONFIG the campaign.
-            # Known deferred kinds â†’ failed_task + progress.
-            # Truly unknown kinds â†’ EXIT_CONFIG (control-plane error).
+            # Incomplete optional stages must not EXIT_CONFIG the campaign when
+            # validate_llm can still hold the finding. Unknown kinds → EXIT_CONFIG.
             kind = task.kind
             err = f"not_implemented: {e}"
             if kind == "validate_llm":
@@ -852,24 +842,8 @@ def cmd_run_once(args, cfg: dict) -> int:
                         },
                     )
                     return EXIT_PROGRESS
-            elif kind in DEFERRED_TASK_KINDS:
-                db.fail_task(task.id, "failed_task", err)
-                append_event(
-                    run_dir,
-                    {
-                        "source": "vf",
-                        "event": "not_implemented",
-                        "task_id": task.id,
-                        "kind": kind,
-                        "attempt": task.attempt,
-                        "error": str(e),
-                    },
-                )
-                print(f"stage not implemented: {e}", file=sys.stderr)
-                # Progress (0), not CONFIG (30): deferred stage must not halt Ralph
-                return EXIT_PROGRESS
             else:
-                # Unknown task kind â€” hard control-plane error
+                # Unknown task kind — hard control-plane error
                 db.fail_task(task.id, "failed_task", err)
                 append_event(
                     run_dir,
@@ -1047,9 +1021,7 @@ def handle_failed_infra(
 def dispatch_task(task, db: Database, run_dir: Path, cfg: dict) -> dict[str, Any]:
     """Route task.kind to stage handler.
 
-    Known deferred optional stages (``DEFERRED_TASK_KINDS``) raise
-    ``NotImplementedError`` and are handled as ``failed_task`` + progress.
-    Truly unknown kinds also raise, but ``cmd_run_once`` maps them to
+    Unknown kinds raise ``NotImplementedError``; ``cmd_run_once`` maps them to
     ``EXIT_CONFIG`` + event ``unknown_task_kind``.
     """
     kind = task.kind
@@ -1077,10 +1049,6 @@ def dispatch_task(task, db: Database, run_dir: Path, cfg: dict) -> dict[str, Any
         from vulnforge.stages import render
 
         return render.run(task, db, run_dir, cfg)
-    if kind == "gapfill":
-        from vulnforge.stages import gapfill
-
-        return gapfill.run(task, db, run_dir, cfg)
     if kind == "tool_gaps":
         from vulnforge.stages import tool_gaps as tool_gaps_stage
 
@@ -1093,9 +1061,6 @@ def dispatch_task(task, db: Database, run_dir: Path, cfg: dict) -> dict[str, Any
         from vulnforge.stages import generate_run_skills as generate_run_skills_stage
 
         return generate_run_skills_stage.run(task, db, run_dir, cfg)
-    if kind in ("dedup", "feedback"):
-        # Modules exist; not product stages â€” explicit deferred error (progress).
-        raise NotImplementedError(f"deferred stage: {kind}")
     raise NotImplementedError(f"unknown task kind: {kind}")
 
 

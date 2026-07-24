@@ -344,8 +344,6 @@ flowchart TD
 | **`tool_gaps`** | optional | ~90 | Mine missing-tool signals |
 | **`generate_skill`** | Yes | operator | Author a hunt profile from brief |
 | **`generate_run_skills`** | Yes | post-recon | N target-specific skills when dynamic_skills |
-| **`gapfill`** | deferred | — | `NotImplementedError` → failed_task progress |
-| **`dedup` / `feedback`** | deferred | — | Modules exist; not product stages |
 
 ### Finding state machine
 
@@ -744,10 +742,10 @@ flowchart TD
 - Writes `project/TOOL_GAPS.md` + `tool_gaps.json`.
 - Modes: mechanical · llm · hybrid. Ideas ≠ mandates.
 
-### Deferred: `gapfill`, `dedup`, `feedback`
+### Near-dup merge (`stages/dedup.py`)
 
-- Modules under `stages/` exist for coverage fill / clustering / param proposals.
-- Enqueue → `NotImplementedError` → **failed_task + progress** (does not halt Ralph).
+- Not a leased task kind. Mechanical `merge_near_duplicate` / `cluster_findings` / operator merge.
+- Used on hunt insert and Report clusters.
 
 ---
 
@@ -756,8 +754,6 @@ flowchart TD
 | Profile | Exec | Intent |
 |---------|------|--------|
 | **`code_static`** (default) | No | Source audit, read-only target |
-
-| `code_exec` | (scaffold) | Future sandboxed exec |
 
 `CodeStaticProfile.allowed_tools()` is the allowlist seed; packet schemas + stage filter enforce model surface.
 
@@ -841,12 +837,12 @@ vulnforge/
     tool_gaps.py         # Stage wrapper for gap mining
     generate_skill.py    # Profile authoring
     generate_run_skills.py
-    gapfill.py / dedup.py / feedback.py  # deferred
+    dedup.py             # near-dup merge helpers (not a task kind)
   tools/                 # Jail + inventory + grep + evidence + notes + request_hunt
   hunt_profiles/         # Operator collection store + generate
   recon_agents/          # Operator recon agent collection
   findings/              # stable_key + near-dup merge
-  profiles/              # code_static (and scaffolds)
+  profiles/              # code_static
   toolgen/               # Draft → validate → integrate pipeline
   ui/                    # FastAPI research cockpit + static JS
   strategies.py          # discovery | file_by_file | recon_docs
@@ -897,7 +893,7 @@ sequenceDiagram
 | Concurrency | `run.max_leases_parallel` | Parallel Ralph workers |
 | Retries | `run.max_task_attempts`, `max_recon_auto_retries` | Infra vs recon recovery |
 | Split | `run.max_split_depth` | Auto-split aborted hunts |
-| Stages | `stages.validate_llm`, gapfill, dedup, feedback | Optional pipeline arms |
+| Stages | `stages.validate_llm` | Optional dual-disprove arm |
 | Packet slim | `packet.max_architecture_chars`, `max_seed_sinks`, … | Context budget |
 | Tools caps | `tools.max_read_bytes`, grep/inventory caps | Jail resource limits |
 | Skill policy | `run.hunt_skill_mode`, `hunt_skill_ids` | Restrict classes for a run |

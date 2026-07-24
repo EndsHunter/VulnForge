@@ -20,6 +20,37 @@
   let chainsCache = [];
   let openChainId = null;
   let reportPanelsBound = false;
+  /** Client-side search (case-insensitive substring) */
+  let searchQuery = "";
+  let searchDebounceTimer = null;
+  /**
+   * Column sort. Default matches historical order: state priority asc, then id desc.
+   * sortKey: id | title | class | severity | state | location
+   * sortDir: asc | desc
+   */
+  let sortKey = "state";
+  let sortDir = "asc";
+
+  const STATE_ORDER = {
+    needs_human: 0,
+    candidate: 1,
+    confirmed: 2,
+    rejected_mech: 3,
+    rejected_llm: 4,
+    rejected_human: 5,
+    superseded: 6,
+  };
+
+  /** Higher = more severe; default sortDir desc puts critical first. */
+  const SEVERITY_ORDER = {
+    critical: 5,
+    high: 4,
+    medium: 3,
+    low: 2,
+    info: 1,
+    unknown: 0,
+    "": -1,
+  };
 
   function esc(s) {
     return String(s ?? "")
@@ -65,6 +96,35 @@
     return s;
   }
 
+  /** Longest path-prefix module from snap.codemap (client-side, no extra API). */
+  function nearestModuleForPath(path) {
+    if (!path) return null;
+    const snap = window.__VF_last_snap || {};
+    const codemap = snap.codemap;
+    if (!codemap || !Array.isArray(codemap.modules)) return null;
+    const norm = (p) =>
+      String(p || "")
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "")
+        .replace(/\/+$/, "");
+    const p = norm(path);
+    if (!p) return null;
+    let best = null;
+    let bestLen = -1;
+    for (const m of codemap.modules) {
+      if (!m || typeof m !== "object") continue;
+      const mp = norm(m.path);
+      if (!mp) continue;
+      if (p === mp || p.startsWith(mp + "/")) {
+        if (mp.length > bestLen) {
+          best = m;
+          bestLen = mp.length;
+        }
+      }
+    }
+    return best;
+  }
+
   /**
    * Dual LLM disprove signal: stood/total where stand = could not kill.
    * Returns { stood, total, label, verifiers } or null if not dual-run.
@@ -101,19 +161,7 @@
 
   function llmVerifyDetailHtml(f) {
     const m = llmVerifyMeta(f);
-    if (!m) {
-      const legacy = bodyOf(f).validation_llm;
-      if (!legacy || typeof legacy !== "object") return "";
-      // Pre-dual single pass: no N/2 badge data
-      const v = legacy.verdict || legacy.status || "";
-      if (!v) return "";
-      return `<div class="report-llm-verify">
-        <h4>LLM verify</h4>
-        <p class="controls-hint">Legacy single disprove (no dual score). Verdict: <span class="mono">${esc(
-          String(v)
-        )}</span></p>
-      </div>`;
-    }
+    if (!m) return "";
     const rows = (m.verifiers || [])
       .map((vr) => {
         const vid = esc(vr.id || "?");
@@ -152,6 +200,29 @@
     return st === ftr;
   }
 
+  function matchesSearch(f) {
+    const q = (searchQuery || "").trim().toLowerCase();
+    if (!q) return true;
+    const b = bodyOf(f);
+    const sev = f.severity || b.severity_claim || "";
+    const loc = pathLabel(primaryPath(f));
+    const hay = [
+      f.id,
+      b.title,
+      f.stable_key,
+      b.weakness_class,
+      sev,
+      f.state,
+      loc,
+      b.summary,
+      b.area,
+      f.area,
+    ]
+      .map((x) => String(x ?? "").toLowerCase())
+      .join("\n");
+    return hay.includes(q);
+  }
+
   function apiBase() {
     if (!meta.target_id || !meta.run_id) return null;
     return `/api/runs/${encodeURIComponent(meta.target_id)}/${encodeURIComponent(meta.run_id)}`;
@@ -163,22 +234,131 @@
     return api(path, opts);
   }
 
+  function sortValue(f, key) {
+    const b = bodyOf(f);
+    switch (key) {
+      case "id":
+        return Number(f.id) || 0;
+      case "title":
+        return String(b.title || f.stable_key || "").toLowerCase();
+      case "class":
+        return String(b.weakness_class || "").toLowerCase();
+      case "severity": {
+        const sev = String(f.severity || b.severity_claim || "")
+          .toLowerCase()
+          .trim();
+        return SEVERITY_ORDER[sev] ?? SEVERITY_ORDER.unknown;
+      }
+      case "state":
+        return STATE_ORDER[f.state] ?? 9;
+      case "location":
+        return pathLabel(primaryPath(f)).toLowerCase();
+      default:
+        return 0;
+    }
+  }
+
+  function compareFindings(a, b) {
+    const dir = sortDir === "desc" ? -1 : 1;
+    const key = sortKey || "state";
+    let cmp = 0;
+    if (key === "id") {
+      cmp = (Number(a.id) || 0) - (Number(b.id) || 0);
+    } else if (key === "severity" || key === "state") {
+      cmp = sortValue(a, key) - sortValue(b, key);
+    } else {
+      const sa = String(sortValue(a, key));
+      const sb = String(sortValue(b, key));
+      cmp = sa.localeCompare(sb, undefined, { sensitivity: "base", numeric: true });
+    }
+    if (cmp !== 0) return cmp * dir;
+    // Stable secondary: id desc (matches historical default)
+    return (Number(b.id) || 0) - (Number(a.id) || 0);
+  }
+
   function sortedFindings() {
-    const order = {
-      needs_human: 0,
-      candidate: 1,
-      confirmed: 2,
-      rejected_mech: 3,
-      rejected_llm: 4,
-      rejected_human: 5,
-      superseded: 6,
-    };
-    return [...cache]
-      .filter(matchesFilter)
-      .sort(
-        (a, b) =>
-          (order[a.state] ?? 9) - (order[b.state] ?? 9) || (b.id || 0) - (a.id || 0)
+    return [...cache].filter(matchesFilter).filter(matchesSearch).sort(compareFindings);
+  }
+
+  function searchOrFilterActive() {
+    return (
+      (filter || "all").toLowerCase() !== "all" || !!(searchQuery || "").trim()
+    );
+  }
+
+  function updateSearchCount() {
+    const el = $("#report-search-count");
+    if (!el) return;
+    if (!searchOrFilterActive()) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    const n = sortedFindings().length;
+    const m = cache.length;
+    el.hidden = false;
+    el.textContent = `${n} of ${m} matching`;
+  }
+
+  function updateSortHeaders() {
+    $$(".report-table thead th.th-sortable").forEach((th) => {
+      const key = th.getAttribute("data-sort") || "";
+      const active = key === sortKey;
+      th.classList.toggle("sorted-asc", active && sortDir === "asc");
+      th.classList.toggle("sorted-desc", active && sortDir === "desc");
+      th.setAttribute(
+        "aria-sort",
+        active ? (sortDir === "asc" ? "ascending" : "descending") : "none"
       );
+      const btn = th.querySelector(".th-sort-btn");
+      if (btn) {
+        btn.setAttribute(
+          "aria-pressed",
+          active ? "true" : "false"
+        );
+      }
+    });
+  }
+
+  function defaultDirForSortKey(key) {
+    if (key === "id" || key === "severity") return "desc";
+    return "asc";
+  }
+
+  function setSort(key) {
+    if (!key) return;
+    if (sortKey === key) {
+      sortDir = sortDir === "asc" ? "desc" : "asc";
+    } else {
+      sortKey = key;
+      sortDir = defaultDirForSortKey(key);
+    }
+    refreshTablePreserveDetail();
+  }
+
+  function setSearch(q) {
+    searchQuery = q == null ? "" : String(q);
+    refreshTablePreserveDetail();
+  }
+
+  /** Re-render table; keep open detail only if the finding is still visible. */
+  function refreshTablePreserveDetail() {
+    if (openId != null) {
+      const stillVisible = sortedFindings().some(
+        (f) => Number(f.id) === Number(openId)
+      );
+      if (!stillVisible) {
+        openId = null;
+        const d = $("#report-detail");
+        if (d) {
+          d.hidden = true;
+          d.innerHTML = "";
+        }
+      }
+    }
+    renderTable();
+    updateSearchCount();
+    updateSortHeaders();
   }
 
   function summaryCounts() {
@@ -377,6 +557,11 @@
       : "";
     const llmBadge = llmVerifyBadge(f);
     const llmDetail = llmVerifyDetailHtml(f);
+    const primary = primaryPath(f);
+    const nearMod = nearestModuleForPath(primary && primary.path);
+    const moduleRow = nearMod && nearMod.path
+      ? `<div class="k">Module</div><div class="v mono">${esc(String(nearMod.path))}</div>`
+      : "";
     return `
       <div class="report-detail-inner" data-fid="${f.id}">
         <div class="report-detail-head">
@@ -409,6 +594,7 @@
               <div class="k">ID</div><div class="v mono">${f.id}</div>
               <div class="k">stable_key</div><div class="v mono">${esc(f.stable_key || "-")}</div>
               <div class="k">Evidence</div><div class="v mono">${eid ? esc(String(eid)) : b.no_poc ? "no_poc" : "-"}</div>
+              ${moduleRow}
             </div>
           </div>
         </div>
@@ -1109,10 +1295,17 @@
       $("#report-go-mission")?.addEventListener("click", () =>
         window.VulnForgeModes?.setMode?.("mission", "overview")
       );
+      updateSearchCount();
+      updateSortHeaders();
       return;
     }
     if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="8" class="empty">No findings match this filter.</td></tr>`;
+      const msg = searchOrFilterActive()
+        ? "No findings match this search / filter."
+        : "No findings match this filter.";
+      tbody.innerHTML = `<tr><td colspan="8" class="empty">${msg}</td></tr>`;
+      updateSearchCount();
+      updateSortHeaders();
       return;
     }
     tbody.innerHTML = rows
@@ -1186,6 +1379,9 @@
         }
       });
     });
+
+    updateSearchCount();
+    updateSortHeaders();
   }
 
   function downloadBlob(filename, text, mime) {
@@ -1906,28 +2102,56 @@
         exportRawProjection(btn.getAttribute("data-export-proj"))
       );
     });
+
+    const search = $("#report-search");
+    if (search && !search.dataset.bound) {
+      search.dataset.bound = "1";
+      if (search.value !== searchQuery) search.value = searchQuery;
+      search.addEventListener("input", () => {
+        const val = search.value || "";
+        if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(() => {
+          searchDebounceTimer = null;
+          setSearch(val);
+        }, 150);
+      });
+    }
+
+    $$(".report-table thead th.th-sortable").forEach((th) => {
+      if (th.dataset.bound) return;
+      th.dataset.bound = "1";
+      const onSort = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setSort(th.getAttribute("data-sort") || "");
+      };
+      // Single handler on th (button clicks bubble); keeps a11y button for keyboard.
+      th.addEventListener("click", onSort);
+    });
+
     setupReportPanels();
+    updateSortHeaders();
+    updateSearchCount();
   }
 
   function setFilter(next) {
     filter = next || "all";
-    openId = null;
-    const d = $("#report-detail");
-    if (d) {
-      d.hidden = true;
-      d.innerHTML = "";
-    }
     renderSummary();
-    renderTable();
+    refreshTablePreserveDetail();
   }
 
   /** Open Report and expand a finding by id (Coverage deep-link). */
   function openFinding(id) {
     if (id == null) return;
     filter = "all";
+    searchQuery = "";
+    const search = $("#report-search");
+    if (search) search.value = "";
     openId = Number(id);
     renderSummary();
     renderTable();
+    updateSearchCount();
+    updateSortHeaders();
     const f = cache.find((x) => Number(x.id) === Number(openId));
     const d = $("#report-detail");
     if (d && f) {
@@ -1956,12 +2180,19 @@
     setupPocChrome();
     renderSummary();
     renderTable();
+    updateSearchCount();
+    updateSortHeaders();
     // Load clusters + chains (async); badges update when clusters return
     loadClusters().catch(() => {});
     loadChains().catch(() => {});
-    // Restore open detail after refresh / human review
+    // Restore open detail after refresh / human review (if still visible under filter/search)
     if (openId != null) {
-      const f = cache.find((x) => Number(x.id) === Number(openId));
+      const stillVisible = sortedFindings().some(
+        (x) => Number(x.id) === Number(openId)
+      );
+      const f = stillVisible
+        ? cache.find((x) => Number(x.id) === Number(openId))
+        : null;
       const d = $("#report-detail");
       if (d && f) {
         d.hidden = false;
@@ -1971,6 +2202,7 @@
         d.hidden = true;
         d.innerHTML = "";
         openId = null;
+        renderTable();
       }
     }
 

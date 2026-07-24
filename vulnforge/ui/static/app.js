@@ -1059,7 +1059,6 @@ function openInitLoading(targetPath, { start } = {}) {
   if (!modal) return;
   modal.classList.add("open");
   modal.classList.remove("is-success");
-  modal.classList.remove("is-binary-re");
   modal.setAttribute("aria-busy", "true");
   const title = $("#init-loading-title");
   if (title) {
@@ -2123,8 +2122,9 @@ function renderOverview(snap) {
         </p>
       </div>
     </div>
-    ${renderTargetInventoryCard(snap.target_inventory || snap.inventory_honesty, snap)}
+    ${renderTargetInventoryCard(snap.target_inventory, snap)}
     ${renderArchitectureBriefCard(archText, archSum, snap)}
+    ${renderCodemapBriefCard(snap)}
     ${renderLlmUsageCard(snap)}
     ${renderOperatorRerunCard(snap)}
     <div class="card" style="margin-top:1rem">
@@ -2150,13 +2150,17 @@ function renderOverview(snap) {
   $("#overview-go-arch")?.addEventListener("click", () => {
     window.VulnForgeModes?.setMode?.("mission", "arch");
   });
+  $("#overview-go-codemap")?.addEventListener("click", () => {
+    window.VulnForgeModes?.setMode?.("mission", "arch");
+    setTimeout(() => $("#codemap-card")?.scrollIntoView?.({ block: "nearest", behavior: "smooth" }), 60);
+  });
   el.querySelectorAll(".overview-stat").forEach((btn) => {
     btn.addEventListener("click", () => goStatLink(btn.getAttribute("data-stat")));
   });
 }
 
 function reconFailureHint(snap) {
-  const lr = snap?.target_inventory?.last_recon || snap?.inventory_honesty?.last_recon;
+  const lr = snap?.target_inventory?.last_recon;
   if (!lr || lr.state === "succeeded") return "";
   const err = lr.error || lr.state || "failed";
   const gen = lr.recon_generation != null ? ` (generation ${esc(String(lr.recon_generation))})` : "";
@@ -2174,14 +2178,6 @@ function reconFailureHint(snap) {
       " Architecture may exist, but hunt planning produced zero tasks (check run.max_tasks and active hunt skills).";
   }
   return `<p class="controls-hint" style="margin:0.5rem 0 0;color:var(--danger, #c44)"><strong>Last recon:</strong> <span class="mono">${esc(String(err))}</span>${gen}.${tip}${retry}</p>`;
-}
-
-function isBinaryArchMode(_archSum, _snap) {
-  return false;
-}
-
-function binaryArchMetaLine(_archSum) {
-  return "";
 }
 
 function renderArchitectureBriefCard(archText, archSum, snap) {
@@ -2218,6 +2214,54 @@ function renderArchitectureBriefCard(archText, archSum, snap) {
       </div>
       <p class="overview-arch-snippet">${snippet}</p>
       <div class="controls-hint">${esc(meta)}${agentsLabel ? ` · agents: <span class="mono">${esc(agentsLabel)}</span>` : ""}</div>
+    </div>`;
+}
+
+function renderCodemapBriefCard(snap) {
+  const sum = snap.codemap_summary || {};
+  const has =
+    !!(sum.has_codemap || snap.has_codemap || (snap.codemap && (snap.codemap.modules || []).length));
+  if (!has) {
+    return `
+    <div class="card" style="margin-top:1rem">
+      <h2>Codemap</h2>
+      <p class="controls-hint" style="margin:0">No codemap yet — run recon (or Rebuild after init). Mechanical structure lives under Mission → Architecture.</p>
+    </div>`;
+  }
+  const mods = sum.module_count != null ? sum.module_count : (snap.codemap?.modules || []).length;
+  const files = sum.file_count != null ? sum.file_count : 0;
+  const roots = Array.isArray(sum.package_roots) ? sum.package_roots : [];
+  const anns = sum.annotation_count != null ? sum.annotation_count : 0;
+  const langObj = sum.languages || {};
+  const topLangs = Object.entries(langObj)
+    .sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0))
+    .slice(0, 4)
+    .map(([k]) => k)
+    .join(", ");
+  const meta = [
+    `${files} file(s)`,
+    `${mods} module(s)`,
+    roots.length ? `${roots.length} package root(s)` : null,
+    topLangs ? topLangs : null,
+    anns ? `${anns} annotation(s)` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return `
+    <div class="card" style="margin-top:1rem">
+      <div class="toolbar" style="margin-bottom:0.35rem">
+        <h2 style="margin:0;flex:1">Codemap</h2>
+        <button type="button" class="btn btn-sm" id="overview-go-codemap">View codemap</button>
+      </div>
+      <div class="controls-hint">${esc(meta)}</div>
+      ${
+        roots.length
+          ? `<div class="arch-chip-row" style="margin-top:0.45rem">${roots
+              .slice(0, 6)
+              .map((r) => `<span class="arch-chip mono">${esc(String(r))}</span>`)
+              .join("")}</div>`
+          : ""
+      }
     </div>`;
 }
 
@@ -2406,7 +2450,7 @@ function renderTargetInventoryCard(inv, snap) {
   const i = inv || {};
   const fc = i.file_count;
   const cap = i.planning_seed_cap ?? i.sample_paths_cap ?? 500;
-  const partial = !!(i.planning_seed_partial ?? i.sample_truncated);
+  const partial = !!i.planning_seed_partial;
   const filesLabel = fc == null ? "—" : String(fc);
   const seedLabel = partial
     ? `stratified seed of ${cap} paths (tree has ${esc(filesLabel)} files)`
@@ -2565,6 +2609,9 @@ function formatTaskLoop(t, maxAttempts) {
 /** @type {"active"|"all"|"done"} */
 let tasksFilter = "active";
 let tasksCache = [];
+const TASKS_PAGE_SIZE = 50;
+/** How many filtered rows to show (grows via Show more / Show all). */
+let tasksVisibleCount = TASKS_PAGE_SIZE;
 
 function priorityTierLabel(priority) {
   const p = Number(priority);
@@ -2633,6 +2680,7 @@ function setupTasksFilter() {
   bar.querySelectorAll("[data-tfilter]").forEach((chip) => {
     chip.addEventListener("click", () => {
       tasksFilter = chip.getAttribute("data-tfilter") || "active";
+      tasksVisibleCount = TASKS_PAGE_SIZE;
       bar.querySelectorAll(".chip").forEach((c) => {
         c.classList.toggle(
           "active",
@@ -2642,6 +2690,46 @@ function setupTasksFilter() {
       renderTasks(tasksCache);
     });
   });
+}
+
+function setupTasksMore() {
+  const more = $("#tasks-more");
+  if (!more || more.dataset.bound) return;
+  more.dataset.bound = "1";
+  more.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-tasks-more]");
+    if (!btn || !more.contains(btn)) return;
+    const action = btn.getAttribute("data-tasks-more");
+    if (action === "more") {
+      tasksVisibleCount += TASKS_PAGE_SIZE;
+      renderTasks(tasksCache);
+    } else if (action === "all") {
+      // Large sentinel; renderTasks clamps to filtered length
+      tasksVisibleCount = Number.MAX_SAFE_INTEGER;
+      renderTasks(tasksCache);
+    }
+  });
+}
+
+function updateTasksMoreBar(visible, total) {
+  const more = $("#tasks-more");
+  if (!more) return;
+  // Hide when empty, or when the full list fits in one page
+  if (!total || (total <= TASKS_PAGE_SIZE && visible >= total)) {
+    more.hidden = true;
+    more.innerHTML = "";
+    return;
+  }
+  more.hidden = false;
+  if (total > visible) {
+    more.innerHTML = `
+      <span class="tasks-more-label controls-hint">Showing ${visible} of ${total}</span>
+      <button type="button" class="btn btn-sm" data-tasks-more="more">Show more</button>
+      <button type="button" class="btn btn-sm btn-ghost" data-tasks-more="all">Show all</button>
+    `;
+  } else {
+    more.innerHTML = `<span class="tasks-more-label controls-hint">Showing ${total} tasks</span>`;
+  }
 }
 
 async function setTaskPriority(taskId, tier) {
@@ -2811,10 +2899,12 @@ function renderTasks(tasks) {
   const tb = $("#tasks-body");
   if (!tb) return;
   setupTasksFilter();
+  setupTasksMore();
   if (Array.isArray(tasks)) tasksCache = tasks;
   const all = Array.isArray(tasks) ? tasks : tasksCache;
   if (!all?.length) {
     tb.innerHTML = `<tr><td colspan="10" class="empty">No tasks</td></tr>`;
+    updateTasksMoreBar(0, 0);
     return;
   }
 
@@ -2824,8 +2914,14 @@ function renderTasks(tasks) {
   );
   if (!filtered.length) {
     tb.innerHTML = `<tr><td colspan="10" class="empty">No tasks match this filter.</td></tr>`;
+    updateTasksMoreBar(0, 0);
     return;
   }
+
+  // Progressive pagination: slice after filter+sort; group headers only for visible rows
+  const visibleCount = Math.min(tasksVisibleCount, filtered.length);
+  const visible = filtered.slice(0, visibleCount);
+  updateTasksMoreBar(visibleCount, filtered.length);
 
   // Queue position among currently queued tasks (global, not filtered)
   const queuedOrdered = [...all]
@@ -2851,7 +2947,7 @@ function renderTasks(tasks) {
   };
   const rows = [];
   let lastGroup = null;
-  for (const t of filtered) {
+  for (const t of visible) {
     const group = taskListGroup(t);
     if (showGroups && group !== lastGroup) {
       rows.push(
@@ -3559,29 +3655,20 @@ function renderArchitecture(arch, summary, snap) {
   const el = $("#arch-panel");
   if (!el) return;
   const s = summary || {};
-  const binary = isBinaryArchMode(s, snap);
-  const pageTitle = binary ? s.title || "Binary map" : s.title || "Architecture";
+  const pageTitle = s.title || "Architecture";
   const has = !!(s.has_architecture || arch);
   if (!has) {
     el.innerHTML = `<div class="card">
       <div class="empty empty-cta">
-        <p><strong>No ${binary ? "binary map" : "architecture"} yet</strong></p>
-        <p class="controls-hint">${
-          binary
-            ? "Recon has not finished (or has not run). The PE map is stored in the run DB after submit_architecture — modules, sinks, and address hunt focus — not under project/. Map the binary first, then hunt from Coverage."
-            : "Recon has not finished (or has not run). Architecture is stored in the run DB after submit_architecture (or free-text salvage) — not under project/. Map the target first, then hunt from Explorer or Coverage."
-        }</p>
+        <p><strong>No architecture yet</strong></p>
+        <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored in the run DB after submit_architecture (or free-text salvage) — not under project/. Map the target first, then hunt from Explorer or Coverage.</p>
         ${reconFailureHint(snap)}
         <div class="empty-cta-actions">
           <button type="button" class="btn btn-primary" id="arch-go-mission">Run recon with brief</button>
-          ${
-            binary
-              ? `<button type="button" class="btn" id="arch-go-coverage">Open Coverage</button>`
-              : `<button type="button" class="btn" id="arch-go-explorer">Open Explorer</button>`
-          }
+          <button type="button" class="btn" id="arch-go-explorer">Open Explorer</button>
         </div>
       </div>
-    </div>`;
+    </div>${renderCodemapCardHtml(snap)}`;
     $("#arch-go-mission")?.addEventListener("click", () => {
       if (window.VulnForgeModes?.setMode) {
         window.VulnForgeModes.setMode("mission", "overview");
@@ -3591,15 +3678,10 @@ function renderArchitecture(arch, summary, snap) {
     $("#arch-go-explorer")?.addEventListener("click", () => {
       window.VulnForgeModes?.setMode?.("explorer");
     });
-    $("#arch-go-coverage")?.addEventListener("click", () => {
-      window.VulnForgeModes?.setMode?.("coverage");
-    });
+    bindCodemapHandlers();
     return;
   }
-  const compsSrc = binary
-    ? s.modules || s.components || []
-    : s.components || [];
-  const comps = (compsSrc || [])
+  const comps = (s.components || [])
     .map(
       (c) =>
         `<li><strong>${esc(c.name)}</strong>${
@@ -3625,38 +3707,6 @@ function renderArchitecture(arch, summary, snap) {
       return `<li>${esc(JSON.stringify(x))}</li>`;
     })
     .join("");
-  const sinks = (s.seed_sinks || [])
-    .map((sk) => {
-      const sym = esc(sk.symbol || sk.name || "sink");
-      const addr = sk.address
-        ? ` <span class="mono controls-hint">${esc(sk.address)}</span>`
-        : "";
-      const kind = sk.kind ? ` <span class="badge">${esc(sk.kind)}</span>` : "";
-      return `<li><strong>${sym}</strong>${addr}${kind}</li>`;
-    })
-    .join("");
-  const huntFocus = (s.hunt_focus || [])
-    .map((h) => {
-      if (!h || typeof h !== "object") {
-        return `<li>${esc(String(h))}</li>`;
-      }
-      const area = esc(h.area || h.name || "area");
-      const cls = h.class ? ` <span class="badge">${esc(h.class)}</span>` : "";
-      const hints = Array.isArray(h.path_hints) ? h.path_hints.slice(0, 4) : [];
-      const hintStr = hints.length
-        ? ` <span class="mono controls-hint">${esc(hints.join(", "))}</span>`
-        : "";
-      return `<li><strong>${area}</strong>${cls}${hintStr}</li>`;
-    })
-    .join("");
-  const importChips = (s.imports_preview || [])
-    .slice(0, 18)
-    .map((n) => `<span class="arch-chip mono">${esc(n)}</span>`)
-    .join("");
-  const exportChips = (s.exports_preview || [])
-    .slice(0, 12)
-    .map((n) => `<span class="arch-chip mono">${esc(n)}</span>`)
-    .join("");
   const agentsRun = Array.isArray(s.recon_agents_run) ? s.recon_agents_run : [];
   const agentsHtml = agentsRun.length
     ? agentsRun
@@ -3674,52 +3724,8 @@ function renderArchitecture(arch, summary, snap) {
     : "";
 
   const summaryHtml = renderMarkdown(s.summary || "(no summary)");
-  const bin = s.binary || {};
-  const binHeader = binary
-    ? `<div class="arch-binary-header">
-        <div class="arch-binary-chips">
-          ${bin.name ? `<span class="arch-chip"><strong>binary</strong> ${esc(String(bin.name))}</span>` : ""}
-          ${bin.arch || bin.architecture || bin.language ? `<span class="arch-chip"><strong>arch</strong> ${esc(String(bin.arch || bin.architecture || bin.language))}</span>` : ""}
-          ${bin.format ? `<span class="arch-chip"><strong>format</strong> ${esc(String(bin.format))}</span>` : ""}
-          ${
-            bin.function_count != null || bin.total_functions != null || bin.functions != null
-              ? `<span class="arch-chip"><strong>functions</strong> ${esc(String(bin.function_count ?? bin.total_functions ?? bin.functions))}</span>`
-              : ""
-          }
-          ${bin.sha256 ? `<span class="arch-chip mono" title="${esc(String(bin.sha256))}"><strong>sha256</strong> ${esc(String(bin.sha256).slice(0, 12))}…</span>` : ""}
-        </div>
-      </div>`
-    : "";
 
-  const metaGrid = binary
-    ? `<div class="arch-meta-grid">
-        <div>
-          <h3>Modules</h3>
-          <ul class="arch-list">${comps || "<li class='controls-hint'> — </li>"}</ul>
-        </div>
-        <div>
-          <h3>Dangerous sinks / APIs</h3>
-          <ul class="arch-list">${sinks || "<li class='controls-hint'> — </li>"}</ul>
-        </div>
-        <div>
-          <h3>Hunt focus (addresses)</h3>
-          <ul class="arch-list">${huntFocus || "<li class='controls-hint'> — </li>"}</ul>
-        </div>
-      </div>
-      ${
-        importChips || exportChips
-          ? `<div class="arch-symbol-row">
-              ${importChips ? `<div><h3>Imports (sample)</h3><div class="arch-chip-row">${importChips}</div></div>` : ""}
-              ${exportChips ? `<div><h3>Exports (sample)</h3><div class="arch-chip-row">${exportChips}</div></div>` : ""}
-            </div>`
-          : ""
-      }
-      ${
-        bounds
-          ? `<div style="margin-top:0.75rem"><h3>Trust edges</h3><ul class="arch-list">${bounds}</ul></div>`
-          : ""
-      }`
-    : `<div class="arch-meta-grid">
+  const metaGrid = `<div class="arch-meta-grid">
         <div>
           <h3>Components</h3>
           <ul class="arch-list">${comps || "<li class='controls-hint'> — </li>"}</ul>
@@ -3735,13 +3741,12 @@ function renderArchitecture(arch, summary, snap) {
       </div>`;
 
   el.innerHTML = `
-    <div class="card arch-summary-card${binary ? " arch-summary-binary" : ""}">
+    <div class="card arch-summary-card">
       <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.4rem">
         <h2 style="margin:0;flex:1">${esc(pageTitle)}</h2>
-        <button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit ${binary ? "map" : "architecture"}</button>
+        <button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit architecture</button>
         <button type="button" class="btn btn-sm" id="arch-history-toggle">History</button>
       </div>
-      ${binHeader}
       <div class="arch-summary-text md-prose">${summaryHtml}</div>
       ${
         agentsHtml
@@ -3791,7 +3796,8 @@ function renderArchitecture(arch, summary, snap) {
           <button type="button" class="btn" id="arch-recon-only">Architecture only</button>
         </div>
       </div>
-    </div>`;
+    </div>
+    ${renderCodemapCardHtml(snap)}`;
   $("#arch-recon-rerun")?.addEventListener("click", () =>
     submitArchRecon(true)
   );
@@ -3809,7 +3815,168 @@ function renderArchitecture(arch, summary, snap) {
     if (p) p.style.display = "none";
   });
   $("#arch-edit-save")?.addEventListener("click", () => saveArchEdit());
+  bindCodemapHandlers();
 }
+
+function renderCodemapCardHtml(snap) {
+  const sum = (snap && snap.codemap_summary) || {};
+  const map = (snap && snap.codemap) || null;
+  const has =
+    !!(sum.has_codemap || (snap && snap.has_codemap) || (map && (map.modules || []).length));
+  if (!has) {
+    return `
+    <div class="card" id="codemap-card" style="margin-top:1rem">
+      <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.4rem">
+        <h2 style="margin:0;flex:1">Codemap</h2>
+        <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild codemap</button>
+      </div>
+      <div class="empty empty-cta" style="padding:0.75rem 0">
+        <p style="margin:0"><strong>No codemap yet</strong></p>
+        <p class="controls-hint" style="margin:0.35rem 0 0">No codemap yet — run recon (or Rebuild after init). Mechanical structure is stored in the run DB (not under project/) and does not replace architecture.</p>
+      </div>
+    </div>`;
+  }
+  const fileCount = sum.file_count != null ? sum.file_count : (map.summary && map.summary.file_count) || 0;
+  const moduleCount =
+    sum.module_count != null ? sum.module_count : (map.modules || []).length;
+  const roots = Array.isArray(sum.package_roots)
+    ? sum.package_roots
+    : (map.summary && map.summary.package_roots) || [];
+  const langs = sum.languages || (map.summary && map.summary.languages) || {};
+  const topLangs = Object.entries(langs)
+    .sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0))
+    .slice(0, 6);
+  const annCount =
+    sum.annotation_count != null
+      ? sum.annotation_count
+      : (map.annotations || []).length;
+  const epCount =
+    sum.entrypoint_count != null
+      ? sum.entrypoint_count
+      : (map.entrypoints || []).length;
+  const chips = [
+    `<span class="arch-chip"><strong>files</strong> ${esc(String(fileCount))}</span>`,
+    `<span class="arch-chip"><strong>modules</strong> ${esc(String(moduleCount))}</span>`,
+    roots.length
+      ? `<span class="arch-chip"><strong>package_roots</strong> ${esc(String(roots.length))}</span>`
+      : "",
+    epCount
+      ? `<span class="arch-chip"><strong>entrypoints</strong> ${esc(String(epCount))}</span>`
+      : "",
+    annCount
+      ? `<span class="arch-chip"><strong>annotations</strong> ${esc(String(annCount))}</span>`
+      : "",
+    sum.source || (map && map.source)
+      ? `<span class="arch-chip"><strong>source</strong> ${esc(String(sum.source || map.source))}</span>`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("");
+  const langChips = topLangs
+    .map(
+      ([k, v]) =>
+        `<span class="arch-chip mono"><strong>${esc(String(k))}</strong> ${esc(String(v))}</span>`
+    )
+    .join("");
+  const rootChips = (roots || [])
+    .slice(0, 12)
+    .map((r) => `<span class="arch-chip mono">${esc(String(r))}</span>`)
+    .join("");
+  const modules = Array.isArray(map && map.modules) ? map.modules : [];
+  const modLimit = 40;
+  const modItems = modules
+    .slice(0, modLimit)
+    .map((m) => {
+      if (!m || typeof m !== "object") return "";
+      const path = esc(String(m.path || m.name || "?"));
+      const kind = m.kind ? ` <span class="badge">${esc(String(m.kind))}</span>` : "";
+      const signals = Array.isArray(m.signals)
+        ? m.signals
+        : Array.isArray(m.security_signals)
+          ? m.security_signals
+          : [];
+      const sigStr = signals.length
+        ? ` <span class="mono controls-hint">${esc(signals.slice(0, 6).join(", "))}</span>`
+        : "";
+      return `<li><span class="mono">${path}</span>${kind}${sigStr}</li>`;
+    })
+    .filter(Boolean)
+    .join("");
+  const moreMods =
+    modules.length > modLimit
+      ? `<li class="controls-hint">…and ${modules.length - modLimit} more</li>`
+      : "";
+  const anns = Array.isArray(map && map.annotations) ? map.annotations : [];
+  const annItems = anns
+    .slice(0, 20)
+    .map((a) => {
+      if (!a || typeof a !== "object") return "";
+      const p = a.path ? `<span class="mono">${esc(String(a.path))}</span>` : "";
+      const sym = a.symbol ? ` <span class="badge">${esc(String(a.symbol))}</span>` : "";
+      const note = a.note ? esc(String(a.note).slice(0, 200)) : "";
+      return `<li>${p}${sym}${p || sym ? " — " : ""}${note || "<span class='controls-hint'>(empty)</span>"}</li>`;
+    })
+    .filter(Boolean)
+    .join("");
+  return `
+    <div class="card" id="codemap-card" style="margin-top:1rem">
+      <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.4rem">
+        <h2 style="margin:0;flex:1">Codemap</h2>
+        <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild codemap</button>
+      </div>
+      <p class="controls-hint" style="margin:0 0 0.5rem">Mechanical path-backed modules from the target tree. Rebuild does not wipe architecture.</p>
+      <div class="arch-chip-row">${chips}</div>
+      ${
+        langChips
+          ? `<div style="margin-top:0.5rem"><h3 style="margin:0 0 0.35rem">Languages</h3><div class="arch-chip-row">${langChips}</div></div>`
+          : ""
+      }
+      ${
+        rootChips
+          ? `<div style="margin-top:0.5rem"><h3 style="margin:0 0 0.35rem">Package roots</h3><div class="arch-chip-row">${rootChips}</div></div>`
+          : ""
+      }
+      <details class="arch-raw" style="margin-top:0.75rem" open>
+        <summary>Modules (${moduleCount})</summary>
+        <ul class="arch-list" style="margin-top:0.4rem">${modItems || "<li class='controls-hint'> — </li>"}${moreMods}</ul>
+      </details>
+      ${
+        annItems
+          ? `<details class="arch-raw" style="margin-top:0.5rem">
+              <summary>Agent annotations (${annCount})</summary>
+              <ul class="arch-list" style="margin-top:0.4rem">${annItems}</ul>
+            </details>`
+          : annCount
+            ? `<p class="controls-hint" style="margin-top:0.5rem">${annCount} annotation(s) present</p>`
+            : ""
+      }
+      <details class="arch-raw" style="margin-top:0.5rem">
+        <summary>Raw codemap JSON</summary>
+        <pre class="arch-box">${esc(JSON.stringify(map || sum, null, 2))}</pre>
+      </details>
+    </div>`;
+}
+
+function bindCodemapHandlers() {
+  $("#codemap-rebuild")?.addEventListener("click", async () => {
+    const btn = $("#codemap-rebuild");
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api(`${runApiBase()}/codemap/rebuild`, { method: "POST" });
+      const n =
+        (r.summary && r.summary.module_count) ||
+        (r.codemap && (r.codemap.modules || []).length) ||
+        0;
+      toast(`Codemap rebuilt (${n} module(s))`);
+      if (typeof loadRunFull === "function") await loadRunFull();
+    } catch (e) {
+      toast(e.message || String(e), true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+}
+
 
 async function toggleArchHistory() {
   const panel = $("#arch-history-panel");

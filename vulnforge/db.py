@@ -133,8 +133,9 @@ class Database:
             self.migrate()
         else:
             self._check_schema()
-            # Soft-migrate additive tables without bumping schema_version.
+            # Soft-migrate additive tables/columns without bumping schema_version.
             self._ensure_architecture_revisions()
+            self._ensure_codemap_column()
 
     @classmethod
     def create(cls, path: Path) -> "Database":
@@ -180,6 +181,7 @@ class Database:
               status TEXT NOT NULL,
               config_json TEXT NOT NULL,
               architecture_json TEXT,
+              codemap_json TEXT,
               created_at TEXT NOT NULL
             );
 
@@ -261,6 +263,16 @@ class Database:
             """
         )
         self.conn.commit()
+
+    def _ensure_codemap_column(self) -> None:
+        """Add runs.codemap_json if missing (open path for older DBs)."""
+        cols = {
+            r[1]
+            for r in self.conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        if "codemap_json" not in cols:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN codemap_json TEXT")
+            self.conn.commit()
 
     def insert_run(
         self,
@@ -354,6 +366,45 @@ class Database:
         if not row or not row["architecture_json"]:
             return None
         return json.loads(row["architecture_json"])
+
+    def set_codemap(
+        self,
+        codemap: dict,
+        *,
+        source: str = "mechanical",
+    ) -> None:
+        """Store mechanical/merged codemap (separate from architecture history)."""
+        row = self.get_run()
+        if not row:
+            raise RuntimeError("no run row")
+        if not isinstance(codemap, dict):
+            raise TypeError("codemap must be a dict")
+        payload = dict(codemap)
+        if source and not payload.get("source"):
+            payload["source"] = source
+        elif source and source != "mechanical":
+            payload["source"] = source
+        self.conn.execute(
+            "UPDATE runs SET codemap_json=? WHERE id=?",
+            (json.dumps(payload), row["id"]),
+        )
+        self.conn.commit()
+
+    def get_codemap(self) -> Optional[dict]:
+        row = self.get_run()
+        if not row:
+            return None
+        try:
+            raw = row["codemap_json"]
+        except (KeyError, IndexError):
+            return None
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
 
     def append_architecture_revision(
         self,
@@ -1297,13 +1348,18 @@ class Database:
         run = self.get_run()
         run_dict = None
         if run:
+            skip_large = {"architecture_json", "codemap_json"}
             run_dict = {
                 k: run[k]
                 for k in run.keys()
-                if k != "architecture_json"  # large; fetch via get_architecture
+                if k not in skip_large  # large; fetch via get_architecture / get_codemap
             }
-            # keep architecture flag only
+            # keep architecture / codemap flags only
             run_dict["has_architecture"] = bool(run["architecture_json"])
+            try:
+                run_dict["has_codemap"] = bool(run["codemap_json"])
+            except (KeyError, IndexError):
+                run_dict["has_codemap"] = False
         return {
             "run": run_dict,
             "tasks": self.count_tasks_by_state(),

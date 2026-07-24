@@ -25,17 +25,17 @@ def test_discover_and_card(tmp_path: Path, toy_sqli: Path):
     snap = store.run_snapshot(refs[0])
     assert snap["tasks"]
     # Pre-recon: manifest file_count only; hunt plan unknown
-    ih = snap["inventory_honesty"]
+    ih = snap["target_inventory"]
     assert ih["file_count"] is not None and ih["file_count"] >= 1
     assert ih["sample_paths_cap"] == store.SAMPLE_PATHS_CAP
-    assert ih["sample_truncated"] is False
+    assert ih["planning_seed_partial"] is False
     assert ih["hunt_plan_source"] is None
     assert ih["hunt_enqueued"] is None
     st = runctl.runner_status(refs[0].path)
     assert st["state"] in ("idle", "paused", "busy")
 
 
-def test_inventory_honesty_from_arch_and_recon(tmp_path: Path, toy_sqli: Path):
+def test_target_inventory_from_arch_and_recon(tmp_path: Path, toy_sqli: Path):
     """Snapshot prefers arch inventory file_count; recon result supplies plan source."""
     from vulnforge.db import Database
 
@@ -66,15 +66,15 @@ def test_inventory_honesty_from_arch_and_recon(tmp_path: Path, toy_sqli: Path):
         db.close()
 
     snap = store.run_snapshot(ref)
-    ih = snap["inventory_honesty"]
+    ih = snap["target_inventory"]
     assert ih["file_count"] == 612
     assert ih["sample_paths_cap"] == 500
-    assert ih["sample_truncated"] is True
+    assert ih["planning_seed_partial"] is True
     assert ih["hunt_plan_source"] == "active_fallback"
     assert ih["hunt_enqueued"] == 8
 
 
-def test_inventory_honesty_hunt_focus(tmp_path: Path, toy_sqli: Path):
+def test_target_inventory_hunt_focus(tmp_path: Path, toy_sqli: Path):
     from vulnforge.db import Database
 
     runs = tmp_path / "runs"
@@ -101,9 +101,9 @@ def test_inventory_honesty_hunt_focus(tmp_path: Path, toy_sqli: Path):
     finally:
         db.close()
 
-    ih = store.run_snapshot(ref)["inventory_honesty"]
+    ih = store.run_snapshot(ref)["target_inventory"]
     assert ih["file_count"] == 40
-    assert ih["sample_truncated"] is False
+    assert ih["planning_seed_partial"] is False
     assert ih["hunt_plan_source"] == "hunt_focus"
     assert ih["hunt_enqueued"] == 3
     assert ih.get("last_recon") is not None
@@ -131,7 +131,7 @@ def test_inventory_last_recon_failure(tmp_path: Path, toy_sqli: Path):
     finally:
         db.close()
 
-    ih = store.run_snapshot(ref)["inventory_honesty"]
+    ih = store.run_snapshot(ref)["target_inventory"]
     assert ih["recon_done"] is False
     lr = ih["last_recon"]
     assert lr is not None
@@ -147,18 +147,18 @@ def test_inventory_last_recon_failure(tmp_path: Path, toy_sqli: Path):
         (501, True),
     ],
 )
-def test_inventory_honesty_sample_truncated_boundary(file_count: int, truncated: bool):
-    """sample_truncated is strict file_count > SAMPLE_PATHS_CAP (500)."""
+def test_target_inventory_planning_seed_partial_boundary(file_count: int, truncated: bool):
+    """planning_seed_partial is strict file_count > SAMPLE_PATHS_CAP (500)."""
     ref = store.RunRef("t", "r", Path("."))
-    ih = store._inventory_honesty(
+    ih = store._target_inventory(
         ref, {"inventory": {"file_count": file_count}}, []
     )
     assert ih["file_count"] == file_count
     assert ih["sample_paths_cap"] == 500
-    assert ih["sample_truncated"] is truncated
+    assert ih["planning_seed_partial"] is truncated
 
 
-def test_inventory_honesty_arch_precedes_manifest(tmp_path: Path, toy_sqli: Path):
+def test_target_inventory_arch_precedes_manifest(tmp_path: Path, toy_sqli: Path):
     """Arch inventory file_count wins over target_manifest.json and recon result."""
     import json
 
@@ -193,9 +193,9 @@ def test_inventory_honesty_arch_precedes_manifest(tmp_path: Path, toy_sqli: Path
     finally:
         db.close()
 
-    ih = store.run_snapshot(ref)["inventory_honesty"]
+    ih = store.run_snapshot(ref)["target_inventory"]
     assert ih["file_count"] == 10
-    assert ih["sample_truncated"] is False
+    assert ih["planning_seed_partial"] is False
     assert _manifest_count(ref) == 999
 
 

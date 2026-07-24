@@ -76,15 +76,22 @@ run:
 
 stages:
   validate_llm: false
-  gapfill: false
-  dedup: false
-  feedback: false
+
+# Mechanical codemap (structure scaffold for recon + hunt targeting)
+codemap:
+  enabled: true
+  max_modules: 80
+  max_depth: 4
+  max_edges: 120
+  max_import_files_scan: 200
+  build_import_edges: true
 
 packet:
   max_architecture_chars: 1800   # P1.2 slim hunt packet (area slice)
   max_architecture_merge_chars: 6000  # prior+incoming JSON budget for LLM merge
   max_file_slice_chars: 4000
   max_codemap_entries: 12
+  max_codemap_chars: 2500         # mechanical codemap structure in packets
   max_known_keys: 20
   max_known_findings: 20
   max_seed_sinks: 12

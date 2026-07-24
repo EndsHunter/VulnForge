@@ -60,13 +60,135 @@ def write_state_md(path: Path, db, run_dir: Path | None = None) -> None:
 
 
 def write_codemap_md(path: Path, db) -> None:
+    """Project structural codemap + agent annotations (not authority)."""
+    from vulnforge.tools.codemap import merge_annotations_into_codemap
+
+    codemap = None
+    try:
+        codemap = db.get_codemap()
+    except Exception:
+        codemap = None
     notes = db.list_notes(kind="codemap")
-    lines = ["# CODEMAP", "", "Interesting paths/symbols from the run.", ""]
-    if not notes:
-        lines.append("_No codemap notes yet._")
-    for n in notes:
-        lines.append(f"- task={n.get('task_id')}: `{json.dumps(n.get('payload'))[:300]}`")
-    lines.append("")
+    if isinstance(codemap, dict) and notes:
+        codemap = merge_annotations_into_codemap(codemap, notes)
+
+    lines = [
+        "# CODEMAP",
+        "",
+        f"Generated: {utc_now_iso()}",
+        "",
+        "_Projection only. `harness.db` (runs.codemap_json + notes) is authoritative._",
+        "",
+    ]
+
+    if isinstance(codemap, dict) and (
+        codemap.get("modules") or codemap.get("entrypoints")
+    ):
+        summary = codemap.get("summary") if isinstance(codemap.get("summary"), dict) else {}
+        lines.extend(
+            [
+                f"**Source:** {codemap.get('source') or 'mechanical'}  ",
+                f"**Target kind:** {codemap.get('target_kind') or '—'}  ",
+                f"**Built:** {codemap.get('generated_at') or '—'}  ",
+                "",
+                "## Summary",
+                "",
+                f"- Files: {summary.get('file_count', '—')}",
+                f"- Modules: {summary.get('module_count', len(codemap.get('modules') or []))}",
+                f"- Entrypoints: {summary.get('entrypoint_count', len(codemap.get('entrypoints') or []))}",
+                f"- Package roots: {', '.join(f'`{p}`' for p in (summary.get('package_roots') or [])[:20]) or '_none_'}",
+                "",
+            ]
+        )
+        langs = summary.get("languages") or {}
+        if isinstance(langs, dict) and langs:
+            top = sorted(langs.items(), key=lambda kv: (-int(kv[1] or 0), str(kv[0])))[:12]
+            lines.append(
+                "- Languages: "
+                + ", ".join(f"`{k}` ({v})" for k, v in top)
+            )
+            lines.append("")
+
+        lines.extend(["## Modules", ""])
+        mods = [m for m in (codemap.get("modules") or []) if isinstance(m, dict)]
+        if not mods:
+            lines.append("_No modules._")
+        for m in mods[:80]:
+            path_s = m.get("path") or "?"
+            kind = m.get("kind") or "dir"
+            nfiles = m.get("file_count")
+            sigs = m.get("signals") or []
+            sig_txt = f" signals: {', '.join(str(s) for s in sigs[:8])}" if sigs else ""
+            lines.append(
+                f"- `{path_s}` ({kind}"
+                + (f", {nfiles} files" if nfiles is not None else "")
+                + f"){sig_txt}"
+            )
+        lines.append("")
+
+        lines.extend(["## Entrypoints", ""])
+        eps = [e for e in (codemap.get("entrypoints") or []) if isinstance(e, dict)]
+        if not eps:
+            lines.append("_None detected._")
+        for e in eps[:40]:
+            lines.append(f"- `{e.get('path')}` ({e.get('marker') or e.get('kind') or 'file'})")
+        lines.append("")
+
+        edges = [e for e in (codemap.get("edges") or []) if isinstance(e, dict)]
+        if edges:
+            lines.extend(["## Import edges (capped, best-effort)", ""])
+            for e in edges[:40]:
+                ev = e.get("evidence") or ""
+                lines.append(
+                    f"- `{e.get('from')}` → `{e.get('to')}`"
+                    + (f" — {ev}" if ev else "")
+                )
+            lines.append("")
+
+        anns = [a for a in (codemap.get("annotations") or []) if isinstance(a, dict)]
+        lines.extend(["## Agent annotations", ""])
+        if not anns:
+            # Fall back to raw notes if not merged
+            if notes:
+                for n in notes:
+                    lines.append(
+                        f"- task={n.get('task_id')}: "
+                        f"`{json.dumps(n.get('payload'))[:300]}`"
+                    )
+            else:
+                lines.append("_No agent codemap notes yet._")
+        else:
+            for a in anns[:100]:
+                p = a.get("path") or ""
+                sym = a.get("symbol") or ""
+                note = a.get("note") or ""
+                tid = a.get("task_id")
+                head = f"`{p}`" if p else "(no path)"
+                if sym:
+                    head += f" · `{sym}`"
+                if tid is not None:
+                    head += f" · task={tid}"
+                lines.append(f"- {head}: {note}" if note else f"- {head}")
+        lines.append("")
+    else:
+        lines.extend(
+            [
+                "No mechanical codemap stored yet (run recon to build one).",
+                "",
+                "## Agent annotations",
+                "",
+            ]
+        )
+        if not notes:
+            lines.append("_No codemap notes yet._")
+        else:
+            for n in notes:
+                lines.append(
+                    f"- task={n.get('task_id')}: "
+                    f"`{json.dumps(n.get('payload'))[:300]}`"
+                )
+        lines.append("")
+
     path.write_text("\n".join(lines), encoding="utf-8")
 
 

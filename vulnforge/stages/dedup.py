@@ -1,13 +1,10 @@
-"""
-Stage: dedup â€” full stage still deferred (default off).
+"""Mechanical near-duplicate merge helpers (no LLM).
 
-P2.5: mechanical cross-class shortlist merge (no LLM) is available as
-``merge_near_duplicate`` for hunt insert path.
+Used on hunt insert and by Report cluster / operator merge. Not a leased task kind.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from vulnforge.util import normalize_relpath
@@ -29,17 +26,6 @@ _CLASS_SPECIFICITY = {
     "obvious": 5,
     "wildcard": 1,
 }
-
-
-def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
-    """
-    TODO (later):
-      - inverted index on files/functions/tokens
-      - shortlist candidates per new finding
-      - merge duplicates â†’ superseded
-      - no O(n^2) LLM pairwise
-    """
-    raise NotImplementedError("TODO: dedup.run â€” deferred")
 
 
 def primary_sink(body: dict) -> tuple[str, str]:
@@ -207,21 +193,6 @@ def merge_near_duplicate(
             "revalidate": False,
         }
     return None
-
-
-def deterministic_shortlist(finding, db, k: int = 10) -> list[int]:
-    """Shortlist findings sharing sink path (no LLM)."""
-    body = getattr(finding, "body", None) or finding
-    key = merge_key(body if isinstance(body, dict) else {})
-    if not key:
-        return []
-    out: list[int] = []
-    for f in db.list_findings():
-        if merge_key(f.body or {}) == key:
-            out.append(f.id)
-        if len(out) >= k:
-            break
-    return out
 
 
 # Keeper preference for cluster labels (lower = better primary).

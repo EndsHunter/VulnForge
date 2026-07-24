@@ -13,7 +13,7 @@ from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT, hunt_class_seeds_root
 from vulnforge.util import utc_now_iso
 
 DEFAULT_COLLECTION_ROOT = CONFIG_ROOT / "hunt_profiles"
-# Dual-read: seeds/hunt_classes when present, else prompts/v1/hunt_classes.
+# Package seed bodies under seeds/hunt_classes (reseed source only).
 SEED_PROMPTS_DIR = hunt_class_seeds_root()
 
 COLLECTION_FORMAT = "vulnforge.hunt_collection/v1"

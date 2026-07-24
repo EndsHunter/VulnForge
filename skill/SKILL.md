@@ -140,7 +140,7 @@ See **PROTOCOL.md** for CLI contracts and **AGENTS.md** for operator/agent roles
 | Editing app source to make a PoC pass | Target mutation; corrupts evidence |
 | Skipping `submit_none` when nothing found | Invented findings / checklist spam |
 | Dual-filing same path+sink under two classes | Noise, merge thrash, dishonest specificity |
-| Expecting `validate_llm` / gapfill / dedup to prove exploit | Deferred stages are not exploit proof |
+| Expecting `validate_llm` or near-dup merge to prove exploit | Neither is exploit proof; only human review sets `confirmed` |
 | Inventing class ids outside the collection | Broken routing; rejected or orphan findings |
 
 ## Scope

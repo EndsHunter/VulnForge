@@ -130,6 +130,17 @@
       <div class="tab-panel active" id="panel-report">
         <div class="report-shell">
           <div class="report-toolbar">
+            <div class="report-search-bar">
+              <input
+                type="search"
+                id="report-search"
+                class="report-search"
+                placeholder="Search findings…"
+                autocomplete="off"
+                aria-label="Search findings"
+              />
+              <span id="report-search-count" class="controls-hint report-search-count" hidden></span>
+            </div>
             <div class="report-export-bar">
               <label class="controls-hint report-export-poc-opt" title="Embed evidence pack files (PoC hub + scripts) into the download">
                 <input type="checkbox" id="report-export-include-poc" />
@@ -150,12 +161,24 @@
                 <thead>
                   <tr>
                     <th class="report-check-col" title="Select for attack chain"></th>
-                    <th>ID</th>
-                    <th>Title</th>
-                    <th>Class</th>
-                    <th>Severity</th>
-                    <th>State</th>
-                    <th>Location</th>
+                    <th class="th-sortable" data-sort="id" aria-sort="none" scope="col">
+                      <button type="button" class="th-sort-btn">ID</button>
+                    </th>
+                    <th class="th-sortable" data-sort="title" aria-sort="none" scope="col">
+                      <button type="button" class="th-sort-btn">Title</button>
+                    </th>
+                    <th class="th-sortable" data-sort="class" aria-sort="none" scope="col">
+                      <button type="button" class="th-sort-btn">Class</button>
+                    </th>
+                    <th class="th-sortable" data-sort="severity" aria-sort="none" scope="col">
+                      <button type="button" class="th-sort-btn">Severity</button>
+                    </th>
+                    <th class="th-sortable sorted-asc" data-sort="state" aria-sort="ascending" scope="col">
+                      <button type="button" class="th-sort-btn" aria-pressed="true">State</button>
+                    </th>
+                    <th class="th-sortable" data-sort="location" aria-sort="none" scope="col">
+                      <button type="button" class="th-sort-btn">Location</button>
+                    </th>
                     <th></th>
                   </tr>
                 </thead>
@@ -268,6 +291,7 @@
               <tbody id="tasks-body"></tbody>
             </table>
           </div>
+          <div class="tasks-more toolbar" id="tasks-more" hidden aria-live="polite"></div>
         </div>
       </div>
       <div class="tab-panel" id="panel-timeline">

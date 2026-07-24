@@ -33,12 +33,17 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     payload = dict(task.payload or {})
 
     # Slim architecture slice for packet (area-focused, not full dump)
-    architecture_txt = _architecture_slice(arch, payload)
+    codemap_struct = None
+    try:
+        codemap_struct = db.get_codemap()
+    except Exception:
+        codemap_struct = None
+    architecture_txt = _architecture_slice(arch, payload, codemap=codemap_struct)
 
     # P2.6: human-readable known findings for packet
     known_findings = _known_findings_readable(db)
     known_keys = [f.stable_key for f in db.list_findings()]
-    codemap = [
+    codemap_notes = [
         json.dumps(n["payload"])[:200]
         for n in db.list_notes(kind="codemap")
     ]
@@ -130,9 +135,10 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         payload,
         architecture_txt,
         known_keys,
-        codemap,
+        codemap_notes,
         seed_sinks=seed_sinks or [],
         known_findings=known_findings,
+        codemap=codemap_struct,
     )
     try:
         refuse_if_over_budget(packet)
@@ -234,6 +240,24 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             return out
 
         flush_notes_to_db(ctx, db)
+        # Merge agent codemap notes into stored structural map
+        try:
+            from vulnforge.tools.codemap import merge_annotations_into_codemap
+
+            note_rows = [
+                n
+                for n in (session.get("notes") or [])
+                if isinstance(n, dict) and n.get("kind") == "codemap"
+            ]
+            if note_rows:
+                base_cm = db.get_codemap() or codemap_struct
+                if base_cm:
+                    db.set_codemap(
+                        merge_annotations_into_codemap(base_cm, note_rows),
+                        source="merge",
+                    )
+        except Exception:
+            pass
         shallow = is_shallow(session, profile=profile)
         spawned_hunts = list(session.get("spawned_hunts") or [])
 
@@ -409,10 +433,13 @@ def _diagnose_no_submit(result: LLMResult, session: dict) -> dict[str, Any]:
     return diagnostics
 
 
-def _architecture_slice(arch: dict, payload: dict) -> str:
+def _architecture_slice(
+    arch: dict, payload: dict, *, codemap: dict | None = None
+) -> str:
     """Compact architecture for hunt packet — not the full recon dump.
 
     When architecture is missing/empty, still returns compact JSON so hunt works.
+    Includes related codemap module paths when available.
     """
     if not isinstance(arch, dict):
         arch = {}
@@ -488,6 +515,30 @@ def _architecture_slice(arch: dict, payload: dict) -> str:
         if isinstance(arch.get("input_surfaces"), list)
         else [],
     }
+    if isinstance(codemap, dict) and (
+        codemap.get("modules") or codemap.get("entrypoints")
+    ):
+        try:
+            from vulnforge.tools.codemap import slice_codemap
+
+            sliced = slice_codemap(
+                codemap,
+                path_hints=path_hints,
+                area=area,
+                max_modules=4,
+            )
+            slim["codemap_modules"] = [
+                {
+                    "path": m.get("path"),
+                    "kind": m.get("kind"),
+                    "label": m.get("label"),
+                    "signals": (m.get("signals") or [])[:6],
+                }
+                for m in (sliced.get("modules") or [])
+                if isinstance(m, dict)
+            ][:4]
+        except Exception:
+            pass
     if focus_matched:
         slim["hunt_focus"] = focus_matched[:5]
     if arch.get("recon_generation") is not None:

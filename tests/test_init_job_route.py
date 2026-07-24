@@ -67,23 +67,6 @@ def test_api_init_rejects_pe(tmp_path: Path):
     assert "pe" in text or "source" in text or "binary" in text
 
 
-def test_api_init_rejects_binary_re_profile(tmp_path: Path):
-    src = tmp_path / "app.py"
-    src.write_text("print(1)\n", encoding="utf-8")
-    app = create_app(runs_root=tmp_path / "runs")
-    client = TestClient(app)
-    r = client.post(
-        "/api/runs/init?background=false",
-        json={
-            "target": str(src),
-            "profile": "binary_re",
-            "start": False,
-        },
-    )
-    assert r.status_code == 400, r.text
-    assert "binary_re" in r.text.lower() or "source" in r.text.lower()
-
-
 def test_api_init_accepts_single_source_file(tmp_path: Path):
     """code_static may target a single source file (not only directories)."""
     src = tmp_path / "lonely.py"

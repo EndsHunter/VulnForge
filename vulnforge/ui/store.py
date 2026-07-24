@@ -274,6 +274,7 @@ def run_card(run: RunRef) -> dict[str, Any]:
             "event_count": event_count,
             "last_event": last_event,
             "has_architecture": bool(run_row.get("has_architecture")),
+            "has_codemap": bool(run_row.get("has_codemap")),
             "has_report": (run.path / "project" / "REPORT.md").is_file(),
             "llm_usage": _llm_usage_card(run),
         }
@@ -423,7 +424,6 @@ def _target_inventory(
         break
 
     seed_partial = file_count is not None and file_count > SAMPLE_PATHS_CAP
-    # Legacy key names kept for API consumers / tests.
     return {
         "file_count": file_count,
         "entrypoints": entrypoints,
@@ -431,7 +431,6 @@ def _target_inventory(
         "planning_seed_cap": SAMPLE_PATHS_CAP,
         "planning_seed_partial": seed_partial,
         "sample_paths_cap": SAMPLE_PATHS_CAP,
-        "sample_truncated": seed_partial,  # legacy alias
         "hunt_plan_source": hunt_plan_source,
         "hunt_enqueued": hunt_enqueued,
         "recon_done": recon_done,
@@ -443,16 +442,15 @@ def _target_inventory(
     }
 
 
-# Back-compat name used by older tests/callers
-_inventory_honesty = _target_inventory
-
-
 def run_snapshot(run: RunRef) -> dict[str, Any]:
     """Full snapshot for run detail page / API."""
     card = run_card(run)
     # Ensure full usage breakdown is present (card already has llm_usage)
     if "llm_usage" not in card or not isinstance(card.get("llm_usage"), dict):
         card["llm_usage"] = _llm_usage_card(run)
+    arch = None
+    codemap = None
+    notes: list = []
     db = _open_db(run)
     try:
         tasks = []
@@ -482,6 +480,7 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
                 }
             )
         arch = db.get_architecture()
+        codemap = db.get_codemap()
         notes = db.list_notes()
         try:
             coverage = db.coverage_matrix()
@@ -565,6 +564,39 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         hunt_classes = {"all": [], "active": []}
         run_cfg = {}
 
+    # Codemap for Mission UI (full map + compact summary; merge agent notes).
+    codemap_summary: dict[str, Any]
+    try:
+        from vulnforge.tools.codemap import (
+            codemap_summary_for_ui,
+            merge_annotations_into_codemap,
+        )
+
+        if isinstance(codemap, dict):
+            note_rows = [
+                n
+                for n in (notes or [])
+                if isinstance(n, dict) and n.get("kind") == "codemap"
+            ]
+            if note_rows:
+                codemap = merge_annotations_into_codemap(codemap, note_rows)
+            codemap_summary = codemap_summary_for_ui(codemap)
+        else:
+            codemap = None
+            codemap_summary = codemap_summary_for_ui(None)
+    except Exception:
+        codemap_summary = {
+            "has_codemap": bool(codemap),
+            "module_count": 0,
+            "file_count": 0,
+            "package_roots": [],
+            "languages": {},
+            "entrypoint_count": 0,
+            "annotation_count": 0,
+            "source": None,
+            "generated_at": None,
+        }
+
     if not isinstance(run_cfg, dict):
         run_cfg = {}
 
@@ -604,6 +636,13 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         "findings_summary": findings_summary,
         "architecture": arch,
         "architecture_summary": arch_summary,
+        "codemap": codemap if isinstance(codemap, dict) else None,
+        "codemap_summary": codemap_summary,
+        "has_codemap": bool(
+            (codemap_summary or {}).get("has_codemap")
+            if isinstance(codemap_summary, dict)
+            else codemap
+        ),
         "notes": notes,
         "evidence": evidence,
         "project_files": project,
@@ -613,7 +652,6 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         "coverage_policy": cov_policy,
         "hunt_classes": hunt_classes,
         "target_inventory": target_inv,
-        "inventory_honesty": target_inv,  # legacy alias
         "config": run_cfg,
         "max_task_attempts": max_task_attempts,
         "max_tasks": max_tasks,

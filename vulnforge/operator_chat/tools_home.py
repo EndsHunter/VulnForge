@@ -387,11 +387,6 @@ def _init_run(args: dict, *, runs_root: Path, project_root: Path) -> dict[str, A
     if not target.exists():
         return {"ok": False, "error": f"target not found: {target}"}
     profile = str(args.get("profile") or "code_static").strip().lower() or "code_static"
-    if profile == "binary_re":
-        return {
-            "ok": False,
-            "error": "profile binary_re was removed; use code_static on a source tree",
-        }
     if is_pe_file(target):
         return {
             "ok": False,

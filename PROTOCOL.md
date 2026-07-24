@@ -123,8 +123,8 @@ Schemas live in `vulnforge/packet.py` → `tool_schemas_for` (OpenAI function to
 | `file_inventory` | recon, hunt, develop_poc | Recursive tree/list; prefer over many `list_dir` |
 | `read_file` | recon, hunt, develop_poc | File or 1-based line range; target is read-only |
 | `grep` | recon, hunt, develop_poc | Content regex; `extension`/`glob`/`files_only`/`match_path` |
-| `note` | recon, hunt, develop_poc | wishlist / sibling_seed / codemap (does not finish task) |
-| `submit_architecture` | recon only | Finish recon map (not findings) |
+| `note` | recon, hunt, develop_poc | wishlist / sibling_seed / codemap (does not finish task). Mechanical codemap is built at recon (`runs.codemap_json`); `note(kind=codemap)` only annotates high-value paths |
+| `submit_architecture` | recon only | Finish recon architecture map (not findings; separate from mechanical codemap) |
 | `submit_candidate` / `submit_none` | hunt only | Finish hunt (candidate is not confirmed) |
 | `write_evidence` | hunt, develop_poc | Write under `evidence/` only |
 | `list_hunt_profiles` / `request_hunt` | hunt | Spawn another profile hunt (does not finish this task) |

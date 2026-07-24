@@ -31,17 +31,6 @@ VulnForge-main.zip
 .vscode/
 *.swp
 
-# Large runtime deps live at repo root for local/offline packaging.
-# They are NOT always committed (size); use scripts/package_offline_release.ps1
-# to ship a full offline zip that includes them.
-# Leading slash = root only so vulnforge/ghidra/ (Python client) stays tracked.
-/ghidra/
-# Vendored MCP source may be committed; ignore rebuildable/local junk only:
-/ghidra-mcp/.venv/
-/ghidra-mcp/.gradle/
-/ghidra-mcp/build/
-/ghidra-mcp/logs/
-/ghidra-mcp/.git/
 # Offline release artifacts
 /dist/*.zip
 

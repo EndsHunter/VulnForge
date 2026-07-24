@@ -333,22 +333,21 @@ def test_architecture_summary():
 
 
 def test_architecture_summary_always_source_mode():
-    """Legacy binary-shaped maps still render as source architecture."""
+    """Architecture summary is always source-mode (binary_re profile removed)."""
     s = dashops.architecture_summary(
         {
-            "summary": "legacy binary map",
-            "inventory": {"kind": "single_binary", "entrypoints": ["notepad.exe"]},
-            "binary": {"name": "notepad.exe"},
-            "components": [{"name": "CRT Memory", "description": "memcpy family"}],
+            "summary": "source map",
+            "inventory": {"file_count": 12, "entrypoints": ["app.py"]},
+            "components": [{"name": "API", "description": "HTTP handlers"}],
             "hunt_focus": [
-                {"area": "x", "class": "memory-safety", "path_hints": ["0x401000"]}
+                {"area": "api", "class": "injection", "path_hints": ["app.py"]}
             ],
         },
-        profile="binary_re",
+        profile="code_static",
     )
     assert s["mode"] == "source"
     assert s["title"] == "Architecture"
-    assert s["components"][0]["name"] == "CRT Memory"
+    assert s["components"][0]["name"] == "API"
 
 
 def test_depth_reason_text():

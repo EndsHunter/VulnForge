@@ -36,6 +36,4 @@ from these seeds; runtime collections can diverge intentionally.
 - Recon agent seeds: `recon_agent_seeds_root()` → `seeds/recon_agents/`
 - Prompt pin at `vf init`: hashes the effective seeds tree (`SEEDS_ROOT`)
 
-Legacy fallback: if `seeds/system` is missing, loaders still accept `prompts/v1/` for mid-migration checkouts.
-
 See also [`docs/LAYOUT.md`](../docs/LAYOUT.md).

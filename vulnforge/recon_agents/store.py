@@ -10,7 +10,6 @@ from typing import Any, Optional
 
 from vulnforge.paths import (
     CONFIG_ROOT,
-    LEGACY_PROMPTS_V1,
     PROJECT_ROOT,
     recon_agent_seeds_root,
     system_prompts_root,
@@ -18,15 +17,9 @@ from vulnforge.paths import (
 from vulnforge.util import utc_now_iso
 
 DEFAULT_COLLECTION_ROOT = CONFIG_ROOT / "recon_agents"
-# Dual-read: seeds/recon_agents when present, else prompts/v1/recon_agents.
 SEED_PROMPTS_DIR = recon_agent_seeds_root()
-# Legacy single recon.md: prefer system_prompts_root, fall back to prompts/v1.
-_sys = system_prompts_root()
-LEGACY_RECON_PROMPT = (
-    (_sys / "recon.md")
-    if (_sys / "recon.md").is_file()
-    else (LEGACY_PROMPTS_V1 / "recon.md")
-)
+# Fallback body source when seed dir lacks default-map.md
+_SYSTEM_RECON_PROMPT = system_prompts_root() / "recon.md"
 
 COLLECTION_FORMAT = "vulnforge.recon_collection/v1"
 AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
@@ -226,8 +219,8 @@ def _normalize_collection(raw: dict[str, Any]) -> dict[str, Any]:
 
 def _default_map_body_fallback() -> str:
     """Embed current seeds/system/recon.md when seed dir lacks default-map."""
-    if LEGACY_RECON_PROMPT.is_file():
-        return LEGACY_RECON_PROMPT.read_text(encoding="utf-8")
+    if _SYSTEM_RECON_PROMPT.is_file():
+        return _SYSTEM_RECON_PROMPT.read_text(encoding="utf-8")
     return (
         "# Recon agent: default-map\n\n"
         "**Mission:** Map the application so hunt tasks are grounded in real structure.\n\n"

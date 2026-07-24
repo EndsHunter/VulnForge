@@ -110,14 +110,3 @@ def make_progress_writer(
         write_job(project_root, job_id, cur)
 
     return progress
-
-
-def cli_progress(phase: str, message: str = "", **kw: Any) -> None:
-    import sys
-
-    extra = ""
-    if "files_seen" in kw:
-        extra += f" files={kw['files_seen']}"
-    if "percent" in kw:
-        extra += f" ~{kw['percent']}%"
-    print(f"[init {phase}]{extra} {message}".rstrip(), file=sys.stderr, flush=True)

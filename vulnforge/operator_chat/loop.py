@@ -10,7 +10,11 @@ from vulnforge.operator_chat.confirm import PendingMutation, create_pending
 from vulnforge.operator_chat.summarize import tool_result_content
 from vulnforge.operator_chat.tools_common import MUTATE_TOOLS, mutation_summary
 
+# Legacy named default for tests that pass an explicit cap. Production operator
+# chat uses max_rounds=None (unlimited with SAFETY_MAX_TOOL_ROUNDS ceiling).
 MAX_TOOL_ROUNDS = 10
+# Anti-runaway ceiling when max_rounds is None (model keeps tool-calling forever).
+SAFETY_MAX_TOOL_ROUNDS = 500
 
 
 def run_operator_loop(
@@ -21,7 +25,7 @@ def run_operator_loop(
     user_message: str,
     tools: list[dict],
     dispatch: Callable[[str, dict], dict[str, Any]],
-    max_rounds: int = MAX_TOOL_ROUNDS,
+    max_rounds: Optional[int] = None,
     session_id: str,
     scope: str,
     run_key: Optional[str] = None,
@@ -29,6 +33,10 @@ def run_operator_loop(
 ) -> dict[str, Any]:
     """
     Run LLM + tools until final assistant text or pending mutation confirm.
+
+    max_rounds:
+      None  — no operator-facing tool limit (safety ceiling SAFETY_MAX_TOOL_ROUNDS)
+      int   — stop after that many LLM rounds (tests / explicit overrides)
 
     Returns dict with keys: messages (new UI-facing turns), pending_confirm,
     ui_hints, error, model_id.
@@ -51,7 +59,12 @@ def run_operator_loop(
     last: Optional[LLMResult] = None
     model_id = getattr(client, "model_id", None) or getattr(client, "model", None)
 
-    for _round in range(max_rounds):
+    # None = unlimited for the operator; still apply safety ceiling.
+    limit = SAFETY_MAX_TOOL_ROUNDS if max_rounds is None else int(max_rounds)
+    if limit < 1:
+        limit = 1
+
+    for _round in range(limit):
         last = client.chat(messages, tools=tools or None, temperature=temperature)
         model_id = last.model_id or model_id
         if not last.ok:

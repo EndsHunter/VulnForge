@@ -861,11 +861,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         profile_n = (args.profile or "code_static").strip().lower()
         if not args.target.exists():
             raise HTTPException(400, f"target not found: {body.target}")
-        if profile_n == "binary_re":
-            raise HTTPException(
-                400,
-                "profile binary_re was removed; VulnForge is source-code analysis only",
-            )
         if is_pe_file(args.target):
             raise HTTPException(
                 400,
@@ -1590,6 +1585,80 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         finally:
             db.close()
 
+    @app.get("/api/runs/{target_id}/{run_id}/codemap")
+    def api_codemap_get(target_id: str, run_id: str):
+        """Mechanical/merged codemap (DB only; separate from architecture)."""
+        from vulnforge.db import Database
+        from vulnforge.tools.codemap import (
+            codemap_summary_for_ui,
+            merge_annotations_into_codemap,
+        )
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            codemap = db.get_codemap()
+            if isinstance(codemap, dict):
+                notes = db.list_notes(kind="codemap")
+                codemap = merge_annotations_into_codemap(codemap, notes)
+            summary = codemap_summary_for_ui(
+                codemap if isinstance(codemap, dict) else None
+            )
+            return {
+                "codemap": codemap,
+                "summary": summary,
+                "has_codemap": bool(
+                    summary.get("has_codemap") if isinstance(summary, dict) else codemap
+                ),
+            }
+        finally:
+            db.close()
+
+    @app.post("/api/runs/{target_id}/{run_id}/codemap/rebuild")
+    def api_codemap_rebuild(target_id: str, run_id: str):
+        """Rebuild mechanical codemap from target path; does not touch architecture."""
+        from pathlib import Path as _Path
+
+        from vulnforge.db import Database
+        from vulnforge.tools.codemap import (
+            build_codemap,
+            codemap_summary_for_ui,
+            merge_annotations_into_codemap,
+        )
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            row = db.get_run()
+            if not row:
+                raise HTTPException(404, "run row missing")
+            target_path = row["target_path"] if "target_path" in row.keys() else None
+            if not target_path:
+                raise HTTPException(400, "run has no target_path")
+            target = _Path(str(target_path))
+            if not target.exists():
+                raise HTTPException(400, f"target path does not exist: {target_path}")
+            cfg = dashops.get_run_config(db) or {}
+            ignore = list((cfg.get("run") or {}).get("ignore_globs") or [])
+            # Preserve agent annotations across mechanical rebuild when possible.
+            prior_notes = db.list_notes(kind="codemap")
+            codemap = build_codemap(target, cfg=cfg, ignore_globs=ignore)
+            if prior_notes:
+                codemap = merge_annotations_into_codemap(codemap, prior_notes)
+            db.set_codemap(codemap, source=str(codemap.get("source") or "mechanical"))
+            stored = db.get_codemap()
+            summary = codemap_summary_for_ui(stored)
+            return {
+                "ok": True,
+                "codemap": stored,
+                "summary": summary,
+                "has_codemap": bool(
+                    summary.get("has_codemap") if isinstance(summary, dict) else stored
+                ),
+            }
+        finally:
+            db.close()
+
     @app.get("/api/runs/{target_id}/{run_id}/coverage/policy")
     def api_coverage_policy_get(target_id: str, run_id: str):
         run = _get_run(target_id, run_id)
@@ -2142,7 +2211,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/hunt-profiles/{profile_id}/restore-seed")
     def api_hunt_profile_restore_seed(profile_id: str):
-        """Restore body from package prompts/v1/hunt_classes/{id}.md; set source=seed."""
+        """Restore body from package seeds/hunt_classes/{id}.md; set source=seed."""
         from vulnforge.hunt_profiles import HuntProfileError, restore_seed_body
 
         try:

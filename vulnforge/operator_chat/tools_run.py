@@ -11,6 +11,7 @@ from vulnforge.operator_chat.tools_common import (
     enqueue_hunt_impl,
     explain_product_impl,
     get_architecture_impl,
+    get_codemap_impl,
     get_coverage_summary_impl,
     get_finding_impl,
     get_hunt_impl,
@@ -126,6 +127,11 @@ def schemas() -> list[dict]:
         ),
         openai_tool("get_architecture", "Architecture map summary for this run.", {}),
         openai_tool(
+            "get_codemap",
+            "Mechanical codemap summary (modules, package roots, languages) for this run.",
+            {},
+        ),
+        openai_tool(
             "get_coverage_summary",
             "Residual coverage cells.",
             {"limit": {"type": "integer"}},
@@ -217,6 +223,8 @@ def dispatch(
         return read_evidence_impl(run, args)
     if name == "get_architecture":
         return get_architecture_impl(run, args)
+    if name == "get_codemap":
+        return get_codemap_impl(run, args)
     if name == "get_coverage_summary":
         return get_coverage_summary_impl(run, args)
     if name == "get_project_excerpt":

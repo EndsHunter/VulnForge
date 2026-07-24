@@ -763,7 +763,7 @@ def _scan_note_payload(
 
 def _capability_suggestion(cap: str) -> str:
     hints = {
-        "exec_job": "Consider code_exec profile or a jailed exec_job tool (off by default).",
+        "exec_job": "Shell/exec is out of scope for code_static; document desired commands in notes.",
         "http_fetch": "Add optional http_fetch tool for live endpoints (scoped allowlist).",
         "security_scanners": "Out-of-band scanners are out of scope for code_static; run offline.",
         "debugger": "Debugger attach is out of scope; use static evidence and notes.",

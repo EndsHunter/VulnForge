@@ -556,9 +556,73 @@ def get_architecture_impl(run: RunRef, _args: dict) -> dict[str, Any]:
         db.close()
 
 
+def get_codemap_impl(run: RunRef, _args: dict) -> dict[str, Any]:
+    """Compact codemap summary for operator chat (not full modules dump)."""
+    from vulnforge.tools.codemap import codemap_summary_for_ui
+
+    db = _open_db(run.path)
+    try:
+        codemap = db.get_codemap()
+        summary = codemap_summary_for_ui(codemap if isinstance(codemap, dict) else None)
+        if not summary.get("has_codemap") and not codemap:
+            return {
+                "ok": True,
+                "codemap": None,
+                "message": "no codemap yet — run recon or rebuild",
+                "target_id": run.target_id,
+                "run_id": run.run_id,
+            }
+        langs = summary.get("languages") or {}
+        top_langs = sorted(
+            ((k, int(v or 0)) for k, v in langs.items()),
+            key=lambda kv: (-kv[1], kv[0]),
+        )[:8]
+        return {
+            "ok": True,
+            "target_id": run.target_id,
+            "run_id": run.run_id,
+            "codemap": {
+                "has_codemap": bool(summary.get("has_codemap")),
+                "module_count": summary.get("module_count") or 0,
+                "file_count": summary.get("file_count") or 0,
+                "package_roots": list(summary.get("package_roots") or [])[:20],
+                "languages": {k: v for k, v in top_langs},
+                "entrypoint_count": summary.get("entrypoint_count") or 0,
+                "annotation_count": summary.get("annotation_count") or 0,
+                "source": summary.get("source"),
+                "generated_at": summary.get("generated_at"),
+            },
+        }
+    finally:
+        db.close()
+
+
 def get_status_impl(run: RunRef, _args: dict) -> dict[str, Any]:
     card = run_card(run)
     status = runctl.runner_status(run.path)
+    codemap_brief: dict[str, Any] = {
+        "has_codemap": bool(card.get("has_codemap")),
+        "module_count": 0,
+        "package_roots": [],
+    }
+    try:
+        from vulnforge.tools.codemap import codemap_summary_for_ui
+
+        db = _open_db(run.path)
+        try:
+            cm = db.get_codemap()
+            s = codemap_summary_for_ui(cm if isinstance(cm, dict) else None)
+            codemap_brief = {
+                "has_codemap": bool(s.get("has_codemap")),
+                "module_count": int(s.get("module_count") or 0),
+                "file_count": int(s.get("file_count") or 0),
+                "package_roots": list(s.get("package_roots") or [])[:12],
+                "annotation_count": int(s.get("annotation_count") or 0),
+            }
+        finally:
+            db.close()
+    except Exception:
+        pass
     return {
         "ok": True,
         "card": {
@@ -575,8 +639,10 @@ def get_status_impl(run: RunRef, _args: dict) -> dict[str, Any]:
                 "locked",
                 "stop",
                 "llm_usage",
+                "has_codemap",
             )
         },
+        "codemap": codemap_brief,
         "runner": status,
         "url": f"/runs/{run.target_id}/{run.run_id}",
     }

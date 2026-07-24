@@ -71,18 +71,3 @@ def take_pending(token: str) -> Optional[PendingMutation]:
     if p.expired():
         return None
     return p
-
-
-def peek_pending(token: str) -> Optional[PendingMutation]:
-    p = _PENDING.get(token)
-    if p is None or p.expired():
-        if p is not None:
-            _PENDING.pop(token, None)
-        return None
-    return p
-
-
-def clear_session_pending(session_id: str) -> None:
-    dead = [k for k, v in _PENDING.items() if v.session_id == session_id]
-    for k in dead:
-        _PENDING.pop(k, None)

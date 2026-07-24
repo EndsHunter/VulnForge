@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import yaml
 
 from vulnforge.cli import (
-    DEFERRED_TASK_KINDS,
     EXIT_CONFIG,
     EXIT_PROGRESS,
     cmd_apply_candidate,
@@ -526,31 +525,6 @@ def test_apply_candidate_warning_missing_evidence(tmp_path: Path, toy_sqli: Path
     assert "warning" in err.getvalue().lower()
     db = Database.open(run_dir / "harness.db")
     assert db.conn.execute("SELECT COUNT(*) AS c FROM findings").fetchone()["c"] == 1
-    db.close()
-
-
-def test_gapfill_not_implemented_exit_progress(tmp_path: Path, toy_sqli: Path):
-    """Deferred gapfill stub â†’ failed_task + EXIT_PROGRESS (not CONFIG)."""
-    run_dir, db = _setup_run(tmp_path, toy_sqli)
-    tid = db.enqueue_task("gapfill", {"note": "synthetic"}, priority=90)
-    # Only this task should be leased (recon not inserted)
-    db.conn.execute("DELETE FROM tasks WHERE kind != 'gapfill'")
-    db.conn.commit()
-    db.close()
-
-    args = SimpleNamespace(run_dir=str(run_dir))
-    err = io.StringIO()
-    with redirect_stderr(err):
-        code = cmd_run_once(args, {"run": {"lease_ttl_seconds": 1800}})
-    assert code == EXIT_PROGRESS
-    db = Database.open(run_dir / "harness.db")
-    row = db.conn.execute(
-        "SELECT state, result_json FROM tasks WHERE id=?", (tid,)
-    ).fetchone()
-    assert row["state"] == "failed_task"
-    events = (run_dir / "events.jsonl").read_text(encoding="utf-8")
-    assert "not_implemented" in events
-    assert "gapfill" in DEFERRED_TASK_KINDS
     db.close()
 
 

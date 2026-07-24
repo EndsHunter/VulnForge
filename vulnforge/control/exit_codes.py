@@ -7,6 +7,3 @@ EXIT_IDLE = 10
 EXIT_BUSY = 11
 EXIT_INFRA = 20
 EXIT_CONFIG = 30
-
-# Known deferred stage kinds (if enqueued → failed_task + progress, not CONFIG)
-DEFERRED_TASK_KINDS = frozenset({"gapfill", "dedup", "feedback"})

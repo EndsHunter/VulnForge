@@ -13,7 +13,7 @@ Your artifacts must pass **hard** checks before integrate.
 6. **Forbidden** on `risk_class=read_only` or `evidence_write` and on `code_static` profile:
    - `subprocess`, `os.system`, `socket`, `requests`, `httpx`, unrestricted network
    - `eval` / `exec` / dynamic shell
-7. `risk_class=exec` is only for future `code_exec` profile — do not add to `code_static` allowlist.
+7. `risk_class=exec` is out of scope for `code_static` — do not add shell/exec tools to the allowlist.
 8. Prefer **extending** `grep` / `file_inventory` / `read_file` when the gap is only a filter or arg.
 9. Primary function name **equals draft id**; schema tool `name` matches.
 

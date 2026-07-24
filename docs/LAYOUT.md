@@ -97,13 +97,11 @@ seeds/
   recon_agents/*.md   # reseed → config/recon_agents
 ```
 
-Legacy `prompts/` holds only a redirect README. Loaders fall back to `prompts/v1` only if `seeds/system` is missing.
+Legacy `prompts/` holds only a redirect README. Runtime seeds load exclusively from `seeds/`.
 
 ## Dead / out-of-scope paths
 
-- **`binary_re` / Ghidra reverse-engineering** — removed; VulnForge is `code_static` only.
-- **`profiles/code_exec.py`** — not the default profile; unrestricted shell is never on `code_static`.
-- **`ghidra-mcp/`** — vendored residue; not used by the default pipeline.
+- **`binary_re` / Ghidra reverse-engineering** — fully removed; VulnForge is `code_static` only.
 - **`project/*` under a run** — projection only, not authority (`harness.db` + evidence are).
 
 ## Project roots (single source)

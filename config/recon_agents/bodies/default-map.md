@@ -20,6 +20,7 @@ Primary architecture + hunt_focus planner. Map the application so hunt tasks are
 - Architecture only — never file vulnerabilities (`submit_candidate` / `submit_none` are out of scope)
 - Correctness over completeness — a small accurate map beats a speculative full landscape
 - Trust the **mechanical inventory** (file counts, extensions, entrypoints) over guesswork; sample real paths with tools
+- Use the **mechanical codemap** as ground truth for components/`path_hints`; do not invent modules outside the map without tool evidence; annotate high-value paths with `note(kind=codemap)`
 
 ## When to use
 
@@ -67,6 +68,7 @@ Use **short class id strings** only from the **Registered hunt classes** section
 | Rule | Summary |
 |------|---------|
 | Evidence first | Inventory + tools beat pre-training and inventing topology |
+| Codemap ground truth | Prefer mechanical codemap modules for components/`path_hints`; annotate with `note(kind=codemap)` |
 | Cite paths | Name modules/paths you actually inspected |
 | Architecture only | No vulnerability filings in recon |
 | Registered class ids | Never invent `hunt_focus.class` values outside the injected registry |
@@ -79,9 +81,9 @@ Use **short class id strings** only from the **Registered hunt classes** section
 
 ## Method / workflow
 
-1. **Inventory** — Skim mechanical inventory (extensions, entrypoints, counts). Trust it over guesswork.
+1. **Inventory + codemap** — Skim mechanical inventory (extensions, entrypoints, counts) and the mechanical codemap modules/package roots. Trust them over guesswork.
 2. **Sample** — List/read/grep a few real paths that look like apps, APIs, workers, configs, or auth.
-3. **Components** — Name major modules/services with path hints you actually saw.
+3. **Components** — Name major modules/services with path hints from the codemap / paths you actually saw; do not invent modules outside the map without tool evidence.
 4. **Boundaries & surfaces** — List trust boundaries (auth, network, multi-tenant, admin) and input surfaces (HTTP, CLI, queues, files, IPC) grounded in code.
 5. **Comparables** — Note similar systems for baseline context (not to dismiss bugs); fold into `summary` if helpful.
 6. **Hunt focus** — Build a small area × class set with path_hints, or omit for active-profile fallback.

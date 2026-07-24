@@ -977,44 +977,6 @@ button.cov-plan-action.is-current {
   max-height: 160px;
   overflow: auto;
 }
-/* Binary map (binary_re) architecture preview */
-.arch-summary-binary .arch-binary-header {
-  margin: 0 0 0.75rem;
-}
-.arch-binary-chips,
-.arch-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-.arch-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.15rem 0.45rem;
-  border-radius: 999px;
-  border: 1px solid var(--border, #333);
-  background: var(--surface-2, rgba(127, 127, 127, 0.08));
-  font-size: 12px;
-  line-height: 1.3;
-}
-.arch-chip strong {
-  font-weight: 600;
-  opacity: 0.85;
-  text-transform: lowercase;
-}
-.arch-symbol-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.85rem;
-  margin-top: 0.85rem;
-}
-@media (max-width: 900px) {
-  .arch-symbol-row { grid-template-columns: 1fr; }
-}
-.arch-summary-binary .arch-list {
-  max-height: 220px;
-}
 .arch-raw { margin-top: 0.75rem; }
 
 /* Operator re-run panel (base colors from shared form controls above) */
@@ -1530,14 +1492,46 @@ button.cov-plan-action.is-current {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 0.75rem;
+}
+.report-search-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.report-search {
+  flex: 1 1 12rem;
+  min-width: 10rem;
+  max-width: 28rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  color-scheme: dark;
+  caret-color: var(--text);
+}
+.report-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(255, 61, 110, 0.15);
+}
+.report-search-count {
+  white-space: nowrap;
+  font-size: 12px;
 }
 .report-export-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
   align-items: center;
+  margin-left: auto;
 }
 .report-export-poc-opt {
   display: inline-flex;
@@ -1546,6 +1540,51 @@ button.cov-plan-action.is-current {
   margin-right: 0.35rem;
   cursor: pointer;
   user-select: none;
+}
+.report-table th.th-sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.report-table th.th-sortable:hover {
+  color: var(--text);
+  background: rgba(255, 61, 110, 0.06);
+}
+.report-table th.th-sortable .th-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.report-table th.th-sortable .th-sort-btn::after {
+  content: "↕";
+  font-size: 10px;
+  opacity: 0.35;
+  line-height: 1;
+}
+.report-table th.th-sortable.sorted-asc .th-sort-btn::after {
+  content: "▲";
+  opacity: 0.9;
+  color: var(--accent);
+}
+.report-table th.th-sortable.sorted-desc .th-sort-btn::after {
+  content: "▼";
+  opacity: 0.9;
+  color: var(--accent);
+}
+.report-table th.th-sortable.sorted-asc,
+.report-table th.th-sortable.sorted-desc {
+  color: var(--text);
 }
 .report-summary-grid {
   display: grid;
@@ -2069,26 +2108,6 @@ button.cov-plan-action.is-current {
   color: var(--good);
   border-bottom-color: rgba(61, 200, 120, 0.55);
 }
-/* Binary / single-PE audits: show Ghidra step in the phase rail */
-.modal-init-loading.is-binary-re .init-phase-ghidra {
-  display: list-item;
-}
-.init-phase-ghidra[hidden] {
-  display: none !important;
-}
-.modal-init-loading.is-binary-re .init-phase-steps li {
-  font-size: 9.5px;
-}
-.init-ghidra-detail {
-  margin-top: 0.35rem !important;
-  color: var(--accent);
-  font-size: 12px;
-  min-height: 1.2em;
-}
-.modal-init-loading.is-ghidra-active .init-loading-icon {
-  /* subtle cyan tint while reverse-engineering */
-  filter: hue-rotate(30deg) saturate(1.15);
-}
 .init-loading-actions {
   justify-content: center;
   margin-top: 0.85rem;
@@ -2454,6 +2473,19 @@ a.cov-class-link:hover {
 tr.task-row .task-actions-cell .btn {
   font-size: 11px;
   padding: 0.15rem 0.4rem;
+}
+.tasks-more {
+  margin: 0.55rem 0 0;
+  margin-bottom: 0;
+  gap: 0.5rem;
+  align-items: center;
+}
+.tasks-more[hidden] {
+  display: none !important;
+}
+.tasks-more-label {
+  margin: 0;
+  margin-right: 0.15rem;
 }
 
 /*  -  -  Modal  -  -  */

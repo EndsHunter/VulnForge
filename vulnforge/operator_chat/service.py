@@ -114,10 +114,10 @@ def handle_turn(
 
         history = list(data.get("messages") or [])
         # model history: store ui messages; loop slims them
-        rounds = max_tool_rounds
-        if rounds is None:
-            llm = cfg.get("llm") or {}
-            rounds = min(12, max(4, int(llm.get("max_tool_rounds") or 10)))
+        # Operator chat is unlimited by default (loop safety ceiling only).
+        # Explicit max_tool_rounds is for tests / rare overrides — do not
+        # inherit llm.max_tool_rounds from hunt/recon agent settings.
+        rounds = max_tool_rounds  # None = unlimited
 
         result = run_operator_loop(
             client=client,
@@ -126,7 +126,7 @@ def handle_turn(
             user_message=msg,
             tools=tools,
             dispatch=_dispatch,
-            max_rounds=int(rounds),
+            max_rounds=rounds,
             session_id=str(data["id"]),
             scope=scope,
             run_key=run_key,

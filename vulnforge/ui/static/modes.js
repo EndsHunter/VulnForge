@@ -17,21 +17,15 @@
     harness: "harness",
   };
 
-  /** Legacy deep links: #research/*, #findings/*, #tasks → audit mode; #poc → modal. */
-  function aliasLegacyMode(mode, tab) {
-    if (mode === "findings") return { mode: "evidence", tab: "evidence" };
-    if (mode === "tasks") return { mode: "audit", tab: tab || "tasks" };
+  /**
+   * Parse hash segment. `#poc/<id>` is the current PoC workshop deep link
+   * (opens Report + modal), not a workspace mode.
+   */
+  function resolveModeHash(mode, tab) {
     if (mode === "poc") {
-      // POC is no longer a workspace mode — open workshop modal if finding id present.
       return { mode: "report", tab: "report", pocFindingId: tab || null };
     }
-    // Experimental Coverage1/2/3 deep links → single Coverage tab
-    if (mode === "coverage1" || mode === "coverage2" || mode === "coverage3") {
-      return { mode: "coverage", tab: "coverage" };
-    }
-    if (mode !== "research") return { mode, tab };
-    if (tab === "coverage") return { mode: "coverage", tab: "coverage" };
-    return { mode: "explorer", tab: "explorer" };
+    return { mode, tab };
   }
 
   function activateTab(tabId) {
@@ -111,13 +105,13 @@
     const h = (location.hash || "").replace(/^#/, "");
     if (!h) return null;
     const [rawMode, rawTab] = h.split("/");
-    const aliased = aliasLegacyMode(rawMode, rawTab || "");
-    const mode = aliased.mode;
+    const resolved = resolveModeHash(rawMode, rawTab || "");
+    const mode = resolved.mode;
     if (!MODE_DEFAULT_TAB[mode]) return null;
     return {
       mode,
-      tab: aliased.tab || MODE_DEFAULT_TAB[mode],
-      pocFindingId: aliased.pocFindingId || null,
+      tab: resolved.tab || MODE_DEFAULT_TAB[mode],
+      pocFindingId: resolved.pocFindingId || null,
     };
   }
 
@@ -184,13 +178,7 @@
     window.VulnForgeModes = {
       setMode,
       goExplorer,
-      /** @deprecated use goExplorer */
-      goResearchExplorer: goExplorer,
       goEvidence,
-      /** @deprecated use goEvidence */
-      goFindings(packId, relpath) {
-        goEvidence(packId, relpath);
-      },
       goCoverage() {
         setMode("coverage");
       },

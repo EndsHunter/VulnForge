@@ -23,6 +23,11 @@ from vulnforge.recon_agents import (
     get_body,
 )
 from vulnforge.tools import build_tool_handler
+from vulnforge.tools.codemap import (
+    build_codemap,
+    merge_annotations_into_codemap,
+    path_hints_for_area,
+)
 from vulnforge.tools.grep_index import build_file_index
 from vulnforge.tools.queue_note import flush_notes_to_db
 from vulnforge.tools.sink_preindex import (
@@ -805,6 +810,17 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             inventory.get("sample_paths") or []
         )
 
+    # Mechanical codemap (structure scaffold) — no LLM; grounds recon + hunts.
+    codemap: dict = {}
+    try:
+        codemap = build_codemap(target, inventory, cfg=cfg, ignore_globs=ignore)
+        db.set_codemap(codemap, source="mechanical")
+    except Exception:
+        try:
+            codemap = db.get_codemap() or {}
+        except Exception:
+            codemap = {}
+
     session: dict = {
         "architecture": None,
         "notes": [],
@@ -997,6 +1013,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 focus_paths=focus_paths,
                 tools_allowlist=tools_allow,
                 agent_id=agent_id,
+                codemap=codemap,
             )
             max_rounds = agent.get("max_tool_rounds")
             if max_rounds is None:
@@ -1243,7 +1260,13 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         if should_finalize and want_hunts:
             # Re-read full merged map after batch siblings
             arch = db.get_architecture() or arch
-            tasks, hunt_plan_source = plan_hunt_tasks(arch, inventory, cfg)
+            try:
+                codemap = db.get_codemap() or codemap
+            except Exception:
+                pass
+            tasks, hunt_plan_source = plan_hunt_tasks(
+                arch, inventory, cfg, codemap=codemap or None
+            )
             if not tasks:
                 # Only fail the finalizer hard when this is a non-batch recon;
                 # batch members already contributed architecture.
@@ -1340,6 +1363,22 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 generate_run_skills_task_id = None
 
         flush_notes_to_db(ctx, db)
+        # Fold agent codemap notes into stored map (annotations)
+        try:
+            session_notes = list((session or {}).get("notes") or [])
+            note_rows = [
+                n
+                for n in session_notes
+                if isinstance(n, dict) and n.get("kind") == "codemap"
+            ]
+            if note_rows:
+                base_cm = db.get_codemap() or codemap or {}
+                if base_cm:
+                    merged_cm = merge_annotations_into_codemap(base_cm, note_rows)
+                    db.set_codemap(merged_cm, source="merge")
+                    codemap = merged_cm
+        except Exception:
+            pass
         _ = last_result  # last LLM result retained for debugging
         result_out: dict[str, Any] = {
             "status": "succeeded",
@@ -1358,6 +1397,9 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "dynamic_skills": dynamic_skills,
             "dynamic_skill_count": dynamic_skill_count if dynamic_skills else 0,
             "generate_run_skills_task_id": generate_run_skills_task_id,
+            "has_codemap": bool(
+                (codemap or {}).get("modules") or (codemap or {}).get("entrypoints")
+            ),
             "transcript": f"task-{task.id}",
             **usage_fields,
         }
@@ -1624,18 +1666,26 @@ def _hints_for_named_area(
     *,
     area_hints: dict[str, list[str]],
     inventory: dict,
+    codemap: Optional[dict] = None,
 ) -> list[str]:
     """Resolve path_hints for one architecture area — never steal another area's paths.
 
-    Prefer component path_hints, then sample_paths under that area/dir.
-    Do **not** fall back to global entrypoints for every area (that makes all
-    hunt skills pile onto the same Package-install / entrypoint paths).
+    Prefer component path_hints, then codemap modules, then sample_paths under
+    that area/dir. Do **not** fall back to global entrypoints for every area
+    (that makes all hunt skills pile onto the same Package-install / entrypoint
+    paths).
     """
     area_s = str(area or "").strip()
     if not area_s:
         return []
     if area_s in area_hints and area_hints[area_s]:
         return list(area_hints[area_s])[:15]
+
+    # Codemap modules (path-backed structure)
+    if isinstance(codemap, dict):
+        from_cm = path_hints_for_area(codemap, area_s)
+        if from_cm:
+            return from_cm[:15]
 
     samples = list(inventory.get("sample_paths") or [])
     # Direct dir / prefix match
@@ -1683,6 +1733,10 @@ def _hints_for_named_area(
 
     # Last resort for lone generic area only
     if area_s in ("app", ".", "root", "target"):
+        if isinstance(codemap, dict):
+            from_cm = path_hints_for_area(codemap, "app")
+            if from_cm:
+                return from_cm[:15]
         return list(
             inventory.get("entrypoints") or inventory.get("sample_paths", [])[:10]
         )[:15]
@@ -1746,6 +1800,7 @@ def _fallback_hunt_tasks(
     architecture: dict,
     inventory: dict,
     cfg: Optional[dict] = None,
+    codemap: Optional[dict] = None,
 ) -> list[dict]:
     """Allowed hunt skills × areas when model focus is missing or unusable.
 
@@ -1766,6 +1821,21 @@ def _fallback_hunt_tasks(
         ph = c.get("path_hints") or []
         if isinstance(ph, list) and ph:
             area_hints[str(c["name"])] = [normalize_relpath(str(x)) for x in ph if x]
+
+    # Prefer codemap package modules as areas when components missing
+    if not areas and isinstance(codemap, dict):
+        mods = [
+            m
+            for m in (codemap.get("modules") or [])
+            if isinstance(m, dict) and m.get("path")
+        ]
+        # Prefer package-kind modules
+        pkg = [m for m in mods if m.get("kind") == "package"]
+        use_mods = pkg or mods
+        areas = [str(m.get("label") or m.get("path")) for m in use_mods[:8]]
+        for m in use_mods[:8]:
+            name = str(m.get("label") or m.get("path"))
+            area_hints[name] = [normalize_relpath(str(m["path"]))]
 
     # P2.2: when components vague, use size-ranked dir partitions
     partitions = inventory.get("dir_partitions") or partition_by_top_dir(
@@ -1796,21 +1866,34 @@ def _fallback_hunt_tasks(
     units: list[tuple[str, list[str]]] = []
     for area in areas[:max_areas]:
         hints = _hints_for_named_area(
-            str(area), area_hints=area_hints, inventory=inventory
+            str(area),
+            area_hints=area_hints,
+            inventory=inventory,
+            codemap=codemap,
         )
         units.append((str(area), hints))
     return balanced_product_tasks(units, list(use_classes), max_tasks=None)
 
 
 def _normalize_path_hints(
-    raw: object, inventory: dict, *, area: Optional[str] = None
+    raw: object,
+    inventory: dict,
+    *,
+    area: Optional[str] = None,
+    codemap: Optional[dict] = None,
 ) -> list[str]:
     if isinstance(raw, list):
         out = [normalize_relpath(str(x)) for x in raw if x]
         if out:
             return out[:15]
     if area:
-        return _hints_for_named_area(str(area), area_hints={}, inventory=inventory)
+        return _hints_for_named_area(
+            str(area), area_hints={}, inventory=inventory, codemap=codemap
+        )
+    if isinstance(codemap, dict):
+        from_cm = path_hints_for_area(codemap, "app")
+        if from_cm:
+            return from_cm[:15]
     return list(
         inventory.get("entrypoints")
         or inventory.get("sample_paths", [])[:5]
@@ -1853,7 +1936,10 @@ def _apply_class_routing(tasks: list[dict], inventory: dict) -> list[dict]:
 
 
 def plan_hunt_tasks(
-    architecture: dict, inventory: dict, cfg: dict
+    architecture: dict,
+    inventory: dict,
+    cfg: dict,
+    codemap: Optional[dict] = None,
 ) -> tuple[list[dict], str]:
     """Plan hunt tasks from recon architecture.
 
@@ -1864,6 +1950,8 @@ def plan_hunt_tasks(
     Run ``hunt_skill_mode`` / ``hunt_skill_ids`` (cfg.run) restrict allowed
     class ids. hunt_focus entries outside the allowlist are dropped; empty
     allowlist yields zero tasks (including fallback).
+
+    When *codemap* is provided, weak path_hints are filled from module paths.
     """
     max_tasks = int((cfg.get("run") or {}).get("max_tasks", 50))
     mode, skill_ids = skill_policy_from_run_cfg(cfg)
@@ -1908,7 +1996,10 @@ def plan_hunt_tasks(
                     "area": area,
                     "class": cls,
                     "path_hints": _normalize_path_hints(
-                        f.get("path_hints"), inventory, area=str(area)
+                        f.get("path_hints"),
+                        inventory,
+                        area=str(area),
+                        codemap=codemap,
                     ),
                 }
             )
@@ -1917,7 +2008,7 @@ def plan_hunt_tasks(
     if not tasks:
         # No usable focus → allowed hunt skills only (not full catalog).
         # Empty allowlist → zero tasks.
-        tasks = _fallback_hunt_tasks(architecture, inventory, cfg)
+        tasks = _fallback_hunt_tasks(architecture, inventory, cfg, codemap=codemap)
         source = "active_fallback"
     tasks = _apply_class_routing(tasks, inventory)
     # Honor operator run.max_tasks only (no monorepo hard-cap override).

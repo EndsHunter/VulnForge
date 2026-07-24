@@ -187,6 +187,110 @@ def test_handle_turn_fake_llm_tool_loop(tmp_path: Path, toy_sqli: Path):
     assert any(m.get("role") == "assistant" and "run" in (m.get("content") or "").lower() for m in r["messages"])
 
 
+def test_handle_turn_many_tool_rounds_unlimited(tmp_path: Path, toy_sqli: Path):
+    """Operator chat is not clamped by llm.max_tool_rounds (was min 4 / max 12)."""
+    runs_root = tmp_path / "runs"
+    _make_run(runs_root, "app-a", "run-001", target_path=toy_sqli)
+    project_root = tmp_path
+    (project_root / "config").mkdir(exist_ok=True)
+
+    n_tools = 15  # exceeds old hard cap of 12
+    responses = []
+    for i in range(n_tools):
+        responses.append(
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="",
+                tool_calls=[
+                    {
+                        "id": f"c{i}",
+                        "name": "list_runs",
+                        "arguments": {"filter": "all"},
+                    }
+                ],
+                raw=None,
+                model_id="fake",
+            )
+        )
+    responses.append(
+        LLMResult(
+            ok=True,
+            classification=ResponseClass.OK,
+            content="Done after many tool rounds.",
+            tool_calls=[],
+            raw=None,
+            model_id="fake",
+        )
+    )
+    fake = FakeLLMClient(responses=responses)
+    # Intentionally low agent max_tool_rounds — must not apply to operator chat
+    cfg = {"llm": {"model": "fake", "max_tool_rounds": 4}}
+    r = handle_turn(
+        scope="home",
+        message="Do many tools then answer",
+        project_root=project_root,
+        runs_root=runs_root,
+        cfg=cfg,
+        client=fake,
+    )
+    assert r["ok"]
+    texts = [m.get("content") or "" for m in r["messages"] if m.get("role") == "assistant"]
+    joined = " ".join(str(t) for t in texts)
+    assert "Done after many tool rounds" in joined
+    assert "Stopped after max tool rounds" not in joined
+
+
+def test_run_operator_loop_respects_explicit_max_rounds(tmp_path: Path, toy_sqli: Path):
+    from vulnforge.operator_chat.loop import run_operator_loop
+
+    responses = [
+        LLMResult(
+            ok=True,
+            classification=ResponseClass.OK,
+            content="",
+            tool_calls=[
+                {"id": "c1", "name": "list_runs", "arguments": {"filter": "all"}}
+            ],
+            raw=None,
+            model_id="fake",
+        ),
+        LLMResult(
+            ok=True,
+            classification=ResponseClass.OK,
+            content="",
+            tool_calls=[
+                {"id": "c2", "name": "list_runs", "arguments": {"filter": "all"}}
+            ],
+            raw=None,
+            model_id="fake",
+        ),
+        LLMResult(
+            ok=True,
+            classification=ResponseClass.OK,
+            content="should not reach",
+            tool_calls=[],
+            raw=None,
+            model_id="fake",
+        ),
+    ]
+    fake = FakeLLMClient(responses=responses)
+    result = run_operator_loop(
+        client=fake,
+        system="test",
+        history=[],
+        user_message="go",
+        tools=[],
+        dispatch=lambda name, args: {"ok": True, "count": 0},
+        max_rounds=2,
+        session_id="s1",
+        scope="home",
+    )
+    texts = [m.get("content") or "" for m in result["messages"] if m.get("role") == "assistant"]
+    assert any("Stopped after max tool rounds" in str(t) for t in texts)
+    assert not any("should not reach" in str(t) for t in texts)
+
+
 def test_confirm_enqueue_flow(tmp_path: Path, toy_sqli: Path):
     runs_root = tmp_path / "runs"
     run = _make_run(runs_root, "app-a", "run-001", target_path=toy_sqli)
