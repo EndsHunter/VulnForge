@@ -17,6 +17,8 @@ from typing import Any, Optional
 import yaml
 
 from vulnforge.db import Database, RunLock
+from vulnforge.paths import PROJECT_ROOT
+from vulnforge.settings.load import load_config
 from vulnforge.util import (
     append_event,
     build_target_manifest,
@@ -34,8 +36,6 @@ from vulnforge.control.exit_codes import (
     EXIT_INFRA,
     EXIT_PROGRESS,
 )
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -243,31 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def load_config(path: Optional[Path] = None) -> dict:
-    cfg_path = path or (PROJECT_ROOT / "config" / "default.yaml")
-    cfg_path = Path(cfg_path)
-    if not cfg_path.is_file():
-        raise FileNotFoundError(f"config not found: {cfg_path}")
-    with cfg_path.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
-    # GUI / ui_settings.json overrides (host, model, context, concurrency)
-    try:
-        from vulnforge.settings import apply_ui_settings_to_cfg, load_ui_settings
-
-        cfg = apply_ui_settings_to_cfg(cfg, load_ui_settings())
-    except Exception:
-        pass
-    # env overrides win last
-    if os.environ.get("VF_BASE_URL"):
-        cfg.setdefault("llm", {})["base_url"] = os.environ["VF_BASE_URL"]
-    if os.environ.get("VF_MODEL"):
-        cfg.setdefault("llm", {})["model"] = os.environ["VF_MODEL"]
-    if os.environ.get("VF_HOST") and os.environ.get("VF_PORT"):
-        cfg.setdefault("llm", {})["base_url"] = (
-            f"http://{os.environ['VF_HOST']}:{os.environ['VF_PORT']}/v1"
-        )
-    cfg["_config_path"] = str(cfg_path.resolve())
-    return cfg
+# load_config imported from vulnforge.settings.load (shim for callers of cli.load_config)
 
 
 def resolve_runs_root(cfg: dict, override: Optional[Path] = None) -> Path:

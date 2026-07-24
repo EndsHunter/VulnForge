@@ -1,11 +1,13 @@
 # AGENTS.md — using and extending VulnForge
 
+**Where is X?** See [`docs/LAYOUT.md`](docs/LAYOUT.md) for the developer directory map (agent tools, seeds vs runtime, config precedence).
+
 ## What this system is
 
 **VulnForge** runs a durable security-audit loop against a **read-only target tree**:
 
 1. **init** — snapshot inventory, create `harness.db`, enqueue `recon`
-2. **recon** (LLM) — map architecture; enqueue **hunt** tasks. When a map already exists, each recon **merges** (LLM merge with mechanical fallback) instead of blank-overwriting; Mission **History** can view/restore prior revisions.
+2. **recon** (LLM) — map architecture; enqueue **hunt** tasks. When a map already exists, each recon **merges** (LLM merge with mechanical fallback) instead of blank-overwriting; Mission **History** can view/restore prior revisions. Mechanical **codemap** (`runs.codemap_json`) is structure-only (modules/entrypoints), separate from architecture.
 3. **hunt** (LLM) — one area × weakness class; candidate or `submit_none`
 4. **validate_mech** (no LLM) — mechanical gates → `needs_human` or `rejected_mech`
 5. **human review** (dashboard Report) — accept → `confirmed`, reject → `rejected_human`, optional notes/docs
@@ -67,12 +69,14 @@ vulnforge/
   findings/      # stable_key + near-dup merge (not a stage)
   hunt_profiles/ # operator hunt skills collection (seed + CRUD + import/export)
   stages/        # recon, hunt, validate_mech, render, …
-  tools/         # FS jail, file_inventory, grep, evidence
+  tools/         # FS jail, file_inventory, grep, codemap, evidence
   llm/           # (or llm.py) client + FakeLLM
   ui/            # FastAPI + research cockpit
   cli.py         # thin argparse → control plane
-  db.py          # SQLite + RunLock
+  db.py          # SQLite + RunLock (architecture_json + codemap_json)
 ```
+
+Mechanical codemap is path-backed structure stored in `runs.codemap_json` (built at recon); it is not the architecture map.
 
 ## Extending
 
@@ -93,9 +97,9 @@ Add check in `stages/validate_mech.py` `CHECKS` list; unit test in `tests/test_v
 
 ### New agent tool
 
-**Full offline guide:** [`toolgen.md`](toolgen.md) — use when adding or extending agent tools with a local/offline model (or any agent). It is the checklist of record for wire-up, safety, tests, and a pasteable prompt.
+**Preferred path (one file):** add `vulnforge/tools/agent/<name>.py` with `SPEC = ToolSpec(...)` and `run(ctx, **args)`. Registry auto-discovers name, schema, stages, aliases, and `critical_for`. See [`docs/LAYOUT.md`](docs/LAYOUT.md).
 
-**Dev dashboard:** Home → **Open Dev** → **Tools** tab lists integrated tools (description + parameters), manages AI **drafts**, and walks gap → prompts → generate → `validate_tool` → integrate. Hunt skills can set an optional **Approved tools** allowlist. Validation: `python scripts/validate_tool.py config/tool_drafts/<id>`.
+**Full offline / AI generate guide:** [`toolgen.md`](toolgen.md). Dev dashboard: Home → **Open Dev** → **Tools** (drafts → validate → integrate). Validation: `python scripts/validate_tool.py config/tool_drafts/<id>`.
 
 **When to open it**
 
@@ -103,29 +107,7 @@ Add check in `stages/validate_mech.py` `CHECKS` list; unit test in `tests/test_v
 - Extending `grep` / `file_inventory` / etc. with new args
 - Adding a brand-new `code_static` tool name
 
-**Ornith + AI generate (not FakeLLM)**
-
-1. LM Studio (or compatible) with Ornith loaded; Settings → **Optimize AI** → Save (`ornith-1.0-35b@4bit` style id, high `max_tokens`).
-2. Dev → **Tools** → **Generate tool…** (or `python scripts/live_toolgen_smoke.py`).
-3. Offline tests use FakeLLM / hand-seeded drafts; live path:
-
-```bash
-VF_LIVE=1 pytest tests/test_live_ornith.py tests/test_live_toolgen.py -v -s
-```
-
-Integrate **apply** mutates package source — dry-run first. Toolgen JSON success ≠ recon tool-call readiness.
-
-**Wire-up order** (details + skeleton in `toolgen.md`)
-
-| Step | Where |
-|------|--------|
-| Implement | `vulnforge/tools/<module>.py` → `{"ok": True/False, ...}` |
-| Dispatch | `vulnforge/tools/__init__.py` → `build_tool_handler` (+ optional aliases) |
-| Allowlist | `vulnforge/profiles/code_static.py` → `allowed_tools()` |
-| LLM schema | `vulnforge/packet.py` → `tool_schemas_for` |
-| Caps (optional) | `config/default.yaml` → `tools.*` |
-| Docs | `PROTOCOL.md` tool list |
-| Tests | `tests/test_tools.py`, known-tools in `tests/test_tool_gaps.py` |
+Integrate **apply** mutates package source — dry-run first. Prefer writing a SPEC module under `tools/agent/`; `extra_registry` remains a compatibility path for older integrates.
 
 **Rules** (same as honesty + `toolgen.md`): target tree read-only; evidence only via `write_evidence`; soft path jail for path tools; no unrestricted shell on default `code_static`. Prefer extending an existing tool when the model only needs filters/args.
 

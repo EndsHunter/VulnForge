@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
+from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT
 from vulnforge.util import utc_now_iso
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-UI_SETTINGS_PATH = PROJECT_ROOT / "config" / "ui_settings.json"
+UI_SETTINGS_PATH = CONFIG_ROOT / "ui_settings.json"
 
 # LLM HTTP API surface (OpenAI chat.completions / responses / Anthropic messages)
 API_MODES = frozenset({"chat_completions", "responses", "messages"})
