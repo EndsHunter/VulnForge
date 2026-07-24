@@ -18,9 +18,8 @@ from vulnforge.packet import pack_develop_poc, refuse_if_over_budget
 from vulnforge.tools import build_tool_handler
 from vulnforge.transcript import save_transcript
 from vulnforge.usage import record_llm_result
+from vulnforge.paths import PROJECT_ROOT
 from vulnforge.util import append_event, utc_now_iso
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _collect_poc_code_files(

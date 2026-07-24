@@ -159,7 +159,9 @@ def line_count(ctx: dict, path: str = ".") -> dict[str, Any]:
     d = get_draft(did, include_files=True)
     assert "def line_count" in (d.get("impl_py") or "")
     wire = d.get("wireup") or {}
-    assert wire.get("impl_path") == f"vulnforge/tools/{did}.py"
+    safe = str(did).lower().replace("-", "_")
+    assert wire.get("impl_path") == f"vulnforge/tools/agent/{safe}.py"
+    assert wire.get("impl_module") == f"vulnforge.tools.agent.{safe}"
     assert did in (wire.get("allowed_tools_add") or [])
 
 

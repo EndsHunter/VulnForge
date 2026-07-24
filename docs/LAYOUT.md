@@ -12,7 +12,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Shared FS/grep backends (not one-tool-one-file) | `vulnforge/tools/fs_read.py`, `grep_index.py`, `evidence_write.py`, … |
 | Extra tools (toolgen integrate) | `vulnforge/tools/extra_registry.py` + optional `tools/extra/` |
 | Stage / task kind | `vulnforge/stages/<kind>.py` |
-| Packet builders + prompt packing | `vulnforge/packet.py` (schemas live on tool SPECs) |
+| Packet builders + prompt packing | `vulnforge/packet.py` (schemas live on tool SPECs; **`packets/` package split deferred**) |
 | System / stage markdown prompts | Prefer `seeds/system/` when present; else `prompts/v1/` (legacy) — see `paths.system_prompts_root()` |
 | Hunt skill **runtime** authority | `config/hunt_profiles/` (collection + bodies) |
 | Hunt skill **package seeds** (reseed only) | `seeds/hunt_classes/` or `prompts/v1/hunt_classes/` |
@@ -70,6 +70,13 @@ are **separate** concerns — not folded into one mega-yaml.
 4. Or use Dev → Tools → generate/validate/integrate (writes SPEC module when possible).
 
 Wire-up checklist (historical multi-touch path): see `toolgen.md`.
+
+## Deferred refactors
+
+| Item | Status |
+|------|--------|
+| Split `packet.py` → `vulnforge/packets/` package with re-export shim | **Deferred** — schemas already left for SPECs; further split is opportunistic polish |
+| Mass move `prompts/v1` → `seeds/` | Dual-read via `paths.system_prompts_root()` etc.; forced move later if needed |
 
 ## Dead / out-of-scope paths
 

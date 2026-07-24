@@ -9,10 +9,10 @@ import shutil
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT
 from vulnforge.util import utc_now_iso
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DRAFTS_ROOT = PROJECT_ROOT / "config" / "tool_drafts"
+DEFAULT_DRAFTS_ROOT = CONFIG_ROOT / "tool_drafts"
 
 TOOL_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 MAX_TEXT_BYTES = 256 * 1024

@@ -17,10 +17,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.paths import PROJECT_ROOT
 from vulnforge.util import append_event, utc_now_iso
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PID_NAME = "ralph.pid"
 STOP_NAME = "STOP"
 META_NAME = "runner.json"

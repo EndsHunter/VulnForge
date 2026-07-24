@@ -303,9 +303,13 @@ def _always_keep_for_stage(stage: str) -> frozenset[str]:
     return frozenset()
 
 
-# Compat shims — prefer ToolSpec.critical_for / registry.critical_tools_for.
-HUNT_ALWAYS_KEEP_TOOLS = _always_keep_for_stage("hunt")
-RECON_ALWAYS_KEEP_TOOLS = _always_keep_for_stage("recon")
+def __getattr__(name: str):
+    """Live critical-keep sets (not frozen at import; refresh after registry reload)."""
+    if name == "HUNT_ALWAYS_KEEP_TOOLS":
+        return _always_keep_for_stage("hunt")
+    if name == "RECON_ALWAYS_KEEP_TOOLS":
+        return _always_keep_for_stage("recon")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def pack_recon(
@@ -443,7 +447,7 @@ def pack_recon_agent(
     run_profile = str((cfg.get("run") or {}).get("profile") or "code_static")
     tools = tool_schemas_for(run_profile, "recon")
     tools = _filter_tools_by_allowlist(
-        tools, tools_allowlist, always_keep=RECON_ALWAYS_KEEP_TOOLS
+        tools, tools_allowlist, always_keep=_always_keep_for_stage("recon")
     )
     budget = _budget_chars(cfg)
     total = len(system) + len(user)
@@ -688,7 +692,7 @@ def pack_hunt(
     if isinstance(payload_tools, list) and payload_tools:
         tools_allowlist = [str(x).strip() for x in payload_tools if str(x).strip()]
     tools = _filter_tools_by_allowlist(
-        tools, tools_allowlist, always_keep=HUNT_ALWAYS_KEEP_TOOLS
+        tools, tools_allowlist, always_keep=_always_keep_for_stage("hunt")
     )
     budget = _budget_chars(cfg)
     total = len(system) + len(user)

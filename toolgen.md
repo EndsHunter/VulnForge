@@ -23,15 +23,20 @@ Checklist of record for humans and local/offline models. Linked from `AGENTS.md`
 
 ## Wire-up order (manual)
 
+**Preferred (one file):** `vulnforge/tools/agent/<name>.py` with `SPEC = ToolSpec(...)` and `run(ctx, **args)`. Registry auto-discovers name, OpenAI schema, stages, aliases, and `critical_for`. No hand-edit of `packet.py` or giant if/elif.
+
 | Step | Where |
 |------|--------|
-| Implement | `vulnforge/tools/<module>.py` |
-| Dispatch | `build_tool_handler` **or** `extra_registry.EXTRA_TOOL_SPECS` (toolgen integrate) |
-| Allowlist | `CodeStaticProfile.allowed_tools()` (auto-includes extras) |
-| LLM schema | `packet.tool_schemas_for` (auto-merges extras) |
+| Implement (preferred) | `vulnforge/tools/agent/<name>.py` — co-located `SPEC` + `run()` |
+| Shared backends | `vulnforge/tools/fs_read.py`, `grep_index.py`, … (optional helpers) |
+| Dispatch | Auto via `tools/registry` + `tools/dispatch` (`build_tool_handler`) |
+| Allowlist | `CodeStaticProfile.allowed_tools()` ← registry (+ extras) |
+| LLM schema | `packet.tool_schemas_for` ← registry SPECs (+ extras) |
+| Critical keep | `ToolSpec.critical_for` (e.g. `submit_*` on hunt) |
+| Legacy extras | `extra_registry.EXTRA_TOOL_SPECS` only when not writing agent SPECs |
 | Caps | `config/default.yaml` → `tools.*` (optional) |
-| Docs | `PROTOCOL.md` tool list |
-| Tests | `tests/test_tools.py` or `tests/test_tool_<id>.py` |
+| Docs | `PROTOCOL.md` tool list; `docs/LAYOUT.md` |
+| Tests | `tests/test_tools.py`, `tests/test_tool_registry.py`, or `tests/test_tool_<id>.py` |
 
 ## Local Ornith (recommended for AI generate)
 
@@ -49,7 +54,7 @@ Primary surface for VulnForge: **LM Studio** (or compatible) OpenAI chat API on 
 
 **AI fix** is **single-shot per click** in the Dev wizard — re-run validate / AI fix until hard checks pass. Do not weaken safety to pass.
 
-**Integrate apply** writes package source (`vulnforge/tools/<id>.py`, `extra_registry.py`). Always dry-run first; review `impl.py` before Apply.
+**Integrate apply** defaults to `vulnforge/tools/agent/<id>.py` (SPEC module). Explicit wireup may still write `vulnforge/tools/<id>.py` + `extra_registry.py` (legacy). Always dry-run first; review `impl.py` before Apply.
 
 ### Live smoke (not FakeLLM)
 
@@ -72,7 +77,7 @@ python scripts/live_toolgen_smoke.py   # dry-run integrate only
 6. **Generate impl** → review `impl.py` + `schema.json` + tests.
 7. **Validate** — `python scripts/validate_tool.py config/tool_drafts/<id>`
 8. Optional **AI fix** (click again if still failing) using the validation report.
-9. **Integrate** (dry-run then apply) — writes module + `extra_registry`.
+9. **Integrate** (dry-run then apply) — writes `tools/agent/<id>.py` SPEC (or legacy extra path).
 10. **Select** on hunt profiles (optional tools allowlist) or recon agents.
 
 Drafts live in `config/tool_drafts/<id>/` and are **never** imported by the agent until Integrate.

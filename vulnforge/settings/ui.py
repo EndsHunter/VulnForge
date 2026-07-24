@@ -2,7 +2,7 @@
 Runtime LLM / agent settings (GUI + env overrides).
 
 Stored at: <PROJECT_ROOT>/config/ui_settings.json
-Merged on top of config/default.yaml by load_runtime_config().
+Merged on top of config/default.yaml by ``vulnforge.settings.load.load_config``.
 """
 
 from __future__ import annotations

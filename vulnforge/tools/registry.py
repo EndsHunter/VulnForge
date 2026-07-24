@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import pkgutil
 from functools import lru_cache
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from vulnforge.tools.base import ToolRunner, ToolSpec
 
+log = logging.getLogger(__name__)
+
 # Stages that participate in operator default_tools narrowing.
 STAGE_KEYS = ("recon", "hunt", "develop_poc")
+
+# When an extra tool omits stages, default here (fail-closed — not all stages).
+_DEFAULT_EXTRA_STAGES = ("hunt",)
 
 
 def _discover_agent_modules() -> list[str]:
     """Import paths for modules under vulnforge.tools.agent (one tool each)."""
     try:
         import vulnforge.tools.agent as agent_pkg
-    except ImportError:
+    except ImportError as e:
+        log.warning("agent tools package unavailable: %s", e)
         return []
     names: list[str] = []
     prefix = agent_pkg.__name__ + "."
@@ -34,17 +41,29 @@ def _discover_agent_modules() -> list[str]:
 @lru_cache(maxsize=1)
 def _load_agent_entries() -> tuple[tuple[ToolSpec, ToolRunner], ...]:
     entries: list[tuple[ToolSpec, ToolRunner]] = []
+    seen_names: set[str] = set()
     for mod_path in _discover_agent_modules():
         try:
             mod = importlib.import_module(mod_path)
-        except Exception:
+        except Exception as e:
+            log.warning("failed to import agent tool module %s: %s", mod_path, e)
             continue
         spec = getattr(mod, "SPEC", None)
         run = getattr(mod, "run", None)
         if not isinstance(spec, ToolSpec):
+            log.warning("agent module %s missing ToolSpec SPEC; skipped", mod_path)
             continue
         if not callable(run):
+            log.warning("agent module %s missing callable run(); skipped", mod_path)
             continue
+        if spec.name in seen_names:
+            log.warning(
+                "duplicate agent tool SPEC name %r from %s; keeping first",
+                spec.name,
+                mod_path,
+            )
+            continue
+        seen_names.add(spec.name)
         entries.append((spec, run))
     # Stable order: name
     entries.sort(key=lambda x: x[0].name)
@@ -102,8 +121,8 @@ def allowed_tool_names(*, include_extras: bool = True) -> list[str]:
             if n not in seen:
                 names.append(n)
                 seen.add(n)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("extra_tool_names failed: %s", e)
     return names
 
 
@@ -119,6 +138,20 @@ def critical_tools_for(stage: str) -> frozenset[str]:
 
 def stage_critical_map() -> dict[str, frozenset[str]]:
     return {s: critical_tools_for(s) for s in STAGE_KEYS}
+
+
+def _extra_stages(raw: dict[str, Any]) -> set[str]:
+    """Resolve stages for an extra tool; empty/missing → fail-closed default hunt."""
+    stages_raw = raw.get("stages")
+    if not stages_raw:
+        name = str(raw.get("name") or "?")
+        log.warning(
+            "extra tool %r has empty stages; defaulting to %s (fail-closed)",
+            name,
+            list(_DEFAULT_EXTRA_STAGES),
+        )
+        return set(_DEFAULT_EXTRA_STAGES)
+    return {str(s).strip() for s in stages_raw if str(s).strip()}
 
 
 def openai_schemas_for_stage(
@@ -149,8 +182,8 @@ def openai_schemas_for_stage(
                 name = str(raw.get("name") or "").strip()
                 if not name or name in seen:
                     continue
-                stages = {str(s) for s in (raw.get("stages") or [])}
-                if stages and stage_key not in stages:
+                stages = _extra_stages(raw)
+                if stage_key not in stages:
                     continue
                 params = (
                     raw.get("parameters")
@@ -182,8 +215,8 @@ def openai_schemas_for_stage(
                     }
                 )
                 seen.add(name)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("list_extra_specs failed for stage %s: %s", stage_key, e)
     return tools
 
 

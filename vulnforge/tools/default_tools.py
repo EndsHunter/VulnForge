@@ -43,28 +43,64 @@ BLOCKED_TOOLS = frozenset(
 )
 
 
-def _critical_from_registry() -> dict[str, frozenset[str]]:
-    try:
-        from vulnforge.tools.registry import stage_critical_map
-
-        return stage_critical_map()
-    except Exception:
-        return {
-            "recon": frozenset({"submit_architecture"}),
-            "hunt": frozenset(
-                {
-                    "submit_candidate",
-                    "submit_none",
-                    "list_hunt_profiles",
-                    "request_hunt",
-                }
-            ),
-            "develop_poc": frozenset({"write_evidence"}),
+_CRITICAL_FALLBACK: dict[str, frozenset[str]] = {
+    "recon": frozenset({"submit_architecture"}),
+    "hunt": frozenset(
+        {
+            "submit_candidate",
+            "submit_none",
+            "list_hunt_profiles",
+            "request_hunt",
         }
+    ),
+    "develop_poc": frozenset({"write_evidence"}),
+}
 
 
-# Compat name: derived from ToolSpec.critical_for (agent registry).
-STAGE_CRITICAL_TOOLS: dict[str, frozenset[str]] = _critical_from_registry()
+def stage_critical_tools(stage: str) -> frozenset[str]:
+    """Live critical set for ``stage`` (from SPECs; not import-time frozen)."""
+    stage_key = str(stage or "").strip()
+    try:
+        from vulnforge.tools.registry import critical_tools_for
+
+        crit = critical_tools_for(stage_key)
+        if crit:
+            return crit
+    except Exception:
+        pass
+    return _CRITICAL_FALLBACK.get(stage_key, frozenset())
+
+
+class _LiveCriticalMap:
+    """Mapping-like view that always re-queries the agent registry."""
+
+    def get(self, stage: str, default: frozenset[str] | None = None) -> frozenset[str]:
+        stage_key = str(stage or "").strip()
+        if stage_key not in STAGES:
+            return default if default is not None else frozenset()
+        return stage_critical_tools(stage_key)
+
+    def __getitem__(self, stage: str) -> frozenset[str]:
+        return stage_critical_tools(stage)
+
+    def items(self):
+        return ((s, stage_critical_tools(s)) for s in STAGES)
+
+    def keys(self):
+        return iter(STAGES)
+
+    def values(self):
+        return (stage_critical_tools(s) for s in STAGES)
+
+    def __contains__(self, stage: object) -> bool:
+        return str(stage or "") in STAGES
+
+    def __iter__(self):
+        return iter(STAGES)
+
+
+# Compat name: mapping always reflects ToolSpec.critical_for (live).
+STAGE_CRITICAL_TOOLS = _LiveCriticalMap()
 
 _EMPTY: dict[str, Any] = {
     "recon": None,

@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from vulnforge.packet import load_prompt_slice
+from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT, system_prompts_root
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PACKAGE_PROMPTS = PROJECT_ROOT / "prompts" / "v1"
-OVERRIDE_DIR = PROJECT_ROOT / "config" / "prompts"
+PACKAGE_PROMPTS = system_prompts_root()
+OVERRIDE_DIR = CONFIG_ROOT / "prompts"
 OVERRIDE_PATH = OVERRIDE_DIR / "generate_skill.md"
 AUTHOR_PROMPT_NAME = "generate_skill.md"
 MAX_AUTHOR_PROMPT_BYTES = 256 * 1024

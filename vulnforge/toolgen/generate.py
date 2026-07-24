@@ -10,6 +10,7 @@ from typing import Any, Optional
 from vulnforge.llm import make_client
 from vulnforge.packet import load_prompt_slice
 from vulnforge.profiles.code_static import CodeStaticProfile
+from vulnforge.paths import PROJECT_ROOT, system_prompts_root
 from vulnforge.toolgen.store import (
     ToolDraftError,
     get_draft,
@@ -18,8 +19,7 @@ from vulnforge.toolgen.store import (
     update_draft,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PROMPTS_ROOT = PROJECT_ROOT / "prompts" / "v1"
+PROMPTS_ROOT = system_prompts_root()
 
 
 class GenerateToolError(ValueError):
@@ -580,8 +580,9 @@ def generate_impl(
     # Ensure baseline wireup keys
     meta = d.get("meta") or {}
     tid = meta.get("id") or draft_id
-    wireup.setdefault("impl_module", f"vulnforge.tools.{tid}")
-    wireup.setdefault("impl_path", f"vulnforge/tools/{tid}.py")
+    safe_leaf = str(tid).lower().replace("-", "_")
+    wireup.setdefault("impl_module", f"vulnforge.tools.agent.{safe_leaf}")
+    wireup.setdefault("impl_path", f"vulnforge/tools/agent/{safe_leaf}.py")
     wireup.setdefault("handler_branches", [tid])
     wireup.setdefault("allowed_tools_add", [tid])
     wireup.setdefault("packet_stages", meta.get("stages") or ["hunt"])

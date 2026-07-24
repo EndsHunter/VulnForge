@@ -15,6 +15,7 @@ from vulnforge.transcript import save_transcript, load_transcript, list_transcri
 def test_ui_settings_merge(tmp_path: Path, monkeypatch):
     # isolate settings file
     p = tmp_path / "ui_settings.json"
+    monkeypatch.setattr("vulnforge.settings.ui.UI_SETTINGS_PATH", p)
     monkeypatch.setattr("vulnforge.settings.UI_SETTINGS_PATH", p)
     save_ui_settings(
         {
@@ -61,6 +62,7 @@ def test_build_llm_base_url_https_and_local():
 
 def test_ui_settings_https_host(tmp_path: Path, monkeypatch):
     p = tmp_path / "ui_settings.json"
+    monkeypatch.setattr("vulnforge.settings.ui.UI_SETTINGS_PATH", p)
     monkeypatch.setattr("vulnforge.settings.UI_SETTINGS_PATH", p)
     save_ui_settings(
         {
@@ -88,6 +90,7 @@ def test_api_key_blank_and_none_accepted(tmp_path: Path, monkeypatch):
     assert normalize_api_key("  sk-live  ") == "sk-live"
 
     p = tmp_path / "ui_settings.json"
+    monkeypatch.setattr("vulnforge.settings.ui.UI_SETTINGS_PATH", p)
     monkeypatch.setattr("vulnforge.settings.UI_SETTINGS_PATH", p)
     save_ui_settings({"api_key": "sk-keep"})
     assert load_ui_settings()["api_key"] == "sk-keep"
@@ -146,6 +149,7 @@ def test_api_mode_aliases_and_default(tmp_path: Path, monkeypatch):
     assert normalize_api_mode("nope") == "chat_completions"
 
     p = tmp_path / "ui_settings.json"
+    monkeypatch.setattr("vulnforge.settings.ui.UI_SETTINGS_PATH", p)
     monkeypatch.setattr("vulnforge.settings.UI_SETTINGS_PATH", p)
     save_ui_settings({"api_mode": "chat-completions"})
     ui = load_ui_settings()

@@ -41,7 +41,7 @@ def drafts_root(tmp_path: Path):
     reset_drafts_root_override()
 
 
-def _seed_valid_draft(draft_id: str = "count_entries"):
+def _seed_draft_base(draft_id: str = "count_entries"):
     create_draft(brief="Count directory entries", suggested_id=draft_id)
     update_draft(
         draft_id,
@@ -63,32 +63,95 @@ def _seed_valid_draft(draft_id: str = "count_entries"):
                 }
             ]
         },
+        handler_snippet=f'if name == "{draft_id}": ...',
+        test_stub=f"def test_{draft_id}():\n    assert True\n",
+    )
+
+
+def _seed_valid_draft_agent(draft_id: str = "count_entries"):
+    """Agent SPEC path (preferred integrate target)."""
+    _seed_draft_base(draft_id)
+    update_draft(
+        draft_id,
         wireup={
-            "impl_module": f"vulnforge.tools.{draft_id}",
-            "impl_path": f"vulnforge/tools/{draft_id}.py",
+            "impl_module": f"vulnforge.tools.agent.{draft_id}",
+            "impl_path": f"vulnforge/tools/agent/{draft_id}.py",
             "handler_branches": [draft_id],
             "allowed_tools_add": [draft_id],
             "packet_stages": ["hunt"],
             "test_file": f"tests/test_tool_{draft_id}.py",
         },
-        handler_snippet=f'if name == "{draft_id}": ...',
-        test_stub=f"def test_{draft_id}():\n    assert True\n",
     )
     report = validate_draft(draft_id, for_integrate=True, persist=True)
     assert report["ok"], report["hard_fail"]
     return draft_id
 
 
-def test_plan_integration_dry_run(drafts_root: Path):
-    did = _seed_valid_draft()
+def _seed_valid_draft_legacy(draft_id: str = "count_entries"):
+    """Legacy extra_registry path with explicit non-agent wireup."""
+    # Use a distinct id that still matches the impl def name via schema rename
+    lid = "legacy_count"
+    create_draft(brief="Count directory entries (legacy)", suggested_id=lid)
+    impl = GOOD_IMPL.replace("def count_entries", f"def {lid}")
+    update_draft(
+        lid,
+        spec_md=f"# Tool: {lid}\n## Purpose\nCount entries.\n",
+        impl_py=impl,
+        schema={
+            "tools": [
+                {
+                    "name": lid,
+                    "description": "Count directory entries under path",
+                    "stages": ["hunt"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "rel path"},
+                        },
+                        "required": [],
+                    },
+                }
+            ]
+        },
+        wireup={
+            "impl_module": f"vulnforge.tools.{lid}",
+            "impl_path": f"vulnforge/tools/{lid}.py",
+            "handler_branches": [lid],
+            "allowed_tools_add": [lid],
+            "packet_stages": ["hunt"],
+            "test_file": f"tests/test_tool_{lid}.py",
+        },
+        handler_snippet=f'if name == "{lid}": ...',
+        test_stub=f"def test_{lid}():\n    assert True\n",
+    )
+    report = validate_draft(lid, for_integrate=True, persist=True)
+    assert report["ok"], report["hard_fail"]
+    return lid
+
+
+def test_plan_integration_agent_default_path(drafts_root: Path):
+    did = _seed_valid_draft_agent()
     plan = plan_integration(did)
     assert plan["ok"]
     assert plan["tool_name"] == did
-    assert any(o["path"].endswith(f"{did}.py") for o in plan["ops"])
+    assert plan.get("write_agent_spec") is True
+    assert plan["impl_path"].replace("\\", "/").startswith("vulnforge/tools/agent/")
+    assert any("tools/agent/" in o["path"].replace("\\", "/") for o in plan["ops"])
+    # Agent path does not rewrite extra_registry
+    assert not any("extra_registry" in o["path"] for o in plan["ops"])
+
+
+def test_plan_integration_legacy_extra_registry(drafts_root: Path):
+    did = _seed_valid_draft_legacy()
+    plan = plan_integration(did)
+    assert plan["ok"]
+    assert plan.get("write_agent_spec") is False
+    assert plan["impl_path"].replace("\\", "/") == f"vulnforge/tools/{did}.py"
+    assert any("extra_registry" in o["path"] for o in plan["ops"])
 
 
 def test_integrate_dry_run_api_shape(drafts_root: Path):
-    did = _seed_valid_draft("count_entries")
+    did = _seed_valid_draft_agent("count_entries")
     out = integrate(did, dry_run=True, apply=False)
     assert out.get("dry_run") is True
     assert "ops" in out

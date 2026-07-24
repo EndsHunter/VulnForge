@@ -29,9 +29,8 @@ from vulnforge.llm import InfraError, classify_llm_failure, make_client, message
 from vulnforge.packet import pack_disprove
 from vulnforge.transcript import save_transcript
 from vulnforge.usage import record_llm_result
+from vulnforge.paths import PROJECT_ROOT
 from vulnforge.util import append_event, utc_now_iso
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # Full pack_disprove + dual LLM path is implemented.
 IMPLEMENTATION_COMPLETE = True

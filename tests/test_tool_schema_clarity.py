@@ -75,3 +75,13 @@ def test_note_payload_documented():
     payload = (fn.get("parameters") or {}).get("properties", {}).get("payload") or {}
     assert payload.get("description")
     assert "codemap" in (payload.get("description") or "").lower()
+
+
+def test_write_evidence_develop_poc_has_evidence_id_and_poc_wording():
+    hunt = _by_name("hunt")["write_evidence"]
+    poc = _by_name("develop_poc")["write_evidence"]
+    h_props = (hunt.get("parameters") or {}).get("properties") or {}
+    p_props = (poc.get("parameters") or {}).get("properties") or {}
+    assert "evidence_id" not in h_props
+    assert "evidence_id" in p_props
+    assert "poc" in (poc.get("description") or "").lower()

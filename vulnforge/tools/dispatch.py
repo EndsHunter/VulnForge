@@ -43,7 +43,7 @@ def run_tool(name: str, ctx: dict, args: dict | None = None) -> dict[str, Any]:
     args = args or {}
     want = str(name or "").strip()
     if not want:
-        return {"ok": False, "error": "unknown tool "}
+        return {"ok": False, "error": "unknown tool name"}
 
     runner = get_agent_runner(want)
     if runner is not None:
