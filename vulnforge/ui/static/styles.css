@@ -4474,6 +4474,13 @@ button.llm-usage-task:focus-visible {
   align-items: center;
   gap: 0.35rem;
 }
+.report-related-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
 .report-related-item.self {
   opacity: 0.85;
 }

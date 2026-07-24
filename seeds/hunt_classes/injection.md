@@ -85,11 +85,13 @@ description: >-
 
 ```
 execute\(|executemany|\.raw\(|\.query\(|f["'].*(SELECT|INSERT|UPDATE)|WHERE .*\+|ORDER BY
+Statement\.execute|createNativeQuery|jdbcTemplate|DBI->|pg_query|mysqli_|sqlite3_exec
 subprocess\.|os\.system|popen|shell=True|Runtime\.exec|ProcessBuilder|child_process|execSync
+system\(|popen\(|CreateProcess|ShellExecute|qx\{|open\([^,]+,\s*['"]\|
 eval\(|Function\(|vm\.|compile\(|__import__|importlib
 render_template_string|Template\(|Jinja|freemarker|SpelExpression|OGNL|Velocity
-open\(|Path\(|join\(.*req|send_file|include\(|readFile.*\+
-pickle\.loads|yaml\.load\(|unserialize|ObjectInputStream
+open\(|Path\(|join\(.*req|send_file|include\(|readFile.*\+|fopen\(|FileInputStream
+pickle\.loads|yaml\.load\(|unserialize|ObjectInputStream|readObject
 ```
 
 ## Required evidence

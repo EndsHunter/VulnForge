@@ -80,6 +80,13 @@ Mechanical codemap is path-backed structure stored in `runs.codemap_json` (built
 
 ## Extending
 
+### Stage docs (recon / hunt / validate)
+
+Maintainer guides (behavior + “what/where to modify”):
+
+- [`docs/harness/`](docs/harness/) — pipeline overview and per-stage folders
+- [`docs/system/`](docs/system/) — every `seeds/system/*` prompt: purpose and impact of edits
+
 ### New hunt class / skill
 
 Hunt skills live in the **operator collection** (`config/hunt_profiles/`), not hardcoded defaults.

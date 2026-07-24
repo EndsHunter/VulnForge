@@ -2,11 +2,12 @@
 name: memory-safety
 description: >-
   Hunts spatial/temporal memory bugs and privileged native-interface flaws on
-  attacker-controlled input in C/C++/ObjC, Rust unsafe, parsers, kernels, FFI,
-  and JIT. Use when tracing memcpy/strcpy/sprintf, length fields from packets/
-  files, free/use sites, slice::from_raw/transmute, ioctl/copy_from_user, or
-  decoder entry points. Prefer concrete input geometry over “C is unsafe.”
-  Managed languages without native/unsafe → submit_none for this class.
+  attacker-controlled input in C/C++/ObjC, Ada (Unchecked_Conversion / Interfaces.C),
+  Fortran, assembly, CUDA, Rust unsafe, parsers, kernels, FFI, and JIT. Use when
+  tracing memcpy/strcpy/sprintf, length fields from packets/files, free/use sites,
+  slice::from_raw/transmute, ioctl/copy_from_user, or decoder entry points.
+  Prefer concrete input geometry over “C is unsafe.” Pure managed Java/Python/Go
+  without JNI/unsafe/FFI → submit_none for this class.
 ---
 
 # Hunt class: memory-safety
@@ -21,13 +22,14 @@ description: >-
 
 ## When to use
 
-- C/C++/ObjC, Rust `unsafe`, kernels/drivers, parsers/decoders, network daemons
-- Firmware, JIT/runtimes, FFI bridges from managed languages
+- C/C++/ObjC, Ada (address overlays, Unchecked_Conversion, pragma Import C), Fortran, assembly, CUDA
+- Rust `unsafe`, kernels/drivers, parsers/decoders, network daemons
+- Firmware, JIT/runtimes, JNI/FFI bridges from managed languages (Java, Perl XS, Python C-API)
 - Packet/file length fields driving alloc/copy; free without drain; type confusion
 
 ## When not to use / Scope
 
-- Safe managed languages without native/unsafe (Go/Java/Python pure, Rust safe) → `submit_none`
+- Safe managed languages without native/unsafe (pure Go/Java/Python/Perl, Rust safe) → `submit_none`
 - Null deref crash inflated to RCE without control claim
 - Unreachable test harnesses only
 - Related skills: `injection` for managed interpreter sinks; `supply-chain` for poisoned native deps; `wildcard` only if residual and not a clean memory finding
@@ -78,9 +80,11 @@ description: >-
 ```
 memcpy|memmove|strcpy|strcat|sprintf|gets\(|scanf\(|recv\(|read\(
 malloc|calloc|realloc|free\(|delete
+Unchecked_Conversion|Interfaces\.C|pragma Import|System\.Address
 unsafe |slice::from_raw|transmute|MaybeUninit
 sizeof\(|offsetof|container_of
 ioctl|copy_from_user|get_user|put_user
+JNI_|Get(String|Byte|Int)Array|GetPrimitiveArrayCritical
 parse_|decode_|deserialize|protobuf|flatbuffer|msgpack
 ```
 

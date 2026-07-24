@@ -17,7 +17,19 @@
         "ssti",
         "path-traversal"
       ],
-      "languages": [],
+      "languages": [
+        "python",
+        "javascript",
+        "typescript",
+        "java",
+        "perl",
+        "php",
+        "ruby",
+        "c",
+        "cpp",
+        "go",
+        "csharp"
+      ],
       "cwe": [
         "CWE-89",
         "CWE-78",
@@ -364,7 +376,7 @@
     {
       "id": "memory-safety",
       "title": "Memory safety",
-      "description": "Hunts spatial/temporal memory bugs and privileged native-interface flaws on attacker-controlled input in C/C++/ObjC, Rust unsafe, parsers, kernels, FFI, and JIT.",
+      "description": "Hunts spatial/temporal memory bugs and privileged native-interface flaws on attacker-controlled input in C/C++/ObjC, Ada, Fortran, assembly, CUDA, Rust unsafe, parsers, kernels, FFI, and JIT.",
       "active": true,
       "body_file": "bodies/memory-safety.md",
       "source": "seed",
@@ -379,7 +391,11 @@
         "c",
         "cpp",
         "rust",
-        "objc"
+        "objc",
+        "ada",
+        "fortran",
+        "assembly",
+        "cuda"
       ],
       "cwe": [
         "CWE-119",
@@ -393,7 +409,9 @@
         6,
         7
       ],
-      "sink_families": [],
+      "sink_families": [
+        "memory"
+      ],
       "specificity": 18,
       "version": 3,
       "tools": null,

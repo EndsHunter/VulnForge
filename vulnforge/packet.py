@@ -406,6 +406,8 @@ def pack_recon_agent(
     inv = {
         "file_count": inventory.get("file_count"),
         "extensions": inventory.get("extensions"),
+        "languages": inventory.get("languages"),
+        "stack_summary": inventory.get("stack_summary"),
         "entrypoints": inventory.get("entrypoints"),
         "sample_paths": (inventory.get("sample_paths") or [])[:80],
     }

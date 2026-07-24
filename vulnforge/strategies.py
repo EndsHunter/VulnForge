@@ -13,66 +13,9 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from vulnforge.hunt_profiles import resolve_run_class_ids
+from vulnforge.languages import ENTRYPOINT_NAMES, SOURCE_EXTS, is_entrypoint_name
 from vulnforge.tools.grep_index import build_file_index
 from vulnforge.util import normalize_relpath
-
-# Source-ish extensions worth hunting; skip media/binary by default.
-SOURCE_EXTS = frozenset(
-    {
-        ".py",
-        ".pyi",
-        ".js",
-        ".jsx",
-        ".ts",
-        ".tsx",
-        ".mjs",
-        ".cjs",
-        ".go",
-        ".rs",
-        ".java",
-        ".kt",
-        ".kts",
-        ".scala",
-        ".rb",
-        ".php",
-        ".cs",
-        ".fs",
-        ".swift",
-        ".m",
-        ".mm",
-        ".c",
-        ".cc",
-        ".cpp",
-        ".cxx",
-        ".h",
-        ".hpp",
-        ".hh",
-        ".sql",
-        ".graphql",
-        ".gql",
-        ".vue",
-        ".svelte",
-        ".r",
-        ".jl",
-        ".lua",
-        ".pl",
-        ".pm",
-        ".ex",
-        ".exs",
-        ".erl",
-        ".hs",
-        ".clj",
-        ".cljs",
-        ".dart",
-        ".zig",
-        ".nim",
-        ".sh",
-        ".bash",
-        ".ps1",
-        ".bat",
-        ".cmd",
-    }
-)
 
 BINARY_EXTS = frozenset(
     {
@@ -118,34 +61,6 @@ BINARY_EXTS = frozenset(
         ".whl",
         ".egg",
         ".min.js",  # not a real ext; handled below
-    }
-)
-
-# Priority: entrypoints and shallow paths first (lower number = higher priority).
-ENTRYPOINT_NAMES = frozenset(
-    {
-        "main.py",
-        "app.py",
-        "manage.py",
-        "server.js",
-        "index.js",
-        "index.ts",
-        "main.go",
-        "main.rs",
-        "main.c",
-        "main.cpp",
-        "wsgi.py",
-        "asgi.py",
-        "routes.py",
-        "views.py",
-        "urls.py",
-        "handler.py",
-        "handlers.py",
-        "controller.py",
-        "controllers.py",
-        "api.py",
-        "app.js",
-        "app.ts",
     }
 )
 
@@ -196,15 +111,21 @@ def _priority_key(rel: str) -> tuple:
     rel_n = normalize_relpath(rel)
     name = Path(rel_n).name
     depth = rel_n.count("/")
-    is_entry = 0 if name in ENTRYPOINT_NAMES else 1
+    is_entry = 0 if is_entrypoint_name(name) else 1
     # Prefer non-test paths slightly
+    low = rel_n.lower()
     is_test = 1 if (
-        "/test" in f"/{rel_n.lower()}"
+        "/test" in f"/{low}"
+        or "/tests/" in f"/{low}/"
         or name.startswith("test_")
         or name.endswith("_test.py")
+        or name.endswith("_test.go")
+        or name.endswith("Test.java")
+        or name.endswith("_test.rs")
         or name.endswith(".test.js")
         or name.endswith(".spec.ts")
         or name.endswith(".spec.js")
+        or name.endswith(".t")  # Perl tests (still source; lower priority)
     ) else 0
     return (is_entry, is_test, depth, rel_n)
 

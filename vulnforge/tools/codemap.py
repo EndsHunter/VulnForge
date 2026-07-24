@@ -11,28 +11,17 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
-from vulnforge.tools.grep_index import ENTRYPOINT_NAMES, _ignored
+from vulnforge.languages import (
+    CODE_EXTS,
+    PACKAGE_MARKERS,
+    is_entrypoint_name,
+    languages_from_extensions,
+)
+from vulnforge.tools.grep_index import _ignored
 from vulnforge.util import normalize_relpath, utc_now_iso
 
-# Package / workspace markers (basename)
-_PACKAGE_MARKERS = frozenset(
-    {
-        "package.json",
-        "pyproject.toml",
-        "setup.py",
-        "setup.cfg",
-        "go.mod",
-        "Cargo.toml",
-        "Cargo.lock",
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "composer.json",
-        "Gemfile",
-        "mix.exs",
-        "__init__.py",
-    }
-)
+# Package / workspace markers (basename) — central catalog
+_PACKAGE_MARKERS = PACKAGE_MARKERS
 
 # Basename / path tokens that hint security-relevant areas (not CWE claims)
 _SIGNAL_TOKENS = frozenset(
@@ -135,8 +124,28 @@ _IMPORT_GO = re.compile(
     re.MULTILINE,
 )
 _IMPORT_GO_LINE = re.compile(r'^\s*"([^"]+)"\s*$', re.MULTILINE)
+_IMPORT_C = re.compile(
+    r'^\s*#\s*include\s*[<"]([^>"]+)[>"]',
+    re.MULTILINE,
+)
+_IMPORT_JAVA = re.compile(
+    r"^\s*import\s+(?:static\s+)?([\w.]+)\s*;",
+    re.MULTILINE,
+)
+_IMPORT_PERL = re.compile(
+    r"^\s*(?:use|require)\s+([\w:]+)",
+    re.MULTILINE,
+)
+_IMPORT_ADA = re.compile(
+    r"^\s*with\s+([\w.]+)\s*;",
+    re.MULTILINE | re.IGNORECASE,
+)
+_IMPORT_RS = re.compile(
+    r"^\s*use\s+([\w:]+)(?:::\{|;)",
+    re.MULTILINE,
+)
 
-_CODE_EXTS = frozenset({".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java"})
+_CODE_EXTS = CODE_EXTS
 
 
 def _cfg_codemap(cfg: Optional[dict]) -> dict[str, Any]:
@@ -238,7 +247,7 @@ def _collect_files(
         name = target_root.name
         files = [name]
         ext_hist[target_root.suffix.lower() or "<none>"] += 1
-        if name in ENTRYPOINT_NAMES:
+        if is_entrypoint_name(name):
             entrypoints.append(name)
         return files, ext_hist, entrypoints
 
@@ -260,7 +269,7 @@ def _collect_files(
             continue
         files.append(rel)
         ext_hist[path.suffix.lower() or "<none>"] += 1
-        if path.name in ENTRYPOINT_NAMES:
+        if is_entrypoint_name(path.name):
             entrypoints.append(rel)
     return files, ext_hist, entrypoints
 
@@ -488,14 +497,15 @@ def build_codemap(
             max_edges=opts["max_edges"],
         )
 
-    languages = {
-        k: int(v)
-        for k, v in sorted(
-            (ext_hist or Counter(inv.get("extensions") or {})).items(),
-            key=lambda kv: (-kv[1], kv[0]),
-        )[:30]
-        if k and k != "<none>"
-    }
+    # Prefer language names (c, cpp, ada, java, perl, …) over raw extensions.
+    ext_for_lang = ext_hist or Counter(inv.get("extensions") or {})
+    languages = languages_from_extensions(ext_for_lang, limit=30)
+    if not languages and inv.get("languages"):
+        languages = {
+            str(k): int(v)
+            for k, v in (inv.get("languages") or {}).items()
+            if k
+        }
 
     return {
         "version": 1,
@@ -523,6 +533,7 @@ def _build_single_file(target: Path, inv: dict) -> dict[str, Any]:
     )
     name = normalize_relpath(name)
     ext = Path(name).suffix.lower()
+    langs = languages_from_extensions({ext: 1} if ext else {})
     return {
         "version": 1,
         "generated_at": utc_now_iso(),
@@ -530,7 +541,7 @@ def _build_single_file(target: Path, inv: dict) -> dict[str, Any]:
         "target_kind": "single_file",
         "summary": {
             "file_count": 1,
-            "languages": {ext: 1} if ext else {},
+            "languages": langs,
             "package_roots": [],
             "entrypoint_count": 1,
             "module_count": 1,
@@ -609,8 +620,30 @@ def _resolve_import_to_module(
 
     for c in candidates:
         c_n = normalize_relpath(c)
-        # exact file
-        for ext in ("", ".py", ".js", ".ts", ".tsx", ".jsx", ".go"):
+        # exact file (multi-language)
+        for ext in (
+            "",
+            ".py",
+            ".js",
+            ".ts",
+            ".tsx",
+            ".jsx",
+            ".go",
+            ".java",
+            ".c",
+            ".h",
+            ".cpp",
+            ".hpp",
+            ".cc",
+            ".rs",
+            ".pm",
+            ".pl",
+            ".ads",
+            ".adb",
+            ".rb",
+            ".php",
+            ".cs",
+        ):
             cand_f = c_n if not ext else c_n + ext
             if cand_f in file_set:
                 return _module_for_path(cand_f, module_paths)
@@ -685,12 +718,27 @@ def _build_import_edges(
         if ext == ".py":
             for m in _IMPORT_PY.finditer(text):
                 imports.append(m.group(1) or m.group(2) or "")
-        elif ext in (".js", ".ts", ".tsx", ".jsx"):
+        elif ext in (".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs"):
             for m in _IMPORT_JS.finditer(text):
                 imports.append(m.group(1) or m.group(2) or m.group(3) or "")
         elif ext == ".go":
             for m in _IMPORT_GO_LINE.finditer(text):
                 imports.append(m.group(1) or "")
+        elif ext in (".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".m", ".mm"):
+            for m in _IMPORT_C.finditer(text):
+                imports.append(m.group(1) or "")
+        elif ext == ".java":
+            for m in _IMPORT_JAVA.finditer(text):
+                imports.append(m.group(1) or "")
+        elif ext in (".pl", ".pm", ".t", ".psgi"):
+            for m in _IMPORT_PERL.finditer(text):
+                imports.append((m.group(1) or "").replace("::", "/"))
+        elif ext in (".ads", ".adb", ".ada"):
+            for m in _IMPORT_ADA.finditer(text):
+                imports.append(m.group(1) or "")
+        elif ext == ".rs":
+            for m in _IMPORT_RS.finditer(text):
+                imports.append((m.group(1) or "").replace("::", "/"))
         for imp in imports[:40]:
             if len(edges) >= max_edges:
                 break

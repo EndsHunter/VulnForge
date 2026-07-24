@@ -41,10 +41,10 @@ This is the **shared stage** recon prompt (legacy single-agent path and harness 
 
 ### Class selection (for `hunt_focus`)
 
-1. **What surfaces exist?** HTTP API, GraphQL, agents/LLM, native parsers, browser SPA, CI/install, money/workflow.
+1. **What languages and surfaces exist?** Use inventory `languages` / `stack_summary` and extensions (not only Python/JS). Cover C, C++, Ada, Java, Perl, Fortran, COBOL, C#, Go, Rust, PHP, Ruby, shell, and mixed trees when present. Surfaces: HTTP API, GraphQL, CLI, agents/LLM, native parsers, browser SPA, IPC, queues, CI/install, money/workflow.
 2. **Pick 1–3 classes per area** that match those surfaces (examples):
    - IDs + mutators / multi-tenant → `access-control` (and `graphql` only if schema/resolvers dominate)
-   - SQL/exec/template/path sinks → `injection`
+   - SQL/exec/template/path sinks (Java JDBC, Perl DBI, C `system`/`popen`, PHP, Python, …) → `injection`
    - Chat/tools/RAG/MCP → `ai-llm`
    - Checkout/quota/state machines → `business-logic`
    - Secrets/JWT/TLS crypto misuse → `cryptography`
@@ -52,11 +52,12 @@ This is the **shared stage** recon prompt (legacy single-agent path and harness 
    - Export/webhook/SSRF features → `feature-abuse`
    - DOM sinks / CORS+credentials → `client-side`
    - postinstall/CI/updater trust → `supply-chain`
-   - C/C++/unsafe parsers → `memory-safety`
+   - C/C++/ObjC/Ada/Fortran/unsafe Rust/CUDA parsers, kernels, FFI → `memory-safety`
    - Residual odd trust edges → `wildcard` (sparingly)
 3. Prefer **specific** classes over `wildcard` when the inventory is clear.
-4. Omit classes with no supporting inventory (e.g. no GraphQL → skip `graphql`).
+4. Omit classes with no supporting inventory (e.g. no GraphQL → skip `graphql`; pure managed Java without JNI → skip `memory-safety`).
 5. If no strong focus, **omit** `hunt_focus` — the harness enqueues the **active** profile set only.
+6. Name components with real extensions/entrypoints (e.g. `CMakeLists.txt`, `pom.xml`, `*.gpr`, `cpanfile`, `main.adb`) — do not assume a web monorepo layout.
 
 Use **short class id strings** from the **Registered hunt classes** section injected below this prompt. Prefer profile **descriptions** (and tags when shown) to pick class fit — not every area needs every class.
 
@@ -78,7 +79,7 @@ Use **short class id strings** from the **Registered hunt classes** section inje
 
 ## Method / workflow
 
-1. Skim inventory extensions and entrypoints; align components with the mechanical codemap; open a few real paths.
+1. Skim inventory **languages**, extensions, and entrypoints (including C/C++/Ada/Java/Perl build markers); align components with the mechanical codemap; open a few real paths per language stack.
 2. Name major components with path hints you actually saw (prefer codemap module paths; do not invent modules outside the map without tool evidence).
 3. List trust boundaries and input surfaces grounded in code.
 4. Note comparables (similar systems for baseline — not to dismiss bugs) in `summary` if useful.

@@ -11,9 +11,10 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Tool registry / dispatch / schemas | `vulnforge/tools/base.py`, `registry.py`, `dispatch.py` |
 | Shared FS/grep backends (not one-tool-one-file) | `vulnforge/tools/fs_read.py`, `grep_index.py`, `evidence_write.py`, … |
 | Extra tools (toolgen integrate) | `vulnforge/tools/extra_registry.py` + optional `tools/extra/` |
-| Stage / task kind | `vulnforge/stages/<kind>.py` |
+| Stage / task kind | `vulnforge/stages/<kind>.py` — behavior + modify guides: [`docs/harness/`](harness/) |
+| System prompt catalog (impact of edits) | [`docs/system/`](system/) |
 | Packet builders + prompt packing | `vulnforge/packet.py` (schemas live on tool SPECs; **`packets/` package split deferred**) |
-| System / stage markdown prompts | `seeds/system/` — see `paths.system_prompts_root()` |
+| System / stage markdown prompts | `seeds/system/` — see `paths.system_prompts_root()`; impact catalog: [`docs/system/`](system/) |
 | Hunt skill **runtime** authority | `config/hunt_profiles/` (collection + bodies) |
 | Hunt skill **package seeds** (reseed only) | `seeds/hunt_classes/` |
 | Recon agent **runtime** | `config/recon_agents/` |
@@ -27,6 +28,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Dashboard routes / static | `vulnforge/ui/` |
 | Hunt profile store / reseed | `vulnforge/hunt_profiles/` |
 | Mechanical codemap (not architecture) | `vulnforge/tools/codemap.py` → `runs.codemap_json` |
+| Languages / extensions / entrypoints catalog | `vulnforge/languages.py` (SOURCE_EXTS, ENTRYPOINT_NAMES, package markers; used by inventory, codemap, sinks, strategies) |
 | Tool-gap mining | `vulnforge/tool_gaps.py` |
 | Toolgen (draft → validate → integrate) | `vulnforge/toolgen/` + `toolgen.md` |
 
@@ -58,7 +60,7 @@ are **separate** concerns — not folded into one mega-yaml.
 |------|-------------------|-------------------------------------|
 | Hunt skills | `config/hunt_profiles/` | `seeds/hunt_classes/` |
 | Recon agents | `config/recon_agents/` | `seeds/recon_agents/` |
-| System prompts | optional `config/prompts/overrides/<name>.md` then package | `seeds/system/` |
+| System prompts | optional `config/prompts/overrides/<name>.md` then package | `seeds/system/` — catalog: [`docs/system/`](system/) |
 
 **Edit runtime collections** for live campaigns. Edit package seeds only when changing the library that Dev **Reseed** copies from.
 

@@ -111,7 +111,7 @@ def expand_recon_agent_tasks(
     base_payload: dict[str, Any],
     agent_ids: list[str],
     *,
-    base_priority: int = 10,
+    base_priority: int | None = None,
 ) -> list[tuple[dict[str, Any], int]]:
     """
     Expand a recon request into one Ralph task payload per agent.
@@ -119,9 +119,12 @@ def expand_recon_agent_tasks(
     Multiple agents share a recon_batch_id so results merge into one architecture
     and hunts finalize once when the batch is complete.
     """
+    from vulnforge.task_priority import RECON_INIT_PRIORITY
+
+    prio_base = int(RECON_INIT_PRIORITY if base_priority is None else base_priority)
     ids = [str(a).strip().lower() for a in (agent_ids or []) if str(a).strip()][:32]
     if not ids:
-        return [(dict(base_payload), int(base_priority))]
+        return [(dict(base_payload), prio_base)]
 
     want_hunts = base_payload.get("enqueue_hunts")
     if want_hunts is None:
@@ -133,7 +136,7 @@ def expand_recon_agent_tasks(
         pl = dict(base_payload)
         pl["agent_ids"] = [ids[0]]
         pl["enqueue_hunts"] = want_hunts
-        return [(pl, int(base_priority))]
+        return [(pl, prio_base)]
 
     batch_id = str(uuid.uuid4())
     out: list[tuple[dict[str, Any], int]] = []
@@ -156,7 +159,7 @@ def expand_recon_agent_tasks(
         else:
             pl["include_prior_architecture"] = True
             pl["merge_with_existing"] = True
-        out.append((pl, int(base_priority) + i))
+        out.append((pl, prio_base + i))
     return out
 
 
@@ -165,12 +168,15 @@ def enqueue_recon_agent_tasks(
     base_payload: dict[str, Any],
     agent_ids: list[str],
     *,
-    base_priority: int = 10,
+    base_priority: int | None = None,
 ) -> list[int]:
     """Enqueue one recon task per agent; return task ids in agent order."""
+    from vulnforge.task_priority import RECON_INIT_PRIORITY
+
+    prio_base = int(RECON_INIT_PRIORITY if base_priority is None else base_priority)
     task_ids: list[int] = []
     for pl, prio in expand_recon_agent_tasks(
-        base_payload, agent_ids, base_priority=base_priority
+        base_payload, agent_ids, base_priority=prio_base
     ):
         task_ids.append(db.enqueue_task("recon", pl, priority=prio))
     return task_ids
@@ -696,8 +702,12 @@ def maybe_auto_retry_recon(
     elif "enqueue_hunts" not in child_payload:
         child_payload["enqueue_hunts"] = True
 
-    # Ahead of default hunts (50) but after operator re-run (5)
-    child_id = db.enqueue_task("recon", child_payload, priority=8)
+    # Ahead of default hunts (50); after operator front-of-queue re-run.
+    from vulnforge.task_priority import RECON_CHILD_PRIORITY
+
+    child_id = db.enqueue_task(
+        "recon", child_payload, priority=int(RECON_CHILD_PRIORITY)
+    )
     try:
         append_event(
             run_dir,
@@ -780,20 +790,24 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     break
         except OSError:
             seed_sinks = []
-        inventory = {
-            "file_count": 1,
-            "kind": "single_file",
-            "extensions": {target.suffix.lower(): 1} if target.suffix else {},
-            "entrypoints": [name],
-            "sample_paths": [name],
-            "seed_sinks": seed_sinks,
-            "dir_partitions": {".": [name]},
-            "single_file": {
-                "name": name,
-                "path": str(target),
-                "sha256": digest,
-            },
-        }
+        from vulnforge.languages import attach_languages_to_inventory
+
+        inventory = attach_languages_to_inventory(
+            {
+                "file_count": 1,
+                "kind": "single_file",
+                "extensions": {target.suffix.lower(): 1} if target.suffix else {},
+                "entrypoints": [name],
+                "sample_paths": [name],
+                "seed_sinks": seed_sinks,
+                "dir_partitions": {".": [name]},
+                "single_file": {
+                    "name": name,
+                    "path": str(target),
+                    "sha256": digest,
+                },
+            }
+        )
     else:
         inventory = build_file_index(target, ignore)
         if inventory["file_count"] == 0:
@@ -937,7 +951,11 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     if len(agents) > 1 and not payload.get("recon_batch_id"):
         first = agents[0]
         all_ids = [str(a.get("id")) for a in agents if a.get("id")]
-        expanded = expand_recon_agent_tasks(dict(payload), all_ids, base_priority=8)
+        from vulnforge.task_priority import RECON_CHILD_PRIORITY
+
+        expanded = expand_recon_agent_tasks(
+            dict(payload), all_ids, base_priority=int(RECON_CHILD_PRIORITY)
+        )
         if expanded:
             first_pl = expanded[0][0]
             payload = {**payload, **first_pl}

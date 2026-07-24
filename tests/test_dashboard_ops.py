@@ -525,7 +525,42 @@ def test_requeue_recon_with_notes(tmp_path: Path, toy_sqli: Path):
         assert t is not None
         assert t.kind == "recon"
         assert t.state == "queued"
-        assert t.priority <= 10
+        # Front-of-queue: at or below init recon band
+        assert t.priority <= 5
+    finally:
+        db.close()
+
+
+def test_requeue_recon_jumps_ahead_of_hunts(tmp_path: Path, toy_sqli: Path):
+    """Operator recon must lease before already-queued hunts."""
+    run = _init_run(tmp_path, toy_sqli)
+    db = Database.open(run / "harness.db")
+    try:
+        for t in db.list_tasks(limit=200):
+            if t.kind == "recon" and t.state == "queued":
+                db.cancel_queued_task(t.id, reason="test_clear")
+        hunt_id = db.enqueue_task(
+            "hunt",
+            {"area": "app", "class": "injection"},
+            priority=40,
+        )
+    finally:
+        db.close()
+
+    r = dashops.requeue_recon(run, operator_notes="Jump queue", enqueue_hunts=False)
+    assert r["ok"] is True
+    recon_id = r["task_id"]
+
+    db = Database.open(run / "harness.db")
+    try:
+        recon = db.get_task(recon_id)
+        hunt_t = db.get_task(int(hunt_id))
+        assert recon is not None and hunt_t is not None
+        assert recon.priority < hunt_t.priority
+        leased = db.lease_next_task("test-worker", ttl_seconds=60)
+        assert leased is not None
+        assert leased.id == recon_id
+        assert leased.kind == "recon"
     finally:
         db.close()
 

@@ -509,6 +509,7 @@
               </li>`;
             })
             .join("")}</ul>
+          <div class="report-related-actions">
           ${
             Number(f.id) === Number(cluster.primary_id) &&
             (cluster.members || []).some((m) => Number(m.id) !== Number(f.id) && m.state !== "superseded")
@@ -518,7 +519,11 @@
                   .join(",")}" title="Supersede all other variants into primary">Merge all variants into primary</button>`
               : ""
           }
-          <p class="controls-hint">Merge marks drop as <span class="mono">superseded</span> and annotates keeper — does not change keeper state / never auto-confirms.</p>
+          <button type="button" class="btn btn-sm report-ask-ai-cluster" data-cluster="${esc(
+            cluster.cluster_id || ""
+          )}" title="Open AI chat with a compare prompt for this near-dup cluster">Ask AI</button>
+          </div>
+          <p class="controls-hint">Merge marks drop as <span class="mono">superseded</span> and annotates keeper — does not change keeper state / never auto-confirms. Ask AI opens the AI tab with a compare draft (not sent until you press Send).</p>
         </div>`
       : "";
     const mergeMeta =
@@ -1179,6 +1184,40 @@
     }
   }
 
+  function buildDedupComparePrompt(cluster) {
+    if (!cluster) return "";
+    const members = cluster.members || [];
+    const lines = members.map((m) => {
+      const isPrimary = Number(m.id) === Number(cluster.primary_id);
+      const title = (m.title || "").trim() || "(no title)";
+      const mark = isPrimary ? " (primary)" : "";
+      return `- #${m.id} [${m.class || "-"}] ${m.state || "-"}${mark} — "${title}"`;
+    });
+    return [
+      "Compare these near-duplicate / overlapping findings. Summarize similarities and differences (sink, class, title, state, evidence). Recommend keep-primary vs keep-separate and why. Do not merge unless I ask. Use get_finding for full bodies if needed.",
+      "",
+      `Cluster: ${cluster.cluster_id || "?"} · strength: ${cluster.strength || "overlap"} · primary: #${cluster.primary_id}${
+        cluster.group_key ? ` · key: ${cluster.group_key}` : ""
+      }`,
+      "",
+      "Findings:",
+      ...lines,
+    ].join("\n");
+  }
+
+  function askAiAboutCluster(cluster) {
+    const text = buildDedupComparePrompt(cluster);
+    if (!text) {
+      toast("No cluster to compare", true);
+      return;
+    }
+    window.VulnForgeModes?.setMode?.("ai");
+    const ok = window.VulnForgeChat?.prefill?.(text);
+    if (!ok) {
+      toast("AI chat unavailable — open the AI tab and paste the compare prompt", true);
+    }
+  }
+
   function bindDetailActions(root) {
     root.querySelectorAll(".report-review-btn").forEach((btn) => {
       btn.addEventListener("click", (e) => {
@@ -1215,6 +1254,14 @@
           .filter(Boolean);
         if (!keep || !drops.length) return;
         doMerge(keep, drops);
+      });
+    });
+    root.querySelectorAll(".report-ask-ai-cluster").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const cid = btn.getAttribute("data-cluster") || "";
+        const cluster = clustersCache.find((c) => String(c.cluster_id) === String(cid));
+        if (cluster) askAiAboutCluster(cluster);
       });
     });
     root.querySelectorAll(".report-open-ev").forEach((btn) => {
@@ -1769,6 +1816,9 @@
               .filter((m) => Number(m.id) !== Number(c.primary_id))
               .map((m) => m.id)
               .join(",")}" title="Merge all into primary">Merge all → primary</button>
+            <button type="button" class="btn btn-sm report-ask-ai-cluster" data-cluster="${esc(
+              c.cluster_id || ""
+            )}" title="Open AI chat with a compare prompt">Ask AI</button>
           </div>
           <div class="report-cluster-members">${members}</div>
         </div>`;
@@ -1788,6 +1838,14 @@
           .map((x) => Number(x.trim()))
           .filter(Boolean);
         if (keep && drops.length) doMerge(keep, drops);
+      });
+    });
+    el.querySelectorAll(".report-ask-ai-cluster").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const cid = btn.getAttribute("data-cluster") || "";
+        const cluster = clustersCache.find((c) => String(c.cluster_id) === String(cid));
+        if (cluster) askAiAboutCluster(cluster);
       });
     });
   }

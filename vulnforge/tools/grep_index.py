@@ -8,11 +8,16 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from vulnforge.languages import (
+    ENTRYPOINT_NAMES,
+    attach_languages_to_inventory,
+    is_entrypoint_name,
+)
 from vulnforge.tools.scope import attach_scope_warning, scope_roots_for_scan
 from vulnforge.util import normalize_relpath
 
-# Nested quantifiers / classic ReDoS shapes â€” reject rather than hang.
-# Do NOT reject stacked .* / .+ (e.g. foo.*bar.*baz) â€” common multi-hop greps.
+# Nested quantifiers / classic ReDoS shapes — reject rather than hang.
+# Do NOT reject stacked .* / .+ (e.g. foo.*bar.*baz) — common multi-hop greps.
 _NESTED_QUANTIFIER = re.compile(
     r"\([^)]*[+*][^)]*\)[+*]|"  # (a+)+ or (a*)*
     r"\([^)]*[+*][^)]*\)\{|"  # (a+){2,
@@ -35,24 +40,6 @@ def _ignored(rel: str, ignore_globs: list[str]) -> bool:
         if g_n.startswith("**/") and fnmatch(rel_n, g_n[3:]):
             return True
     return False
-
-
-ENTRYPOINT_NAMES = {
-    "package.json",
-    "pyproject.toml",
-    "setup.py",
-    "Cargo.toml",
-    "go.mod",
-    "main.go",
-    "main.py",
-    "app.py",
-    "manage.py",
-    "Dockerfile",
-    "docker-compose.yml",
-    "server.js",
-    "index.js",
-    "index.ts",
-}
 
 # Cap on paths injected into recon packet / default hunt seeds.
 # Full-tree walk still counts every file; hunts can grep/read anywhere.
@@ -109,7 +96,7 @@ def build_file_index(target_root: Path, ignore_globs: list[str] | None = None) -
             continue
         files.append(rel)
         ext_hist[path.suffix.lower() or "<none>"] += 1
-        if path.name in ENTRYPOINT_NAMES:
+        if is_entrypoint_name(path.name):
             entrypoints.append(rel)
 
     sample = stratified_sample_paths(files, SAMPLE_PATHS_CAP)
@@ -132,7 +119,7 @@ def build_file_index(target_root: Path, ignore_globs: list[str] | None = None) -
                         break
             seen.add(e)
 
-    return {
+    inv = {
         "file_count": len(files),
         "extensions": dict(ext_hist),
         "entrypoints": entrypoints,
@@ -142,6 +129,7 @@ def build_file_index(target_root: Path, ignore_globs: list[str] | None = None) -
         "sample_paths_cap": SAMPLE_PATHS_CAP,
         "sample_paths_partial": len(files) > SAMPLE_PATHS_CAP,
     }
+    return attach_languages_to_inventory(inv)
 
 
 def validate_grep_pattern(pattern: str, max_len: int = DEFAULT_MAX_PATTERN_LEN) -> str | None:

@@ -36,4 +36,8 @@ from these seeds; runtime collections can diverge intentionally.
 - Recon agent seeds: `recon_agent_seeds_root()` → `seeds/recon_agents/`
 - Prompt pin at `vf init`: hashes the effective seeds tree (`SEEDS_ROOT`)
 
-See also [`docs/LAYOUT.md`](../docs/LAYOUT.md).
+See also:
+
+- [`docs/LAYOUT.md`](../docs/LAYOUT.md) — seed vs runtime map
+- [`docs/system/`](../docs/system/) — catalog of every `seeds/system/*` file, loaders, and impact of changes
+- [`docs/harness/`](../docs/harness/) — recon / hunt / validate stage behavior and MODIFY guides

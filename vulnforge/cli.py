@@ -565,11 +565,13 @@ def cmd_init(args, cfg: dict) -> int:
         _attach_hunt_skill_policy(recon_payload)
         _attach_enqueue_hunts(recon_payload)
         # One Ralph task per recon agent; architecture merges when batch completes.
+        from vulnforge.task_priority import RECON_INIT_PRIORITY
+
         recon_task_ids = enqueue_recon_agent_tasks(
             db,
             recon_payload,
             recon_agent_ids or resolve_recon_agent_ids(None),
-            base_priority=10,
+            base_priority=RECON_INIT_PRIORITY,
         )
     else:
         # discovery (default): recon only — one Ralph loop per agent profile
@@ -584,11 +586,13 @@ def cmd_init(args, cfg: dict) -> int:
         _attach_dynamic_skills(recon_payload)
         _attach_hunt_skill_policy(recon_payload)
         _attach_enqueue_hunts(recon_payload)
+        from vulnforge.task_priority import RECON_INIT_PRIORITY
+
         recon_task_ids = enqueue_recon_agent_tasks(
             db,
             recon_payload,
             recon_agent_ids or resolve_recon_agent_ids(None),
-            base_priority=10,
+            base_priority=RECON_INIT_PRIORITY,
         )
 
     db.close()

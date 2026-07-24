@@ -1,4 +1,8 @@
-"""Mechanical sink preindex â€” seed_sinks for recon/hunt (no LLM)."""
+"""Mechanical sink preindex — seed_sinks for recon/hunt (no LLM).
+
+Covers web/script stacks plus C/C++, Ada, Java, Perl, and other languages
+that historically fell out of narrow extension allow-lists.
+"""
 
 from __future__ import annotations
 
@@ -6,26 +10,98 @@ import re
 from pathlib import Path
 from typing import Any
 
+from vulnforge.languages import CODE_BASENAMES, CODE_EXTS, is_code_extension
 from vulnforge.util import normalize_relpath
 
-# kind â†’ compiled patterns (line-level, case-sensitive where idiomatic)
+# kind → compiled patterns (line-level)
 _SINK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("sql", re.compile(r"""(?:execute|executemany|raw|cursor\.execute)\s*\(|SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM""", re.I)),
-    ("sql", re.compile(r"""(?:text|sql)\s*\(\s*f['\"]|%\s*\(|\.format\s*\(.*(?:SELECT|INSERT|UPDATE)""", re.I)),
-    ("exec", re.compile(r"""(?:subprocess\.(?:run|call|Popen|check_output)|os\.system|os\.popen|exec\s*\(|eval\s*\(|Runtime\.exec|child_process|shell_exec|passthru)\s*\(""", re.I)),
-    ("path", re.compile(r"""(?:open\s*\(|Path\s*\(|readFileSync|writeFileSync|send_file|sendfile|FileResponse|os\.path\.join)\s*""")),
-    ("jwt", re.compile(r"""(?:jwt\.(?:decode|encode|verify)|jsonwebtoken|jose\.|HS256|RS256|verify\s*\(.*token)""", re.I)),
-    ("llm", re.compile(r"""(?:openai|anthropic|chat\.completions|ChatCompletion|tool_calls|function_call|prompt\s*=|system_prompt|langchain|ChatOpenAI|responses\.create)""", re.I)),
-    ("auth", re.compile(r"""(?:@login_required|@require_|require_auth|authenticate|authorize|check_permission|has_permission|IsAuthenticated|current_user|get_current_user|session\[.user)""", re.I)),
-    ("template", re.compile(r"""(?:render_template|jinja2|Template\s*\(|Mustache|\.render\s*\(|innerHTML\s*=|dangerouslySetInnerHTML|v-html)""", re.I)),
-    ("deserialize", re.compile(r"""(?:pickle\.loads|yaml\.load\s*\(|unserialize|ObjectInputStream|JSON\.parse\s*\()""", re.I)),
-    ("ssrf", re.compile(r"""(?:requests\.(?:get|post|put|request)|httpx\.|urllib\.request|fetch\s*\(|axios\.|HttpClient)""", re.I)),
+    # SQL — multi-language
+    (
+        "sql",
+        re.compile(
+            r"""(?:execute|executemany|raw|cursor\.execute|Statement\.execute|createQuery|createNativeQuery|jdbcTemplate|\.query\s*\(|prepare\s*\(|DBI->|pg_query|mysqli_|mysql_query|sqlite3_exec)\s*\(|SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM""",
+            re.I,
+        ),
+    ),
+    (
+        "sql",
+        re.compile(
+            r"""(?:text|sql)\s*\(\s*f['\"]|%\s*\(|\.format\s*\(.*(?:SELECT|INSERT|UPDATE)|"\s*\+\s*.*(?:SELECT|WHERE|FROM)""",
+            re.I,
+        ),
+    ),
+    # Command / process exec
+    (
+        "exec",
+        re.compile(
+            r"""(?:subprocess\.(?:run|call|Popen|check_output)|os\.system|os\.popen|exec\s*\(|eval\s*\(|Runtime\.exec|ProcessBuilder|child_process|shell_exec|passthru|system\s*\(|popen\s*\(|posix_spawn|CreateProcess|ShellExecute)\s*\(""",
+            re.I,
+        ),
+    ),
+    # Path / file IO
+    (
+        "path",
+        re.compile(
+            r"""(?:open\s*\(|Path\s*\(|readFileSync|writeFileSync|send_file|sendfile|FileResponse|os\.path\.join|Files\.(?:read|write|newInputStream|newOutputStream)|FileInputStream|FileOutputStream|std::(?:ifstream|ofstream|fstream)|fopen\s*\()""",
+        ),
+    ),
+    # JWT / token crypto
+    (
+        "jwt",
+        re.compile(
+            r"""(?:jwt\.(?:decode|encode|verify)|jsonwebtoken|jose\.|HS256|RS256|verify\s*\(.*token|Jwts\.|JWT\.decode)""",
+            re.I,
+        ),
+    ),
+    # LLM / agents
+    (
+        "llm",
+        re.compile(
+            r"""(?:openai|anthropic|chat\.completions|ChatCompletion|tool_calls|function_call|prompt\s*=|system_prompt|langchain|ChatOpenAI|responses\.create)""",
+            re.I,
+        ),
+    ),
+    # Authz / session
+    (
+        "auth",
+        re.compile(
+            r"""(?:@login_required|@require_|require_auth|authenticate|authorize|check_permission|has_permission|IsAuthenticated|current_user|get_current_user|session\[.user|@PreAuthorize|@Secured|HttpServletRequest)""",
+            re.I,
+        ),
+    ),
+    # Templates / XSS-ish
+    (
+        "template",
+        re.compile(
+            r"""(?:render_template|jinja2|Template\s*\(|Mustache|\.render\s*\(|innerHTML\s*=|dangerouslySetInnerHTML|v-html|Freemarker|Velocity|Thymeleaf|SpelExpression|OGNL)""",
+            re.I,
+        ),
+    ),
+    # Deserialization
+    (
+        "deserialize",
+        re.compile(
+            r"""(?:pickle\.loads|yaml\.load\s*\(|unserialize|ObjectInputStream|readObject\s*\(|Marshal\.load|BinaryFormatter|JsonConvert\.DeserializeObject|JSON\.parse\s*\()""",
+            re.I,
+        ),
+    ),
+    # SSRF-ish HTTP clients
+    (
+        "ssrf",
+        re.compile(
+            r"""(?:requests\.(?:get|post|put|request)|httpx\.|urllib\.request|fetch\s*\(|axios\.|HttpClient|HttpURLConnection|RestTemplate|WebClient|LWP::|HTTP::Tiny|curl_easy)""",
+            re.I,
+        ),
+    ),
+    # Native memory / copy sinks (C/C++/Ada/unsafe)
+    (
+        "memory",
+        re.compile(
+            r"""(?:memcpy|memmove|strcpy|strncpy|strcat|strncat|sprintf|vsprintf|gets\s*\(|scanf\s*\(|malloc|calloc|realloc|free\s*\(|delete\s*\[|Unchecked_Conversion|Interfaces\.C|pragma\s+Import|slice::from_raw|transmute|MaybeUninit|copy_from_user|get_user|put_user)""",
+            re.I,
+        ),
+    ),
 ]
-
-_CODE_EXTS = {
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".rb", ".php",
-    ".cs", ".c", ".cc", ".cpp", ".h", ".hpp", ".vue", ".svelte", ".kt", ".scala",
-}
 
 
 def _ignored(rel: str, ignore_globs: list[str]) -> bool:
@@ -61,9 +137,11 @@ def build_sink_preindex(
     for path in sorted(target_root.rglob("*")):
         if not path.is_file():
             continue
-        if path.suffix.lower() not in _CODE_EXTS and path.name not in {
-            "Dockerfile", "Makefile",
-        }:
+        if not (
+            is_code_extension(path.suffix, path.name)
+            or path.suffix.lower() in CODE_EXTS
+            or path.name in CODE_BASENAMES
+        ):
             continue
         rel = normalize_relpath(str(path.relative_to(target_root)))
         if _ignored(rel, globs):
@@ -114,7 +192,9 @@ def filter_sinks_for_paths(
         p = normalize_relpath(str(s.get("path") or ""))
         if hints:
             if not any(
-                p == h or p.startswith(h.rstrip("/") + "/") or h.startswith(p.rstrip("/") + "/")
+                p == h
+                or p.startswith(h.rstrip("/") + "/")
+                or h.startswith(p.rstrip("/") + "/")
                 for h in hints
                 if h
             ):
@@ -130,7 +210,9 @@ def filter_sinks_for_paths(
     return out
 
 
-def sink_kinds_present(sinks: list[dict[str, Any]], path_hints: list[str] | None = None) -> set[str]:
+def sink_kinds_present(
+    sinks: list[dict[str, Any]], path_hints: list[str] | None = None
+) -> set[str]:
     filtered = filter_sinks_for_paths(sinks, path_hints, top_k=10_000)
     return {str(s.get("kind")) for s in filtered if s.get("kind")}
 
@@ -147,6 +229,7 @@ CLASS_SINK_FAMILIES: dict[str, set[str]] = {
     "client-side": {"template"},
     "feature-abuse": {"ssrf"},
     "graphql": {"auth"},
+    "memory-safety": {"memory"},
 }
 
 

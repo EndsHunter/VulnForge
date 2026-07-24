@@ -30,15 +30,21 @@ class CodeStaticProfile:
             ]
 
     def validate_target_hint(self, inventory: dict) -> str | None:
+        from vulnforge.languages import SOURCE_EXTS
+
         ext = inventory.get("extensions") or {}
         total = sum(ext.values()) or 1
-        binary_exts = {".exe", ".dll", ".so", ".dylib", ".bin"}
+        binary_exts = {".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a", ".class"}
         bin_count = sum(ext.get(e, 0) for e in binary_exts)
-        source_exts = {".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".rb"}
-        src_count = sum(ext.get(e, 0) for e in source_exts)
+        src_count = sum(ext.get(e, 0) for e in SOURCE_EXTS)
+        # Also accept language summary when extensions are sparse
+        langs = inventory.get("languages") or {}
+        if not src_count and isinstance(langs, dict):
+            src_count = sum(int(v) for v in langs.values() if v)
         if bin_count / total > 0.7 and src_count == 0:
             return (
                 "tree looks binary-heavy with little source; "
-                "VulnForge is source-code analysis only — point at a source tree"
+                "VulnForge is source-code analysis only — point at a source tree "
+                "(C/C++/Ada/Java/Perl/Python/JS and other source trees are supported)"
             )
         return None

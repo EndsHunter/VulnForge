@@ -42,12 +42,12 @@ Focus on **where untrusted data enters** and where those paths cross trust bound
 
 ## Decision tree
 
-1. **Entrypoints present?** Use inventory entrypoints first; sample implementing files.
+1. **Entrypoints present?** Use inventory entrypoints first (multi-language: `main.c`/`main.cpp`/`Main.java`/`main.adb`/`app.psgi`/`CMakeLists.txt`/`pom.xml`/`*.gpr`/`cpanfile`, not only `app.py`/`package.json`); sample implementing files.
 2. **Channel type?**
-   - HTTP/REST/GraphQL/WebSocket → routes, handlers, middleware, frameworks
-   - CLI / cron / workers → flags, jobs, scheduled handlers
+   - HTTP/REST/GraphQL/WebSocket → routes, handlers, middleware, frameworks (Java servlets/Spring, Perl PSGI, C embedded HTTP, …)
+   - CLI / cron / workers → flags, jobs, scheduled handlers (`main`, `argv`, Ada command-line, …)
    - Queues / pubsub / webhooks → consumers and callback URLs
-   - Files / uploads / IPC / sockets → parsers and listeners
+   - Files / uploads / IPC / sockets → parsers and listeners (C/C++/Ada packet/file decoders especially)
    - Admin / debug / metrics → privileged or accidental exposure
 3. **Auth adjacent?** If a surface is public vs authenticated vs admin-only *and path evidence supports it*, note it on the surface and in `trust_boundaries`.
 4. **Hunt pairing** — Map high-risk surfaces to registered classes (examples only if ids exist in registry):

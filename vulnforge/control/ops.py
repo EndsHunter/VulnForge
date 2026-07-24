@@ -23,7 +23,14 @@ from vulnforge.hunt_profiles import (
     resolve_run_class_ids,
     skill_policy_from_run_cfg,
 )
+from vulnforge.languages import POC_CODE_EXTS
 from vulnforge.stages.recon import _normalize_class
+from vulnforge.task_priority import (
+    PRIORITY_HIGH,
+    PRIORITY_LOW,
+    PRIORITY_NORMAL,
+    recon_front_priority,
+)
 from vulnforge.tools.fs_read import list_dir as tool_list_dir, read_file as tool_read_file, resolve_target_path
 from vulnforge.util import append_event, normalize_relpath
 
@@ -265,11 +272,12 @@ def cell_detail(run_dir: Path, area: str, attack_class: str) -> dict[str, Any]:
 
 # Operator-facing priority tiers (lower int = sooner). See lease_next_task ORDER BY.
 PRIORITY_TIERS: dict[str, int] = {
-    "high": 30,  # ahead of selection (35) and normal hunts (50)
-    "normal": 50,  # default recon hunts
-    "low": 90,  # after bulk residual work
+    "high": PRIORITY_HIGH,  # ahead of selection (35) and normal hunts (50)
+    "normal": PRIORITY_NORMAL,  # default recon-planned hunts
+    "low": PRIORITY_LOW,  # after bulk residual work
 }
 # run_next is dynamic: min(queued)-1
+# Recon init / operator: see task_priority.RECON_INIT_PRIORITY / recon_front_priority
 
 
 def priority_tier_of(priority: int) -> str:
@@ -892,9 +900,10 @@ def requeue_recon(
             except Exception:
                 pass
 
-        # Priority 5: ahead of default recon (10) and hunts (40-50)
+        # Front of queue so recon jumps ahead of bulk hunts (35–50).
+        front = recon_front_priority(db)
         task_ids = enqueue_recon_agent_tasks(
-            db, payload, resolved, base_priority=5
+            db, payload, resolved, base_priority=front
         )
         tid = task_ids[0] if task_ids else None
         try:
@@ -2204,8 +2213,7 @@ def review_finding(
 
 POC_DEVELOP_RELPATH = "poc_develop.md"
 
-# Runnable PoC extensions surfaced in the POC workshop / finding body.
-POC_CODE_EXTS = frozenset({".py", ".sh", ".ps1", ".c", ".go", ".js", ".rb", ".rs"})
+# Runnable PoC extensions: vulnforge.languages.POC_CODE_EXTS (imported above).
 
 
 def _poc_code_files_from_names(names: list[str]) -> list[str]:

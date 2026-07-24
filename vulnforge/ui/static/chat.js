@@ -70,6 +70,34 @@
     if (input) setTimeout(() => input.focus(), 50);
   }
 
+  /**
+   * Prefill the composer (does not send). Ensures the chat shell is mounted.
+   * @param {string} text
+   * @param {{ select?: boolean }} [opts]
+   */
+  function prefill(text, opts) {
+    ensureMounted();
+    const root = state.root || document.getElementById("operator-chat-root");
+    if (!root) return false;
+    const input = root.querySelector("#oc-input");
+    if (!input) return false;
+    input.value = String(text ?? "");
+    setTimeout(() => {
+      input.focus();
+      if (opts?.select) {
+        try {
+          input.select();
+        } catch (_) {}
+      } else {
+        try {
+          const n = input.value.length;
+          input.setSelectionRange(n, n);
+        } catch (_) {}
+      }
+    }, 50);
+    return true;
+  }
+
   function defaultChips(scope) {
     if (scope === "run") {
       return [
@@ -318,5 +346,5 @@
     if (input) input.disabled = !on;
   }
 
-  window.VulnForgeChat = { mount, ensureMounted };
+  window.VulnForgeChat = { mount, ensureMounted, prefill };
 })();
