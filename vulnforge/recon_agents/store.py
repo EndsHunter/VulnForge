@@ -8,12 +8,25 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.paths import (
+    CONFIG_ROOT,
+    LEGACY_PROMPTS_V1,
+    PROJECT_ROOT,
+    recon_agent_seeds_root,
+    system_prompts_root,
+)
 from vulnforge.util import utc_now_iso
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_COLLECTION_ROOT = PROJECT_ROOT / "config" / "recon_agents"
-SEED_PROMPTS_DIR = PROJECT_ROOT / "prompts" / "v1" / "recon_agents"
-LEGACY_RECON_PROMPT = PROJECT_ROOT / "prompts" / "v1" / "recon.md"
+DEFAULT_COLLECTION_ROOT = CONFIG_ROOT / "recon_agents"
+# Dual-read: seeds/recon_agents when present, else prompts/v1/recon_agents.
+SEED_PROMPTS_DIR = recon_agent_seeds_root()
+# Legacy single recon.md: prefer system_prompts_root, fall back to prompts/v1.
+_sys = system_prompts_root()
+LEGACY_RECON_PROMPT = (
+    (_sys / "recon.md")
+    if (_sys / "recon.md").is_file()
+    else (LEGACY_PROMPTS_V1 / "recon.md")
+)
 
 COLLECTION_FORMAT = "vulnforge.recon_collection/v1"
 AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")

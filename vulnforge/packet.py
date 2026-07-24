@@ -225,646 +225,35 @@ def tool_schemas_for(
 ) -> list[dict]:
     """OpenAI-style tool schemas for profile stages.
 
+    Schemas live on tool SPECs under ``vulnforge.tools.agent`` (registry).
     When apply_defaults is True (runtime packets), operator global defaults from
     config/default_tools.json may narrow the set. Catalog / Dev UI should pass
     apply_defaults=False to list the full integrated surface.
     """
+    from vulnforge.tools.registry import critical_tools_for, openai_schemas_for_stage
 
-    def fn(name: str, description: str, properties: dict, required: list[str] | None = None):
-        return {
-            "type": "function",
-            "function": {
-                "name": name,
-                "description": description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": required or [],
-                },
-            },
-        }
+    # profile reserved for future multi-profile; code_static is the only surface.
+    _ = profile
+    tools = openai_schemas_for_stage(stage, include_extras=True)
 
-    def _finish(tools: list[dict]) -> list[dict]:
-        if not apply_defaults or stage not in ("recon", "hunt", "develop_poc"):
-            return tools
-        try:
-            from vulnforge.tools.default_tools import resolve_stage_tools
-
-            names: list[str] = []
-            for t in tools:
-                fn_obj = (t.get("function") or {}) if isinstance(t, dict) else {}
-                n = fn_obj.get("name") if isinstance(fn_obj, dict) else None
-                if n:
-                    names.append(str(n))
-            resolved = resolve_stage_tools(stage, names)
-            if list(resolved) == names:
-                return tools
-            always = (
-                HUNT_ALWAYS_KEEP_TOOLS
-                if stage == "hunt"
-                else RECON_ALWAYS_KEEP_TOOLS
-                if stage == "recon"
-                else frozenset({"write_evidence"})
-            )
-            return _filter_tools_by_allowlist(tools, resolved, always_keep=always)
-        except Exception:
-            return tools
-
-    # Read-only target inspection (shared). Hunt-only tools added per stage.
-    # Descriptions are operator-facing AND model-facing: local models need
-    # when-to-use, path rules, and finish contracts in the tool schema itself.
-    ro = [
-        fn(
-            "list_dir",
-            "List ONE directory level under the audit target (read-only). "
-            "Paths are relative to the target root (use '.' for root). "
-            "Returns names + is_dir only — not recursive. "
-            "Prefer file_inventory for a full subtree or tree in one call; "
-            "use list_dir when you only need children of a known folder.",
-            {
-                "path": {
-                    "type": "string",
-                    "description": (
-                        "Directory relative to target root. "
-                        "Default '.' if omitted. No leading slash; no '..'."
-                    ),
-                },
-                "max_entries": {
-                    "type": "integer",
-                    "description": (
-                        "Max children to return (default from config, often 200). "
-                        "If truncated is true, narrow path or raise cap carefully."
-                    ),
-                },
-            },
-            [],
-        ),
-        fn(
-            "file_inventory",
-            "Recursive file inventory / directory tree under a path (read-only). "
-            "Prefer this over many list_dir rounds. "
-            "Filter with extension (e.g. '.c', 'py', '*.go') or glob ('**/pkcs11/*'). "
-            "format=tree for structure, list for paths, both for both. "
-            "If truncated, narrow path/depth or add extension/glob — do not re-walk "
-            "the whole tree with the same args.",
-            {
-                "path": {
-                    "type": "string",
-                    "description": (
-                        "Subtree root relative to target (default '.'). "
-                        "E.g. 'src/libopensc' to inventory one package."
-                    ),
-                },
-                "max_depth": {
-                    "type": "integer",
-                    "description": (
-                        "Max directory depth from path (default from config, often 10). "
-                        "Lower depth for huge trees."
-                    ),
-                },
-                "max_entries": {
-                    "type": "integer",
-                    "description": (
-                        "Max files to return (default from config, often 2000). "
-                        "Response includes truncated=true when capped."
-                    ),
-                },
-                "extension": {
-                    "type": "string",
-                    "description": (
-                        "Keep only this file extension: '.c', 'c', or '*.c' all work. "
-                        "Case-insensitive."
-                    ),
-                },
-                "glob": {
-                    "type": "string",
-                    "description": (
-                        "fnmatch on full relative path or basename, e.g. '*.go', "
-                        "'**/tools/*', 'Makefile*'."
-                    ),
-                },
-                "format": {
-                    "type": "string",
-                    "enum": ["tree", "list", "both"],
-                    "description": (
-                        "tree (default): indented tree string; "
-                        "list: paths array; both: tree + paths."
-                    ),
-                },
-            },
-            [],
-        ),
-        fn(
-            "read_file",
-            "Read a text file (or line range) from the audit target (read-only). "
-            "path is relative to the target root. "
-            "start_line/end_line are 1-based inclusive line numbers "
-            "(omit both to read from the start, subject to max size). "
-            "Large files are truncated — use a line range for long sources. "
-            "Prefer grep to find a symbol, then read_file around that line. "
-            "Never invent path contents; only cite what this tool returns.",
-            {
-                "path": {
-                    "type": "string",
-                    "description": (
-                        "File path relative to target root, e.g. 'src/tools/opensc-tool.c'. "
-                        "Must be a file, not a directory."
-                    ),
-                },
-                "start_line": {
-                    "type": "integer",
-                    "description": (
-                        "First line to include (1-based). Default 1 if end_line is set. "
-                        "Omit both start and end to read from line 1 (may truncate)."
-                    ),
-                },
-                "end_line": {
-                    "type": "integer",
-                    "description": (
-                        "Last line to include (1-based, inclusive). "
-                        "Omit to read through end of file (or max bytes)."
-                    ),
-                },
-            },
-            ["path"],
-        ),
-        fn(
-            "grep",
-            "Search target files with a regex (read-only). "
-            "pattern is a Python/PCRE-style regex over file lines "
-            "(or over path/filename when match_path=true). "
-            "Narrow with extension and/or glob before broad searches on large trees. "
-            "files_only=true returns unique paths only (faster inventory of hits). "
-            "Empty pattern + extension or glob lists matching files by path "
-            "(prefer file_inventory for directory trees). "
-            "On 0 matches, read the response hint — do not repeat the same empty query. "
-            "Avoid catastrophic regex (nested quantifiers are rejected).",
-            {
-                "pattern": {
-                    "type": "string",
-                    "description": (
-                        "Regex to match file lines (default mode). "
-                        "With match_path=true, also matches relative path/filename. "
-                        "Empty string allowed only with extension/glob/match_path "
-                        "for path-listing mode."
-                    ),
-                },
-                "glob": {
-                    "type": "string",
-                    "description": (
-                        "Limit scan to paths matching fnmatch, e.g. '*.py', "
-                        "'**/pkcs11/*', 'src/tools/*'."
-                    ),
-                },
-                "extension": {
-                    "type": "string",
-                    "description": (
-                        "Limit scan to this extension: '.c', 'c', or '*.c'."
-                    ),
-                },
-                "files_only": {
-                    "type": "boolean",
-                    "description": (
-                        "If true, return unique matching paths only "
-                        "(no line text). Good for building a read list."
-                    ),
-                },
-                "match_path": {
-                    "type": "boolean",
-                    "description": (
-                        "If true, also match pattern against relative path and "
-                        "basename (filename search)."
-                    ),
-                },
-                "max_matches": {
-                    "type": "integer",
-                    "description": (
-                        "Stop after this many hits (default from config). "
-                        "Lower on huge trees to keep responses small."
-                    ),
-                },
-            },
-            [],
-        ),
-        fn(
-            "note",
-            "Store a short operator-facing note (not a finding). "
-            "kind=codemap: interesting path/symbol for the project CODEMAP. "
-            "kind=wishlist: missing tool or capability you wished you had. "
-            "kind=sibling_seed: area/class/path idea for a future hunt sibling. "
-            "Does not finish the task — still call submit_* when done.",
-            {
-                "kind": {
-                    "type": "string",
-                    "enum": ["wishlist", "sibling_seed", "codemap"],
-                    "description": "Note category (see tool description).",
-                },
-                "payload": {
-                    "description": (
-                        "Object or string body. "
-                        "codemap: {\"path\": \"...\", \"symbol\": \"...\", \"note\": \"...\"} "
-                        "or a short string. "
-                        "wishlist: {\"need\": \"...\", \"why\": \"...\"} or string. "
-                        "sibling_seed: {\"area\": \"...\", \"class\": \"injection\", "
-                        "\"path_hints\": [\"...\"]}."
-                    ),
-                },
-            },
-            ["kind", "payload"],
-        ),
-    ]
-    if stage == "recon":
-        # No write_evidence / submit_candidate / submit_none — architecture only.
-        ro.append(
-            fn(
-                "submit_architecture",
-                "Finish recon: submit the architecture map (not vulnerabilities). "
-                "Call exactly once when done exploring. "
-                "summary is required and must be non-empty. "
-                "Prefer path-backed components, input_surfaces, and hunt_focus "
-                "from files you actually listed/read/grepped. "
-                "hunt_focus.class must be a registered hunt class id from the "
-                "prompt registry (never invent ids). "
-                "Do not call submit_candidate or submit_none in recon.",
-                {
-                    "summary": {
-                        "type": "string",
-                        "description": (
-                            "1–3 paragraphs: what the system is, main modules, "
-                            "and attacker-relevant shape. Non-empty required."
-                        ),
-                    },
-                    "trust_boundaries": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Boundaries untrusted input crosses, e.g. "
-                            "'CLI argv → libopensc', 'PKCS#11 app → token', "
-                            "'config file → parser'."
-                        ),
-                    },
-                    "components": {
-                        "type": "array",
-                        "description": (
-                            "Major modules/packages with path_hints you inspected."
-                        ),
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {
-                                    "type": "string",
-                                    "description": "Component name (e.g. pkcs11, tools)",
-                                },
-                                "path_hints": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": (
-                                        "Relative paths under the target "
-                                        "(dirs or key files)."
-                                    ),
-                                },
-                                "role": {
-                                    "type": "string",
-                                    "description": "Optional short role description.",
-                                },
-                            },
-                        },
-                    },
-                    "input_surfaces": {
-                        "type": "array",
-                        "description": (
-                            "Where untrusted data enters. Prefer short path-backed "
-                            "strings, or objects with name + path_hints."
-                        ),
-                        "items": {
-                            "anyOf": [
-                                {"type": "string"},
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "name": {"type": "string"},
-                                        "path_hints": {
-                                            "type": "array",
-                                            "items": {"type": "string"},
-                                        },
-                                        "protocol": {"type": "string"},
-                                    },
-                                },
-                            ]
-                        },
-                    },
-                    "hunt_focus": {
-                        "type": "array",
-                        "description": (
-                            "Optional small set of area × registered class × path_hints "
-                            "for later hunts. Omit weak/generic focus."
-                        ),
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "area": {
-                                    "type": "string",
-                                    "description": "Logical area name (often a component).",
-                                },
-                                "class": {
-                                    "type": "string",
-                                    "description": (
-                                        "Registered hunt class id only "
-                                        "(e.g. injection, memory-safety, cryptography)."
-                                    ),
-                                },
-                                "path_hints": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "Paths to bound the hunt.",
-                                },
-                            },
-                        },
-                    },
-                },
-                ["summary"],
-            )
-        )
-        return _finish(ro)
-    if stage == "hunt":
-        ro.extend(
-            [
-                fn(
-                    "write_evidence",
-                    "Write a text file into this task's evidence pack under evidence/ "
-                    "(never into the audit target). "
-                    "Use for notes, excerpts, or draft PoC material. "
-                    "relpath is relative to the pack root (e.g. 'notes.md', 'excerpt.c').",
-                    {
-                        "relpath": {
-                            "type": "string",
-                            "description": (
-                                "Path inside the evidence pack only, e.g. 'notes.md'. "
-                                "No '..' or absolute paths."
-                            ),
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "Full file contents to write (UTF-8 text).",
-                        },
-                    },
-                    ["relpath", "content"],
-                ),
-                fn(
-                    "submit_candidate",
-                    "Finish hunt with one vulnerability candidate (not confirmed). "
-                    "Requires path-backed citations from files you read. "
-                    "weakness_class should match this hunt's class when possible. "
-                    "threat_model must state attacker, boundary crossed, and impact. "
-                    "This is not exploit proof — human review decides confirmed. "
-                    "Do not call submit_none after a successful candidate.",
-                    {
-                        "title": {
-                            "type": "string",
-                            "description": "Short specific title (not just the class name).",
-                        },
-                        "summary": {
-                            "type": "string",
-                            "description": (
-                                "What is wrong, where, and why it matters. "
-                                "Ground in citations."
-                            ),
-                        },
-                        "weakness_class": {
-                            "type": "string",
-                            "description": (
-                                "Weakness / hunt class id, e.g. injection, "
-                                "access-control, memory-safety."
-                            ),
-                        },
-                        "threat_model": {
-                            "type": "object",
-                            "description": "Who attacks, what boundary, what impact.",
-                            "properties": {
-                                "attacker": {
-                                    "type": "string",
-                                    "description": (
-                                        "Who can reach the sink "
-                                        "(e.g. local CLI user, remote PKCS#11 client)."
-                                    ),
-                                },
-                                "boundary": {
-                                    "type": "string",
-                                    "description": (
-                                        "Trust boundary crossed "
-                                        "(e.g. untrusted APDU → parser)."
-                                    ),
-                                },
-                                "impact": {
-                                    "type": "string",
-                                    "description": (
-                                        "Concrete impact if exploited "
-                                        "(RCE, auth bypass, secret leak, DoS…)."
-                                    ),
-                                },
-                            },
-                            "required": ["attacker", "boundary", "impact"],
-                        },
-                        "citations": {
-                            "type": "array",
-                            "description": (
-                                "One or more code locations. path required; "
-                                "include start_line/end_line when known."
-                            ),
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "path": {
-                                        "type": "string",
-                                        "description": "Relative path under the target.",
-                                    },
-                                    "start_line": {
-                                        "type": "integer",
-                                        "description": "1-based start line.",
-                                    },
-                                    "end_line": {
-                                        "type": "integer",
-                                        "description": "1-based end line (inclusive).",
-                                    },
-                                    "symbol": {
-                                        "type": "string",
-                                        "description": "Optional function/type name.",
-                                    },
-                                },
-                                "required": ["path"],
-                            },
-                        },
-                        "evidence_id": {
-                            "type": "string",
-                            "description": (
-                                "Optional evidence pack id if you wrote supporting files."
-                            ),
-                        },
-                        "poc_relpath": {
-                            "type": "string",
-                            "description": (
-                                "Optional path of a PoC file inside the evidence pack."
-                            ),
-                        },
-                        "severity_claim": {
-                            "type": "string",
-                            "enum": [
-                                "CRITICAL",
-                                "HIGH",
-                                "MEDIUM",
-                                "LOW",
-                                "INFORMATIONAL",
-                            ],
-                            "description": (
-                                "Optional severity rating only — one of CRITICAL, HIGH, "
-                                "MEDIUM, LOW, INFORMATIONAL. Not free-text impact prose "
-                                "(put impact in threat_model.impact / summary)."
-                            ),
-                        },
-                    },
-                    ["title", "summary", "weakness_class", "threat_model", "citations"],
-                ),
-                fn(
-                    "submit_none",
-                    "Finish hunt with no solid finding after a real search. "
-                    "reason must say what you checked and why nothing met the bar "
-                    "(not just 'looks fine'). "
-                    "Do not use submit_none to skip work; use tools first. "
-                    "Do not call submit_candidate after submit_none.",
-                    {
-                        "reason": {
-                            "type": "string",
-                            "description": (
-                                "Concrete negative result: paths/patterns checked "
-                                "and residual uncertainty if any."
-                            ),
-                        },
-                    },
-                    ["reason"],
-                ),
-                fn(
-                    "list_hunt_profiles",
-                    "List registered hunt profile ids (and titles) you may pass to "
-                    "request_hunt. Prefer active profiles. "
-                    "No arguments. Call before request_hunt if you are unsure of ids.",
-                    {},
-                    [],
-                ),
-                fn(
-                    "request_hunt",
-                    "Queue a separate Ralph hunt for another registered profile "
-                    "(does not finish this task). "
-                    "Use when the current area clearly needs a different class skill "
-                    "(e.g. auth code found during injection → access-control). "
-                    "Rejected if that profile is already queued/leased, if it would "
-                    "circularly re-queue a profile on this spawn chain (A→B→A), "
-                    "or if spawn caps are hit. "
-                    "Do not re-run the same profile as this task. "
-                    "Still finish THIS hunt with submit_candidate or submit_none.",
-                    {
-                        "profile": {
-                            "type": "string",
-                            "description": (
-                                "Registered hunt profile id "
-                                "(e.g. injection, access-control). "
-                                "Use list_hunt_profiles if unsure."
-                            ),
-                        },
-                        "reason": {
-                            "type": "string",
-                            "description": (
-                                "Why that class should run on this area "
-                                "(path or symbol evidence)."
-                            ),
-                        },
-                        "area": {
-                            "type": "string",
-                            "description": (
-                                "Optional area override (default: this task's area)."
-                            ),
-                        },
-                        "path_hints": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": (
-                                "Optional paths to bound the spawned hunt "
-                                "(default: this task's path_hints)."
-                            ),
-                        },
-                        "force_depth": {
-                            "type": "boolean",
-                            "description": (
-                                "If true (default), spawned hunt must use deeper "
-                                "tools before submit_none."
-                            ),
-                        },
-                    },
-                    ["profile", "reason"],
-                ),
-            ]
-        )
-        return _finish(ro)
-    if stage == "develop_poc":
-        # Read tools already in ro; add write_evidence only (no submit_*).
-        ro.append(
-            fn(
-                "write_evidence",
-                "Write a file into the evidence pack (not the audit target). "
-                "Prefer runnable PoC scripts: poc.py, poc.sh, poc.ps1, or poc.c. "
-                "Also write/update hub poc_develop.md with run instructions only — "
-                "do not rewrite the finding narrative. "
-                "relpath is relative to the pack (or pack selected by evidence_id).",
-                {
-                    "relpath": {
-                        "type": "string",
-                        "description": (
-                            "Path inside the evidence pack, e.g. 'poc.py', "
-                            "'poc_develop.md'."
-                        ),
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full file contents (UTF-8 text).",
-                    },
-                    "evidence_id": {
-                        "type": "string",
-                        "description": (
-                            "Evidence pack id for this finding (use the task pack id)."
-                        ),
-                    },
-                },
-                ["relpath", "content"],
-            )
-        )
-        return _finish(ro)
-    if stage == "disprove":
-        return []  # text-only
-
-    # Operator-integrated extras (toolgen) for this stage.
+    if not apply_defaults or stage not in ("recon", "hunt", "develop_poc"):
+        return tools
     try:
-        from vulnforge.tools.extra_registry import list_extra_specs
+        from vulnforge.tools.default_tools import resolve_stage_tools
 
-        for spec in list_extra_specs():
-            stages = {str(s) for s in (spec.get("stages") or [])}
-            if stage not in stages and stages:
-                continue
-            name = str(spec.get("name") or "").strip()
-            if not name:
-                continue
-            params = spec.get("parameters") if isinstance(spec.get("parameters"), dict) else {}
-            props = params.get("properties") if isinstance(params.get("properties"), dict) else {}
-            req = params.get("required") if isinstance(params.get("required"), list) else []
-            ro.append(
-                fn(
-                    name,
-                    str(spec.get("description") or name),
-                    dict(props),
-                    [str(x) for x in req],
-                )
-            )
+        names: list[str] = []
+        for t in tools:
+            fn_obj = (t.get("function") or {}) if isinstance(t, dict) else {}
+            n = fn_obj.get("name") if isinstance(fn_obj, dict) else None
+            if n:
+                names.append(str(n))
+        resolved = resolve_stage_tools(stage, names)
+        if list(resolved) == names:
+            return tools
+        always = critical_tools_for(stage) or _always_keep_for_stage(stage)
+        return _filter_tools_by_allowlist(tools, resolved, always_keep=always)
     except Exception:
-        pass
-    return _finish(ro)
+        return tools
 
 
 def _filter_tools_by_allowlist(
@@ -888,16 +277,35 @@ def _filter_tools_by_allowlist(
     return out or tools
 
 
-# Hunt stage must always be able to finish the task.
-HUNT_ALWAYS_KEEP_TOOLS = frozenset(
-    {
-        "submit_candidate",
-        "submit_none",
-        "list_hunt_profiles",
-        "request_hunt",
-    }
-)
-RECON_ALWAYS_KEEP_TOOLS = frozenset({"submit_architecture"})
+def _always_keep_for_stage(stage: str) -> frozenset[str]:
+    """Compat helper: stage-critical tools from SPECs (with static fallback)."""
+    try:
+        from vulnforge.tools.registry import critical_tools_for
+
+        crit = critical_tools_for(stage)
+        if crit:
+            return crit
+    except Exception:
+        pass
+    if stage == "hunt":
+        return frozenset(
+            {
+                "submit_candidate",
+                "submit_none",
+                "list_hunt_profiles",
+                "request_hunt",
+            }
+        )
+    if stage == "recon":
+        return frozenset({"submit_architecture"})
+    if stage == "develop_poc":
+        return frozenset({"write_evidence"})
+    return frozenset()
+
+
+# Compat shims — prefer ToolSpec.critical_for / registry.critical_tools_for.
+HUNT_ALWAYS_KEEP_TOOLS = _always_keep_for_stage("hunt")
+RECON_ALWAYS_KEEP_TOOLS = _always_keep_for_stage("recon")
 
 
 def pack_recon(
@@ -907,6 +315,7 @@ def pack_recon(
     architecture_so_far: str = "",
     operator_brief: str = "",
     focus_paths: list | None = None,
+    codemap: dict | None = None,
 ) -> Packet:
     """Legacy single-packet recon using prompts/v1/recon.md (default-map equivalent)."""
     try:
@@ -925,6 +334,7 @@ def pack_recon(
         focus_paths=focus_paths,
         tools_allowlist=None,
         agent_id="legacy-recon",
+        codemap=codemap,
     )
 
 
@@ -938,6 +348,7 @@ def pack_recon_agent(
     focus_paths: list | None = None,
     tools_allowlist: list[str] | None = None,
     agent_id: str = "",
+    codemap: dict | None = None,
 ) -> Packet:
     """Recon packet for one configurable recon agent body."""
     # Recon-focused system: shared preamble only — no hunt PRINCIPLES / submit tools.
@@ -979,12 +390,32 @@ def pack_recon_agent(
         "entrypoints": inventory.get("entrypoints"),
         "sample_paths": (inventory.get("sample_paths") or [])[:80],
     }
+    pkt = cfg.get("packet") or {}
+    max_cm = int(pkt.get("max_codemap_chars", 2500))
+    cm_block = ""
+    if codemap:
+        try:
+            from vulnforge.tools.codemap import format_codemap_for_packet
+
+            cm_txt = format_codemap_for_packet(codemap, max_chars=max_cm)
+            if cm_txt and cm_txt != "(no codemap)":
+                cm_block = (
+                    "\n## Mechanical codemap (ground truth for modules/paths)\n"
+                    "Prefer these paths for components and hunt_focus path_hints; "
+                    "do not invent modules outside this map without tool evidence.\n"
+                    "Annotate high-value paths/symbols with note(kind=codemap).\n```json\n"
+                    + cm_txt
+                    + "\n```\n"
+                )
+        except Exception:
+            cm_block = ""
     user = (
         recon
         + registry_section
         + "\n\n## Mechanical inventory\n```json\n"
         + json.dumps(inv, indent=2)
         + "\n```\n"
+        + cm_block
         + "Use tools to inspect paths. Finish with submit_architecture.\n"
     )
     if architecture_so_far:
@@ -1115,6 +546,7 @@ def pack_hunt(
     codemap_notes: list[str],
     seed_sinks: list | None = None,
     known_findings: list[str] | None = None,
+    codemap: dict | None = None,
 ) -> Packet:
     system = load_prompt_slice(prompts_root, "PRINCIPLES.md")
     cls = task_payload.get("class") or "wildcard"
@@ -1160,6 +592,27 @@ def pack_hunt(
         )
     elif keys:
         known_block = f"\n## Known finding keys (skip re-find)\n{keys}\n"
+    cm_struct_block = ""
+    max_cm = int(pkt.get("max_codemap_chars", 2500))
+    if codemap:
+        try:
+            from vulnforge.tools.codemap import format_codemap_for_packet
+
+            cm_txt = format_codemap_for_packet(
+                codemap,
+                max_chars=max_cm,
+                path_hints=list(task_payload.get("path_hints") or []),
+                area=str(task_payload.get("area") or ""),
+                sliced=True,
+            )
+            if cm_txt and cm_txt != "(no codemap)":
+                cm_struct_block = (
+                    "\n## Codemap (area slice — modules near path_hints)\n```json\n"
+                    + cm_txt
+                    + "\n```\n"
+                )
+        except Exception:
+            cm_struct_block = ""
     scope_note = (
         "Tools prefer path_hints (soft jail). list_dir/read_file/file_inventory: first "
         "out-of-scope call soft-blocks (widen_available); retry widens once. "
@@ -1207,6 +660,7 @@ def pack_hunt(
         f"{class_md}{angles_block}"
         f"{op_block}{sel_block}"
         f"## Architecture (area slice)\n{arch}\n"
+        f"{cm_struct_block}"
         f"{sinks_block}"
         f"{known_block}\n"
         f"## Codemap notes\n{notes}\n\n"

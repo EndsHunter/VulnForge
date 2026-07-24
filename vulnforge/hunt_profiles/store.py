@@ -9,11 +9,12 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT, hunt_class_seeds_root
 from vulnforge.util import utc_now_iso
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_COLLECTION_ROOT = PROJECT_ROOT / "config" / "hunt_profiles"
-SEED_PROMPTS_DIR = PROJECT_ROOT / "prompts" / "v1" / "hunt_classes"
+DEFAULT_COLLECTION_ROOT = CONFIG_ROOT / "hunt_profiles"
+# Dual-read: seeds/hunt_classes when present, else prompts/v1/hunt_classes.
+SEED_PROMPTS_DIR = hunt_class_seeds_root()
 
 COLLECTION_FORMAT = "vulnforge.hunt_collection/v1"
 PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")

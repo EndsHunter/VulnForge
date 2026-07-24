@@ -14,8 +14,9 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default_tools.json"
+from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT
+
+DEFAULT_CONFIG_PATH = CONFIG_ROOT / "default_tools.json"
 
 STAGES = ("recon", "hunt", "develop_poc")
 
@@ -41,18 +42,29 @@ BLOCKED_TOOLS = frozenset(
     }
 )
 
-STAGE_CRITICAL_TOOLS: dict[str, frozenset[str]] = {
-    "recon": frozenset({"submit_architecture"}),
-    "hunt": frozenset(
-        {
-            "submit_candidate",
-            "submit_none",
-            "list_hunt_profiles",
-            "request_hunt",
+
+def _critical_from_registry() -> dict[str, frozenset[str]]:
+    try:
+        from vulnforge.tools.registry import stage_critical_map
+
+        return stage_critical_map()
+    except Exception:
+        return {
+            "recon": frozenset({"submit_architecture"}),
+            "hunt": frozenset(
+                {
+                    "submit_candidate",
+                    "submit_none",
+                    "list_hunt_profiles",
+                    "request_hunt",
+                }
+            ),
+            "develop_poc": frozenset({"write_evidence"}),
         }
-    ),
-    "develop_poc": frozenset({"write_evidence"}),
-}
+
+
+# Compat name: derived from ToolSpec.critical_for (agent registry).
+STAGE_CRITICAL_TOOLS: dict[str, frozenset[str]] = _critical_from_registry()
 
 _EMPTY: dict[str, Any] = {
     "recon": None,

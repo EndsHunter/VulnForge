@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.paths import PROJECT_ROOT
 from vulnforge.toolgen.store import (
     ToolDraftError,
     get_draft,
@@ -14,8 +15,6 @@ from vulnforge.toolgen.store import (
 )
 from vulnforge.toolgen.validate import validate_draft
 from vulnforge.util import utc_now_iso
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class IntegrateToolError(ValueError):
@@ -142,14 +141,24 @@ def plan_integration(draft_id: str) -> dict[str, Any]:
         raise IntegrateToolError("schema.tools empty")
     primary = tools[0]
     name = str(primary.get("name") or tid)
+    # Safe module leaf (draft ids are usually snake_case already).
+    safe_leaf = re.sub(r"[^a-z0-9_]", "_", tid.lower().replace("-", "_"))
+    if not safe_leaf or safe_leaf[0].isdigit():
+        safe_leaf = f"tool_{safe_leaf or 'x'}"
     stages = list(wireup.get("packet_stages") or meta.get("stages") or ["hunt"])
     params = primary.get("parameters") if isinstance(primary.get("parameters"), dict) else {
         "type": "object",
         "properties": {},
         "required": [],
     }
-    module = str(wireup.get("impl_module") or f"vulnforge.tools.{tid}")
-    impl_path_rel = str(wireup.get("impl_path") or f"vulnforge/tools/{tid}.py")
+    # Prefer agent SPEC modules (auto-discovered). Explicit wireup still wins.
+    default_agent_module = f"vulnforge.tools.agent.{safe_leaf}"
+    default_agent_path = f"vulnforge/tools/agent/{safe_leaf}.py"
+    module = str(wireup.get("impl_module") or default_agent_module)
+    impl_path_rel = str(wireup.get("impl_path") or default_agent_path)
+    write_agent_spec = "tools.agent." in module or "/agent/" in impl_path_rel.replace(
+        "\\", "/"
+    )
     # Normalize to under project
     if impl_path_rel.startswith("/"):
         raise IntegrateToolError("impl_path must be relative")
@@ -162,36 +171,48 @@ def plan_integration(draft_id: str) -> dict[str, Any]:
     test_rel = str(wireup.get("test_file") or f"tests/test_tool_{tid}.py")
     test_path = PROJECT_ROOT / test_rel
 
+    description = str(primary.get("description") or meta.get("description") or name)
+    aliases = list(wireup.get("aliases") or [])
+    callable_name = name if name in (d.get("impl_py") or "") else tid
+    if f"def {name}(" in (d.get("impl_py") or ""):
+        callable_name = name
+    elif f"def {tid}(" in (d.get("impl_py") or ""):
+        callable_name = tid
+
+    # extra_registry entry still used when not writing a discoverable agent SPEC.
     spec = {
         "name": name,
-        "module": module,
-        "callable": name if name in (d.get("impl_py") or "") else tid,
+        "module": module if not write_agent_spec else f"vulnforge.tools.agent.{safe_leaf}",
+        "callable": "run" if write_agent_spec else callable_name,
         "stages": stages,
-        "description": str(primary.get("description") or meta.get("description") or name),
+        "description": description,
         "parameters": params,
-        "aliases": list(wireup.get("aliases") or []),
+        "aliases": aliases,
     }
-    # Prefer function name matching tool name
-    if f"def {name}(" in (d.get("impl_py") or ""):
-        spec["callable"] = name
-    elif f"def {tid}(" in (d.get("impl_py") or ""):
-        spec["callable"] = tid
 
     new_specs = [s for s in _load_current_specs() if str(s.get("name")) != name]
-    new_specs.append(spec)
+    if not write_agent_spec:
+        new_specs.append(spec)
 
     ops = [
         {
             "op": "write",
             "path": str(impl_path.relative_to(PROJECT_ROOT)),
-            "description": f"Write tool module {name}",
-        },
-        {
-            "op": "write",
-            "path": str(_registry_path().relative_to(PROJECT_ROOT)),
-            "description": "Update EXTRA_TOOL_SPECS registry",
+            "description": (
+                f"Write agent SPEC tool {name}"
+                if write_agent_spec
+                else f"Write tool module {name}"
+            ),
         },
     ]
+    if not write_agent_spec:
+        ops.append(
+            {
+                "op": "write",
+                "path": str(_registry_path().relative_to(PROJECT_ROOT)),
+                "description": "Update EXTRA_TOOL_SPECS registry",
+            }
+        )
     if (d.get("test_stub") or "").strip():
         ops.append(
             {
@@ -199,6 +220,18 @@ def plan_integration(draft_id: str) -> dict[str, Any]:
                 "path": str(test_path.relative_to(PROJECT_ROOT)),
                 "description": "Write unit test stub",
             }
+        )
+
+    impl_py = d.get("impl_py") or ""
+    if write_agent_spec:
+        impl_py = _wrap_agent_spec_module(
+            name=name,
+            stages=stages,
+            description=description,
+            params=params,
+            aliases=aliases,
+            impl_py=impl_py,
+            callable_name=callable_name,
         )
 
     return {
@@ -210,12 +243,67 @@ def plan_integration(draft_id: str) -> dict[str, Any]:
         "impl_path": str(impl_path.relative_to(PROJECT_ROOT)),
         "test_path": str(test_path.relative_to(PROJECT_ROOT)),
         "registry_path": str(_registry_path().relative_to(PROJECT_ROOT)),
-        "impl_py": d.get("impl_py") or "",
+        "write_agent_spec": write_agent_spec,
+        "impl_py": impl_py,
         "test_stub": d.get("test_stub") or "",
         "new_specs": new_specs,
         "validation": report,
         "planned_at": utc_now_iso(),
     }
+
+
+def _wrap_agent_spec_module(
+    *,
+    name: str,
+    stages: list[str],
+    description: str,
+    params: dict[str, Any],
+    aliases: list[str],
+    impl_py: str,
+    callable_name: str,
+) -> str:
+    """Wrap a draft impl into tools/agent SPEC + run() if not already a SPEC module."""
+    if "SPEC = ToolSpec" in impl_py and "def run(" in impl_py:
+        return impl_py
+    props = params.get("properties") if isinstance(params.get("properties"), dict) else {}
+    required = params.get("required") if isinstance(params.get("required"), list) else []
+    # Keep draft body; add SPEC + thin run that calls the primary def.
+    stages_lit = ", ".join(repr(s) for s in stages)
+    aliases_lit = ", ".join(repr(a) for a in aliases)
+    required_lit = ", ".join(repr(r) for r in required)
+    props_json = json.dumps(props, indent=4)
+    props_py = (
+        props_json.replace(": true", ": True")
+        .replace(": false", ": False")
+        .replace(": null", ": None")
+    )
+    header = f'''"""Agent tool: {name} (toolgen integrated SPEC module)."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from vulnforge.tools.base import ToolSpec
+
+SPEC = ToolSpec(
+    name={name!r},
+    stages=({stages_lit}{"," if len(stages) == 1 else ""}),
+    description={description!r},
+    parameters={props_py},
+    required=({required_lit}{"," if len(required) == 1 else ""}),
+    aliases=({aliases_lit}{"," if len(aliases) == 1 else ""}),
+)
+
+'''
+    body = impl_py.strip() + "\n\n"
+    # If draft already defines run, keep it; else wrap callable_name.
+    if re.search(r"^def run\s*\(", impl_py, re.M):
+        return header + body
+    wrapper = f'''
+def run(ctx: dict, **args: Any) -> dict[str, Any]:
+    return {callable_name}(ctx, **args)
+'''
+    return header + body + wrapper
 
 
 def apply_integration(
@@ -230,29 +318,41 @@ def apply_integration(
     impl_path = PROJECT_ROOT / plan["impl_path"]
     impl_path.parent.mkdir(parents=True, exist_ok=True)
     impl_py = plan["impl_py"]
-    if not impl_py.lstrip().startswith('"""') and not impl_py.lstrip().startswith("#"):
+    if (
+        not plan.get("write_agent_spec")
+        and not impl_py.lstrip().startswith('"""')
+        and not impl_py.lstrip().startswith("#")
+    ):
         header = f'"""Agent tool: {plan["tool_name"]} (toolgen integrated)."""\n\n'
         impl_py = header + impl_py
     impl_path.write_text(impl_py, encoding="utf-8")
     written.append(plan["impl_path"])
 
-    reg_path = _registry_path()
-    reg_path.write_text(_render_registry_file(plan["new_specs"]), encoding="utf-8")
-    written.append(plan["registry_path"])
+    if not plan.get("write_agent_spec"):
+        reg_path = _registry_path()
+        reg_path.write_text(_render_registry_file(plan["new_specs"]), encoding="utf-8")
+        written.append(plan["registry_path"])
 
-    # Hot-reload in-process registry
-    try:
-        import importlib
+        # Hot-reload in-process registry
+        try:
+            import importlib
 
-        import vulnforge.tools.extra_registry as reg
+            import vulnforge.tools.extra_registry as reg
 
-        importlib.reload(reg)
-        # Also update module-level list used by get_extra_spec
-        for s in plan["new_specs"]:
-            if str(s.get("name")) == plan["tool_name"]:
-                reg.upsert_extra_spec(s)
-    except Exception:
-        pass
+            importlib.reload(reg)
+            for s in plan["new_specs"]:
+                if str(s.get("name")) == plan["tool_name"]:
+                    reg.upsert_extra_spec(s)
+        except Exception:
+            pass
+    else:
+        # Agent SPEC modules: refresh discovery cache
+        try:
+            from vulnforge.tools.registry import clear_registry_cache
+
+            clear_registry_cache()
+        except Exception:
+            pass
 
     test_stub = (plan.get("test_stub") or "").strip()
     if test_stub:

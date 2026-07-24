@@ -8,26 +8,26 @@ class CodeStaticProfile:
     allow_exec = False
 
     def allowed_tools(self) -> list[str]:
-        base = [
-            "list_dir",
-            "file_inventory",
-            "read_file",
-            "grep",
-            "write_evidence",
-            "submit_candidate",
-            "submit_none",
-            "submit_architecture",
-            "note",
-        ]
+        """Built-in agent tools (registry) + operator-integrated extras."""
         try:
-            from vulnforge.tools.extra_registry import extra_tool_names
+            from vulnforge.tools.registry import allowed_tool_names
 
-            for n in extra_tool_names():
-                if n not in base:
-                    base.append(n)
+            return allowed_tool_names(include_extras=True)
         except Exception:
-            pass
-        return base
+            # Fallback if registry unavailable during early import
+            return [
+                "list_dir",
+                "file_inventory",
+                "read_file",
+                "grep",
+                "write_evidence",
+                "submit_candidate",
+                "submit_none",
+                "submit_architecture",
+                "note",
+                "list_hunt_profiles",
+                "request_hunt",
+            ]
 
     def validate_target_hint(self, inventory: dict) -> str | None:
         ext = inventory.get("extensions") or {}
