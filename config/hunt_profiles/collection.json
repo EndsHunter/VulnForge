@@ -1,7 +1,7 @@
 {
   "format": "vulnforge.hunt_collection/v1",
   "updated_at": "2026-07-20T00:19:22Z",
-  "seeded_from": "prompts/v1/hunt_classes",
+  "seeded_from": "seeds/hunt_classes",
   "profiles": [
     {
       "id": "injection",

@@ -27,22 +27,22 @@ VulnForge is **source-code analysis only** (`code_static` profile). PE binaries 
 
 ## Project layout (this tree)
 
-Run commands from the **repo root** (the directory that contains both `vulnforge/` and `prompts/`):
+Run commands from the **repo root** (the directory that contains `vulnforge/` and `seeds/`):
 
 ```text
 .
 ├── vulnforge/           # Python package (control plane, stages, UI)
-├── prompts/v1/          # Prompt pin + hunt class seeds
-├── config/              # default.yaml, hunt_profiles/, recon_agents/
+├── seeds/               # Package seed library (system + hunt_classes + recon_agents)
+├── config/              # default.yaml, hunt_profiles/, recon_agents/ (runtime)
 ├── scripts/ralph.py     # Outer loop
-├── docs/                # Internal maps / plans
+├── docs/                # LAYOUT.md, internal maps / plans
 ├── fixtures/            # Toy targets for tests / first run
 ├── skill/SKILL.md       # Optional agent skill for coding agents
 ├── tests/
 └── pyproject.toml
 ```
 
-If you only cloned the package folder, copy or extract `prompts/`, `config/`, `scripts/`, `fixtures/`, and `pyproject.toml` next to `vulnforge/` so `PROJECT_ROOT` resolves correctly.
+If you only cloned the package folder, copy or extract `seeds/`, `config/`, `scripts/`, `fixtures/`, and `pyproject.toml` next to `vulnforge/` so `PROJECT_ROOT` resolves correctly. See [`docs/LAYOUT.md`](docs/LAYOUT.md) and [`seeds/README.md`](seeds/README.md).
 
 ---
 
@@ -175,7 +175,7 @@ Token usage (when the model returns `usage`, or estimated) appears on Home and M
 | Dashboard import errors | `pip install -e ".[dev]"` (needs fastapi, uvicorn, jinja2) |
 | Recon/hunt fail with transport | Start LM Studio; check `config/default.yaml` `base_url` / `model` |
 | Empty / truncated answers | Raise `llm.max_tokens` (reasoning models need headroom) |
-| Wrong prompts path | Run from repo root; ensure `prompts/v1/` exists beside `vulnforge/` |
+| Wrong prompts path | Run from repo root; ensure `seeds/system/` exists beside `vulnforge/` |
 | Port in use | `vf dashboard --port 8788` |
 
 ---
@@ -184,6 +184,7 @@ Token usage (when the model returns `usage`, or estimated) appears on Home and M
 
 - [`PROTOCOL.md`](PROTOCOL.md) — authority model, labels, apply-candidate contract  
 - [`AGENTS.md`](AGENTS.md) — extending tools, profiles, and the cockpit  
+- [`docs/LAYOUT.md`](docs/LAYOUT.md) — where is X? (seeds, tools, config)  
 - [`skill/SKILL.md`](skill/SKILL.md) — optional skill for coding agents using this harness  
 
 ## License

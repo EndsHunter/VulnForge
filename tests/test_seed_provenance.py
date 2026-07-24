@@ -34,10 +34,17 @@ def collection(tmp_path: Path):
 
 
 def test_seed_body_path_for_package_class(collection: Path):
+    from vulnforge.paths import PROJECT_ROOT, SEEDS_ROOT
+
     path = seed_body_path("injection")
     assert path is not None
     assert path.is_file()
     assert path.parent == SEED_PROMPTS_DIR.resolve()
+    # Prefer package seeds/ layout when present
+    expected = (SEEDS_ROOT / "hunt_classes").resolve()
+    assert SEED_PROMPTS_DIR.resolve() == expected
+    assert "seeds" in str(SEED_PROMPTS_DIR.resolve()).replace("\\", "/")
+    assert path.resolve().is_relative_to(PROJECT_ROOT.resolve())
     assert seed_body_path("no-such-class-zzzz") is None
 
 

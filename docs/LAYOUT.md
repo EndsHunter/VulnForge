@@ -76,6 +76,16 @@ Wire-up checklist (historical multi-touch path): see `toolgen.md`.
 | Item | Status |
 |------|--------|
 | Split `packet.py` → `vulnforge/packets/` package with re-export shim | **Deferred** — schemas already left for SPECs; further split is opportunistic polish |
+| Full settings DRY (`settings/schema.py` single defaults source) | **Deferred (Phase 2 residual)** — UI defaults still live in `settings/ui.py` + `config/default.yaml`; not blocking tool/seeds rearch |
+
+## System prompt overrides (one convention)
+
+| Kind | Path | Loader |
+|------|------|--------|
+| **System stage prompts** (preamble, PRINCIPLES, disprove*, toolgen*, …) | `config/prompts/overrides/<basename>.md` | `load_prompt_slice` prefers override for basenames (no `/`) |
+| **Hunt skill author prompt** (Dev generate skill) | `config/prompts/generate_skill.md` | `hunt_profiles.author_prompt` special-case (not under `overrides/`) |
+
+Package seeds remain under `seeds/system/`. Do not put hunt/recon collection bodies in `overrides/`.
 
 ## Package seeds (`seeds/`)
 

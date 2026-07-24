@@ -18,10 +18,16 @@ seeds/
 |---------------|------|
 | Live campaign hunts / recon agents | `config/hunt_profiles/`, `config/recon_agents/` (runtime authority) |
 | Package library that **Reseed from package** copies | files under `seeds/` (this tree) |
-| Optional system-prompt override for one machine | `config/prompts/overrides/<name>.md` |
+| Optional system-prompt override for one machine | `config/prompts/overrides/<basename>.md` |
+| Hunt skill **author** prompt (Dev generate) | `config/prompts/generate_skill.md` (special-case; not under `overrides/`) |
 
 Do **not** treat `seeds/` as the operator collection. Reseed overwrites runtime bodies
 from these seeds; runtime collections can diverge intentionally.
+
+### Override convention
+
+1. **System stage markdown** (`preamble.md`, `PRINCIPLES.md`, `disprove.md`, …): put a file with the **same basename** under `config/prompts/overrides/`. `load_prompt_slice` prefers it over `seeds/system/` for top-level basenames only (no path separators).
+2. **Generate-skill author prompt**: single file `config/prompts/generate_skill.md` (existing Dev UI path). Restoring package seed removes the override file.
 
 ## Loaders
 

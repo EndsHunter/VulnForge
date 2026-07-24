@@ -252,3 +252,45 @@ def test_paths_and_load_config_smoke(tmp_path: Path, monkeypatch):
     cfg = load_config()
     assert cfg["llm"]["model"] == "registry-test-model"
     monkeypatch.delenv("VF_MODEL", raising=False)
+
+
+def test_paths_dual_read_fallback_when_seeds_empty(tmp_path: Path, monkeypatch):
+    """When seeds/system has no markdown, loaders fall back to LEGACY_PROMPTS_V1."""
+    import vulnforge.paths as paths_mod
+
+    legacy = tmp_path / "legacy_v1"
+    legacy.mkdir()
+    (legacy / "PRINCIPLES.md").write_text("# legacy\n", encoding="utf-8")
+    (legacy / "hunt_classes").mkdir()
+    (legacy / "hunt_classes" / "injection.md").write_text("# inj\n", encoding="utf-8")
+    (legacy / "recon_agents").mkdir()
+    empty_seeds = tmp_path / "empty_seeds"
+    empty_seeds.mkdir()
+    # system dir missing or empty → fallback
+    monkeypatch.setattr(paths_mod, "SEEDS_ROOT", empty_seeds)
+    monkeypatch.setattr(paths_mod, "LEGACY_PROMPTS_V1", legacy)
+
+    assert paths_mod.system_prompts_root() == legacy
+    assert paths_mod.hunt_class_seeds_root() == legacy / "hunt_classes"
+    assert paths_mod.recon_agent_seeds_root() == legacy / "recon_agents"
+    assert paths_mod.effective_prompt_pin_root() == legacy
+
+
+def test_load_prompt_slice_prefers_override(tmp_path: Path, monkeypatch):
+    from vulnforge.packet import load_prompt_slice
+
+    package = tmp_path / "system"
+    package.mkdir()
+    (package / "preamble.md").write_text("FROM_PACKAGE\n", encoding="utf-8")
+    ov = tmp_path / "overrides"
+    ov.mkdir()
+    (ov / "preamble.md").write_text("FROM_OVERRIDE\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "vulnforge.paths.prompt_overrides_root",
+        lambda: ov,
+    )
+    assert load_prompt_slice(package, "preamble.md") == "FROM_OVERRIDE\n"
+    # Nested relative paths do not use overrides (basename-only convention)
+    (package / "sub").mkdir()
+    (package / "sub" / "nested.md").write_text("NESTED\n", encoding="utf-8")
+    assert load_prompt_slice(package, "sub/nested.md") == "NESTED\n"

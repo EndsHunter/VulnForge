@@ -24,7 +24,7 @@ Do not invent a second orchestrator. Prefer `vf` / Ralph / dashboard over free-f
 - **Honest none.** Prefer `submit_none` over inventing findings or dual-filing the same path+sink.
 - **No target mutation.** Do not edit application source to make a PoC pass.
 
-Follow `prompts/v1/PRINCIPLES.md` for the full exploitability bar, threat model, and exclusion gates (REACHABLE / UNMITIGATED / CONCRETE / IN SCOPE / CITED).
+Follow `seeds/system/PRINCIPLES.md` for the full exploitability bar, threat model, and exclusion gates (REACHABLE / UNMITIGATED / CONCRETE / IN SCOPE / CITED).
 
 ## Authority
 
@@ -118,11 +118,11 @@ See **PROTOCOL.md** for CLI contracts and **AGENTS.md** for operator/agent roles
 ## Hunt skills
 
 - Operator collection: `config/hunt_profiles/` (bodies + `collection.json` metadata; path kept for compatibility).
-- Package seeds: `prompts/v1/hunt_classes/` (reseed replaces the collection).
+- Package seeds: `seeds/hunt_classes/` (reseed replaces the collection).
 - Each skill body (Cloudflare-aligned): trigger-rich description, Mission/Principles, Rules quick reference, Anti-patterns table, Hunt workflow/Method, Scope, Submit checklist (+ focus, stack cues, evidence rails).
 - Metadata drives angles (`angle_ids`), sink routing (`sink_families`), and cross-class merge rank (`specificity`).
 - **Active** skills bulk-enqueue when recon omits `hunt_focus`.
-- Author prompt: `prompts/v1/generate_skill.md` (override: `config/prompts/generate_skill.md`).
+- Author prompt: `seeds/system/generate_skill.md` (override: `config/prompts/generate_skill.md`).
 
 ## apply-candidate notes
 
@@ -150,8 +150,8 @@ This skill covers **operating VulnForge** as a coding-agent client: init/run, fi
 Related surfaces (not separate inventable class ids):
 
 - **PROTOCOL.md / AGENTS.md** — CLI contracts and operator/agent roles
-- **prompts/v1/PRINCIPLES.md** — exploitability bar shared by all hunters
-- **Hunt skills** (`config/hunt_profiles/`, `prompts/v1/hunt_classes/`) — per-class Mission/Method; do not restate them here
+- **seeds/system/PRINCIPLES.md** — exploitability bar shared by all hunters
+- **Hunt skills** (`config/hunt_profiles/`, `seeds/hunt_classes/`) — per-class Mission/Method; do not restate them here
 - **Dev generate skill** — authors new profile bodies via `generate_skill.md`; still protocol-bound
 
 Out of scope: general product feature development, mutating targets for demo PoCs, or claiming production-ready exploit proof without human review.

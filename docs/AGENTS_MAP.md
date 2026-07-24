@@ -392,7 +392,7 @@ flowchart TD
 Init also:
 
 1. Builds **`target_manifest.json`** (inventory + hashes, ignore_globs).
-2. Creates **`harness.db`**, prompt_pin hash of `prompts/v1`.
+2. Creates **`harness.db`**, prompt_pin hash of package seeds (`seeds/` via `paths.effective_prompt_pin_root()`).
 3. Seeds config from `config/default.yaml` + CLI overrides.
 4. Optionally wires progress callbacks for dashboard jobs.
 
@@ -411,7 +411,7 @@ Recon is **not** a single hardcoded prompt. Operator **recon agent collection** 
 | **`dependency-risk`** | optional | Third-party / supply-chain / secrets surfaces |
 | **`auth-model`** | optional | AuthN/AuthZ boundaries with path evidence |
 
-Bodies live in `config/recon_agents/bodies/*.md` (seeded from `prompts/v1/recon_agents/`).
+Bodies live in `config/recon_agents/bodies/*.md` (seeded from `seeds/recon_agents/`).
 
 ### Single-task sequential multi-agent vs batch fan-out
 
@@ -494,7 +494,7 @@ Each **hunt** task is one investigation cell:
 ### Hunt skill collection
 
 Runtime authority: **`config/hunt_profiles/`** (not package prompts).  
-Package `prompts/v1/hunt_classes/` is **seed library only** (first open / reseed).
+Package `seeds/hunt_classes/` is **seed library only** (first open / reseed).
 
 Examples of classes: `injection`, `access-control`, `business-logic`, `cryptography`, `graphql`, `memory-safety`, `supply-chain`, `ai-llm`, `chains`, `client-side`, `feature-abuse`, `web-protocol-auth`, `obvious`, `wildcard`, plus operator/custom.
 

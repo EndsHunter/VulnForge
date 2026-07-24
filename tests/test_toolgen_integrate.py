@@ -139,6 +139,10 @@ def test_plan_integration_agent_default_path(drafts_root: Path):
     assert any("tools/agent/" in o["path"].replace("\\", "/") for o in plan["ops"])
     # Agent path does not rewrite extra_registry
     assert not any("extra_registry" in o["path"] for o in plan["ops"])
+    # Planned module is a SPEC + run() agent tool
+    impl = plan.get("impl_py") or ""
+    assert "SPEC = ToolSpec" in impl
+    assert "def run(" in impl
 
 
 def test_plan_integration_legacy_extra_registry(drafts_root: Path):
