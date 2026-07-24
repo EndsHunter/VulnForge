@@ -403,7 +403,9 @@ def test_dispatch_generate_skill(tmp_path: Path, profiles_root: Path, toy_sqli: 
 
 
 def test_pack_hunt_class_body_override(tmp_path: Path, profiles_root: Path):
-    prompts = Path(__file__).resolve().parents[1] / "prompts" / "v1"
+    from vulnforge.paths import system_prompts_root
+
+    prompts = system_prompts_root()
     override = "# Hunt class: inline\n\n**Mission:** x\n\n## Method\n\n1. y\n\n## Submit\n\nz\n"
     pkt = pack_hunt(
         {"packet": {"max_architecture_chars": 500}},

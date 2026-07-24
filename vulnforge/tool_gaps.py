@@ -923,7 +923,9 @@ _MAX_LLM_SNIPPETS = 40
 
 
 def _prompts_root() -> Path:
-    return Path(__file__).resolve().parents[1] / "prompts" / "v1"
+    from vulnforge.paths import system_prompts_root
+
+    return system_prompts_root()
 
 
 def _normalize_mode(mode: Optional[str]) -> str:

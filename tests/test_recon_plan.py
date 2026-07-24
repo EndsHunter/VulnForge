@@ -249,7 +249,9 @@ def test_recon_salvages_json_architecture_after_no_submit(tmp_path: Path, toy_sq
 
 def test_hunt_class_catalog_from_registry():
     """Catalog is active+all from seeded collection; seed library covers known stems."""
-    prompts = Path(__file__).resolve().parents[1] / "prompts" / "v1" / "hunt_classes"
+    from vulnforge.paths import hunt_class_seeds_root
+
+    prompts = hunt_class_seeds_root()
     on_disk = {p.stem for p in prompts.glob("*.md")}
     cat = hunt_class_catalog()
     assert {"all", "active"}.issubset(set(cat.keys()))

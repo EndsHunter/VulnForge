@@ -411,7 +411,9 @@ def test_resolve_disprove_verifiers_defaults():
 def test_pack_disprove_includes_perspective():
     from vulnforge.packet import pack_disprove
 
-    root = Path(__file__).resolve().parents[1] / "prompts" / "v1"
+    from vulnforge.paths import system_prompts_root
+
+    root = system_prompts_root()
     pkt = pack_disprove(
         {"packet": {}},
         root,

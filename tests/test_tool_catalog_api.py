@@ -70,7 +70,9 @@ def test_hunt_profile_tools_allowlist(client: TestClient, tmp_path: Path):
     from vulnforge.cli import PROJECT_ROOT
 
     cfg = {"packet": {}, "llm": {}}
-    prompts = PROJECT_ROOT / "prompts" / "v1"
+    from vulnforge.paths import system_prompts_root
+
+    prompts = system_prompts_root()
     pkt = pack_hunt(
         cfg,
         prompts,

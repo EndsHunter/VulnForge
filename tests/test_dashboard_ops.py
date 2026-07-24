@@ -554,7 +554,9 @@ def test_pack_recon_includes_operator_brief():
     from vulnforge.packet import pack_recon
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[1] / "prompts" / "v1"
+    from vulnforge.paths import system_prompts_root
+
+    root = system_prompts_root()
     pkt = pack_recon(
         {"llm": {"context_tokens": 32768, "max_context_fraction": 0.25}},
         root,

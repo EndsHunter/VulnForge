@@ -523,7 +523,9 @@ def test_prepare_candidate_prefers_symbol_citation():
 
 
 def test_pack_hunt_slim_has_sinks_and_known(tmp_path: Path):
-    prompts = Path(__file__).resolve().parents[1] / "prompts" / "v1"
+    from vulnforge.paths import system_prompts_root
+
+    prompts = system_prompts_root()
     cfg = {
         "llm": {"context_tokens": 32768, "max_context_fraction": 0.25},
         "packet": {"max_architecture_chars": 1800, "max_hunt_angles": 4},
