@@ -109,6 +109,11 @@ def test_cell_detail_reasons(tmp_path: Path, toy_sqli: Path):
     assert "shallow" in detail["depth_blurb"].lower()
     assert any("shallow" in r.lower() or "none" in r.lower() for r in detail["reasons"])
     assert detail["can_requeue"] is True
+    # Sink coverage fields always present (may be empty before recon seeds)
+    assert "sinks" in detail
+    assert "residual_sinks" in detail
+    assert isinstance(detail["sinks"], list)
+    assert detail["sink_count"] == len(detail["sinks"])
 
 
 def test_requeue_hunt_bulk(tmp_path: Path, toy_sqli: Path):
@@ -145,6 +150,49 @@ def test_requeue_hunt(tmp_path: Path, toy_sqli: Path):
         assert any(t.state == "queued" and t.payload.get("operator_requested") for t in tasks)
     finally:
         db.close()
+
+
+def test_requeue_hunt_with_seed_sinks(tmp_path: Path, toy_sqli: Path):
+    """Focused sink requeue attaches seed_sinks and records sink_coverage planned."""
+    run = _init_run(tmp_path, toy_sqli)
+    sinks = [
+        {
+            "path": "app.py",
+            "line": 10,
+            "kind": "sql",
+            "text": "cursor.execute",
+        }
+    ]
+    r = dashops.requeue_hunt(
+        run,
+        area="app",
+        attack_class="injection",
+        path_hints=["app.py"],
+        seed_sinks=sinks,
+        force_depth=True,
+        reason="test_sink_focus",
+    )
+    assert r["ok"] is True
+    assert r["payload"].get("seed_sinks")
+    assert r["payload"]["seed_sinks"][0]["path"] == "app.py"
+    assert "app.py" in (r["payload"].get("path_hints") or [])
+
+    detail = dashops.cell_detail(run, "app", "injection")
+    assert detail["sink_count"] >= 1
+    keys = {s["sink_key"] for s in detail["sinks"]}
+    assert "app.py:10:sql" in keys
+    row = next(s for s in detail["sinks"] if s["sink_key"] == "app.py:10:sql")
+    assert row["last_depth"] == "planned"
+
+    r2 = dashops.requeue_hunt_for_sinks(
+        run,
+        area="app",
+        attack_class="injection",
+        sinks=sinks,
+        reason="test_sink_helper",
+    )
+    assert r2["ok"] is True
+    assert r2["payload"].get("seed_sinks")
 
 
 def test_coverage_mode_select_path_targets(tmp_path: Path, toy_sqli: Path):

@@ -349,6 +349,8 @@ class CoverageRequeueBody(BaseModel):
     force_depth: bool = True
     reason: str = "operator_requeue"
     operator_notes: str = ""
+    # Optional focused sinks from Coverage cell detail (path:line:kind records)
+    seed_sinks: Optional[list[dict]] = None
 
     model_config = {"populate_by_name": True}
 
@@ -1468,6 +1470,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             force_depth=body.force_depth,
             reason=body.reason,
             operator_notes=body.operator_notes or "",
+            seed_sinks=list(body.seed_sinks or []) if body.seed_sinks else None,
         )
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "requeue failed")
@@ -1621,12 +1624,23 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             db.close()
 
     @app.get("/api/runs/{target_id}/{run_id}/codemap")
-    def api_codemap_get(target_id: str, run_id: str):
-        """Mechanical/merged codemap (DB only; separate from architecture)."""
+    def api_codemap_get(
+        target_id: str,
+        run_id: str,
+        include_symbols: bool = False,
+        path: str = "",
+        max_symbols: int = 200,
+    ):
+        """Mechanical/merged codemap (DB only; separate from architecture).
+
+        Default omits full files/symbols arrays (counts remain in summary).
+        Pass include_symbols=1 or path= to retrieve a symbol subset.
+        """
         from vulnforge.db import Database
         from vulnforge.tools.codemap import (
             codemap_summary_for_ui,
             merge_annotations_into_codemap,
+            slim_codemap_for_ui,
         )
 
         run = _get_run(target_id, run_id)
@@ -1639,11 +1653,21 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             summary = codemap_summary_for_ui(
                 codemap if isinstance(codemap, dict) else None
             )
+            try:
+                max_sym = max(1, min(5000, int(max_symbols)))
+            except (TypeError, ValueError):
+                max_sym = 200
+            view = slim_codemap_for_ui(
+                codemap if isinstance(codemap, dict) else None,
+                include_symbols=bool(include_symbols),
+                path=str(path or ""),
+                max_symbols=max_sym,
+            )
             return {
-                "codemap": codemap,
+                "codemap": view,
                 "summary": summary,
                 "has_codemap": bool(
-                    summary.get("has_codemap") if isinstance(summary, dict) else codemap
+                    summary.get("has_codemap") if isinstance(summary, dict) else view
                 ),
             }
         finally:
@@ -1683,12 +1707,16 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             db.set_codemap(codemap, source=str(codemap.get("source") or "mechanical"))
             stored = db.get_codemap()
             summary = codemap_summary_for_ui(stored)
+            from vulnforge.tools.codemap import slim_codemap_for_ui
+
+            # Response omits bulk symbols; full map is in DB.
+            view = slim_codemap_for_ui(stored, include_symbols=False)
             return {
                 "ok": True,
-                "codemap": stored,
+                "codemap": view,
                 "summary": summary,
                 "has_codemap": bool(
-                    summary.get("has_codemap") if isinstance(summary, dict) else stored
+                    summary.get("has_codemap") if isinstance(summary, dict) else view
                 ),
             }
         finally:

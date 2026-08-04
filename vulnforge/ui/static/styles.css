@@ -922,7 +922,8 @@ button.cov-plan-action.is-current {
 }
 .cov-path-chip { font-family: var(--mono); font-size: 11.5px; }
 .cov-task-row,
-.cov-finding-row {
+.cov-finding-row,
+.cov-sink-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -931,9 +932,23 @@ button.cov-plan-action.is-current {
   list-style: disc;
 }
 .cov-task-list,
-.cov-finding-list {
+.cov-finding-list,
+.cov-sink-list {
   list-style: none;
   padding-left: 0 !important;
+}
+.cov-sink-loc {
+  font-size: 12px;
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.coverage-honesty-dynamic {
+  margin: 0.25rem 0 0;
+}
+.coverage-honesty-dynamic .warn-text {
+  color: var(--warn, #c9a227);
 }
 
 /* ── Architecture page (Mission → Architecture) ── */

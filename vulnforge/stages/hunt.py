@@ -14,6 +14,7 @@ from vulnforge.tools.queue_note import flush_notes_to_db
 from vulnforge.transcript import save_transcript
 from vulnforge.usage import record_llm_result
 from vulnforge.paths import system_prompts_root
+from vulnforge.tools.sink_preindex import filter_sinks_for_paths, record_sink_coverage
 from vulnforge.util import append_event, normalize_relpath
 
 # Abort errors that free the queue and may trigger auto-split (not infra).
@@ -23,6 +24,52 @@ MAX_SPLIT_DEPTH = 2
 MAX_SPLIT_CHILDREN = 4
 MIN_SPLIT_CHILDREN = 2
 SPLIT_BUDGET_FRACTION = 0.30
+
+
+def _resolve_task_seed_sinks(
+    payload: dict,
+    arch: dict,
+    cfg: dict,
+) -> list[dict[str, Any]]:
+    """Sinks associated with this hunt (payload first, else path-filtered arch index)."""
+    raw = payload.get("seed_sinks")
+    if isinstance(raw, list) and raw:
+        return [s for s in raw if isinstance(s, dict)]
+    inv = arch.get("inventory") if isinstance(arch.get("inventory"), dict) else {}
+    all_sinks = inv.get("seed_sinks") or arch.get("seed_sinks") or []
+    if not isinstance(all_sinks, list) or not all_sinks:
+        return []
+    return filter_sinks_for_paths(
+        [s for s in all_sinks if isinstance(s, dict)],
+        payload.get("path_hints") or [],
+        top_k=int((cfg.get("packet") or {}).get("max_seed_sinks", 12)),
+    )
+
+
+def _mark_sink_coverage(
+    db,
+    payload: dict,
+    arch: dict,
+    cfg: dict,
+    *,
+    area: str,
+    attack_class: str,
+    visit_delta: int,
+    last_depth: str,
+) -> None:
+    """Update sink_coverage_facts for this hunt's seed sinks (best-effort)."""
+    try:
+        sinks = _resolve_task_seed_sinks(payload, arch, cfg)
+        record_sink_coverage(
+            db,
+            sinks,
+            area=area,
+            attack_class=attack_class,
+            visit_delta=visit_delta,
+            last_depth=last_depth,
+        )
+    except Exception:
+        pass
 
 
 def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
@@ -49,19 +96,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         for n in db.list_notes(kind="codemap")
     ]
 
-    seed_sinks = payload.get("seed_sinks")
-    if not seed_sinks:
-        # Pull from architecture inventory preindex when present
-        inv = arch.get("inventory") or {}
-        all_sinks = inv.get("seed_sinks") or arch.get("seed_sinks") or []
-        if all_sinks:
-            from vulnforge.tools.sink_preindex import filter_sinks_for_paths
-
-            seed_sinks = filter_sinks_for_paths(
-                all_sinks,
-                payload.get("path_hints") or [],
-                top_k=int((cfg.get("packet") or {}).get("max_seed_sinks", 12)),
-            )
+    seed_sinks = _resolve_task_seed_sinks(payload, arch, cfg)
 
     session: dict = {
         "candidate": None,
@@ -242,6 +277,16 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 out["error"] = "max_tool_rounds" if "max_tool_rounds" in str(err) else err
                 out["aborted_scope"] = True
                 db.upsert_coverage_fact(area, cls, visit_delta=1, last_depth="aborted")
+                _mark_sink_coverage(
+                    db,
+                    payload,
+                    arch,
+                    cfg,
+                    area=area,
+                    attack_class=cls,
+                    visit_delta=1,
+                    last_depth="aborted",
+                )
                 # P1.5 auto-split hook
                 split_info = maybe_auto_split(task, db, cfg, run_dir)
                 if split_info:
@@ -276,6 +321,16 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 "shallow_requeued"
             ):
                 db.upsert_coverage_fact(area, cls, visit_delta=1, last_depth="shallow")
+                _mark_sink_coverage(
+                    db,
+                    payload,
+                    arch,
+                    cfg,
+                    area=area,
+                    attack_class=cls,
+                    visit_delta=1,
+                    last_depth="shallow",
+                )
                 child_payload = {
                     **payload,
                     "force_depth": True,
@@ -312,6 +367,16 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
 
             depth = "shallow" if shallow else "none"
             db.upsert_coverage_fact(area, cls, visit_delta=1, last_depth=depth)
+            _mark_sink_coverage(
+                db,
+                payload,
+                arch,
+                cfg,
+                area=area,
+                attack_class=cls,
+                visit_delta=1,
+                last_depth=depth,
+            )
             return {
                 "status": "succeeded",
                 "none_found": True,
@@ -348,6 +413,16 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     priority=20,
                 )
             db.upsert_coverage_fact(area, cls, visit_delta=1, last_depth="candidate")
+            _mark_sink_coverage(
+                db,
+                payload,
+                arch,
+                cfg,
+                area=area,
+                attack_class=cls,
+                visit_delta=1,
+                last_depth="candidate",
+            )
             out_ok: dict[str, Any] = {
                 "status": "succeeded",
                 "finding_id": fid,
@@ -363,6 +438,16 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
 
         # P1.4 no_submit abort + optional split with enhanced diagnostics
         db.upsert_coverage_fact(area, cls, visit_delta=1, last_depth="aborted")
+        _mark_sink_coverage(
+            db,
+            payload,
+            arch,
+            cfg,
+            area=area,
+            attack_class=cls,
+            visit_delta=1,
+            last_depth="aborted",
+        )
 
         # Diagnose why no_submit occurred
         diagnostics = _diagnose_no_submit(result, session)

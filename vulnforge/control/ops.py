@@ -253,6 +253,17 @@ def cell_detail(run_dir: Path, area: str, attack_class: str) -> dict[str, Any]:
             if f.get("path") and f["path"] not in path_hints:
                 path_hints.append(f["path"])
 
+        # Per-sink residual coverage for this area × class (additive to matrix).
+        sinks: list[dict[str, Any]] = []
+        try:
+            sinks = db.sink_coverage_for_cell(area, attack_class)
+        except Exception:
+            sinks = []
+        residual_depths = frozenset({"", "planned", "shallow", "none", "aborted"})
+        residual_sinks = [
+            s for s in sinks if (s.get("last_depth") or "") in residual_depths
+        ]
+
         return {
             "area": area,
             "class": attack_class,
@@ -264,6 +275,10 @@ def cell_detail(run_dir: Path, area: str, attack_class: str) -> dict[str, Any]:
             "path_hints": path_hints[:40],
             "tasks": tasks[-20:],  # recent-ish by id order
             "findings": findings[:20],
+            "sinks": sinks[:80],
+            "residual_sinks": residual_sinks[:80],
+            "sink_count": len(sinks),
+            "residual_sink_count": len(residual_sinks),
             "can_requeue": True,
         }
     finally:
@@ -697,14 +712,41 @@ def requeue_hunt(
     force_depth: bool = True,
     reason: str = "operator_requeue",
     operator_notes: str = "",
+    seed_sinks: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
-    """Enqueue a hunt for area x class (operator force / residual coverage)."""
+    """Enqueue a hunt for area x class (operator force / residual coverage).
+
+    Optional ``seed_sinks`` tightens the hunt packet to specific preindex sinks
+    (Coverage sink-focus requeue). Also records sink_coverage planned rows.
+    """
     cls = _normalize_class(attack_class)
     area_s = str(area or "app").strip() or "app"
     notes = (operator_notes or "").strip()
     db = _open_db(run_dir)
     try:
         hints = [normalize_relpath(str(p)) for p in (path_hints or []) if p]
+        seeds: list[dict[str, Any]] = []
+        if isinstance(seed_sinks, list):
+            for s in seed_sinks[:24]:
+                if not isinstance(s, dict):
+                    continue
+                p = normalize_relpath(str(s.get("path") or ""))
+                if not p:
+                    continue
+                try:
+                    line = int(s.get("line") or 0)
+                except (TypeError, ValueError):
+                    line = 0
+                kind = str(s.get("kind") or "").strip().lower()
+                rec = {
+                    "path": p,
+                    "line": line,
+                    "kind": kind,
+                    "text": str(s.get("text") or "")[:160],
+                }
+                seeds.append(rec)
+                if p not in hints:
+                    hints.append(p)
         if not hints:
             # fall back from prior tasks / facts
             detail = cell_detail(run_dir, area_s, cls)
@@ -717,12 +759,28 @@ def requeue_hunt(
             "operator_requested": True,
             "operator_reason": reason,
         }
+        if seeds:
+            payload["seed_sinks"] = seeds
         if notes:
             payload["operator_notes"] = notes[:4000]
         tid = db.enqueue_task("hunt", payload, priority=40)
         db.upsert_coverage_fact(
             area_s, cls, path=(hints[0] if hints else ""), visit_delta=0, last_depth="planned"
         )
+        if seeds:
+            try:
+                from vulnforge.tools.sink_preindex import record_sink_coverage
+
+                record_sink_coverage(
+                    db,
+                    seeds,
+                    area=area_s,
+                    attack_class=cls,
+                    visit_delta=0,
+                    last_depth="planned",
+                )
+            except Exception:
+                pass
         try:
             append_event(
                 run_dir,
@@ -734,6 +792,7 @@ def requeue_hunt(
                     "class": cls,
                     "reason": reason,
                     "has_notes": bool(notes),
+                    "seed_sink_count": len(seeds),
                 },
             )
         except OSError:
@@ -741,6 +800,29 @@ def requeue_hunt(
         return {"ok": True, "task_id": tid, "payload": payload}
     finally:
         db.close()
+
+
+def requeue_hunt_for_sinks(
+    run_dir: Path,
+    *,
+    area: str,
+    attack_class: str,
+    sinks: list[dict[str, Any]],
+    force_depth: bool = True,
+    reason: str = "operator_sink_requeue",
+    operator_notes: str = "",
+) -> dict[str, Any]:
+    """Requeue a hunt focused on one or more preindex sinks (path + seed_sinks)."""
+    return requeue_hunt(
+        run_dir,
+        area=area,
+        attack_class=attack_class,
+        path_hints=None,
+        force_depth=force_depth,
+        reason=reason,
+        operator_notes=operator_notes,
+        seed_sinks=list(sinks or []),
+    )
 
 
 # Cap bulk operator requeues so one click cannot flood the queue unbounded.
@@ -2407,6 +2489,43 @@ def get_finding_poc(run_dir: Path, finding_id: int) -> dict[str, Any]:
                 set(code_files) | set(readiness.get("code_files") or [])
             )
         latest_val = body.get("poc_validation_latest")
+        # Surface configured harness defaults (not a security boundary — honesty UI).
+        harness_info: dict[str, Any] = {}
+        try:
+            from vulnforge.poc_runner import docker_available, harness_config
+            from vulnforge.settings.load import load_config
+
+            try:
+                run_cfg = get_run_config(db) or {}
+            except Exception:
+                run_cfg = {}
+            # Package defaults, overridden by run-stored poc_harness when present
+            try:
+                pkg_cfg = load_config()
+            except Exception:
+                pkg_cfg = {}
+            merged: dict[str, Any] = dict(pkg_cfg) if isinstance(pkg_cfg, dict) else {}
+            if isinstance(run_cfg, dict) and isinstance(run_cfg.get("poc_harness"), dict):
+                base_ph = (
+                    dict(merged.get("poc_harness") or {})
+                    if isinstance(merged.get("poc_harness"), dict)
+                    else {}
+                )
+                base_ph.update(run_cfg["poc_harness"])
+                merged["poc_harness"] = base_ph
+            hc = harness_config(merged if merged else run_cfg)
+            harness_info = {
+                "runner": hc["runner"],
+                "network": hc["network"],
+                "timeout_s": hc["timeout_s"],
+                "docker_image": hc.get("docker_image"),
+                "docker_available": (
+                    docker_available() if hc["runner"] == "docker" else None
+                ),
+                "enabled": hc["enabled"],
+            }
+        except Exception:
+            harness_info = {}
         return {
             "ok": True,
             "finding_id": finding.id,
@@ -2421,6 +2540,7 @@ def get_finding_poc(run_dir: Path, finding_id: int) -> dict[str, Any]:
             "poc_code_files": code_files,
             "readiness": readiness,
             "harness_ready": bool(readiness.get("ready")),
+            "harness": harness_info or None,
             "poc_validation_latest": latest_val if isinstance(latest_val, dict) else None,
         }
     finally:

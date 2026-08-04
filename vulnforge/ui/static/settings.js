@@ -82,6 +82,16 @@
       $("#set-validate-models").value = Array.isArray(vm)
         ? vm.join("\n")
         : String(vm || "");
+      const list = Array.isArray(vm)
+        ? vm
+        : String(vm || "")
+            .split(/\n|,/)
+            .map((x) => x.trim())
+            .filter(Boolean);
+      updateValidateModelsWarn(
+        list.length ? list : [s.model || ""],
+        s.model || ""
+      );
     }
     if ($("#set-validate-consensus")) {
       $("#set-validate-consensus").value = s.validate_consensus || "majority";
@@ -106,13 +116,13 @@
     const s = data.settings || {};
     const dash = "-";
     const keyNote = eff.api_key_set ? "api key set" : "no api key";
-    const vModels =
-      (eff.validate_models && eff.validate_models.length
+    const vList =
+      eff.validate_models && eff.validate_models.length
         ? eff.validate_models
         : s.validate_models && s.validate_models.length
           ? s.validate_models
-          : [eff.model || s.model || dash]
-      ).join(", ");
+          : [eff.model || s.model || dash];
+    const vModels = vList.join(", ");
     const el = $("#settings-effective");
     if (!el) return;
     el.textContent =
@@ -121,6 +131,24 @@
       `referee ${eff.validate_poc_referee ?? s.validate_poc_referee} | ` +
       `disprove ${eff.validate_llm ?? s.validate_llm} | ${keyNote} | ` +
       `agents ${eff.max_leases_parallel || 1}`;
+    updateValidateModelsWarn(vList, eff.model || s.model || "");
+  }
+
+  function updateValidateModelsWarn(models, defaultModel) {
+    const warn = $("#set-validate-models-warn");
+    if (!warn) return;
+    const list = (models || []).map((m) => String(m || "").trim()).filter(Boolean);
+    const uniq = [...new Set(list.map((m) => m.toLowerCase()))];
+    const def = String(defaultModel || "").trim().toLowerCase();
+    if (uniq.length <= 1) {
+      warn.hidden = false;
+      warn.textContent =
+        "Same-model disprove is a weak signal. Add a second validation model id when you can.";
+    } else {
+      warn.hidden = true;
+      warn.textContent = "";
+    }
+    void def; // reserved if we later warn when list equals only default
   }
 
   function applyRecommendedToSettingsForm(rec) {

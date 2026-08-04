@@ -107,7 +107,12 @@
               <span class="label-text">Validation models (1+)</span>
             </label>
             <textarea id="set-validate-models" class="mono" rows="4" placeholder="one model id per line&#10;(empty = default model only)"></textarea>
-            <p class="controls-hint">Used for <code>validate_llm</code> disprove and PoC referee. Add a second (or third) model id when you have another endpoint model available.</p>
+            <p class="controls-hint">
+              Used for <code>validate_llm</code> disprove and PoC referee.
+              Empty = default model only — <strong>same-model dual disprove is a weak signal</strong>.
+              Prefer 2+ distinct model ids when available.
+            </p>
+            <p id="set-validate-models-warn" class="controls-hint warn-text" hidden style="color:var(--warn,#c9a227)"></p>
           </div>
           <div class="grid-2">
             <div class="field">

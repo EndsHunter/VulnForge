@@ -5,6 +5,7 @@
 | Want to… | Edit |
 |----------|------|
 | Add a mechanical gate | Append to `CHECKS` in `vulnforge/stages/validate_mech.py`; unit test in `tests/test_validate_mech_gates.py` |
+| Tighten citation content overlap | `check_citation_content` / `citation_claim_tokens` in `validate_mech.py`; optional `stages.strict_citation_content` |
 | Tighten vacuous impact / severity floor | `check_non_vacuous` (+ `_VACUOUS_*` helpers) in `validate_mech.py` |
 | Change severity handling | `vulnforge/findings/severity.py` + mech check |
 | Improve hunter impact wording | `seeds/system/PRINCIPLES.md` and `submit_candidate` tool schema |
@@ -15,7 +16,7 @@
 | Change dual-verifier list | `stages/validate_llm.py` / config `llm.disprove_verifiers` |
 | Change human review API | `control/ops.py` human review helpers + `ui/app.py` Report routes |
 | Change Report UI | `vulnforge/ui/static/report.js` |
-| PoC harness runner / timeouts | `config/default.yaml` → `poc_harness`; `vulnforge/poc_runner.py` |
+| PoC harness runner / timeouts / network | `config/default.yaml` → `poc_harness` (default `docker` + `network: none`); `vulnforge/poc_runner.py` `harness_config` |
 | validate_poc stage | `vulnforge/stages/validate_poc.py` |
 | Handoff export / readiness | `vulnforge/poc_handoff.py` |
 | PoC referee prompt | `seeds/system/referee_poc.md` + `packet.pack_poc_referee` |

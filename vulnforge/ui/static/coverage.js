@@ -1300,6 +1300,76 @@
     return t.state || "";
   }
 
+  function sinkDepthLabel(d) {
+    const x = normDepth(d);
+    if (!x) return "unvisited";
+    if (x === "planned") return "planned";
+    if (x === "shallow") return "shallow";
+    if (x === "none") return "none";
+    if (x === "aborted") return "aborted";
+    if (x === "candidate" || x === "needs_human" || x === "confirmed") return x;
+    return x;
+  }
+
+  function renderSinkRows(sinks) {
+    if (!sinks || !sinks.length) {
+      return "<li class='controls-hint'>No sink coverage rows for this cell yet (recon may not have seeded sinks, or class has no preindex hits).</li>";
+    }
+    return sinks
+      .slice(0, 40)
+      .map((s, idx) => {
+        const path = String(s.path || "");
+        const line = s.line != null ? Number(s.line) : 0;
+        const kind = String(s.kind || "");
+        const depth = sinkDepthLabel(s.last_depth);
+        const residual = isResidual(s.last_depth);
+        const loc = line > 0 ? `${path}:${line}` : path;
+        return `<li class="cov-sink-row">
+          <span class="mono cov-sink-loc" title="${esc(loc)}">${esc(loc)}</span>
+          <span class="badge">${esc(kind || "?")}</span>
+          <span class="cov-cell ${covDepthClass(s.last_depth)}" style="display:inline-flex;width:auto;padding:0.1rem 0.4rem;font-size:0.8em">${esc(depth)}</span>
+          ${
+            path
+              ? `<button type="button" class="btn btn-ghost btn-sm cov-sink-open" data-path="${esc(path)}" title="Open in Explorer">Open</button>`
+              : ""
+          }
+          ${
+            residual && path
+              ? `<button type="button" class="btn btn-sm cov-sink-requeue" data-sink-idx="${idx}" title="Re-queue hunt focused on this sink">Re-queue focus</button>`
+              : ""
+          }
+        </li>`;
+      })
+      .join("");
+  }
+
+  function renderHonestyStrip(snap) {
+    const el = $("#coverage-honesty-dynamic");
+    if (!el) return;
+    const sc = snap?.sink_coverage_summary || {};
+    const total = Number(sc.total || 0);
+    const residual = Number(sc.residual || 0);
+    const incomplete = !!snap?.sinks_incomplete;
+    const meta = snap?.seed_sinks_meta || {};
+    const bits = [];
+    if (total > 0) {
+      bits.push(
+        `Sink coverage: <strong>${total}</strong> tracked · <strong>${residual}</strong> residual`
+      );
+    } else {
+      bits.push("Sink coverage: none yet (appears after recon plans hunts with seed sinks)");
+    }
+    if (incomplete) {
+      const why = [];
+      if (meta.files_capped) why.push("file scan capped");
+      if (meta.sinks_capped) why.push("sink count capped");
+      bits.push(
+        `<span class="warn-text">Sink index incomplete${why.length ? " (" + why.join(", ") + ")" : ""}</span>`
+      );
+    }
+    el.innerHTML = bits.join(" · ");
+  }
+
   async function openCell(area, cls) {
     const detail = $("#coverage-detail");
     if (!detail) return;
@@ -1376,6 +1446,14 @@
         })
         .join("");
 
+      const sinks = data.sinks || [];
+      const residualSinks = data.residual_sinks || [];
+      const sinkRows = renderSinkRows(sinks);
+      const sinkHead =
+        sinks.length > 0
+          ? `<span class="controls-hint">${sinks.length} tracked · ${residualSinks.length} residual</span>`
+          : "";
+
       detail.innerHTML = `
         <div class="coverage-detail-head">
           <div>
@@ -1404,6 +1482,18 @@
         <ul class="reason-list">${reasons || "<li class='controls-hint'>No detail</li>"}</ul>
         <h3>Path hints</h3>
         <div class="cov-path-chips">${paths || "<span class='controls-hint'>None stored</span>"}</div>
+        <h3>Sinks for this cell ${sinkHead}</h3>
+        <p class="controls-hint" style="margin-top:0">Mechanical preindex locations for this class — not exploit proof. Re-queue focus tightens path_hints + seed_sinks.</p>
+        <ul class="task-mini cov-sink-list">${sinkRows}</ul>
+        ${
+          residualSinks.length
+            ? `<div class="toolbar" style="margin:0.35rem 0 0.75rem">
+                <button type="button" class="btn btn-sm" id="cov-requeue-residual-sinks">
+                  Re-queue residual sinks (${Math.min(residualSinks.length, 12)})
+                </button>
+              </div>`
+            : ""
+        }
         <h3>Related hunts</h3>
         <ul class="task-mini cov-task-list">${tasks || "<li class='controls-hint'>No hunt tasks for this cell</li>"}</ul>
         <h3>Findings</h3>
@@ -1434,6 +1524,81 @@
         } catch (e) {
           toast(e.message || String(e), true);
         }
+      });
+      $("#cov-requeue-residual-sinks")?.addEventListener("click", async () => {
+        try {
+          const operator_notes = ($("#cov-op-notes")?.value || "").trim();
+          const seeds = residualSinks.slice(0, 12).map((s) => ({
+            path: s.path,
+            line: s.line,
+            kind: s.kind,
+            text: s.text || "",
+          }));
+          const r = await api(`${runApiBase()}/coverage/requeue`, {
+            method: "POST",
+            body: JSON.stringify({
+              area,
+              class: cls,
+              path_hints: seeds.map((s) => s.path),
+              seed_sinks: seeds,
+              force_depth: true,
+              reason: "operator_sink_requeue_ui",
+              operator_notes,
+            }),
+          });
+          toast(`Re-queued sink-focused hunt #${r.task_id}`);
+          if (typeof window.loadRunFull === "function") await window.loadRunFull();
+          openCell(area, cls);
+        } catch (e) {
+          toast(e.message || String(e), true);
+        }
+      });
+      detail.querySelectorAll(".cov-sink-requeue").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            const idx = Number(btn.getAttribute("data-sink-idx"));
+            const src = sinks[idx];
+            if (!src || !src.path) {
+              toast("Invalid sink payload", true);
+              return;
+            }
+            const seed = {
+              path: src.path,
+              line: src.line,
+              kind: src.kind,
+              text: src.text || "",
+            };
+            const operator_notes = ($("#cov-op-notes")?.value || "").trim();
+            const r = await api(`${runApiBase()}/coverage/requeue`, {
+              method: "POST",
+              body: JSON.stringify({
+                area,
+                class: cls,
+                path_hints: [seed.path],
+                seed_sinks: [seed],
+                force_depth: true,
+                reason: "operator_sink_requeue_ui",
+                operator_notes,
+              }),
+            });
+            toast(`Re-queued focus on ${seed.path}:${seed.line || "?"} (#${r.task_id})`);
+            if (typeof window.loadRunFull === "function") await window.loadRunFull();
+            openCell(area, cls);
+          } catch (e) {
+            toast(e.message || String(e), true);
+          }
+        });
+      });
+      detail.querySelectorAll(".cov-sink-open").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const path = btn.getAttribute("data-path");
+          if (window.VulnForgeModes?.goExplorer) {
+            window.VulnForgeModes.goExplorer(path);
+          } else if (window.VulnForgeExplorer?.reveal) {
+            window.VulnForgeModes?.setMode?.("explorer");
+            window.VulnForgeExplorer.reveal(path);
+          }
+        });
       });
       detail.querySelectorAll(".cov-path-chip").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -1549,6 +1714,7 @@
     }
     covCache = enrichCoverageAxes(snap?.coverage || covCache, snap);
 
+    renderHonestyStrip(snap);
     renderLegend();
     renderSummary(covCache);
     renderModeBar(window.__VF_cov_policy);

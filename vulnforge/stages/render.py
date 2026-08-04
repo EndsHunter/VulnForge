@@ -95,6 +95,8 @@ def write_codemap_md(path: Path, db) -> None:
                 "",
                 f"- Files: {summary.get('file_count', '—')}",
                 f"- Modules: {summary.get('module_count', len(codemap.get('modules') or []))}",
+                f"- Symbols: {summary.get('symbol_count', len(codemap.get('symbols') or []))}",
+                f"- Symbol backend: {summary.get('symbol_backend') or codemap.get('symbol_backend') or '—'}",
                 f"- Entrypoints: {summary.get('entrypoint_count', len(codemap.get('entrypoints') or []))}",
                 f"- Package roots: {', '.join(f'`{p}`' for p in (summary.get('package_roots') or [])[:20]) or '_none_'}",
                 "",
@@ -113,17 +115,33 @@ def write_codemap_md(path: Path, db) -> None:
         mods = [m for m in (codemap.get("modules") or []) if isinstance(m, dict)]
         if not mods:
             lines.append("_No modules._")
+        # Sample symbols per module path (projection only; DB holds full index)
+        symbols = [s for s in (codemap.get("symbols") or []) if isinstance(s, dict)]
+        by_mod: dict[str, list[dict]] = {}
+        for s in symbols:
+            mid = str(s.get("module_id") or "")
+            by_mod.setdefault(mid, []).append(s)
         for m in mods[:80]:
             path_s = m.get("path") or "?"
             kind = m.get("kind") or "dir"
             nfiles = m.get("file_count")
+            nsym = m.get("symbol_count")
             sigs = m.get("signals") or []
             sig_txt = f" signals: {', '.join(str(s) for s in sigs[:8])}" if sigs else ""
+            sym_txt = f", {nsym} symbols" if nsym is not None else ""
             lines.append(
                 f"- `{path_s}` ({kind}"
                 + (f", {nfiles} files" if nfiles is not None else "")
-                + f"){sig_txt}"
+                + f"{sym_txt}){sig_txt}"
             )
+            sample = (by_mod.get(str(m.get("id") or "")) or [])[:8]
+            for s in sample:
+                name = s.get("name") or "?"
+                sk = s.get("kind") or "symbol"
+                line_n = s.get("line")
+                sig = (str(s.get("signature") or ""))[:100]
+                loc = f":{line_n}" if line_n else ""
+                lines.append(f"  - `{name}` ({sk}{loc}) {sig}".rstrip())
         lines.append("")
 
         lines.extend(["## Entrypoints", ""])

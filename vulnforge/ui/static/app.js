@@ -43,9 +43,39 @@ async function api(path, opts = {}) {
   return data;
 }
 
-function badge(state) {
+/** Operator-facing state labels (CSS class still uses raw state). */
+const STATE_LABELS = {
+  needs_human: "Needs review",
+  candidate: "Candidate",
+  confirmed: "Accepted (human)",
+  rejected_mech: "Rejected (mechanical)",
+  rejected_llm: "Rejected (disprove)",
+  rejected_human: "Rejected (human)",
+  superseded: "Superseded",
+  idle: "Idle",
+  queued: "Queued",
+  leased: "Running",
+  paused: "Paused",
+  succeeded: "Succeeded",
+  failed_task: "Failed",
+  failed_infra: "Infra failure",
+  deadletter: "Deadletter",
+  cancelled: "Cancelled",
+};
+
+function stateLabel(state, finding) {
   const s = (state || "idle").toLowerCase();
-  return `<span class="badge ${esc(s)}">${esc(s)}</span>`;
+  if (s === "needs_human" && finding) {
+    const b = finding.body || {};
+    if (b.validation_mech?.pending_llm) return "Pending disprove";
+  }
+  return STATE_LABELS[s] || state || "idle";
+}
+
+function badge(state, finding) {
+  const s = (state || "idle").toLowerCase();
+  const label = stateLabel(s, finding);
+  return `<span class="badge ${esc(s)}" title="${esc(s)}">${esc(label)}</span>`;
 }
 
 /** Humanize validate_mech / validate_llm reason codes for operator UI. */
@@ -62,6 +92,11 @@ function humanizeValidationReason(raw) {
     missing_path: "Citation path does not exist under the target.",
     citation_escape: "Citation path escapes the target tree (path jail).",
     citation_not_object: "A citation entry is not a valid object.",
+    citation_missing_line:
+      "Citation lacks start_line — cite a concrete source line for the claim.",
+    citation_empty_slice: "Cited line range is empty or unreadable.",
+    citation_content_mismatch:
+      "Cited lines do not mention the claimed sink/symbol (or title tokens). Point citations at the real code.",
     unreadable: "Cited file could not be read.",
     line_oob: "Citation start_line is outside the file.",
     bad_line_range: "Citation line range is invalid.",
@@ -73,8 +108,12 @@ function humanizeValidationReason(raw) {
     poc_without_evidence_id: "poc_relpath set without evidence_id.",
     weak_no_poc_justification: "no_poc justification is too short or missing.",
     vacuous_impact: "Threat model impact looks vacuous / circular.",
+    vacuous_attacker: "Threat model attacker is empty or placeholder (n/a, none, unknown).",
     vacuous_boundary: "Threat model boundary is empty or placeholder (n/a, none, unknown).",
+    vacuous_impact_for_severity:
+      "HIGH/CRITICAL requires a concrete impact class (e.g. authz bypass, data leak, RCE).",
     title_too_short: "Finding title is too short.",
+    summary_too_short: "Finding summary is empty or too short.",
     bad_severity:
       "severity_claim must be CRITICAL, HIGH, MEDIUM, LOW, or INFORMATIONAL (not free text).",
     no_run: "Run row missing in harness.db.",
@@ -115,6 +154,8 @@ function formatValidationReasonsHtml(finding, { heading } = {}) {
   </div>`;
 }
 
+window.STATE_LABELS = STATE_LABELS;
+window.stateLabel = stateLabel;
 window.humanizeValidationReason = humanizeValidationReason;
 window.validationReasonsOf = validationReasonsOf;
 window.formatValidationReasonsHtml = formatValidationReasonsHtml;
@@ -2230,6 +2271,7 @@ function renderCodemapBriefCard(snap) {
   }
   const mods = sum.module_count != null ? sum.module_count : (snap.codemap?.modules || []).length;
   const files = sum.file_count != null ? sum.file_count : 0;
+  const syms = sum.symbol_count != null ? sum.symbol_count : 0;
   const roots = Array.isArray(sum.package_roots) ? sum.package_roots : [];
   const anns = sum.annotation_count != null ? sum.annotation_count : 0;
   const langObj = sum.languages || {};
@@ -2241,6 +2283,7 @@ function renderCodemapBriefCard(snap) {
   const meta = [
     `${files} file(s)`,
     `${mods} module(s)`,
+    syms ? `${syms} symbol(s)` : null,
     roots.length ? `${roots.length} package root(s)` : null,
     topLangs ? topLangs : null,
     anns ? `${anns} annotation(s)` : null,
@@ -4026,9 +4069,16 @@ function renderCodemapCardHtml(snap) {
     sum.entrypoint_count != null
       ? sum.entrypoint_count
       : (map.entrypoints || []).length;
+  const symbolCount =
+    sum.symbol_count != null
+      ? sum.symbol_count
+      : (map.summary && map.summary.symbol_count) || 0;
   const chips = [
     `<span class="arch-chip"><strong>files</strong> ${esc(String(fileCount))}</span>`,
     `<span class="arch-chip"><strong>modules</strong> ${esc(String(moduleCount))}</span>`,
+    symbolCount
+      ? `<span class="arch-chip"><strong>symbols</strong> ${esc(String(symbolCount))}</span>`
+      : "",
     roots.length
       ? `<span class="arch-chip"><strong>package_roots</strong> ${esc(String(roots.length))}</span>`
       : "",
@@ -4062,6 +4112,10 @@ function renderCodemapCardHtml(snap) {
       if (!m || typeof m !== "object") return "";
       const path = esc(String(m.path || m.name || "?"));
       const kind = m.kind ? `<span class="badge">${esc(String(m.kind))}</span>` : "";
+      const nsym =
+        m.symbol_count != null
+          ? `<span class="badge">${esc(String(m.symbol_count))} sym</span>`
+          : "";
       const signals = Array.isArray(m.signals)
         ? m.signals
         : Array.isArray(m.security_signals)
@@ -4074,7 +4128,7 @@ function renderCodemapCardHtml(snap) {
             .join("")}</div>`
         : "";
       return `<li class="arch-item">
-        <div class="arch-item-title"><span class="mono">${path}</span>${kind}</div>
+        <div class="arch-item-title"><span class="mono">${path}</span>${kind}${nsym}</div>
         ${sigChips}
       </li>`;
     })
@@ -4104,7 +4158,7 @@ function renderCodemapCardHtml(snap) {
       <header class="arch-section-head">
         <div>
           <h3>Codemap</h3>
-          <p class="controls-hint arch-page-sub">Mechanical path-backed modules. Rebuild does not wipe architecture.</p>
+          <p class="controls-hint arch-page-sub">Mechanical modules + function-level symbols (full index in DB). Rebuild does not wipe architecture.</p>
         </div>
         <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild</button>
       </header>

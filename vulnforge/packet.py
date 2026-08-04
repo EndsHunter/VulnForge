@@ -413,18 +413,27 @@ def pack_recon_agent(
         "sample_paths": (inventory.get("sample_paths") or [])[:80],
     }
     pkt = cfg.get("packet") or {}
-    max_cm = int(pkt.get("max_codemap_chars", 2500))
+    max_cm = int(pkt.get("max_codemap_chars", 3500))
     cm_block = ""
     if codemap:
         try:
             from vulnforge.tools.codemap import format_codemap_for_packet
 
-            cm_txt = format_codemap_for_packet(codemap, max_chars=max_cm)
+            # Recon: structure overview only (no bulk function dump).
+            cm_txt = format_codemap_for_packet(
+                codemap,
+                max_chars=max_cm,
+                cfg=cfg,
+                include_symbols=False,
+                sliced=False,
+            )
             if cm_txt and cm_txt != "(no codemap)":
                 cm_block = (
                     "\n## Mechanical codemap (ground truth for modules/paths)\n"
                     "Prefer these paths for components and hunt_focus path_hints; "
                     "do not invent modules outside this map without tool evidence.\n"
+                    "Full function-level index is in the run DB — use query_codemap "
+                    "when you need symbols for a path.\n"
                     "Annotate high-value paths/symbols with note(kind=codemap).\n```json\n"
                     + cm_txt
                     + "\n```\n"
@@ -615,7 +624,7 @@ def pack_hunt(
     elif keys:
         known_block = f"\n## Known finding keys (skip re-find)\n{keys}\n"
     cm_struct_block = ""
-    max_cm = int(pkt.get("max_codemap_chars", 2500))
+    max_cm = int(pkt.get("max_codemap_chars", 3500))
     if codemap:
         try:
             from vulnforge.tools.codemap import format_codemap_for_packet
@@ -626,10 +635,15 @@ def pack_hunt(
                 path_hints=list(task_payload.get("path_hints") or []),
                 area=str(task_payload.get("area") or ""),
                 sliced=True,
+                cfg=cfg,
+                include_symbols=True,
             )
             if cm_txt and cm_txt != "(no codemap)":
                 cm_struct_block = (
-                    "\n## Codemap (area slice — modules near path_hints)\n```json\n"
+                    "\n## Codemap (area slice — modules/files/functions near path_hints)\n"
+                    "Full repo codemap is stored on the run; this is only the local "
+                    "insight for this hunt. Use query_codemap(path=…) or find_symbol "
+                    "for more symbols outside this slice.\n```json\n"
                     + cm_txt
                     + "\n```\n"
                 )

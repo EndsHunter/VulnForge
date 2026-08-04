@@ -152,6 +152,13 @@ def _cfg_codemap(cfg: Optional[dict]) -> dict[str, Any]:
     c = (cfg or {}).get("codemap") if isinstance(cfg, dict) else None
     if not isinstance(c, dict):
         c = {}
+    prefer_raw = c.get("packet_prefer_kinds") or ["function", "method", "class"]
+    if isinstance(prefer_raw, str):
+        prefer_kinds = [prefer_raw]
+    elif isinstance(prefer_raw, (list, tuple)):
+        prefer_kinds = [str(x) for x in prefer_raw if x]
+    else:
+        prefer_kinds = ["function", "method", "class"]
     return {
         "enabled": bool(c.get("enabled", True)),
         "max_modules": max(1, int(c.get("max_modules", 80))),
@@ -159,6 +166,17 @@ def _cfg_codemap(cfg: Optional[dict]) -> dict[str, Any]:
         "max_edges": max(0, int(c.get("max_edges", 120))),
         "max_import_files_scan": max(0, int(c.get("max_import_files_scan", 200))),
         "build_import_edges": bool(c.get("build_import_edges", True)),
+        # Symbol layer (full store; packet budgets are separate)
+        "symbols_enabled": bool(c.get("symbols_enabled", True)),
+        "symbol_backend": str(c.get("symbol_backend") or "auto").strip().lower(),
+        "max_symbol_files": max(0, int(c.get("max_symbol_files", 5000))),
+        "max_symbols": max(0, int(c.get("max_symbols", 100_000))),
+        "max_symbols_per_file": max(1, int(c.get("max_symbols_per_file", 500))),
+        "max_signature_chars": max(40, int(c.get("max_signature_chars", 240))),
+        "packet_max_modules": max(1, int(c.get("packet_max_modules", 8))),
+        "packet_max_files": max(0, int(c.get("packet_max_files", 40))),
+        "packet_max_symbols": max(0, int(c.get("packet_max_symbols", 60))),
+        "packet_prefer_kinds": prefer_kinds or ["function", "method", "class"],
     }
 
 
@@ -298,17 +316,26 @@ def build_codemap(
 
     if not opts["enabled"]:
         return {
-            "version": 1,
+            "version": 2,
             "generated_at": utc_now_iso(),
             "source": "mechanical",
             "target_kind": "disabled",
+            "symbol_backend": "none",
             "summary": {
                 "file_count": inv.get("file_count") or 0,
                 "languages": {},
                 "package_roots": [],
                 "entrypoint_count": 0,
+                "module_count": 0,
+                "symbol_count": 0,
+                "file_index_count": 0,
+                "symbol_backend": "none",
+                "symbol_languages": [],
+                "truncated_symbols": False,
             },
             "modules": [],
+            "files": [],
+            "symbols": [],
             "entrypoints": [],
             "edges": [],
             "annotations": [],
@@ -316,7 +343,7 @@ def build_codemap(
 
     single_file = target.is_file() or inv.get("kind") == "single_file"
     if single_file:
-        return _build_single_file(target, inv)
+        return _build_single_file(target, inv, cfg=cfg)
 
     try:
         files, ext_hist, entrypoints = _collect_files(
@@ -453,6 +480,7 @@ def build_codemap(
                 "kind": kind,
                 "label": label,
                 "file_count": len(kids_files) if kids_files else int(-_neg_n),
+                "symbol_count": 0,
                 "extensions": {k: int(v) for k, v in sorted(exts.items())[:20]},
                 "signals": sigs[:12],
                 "children": [],
@@ -507,26 +535,112 @@ def build_codemap(
             if k
         }
 
+    # Function/class-level symbol layer (full store; hunts slice later).
+    root = target if target.is_dir() else target.parent
+    files_layer, symbols_layer, sym_meta = _attach_symbols(
+        root,
+        files,
+        module_paths,
+        cfg=cfg,
+        opts=opts,
+    )
+    _rollup_module_symbol_counts(modules, symbols_layer)
+
     return {
-        "version": 1,
+        "version": 2,
         "generated_at": utc_now_iso(),
         "source": "mechanical",
         "target_kind": "directory",
+        "symbol_backend": sym_meta.get("backend") or "none",
         "summary": {
             "file_count": file_count,
             "languages": languages,
             "package_roots": sorted(package_roots)[:40],
             "entrypoint_count": len(ep_records),
             "module_count": len(modules),
+            "symbol_count": len(symbols_layer),
+            "file_index_count": len(files_layer),
+            "symbol_backend": sym_meta.get("backend") or "none",
+            "symbol_languages": list(sym_meta.get("languages") or []),
+            "truncated_symbols": bool(sym_meta.get("truncated")),
         },
         "modules": modules,
+        "files": files_layer,
+        "symbols": symbols_layer,
         "entrypoints": ep_records,
         "edges": edges,
         "annotations": [],
     }
 
 
-def _build_single_file(target: Path, inv: dict) -> dict[str, Any]:
+def _attach_symbols(
+    root: Path,
+    files: list[str],
+    module_paths: list[str],
+    *,
+    cfg: Optional[dict],
+    opts: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Run symbol extractor; return (files, symbols, meta)."""
+    if not opts.get("symbols_enabled"):
+        return [], [], {
+            "backend": "none",
+            "truncated": False,
+            "languages": [],
+        }
+    try:
+        from vulnforge.tools.symbols import extract_symbols
+    except Exception:
+        return [], [], {
+            "backend": "none",
+            "truncated": False,
+            "languages": [],
+        }
+    try:
+        result = extract_symbols(
+            root,
+            files,
+            cfg=cfg,
+            module_paths=module_paths,
+            module_for_path=_module_for_path,
+        )
+    except Exception:
+        return [], [], {
+            "backend": "none",
+            "truncated": False,
+            "languages": [],
+        }
+    return (
+        list(result.get("files") or []),
+        list(result.get("symbols") or []),
+        {
+            "backend": str(result.get("backend") or "none"),
+            "truncated": bool(result.get("truncated")),
+            "languages": list(result.get("languages") or []),
+        },
+    )
+
+
+def _rollup_module_symbol_counts(
+    modules: list[dict[str, Any]], symbols: list[dict[str, Any]]
+) -> None:
+    counts: dict[str, int] = defaultdict(int)
+    for s in symbols:
+        if not isinstance(s, dict):
+            continue
+        mid = str(s.get("module_id") or "")
+        if mid:
+            counts[mid] += 1
+    for m in modules:
+        if not isinstance(m, dict):
+            continue
+        mid = str(m.get("id") or "")
+        m["symbol_count"] = int(counts.get(mid, 0))
+
+
+def _build_single_file(
+    target: Path, inv: dict, *, cfg: Optional[dict] = None
+) -> dict[str, Any]:
     name = target.name if target.is_file() else str(
         (inv.get("single_file") or {}).get("name")
         or (inv.get("entrypoints") or ["file"])[0]
@@ -534,30 +648,59 @@ def _build_single_file(target: Path, inv: dict) -> dict[str, Any]:
     name = normalize_relpath(name)
     ext = Path(name).suffix.lower()
     langs = languages_from_extensions({ext: 1} if ext else {})
+    opts = _cfg_codemap(cfg)
+    modules = [
+        {
+            "id": _mod_id(name),
+            "path": name,
+            "kind": "file",
+            "label": Path(name).stem or name,
+            "file_count": 1,
+            "symbol_count": 0,
+            "extensions": {ext: 1} if ext else {},
+            "signals": _signals_for_path(name),
+            "children": [],
+        }
+    ]
+    root = target.parent if target.is_file() else target
+    files_layer, symbols_layer, sym_meta = _attach_symbols(
+        root,
+        [name],
+        [name],
+        cfg=cfg,
+        opts=opts,
+    )
+    # Single-file: ensure module_id points at the file module
+    for s in symbols_layer:
+        if isinstance(s, dict):
+            s["module_id"] = _mod_id(name)
+            s["path"] = name
+    for f in files_layer:
+        if isinstance(f, dict):
+            f["module_id"] = _mod_id(name)
+            f["path"] = name
+    _rollup_module_symbol_counts(modules, symbols_layer)
     return {
-        "version": 1,
+        "version": 2,
         "generated_at": utc_now_iso(),
         "source": "mechanical",
         "target_kind": "single_file",
+        "symbol_backend": sym_meta.get("backend") or "none",
         "summary": {
             "file_count": 1,
             "languages": langs,
             "package_roots": [],
             "entrypoint_count": 1,
             "module_count": 1,
+            "symbol_count": len(symbols_layer),
+            "file_index_count": len(files_layer),
+            "symbol_backend": sym_meta.get("backend") or "none",
+            "symbol_languages": list(sym_meta.get("languages") or []),
+            "truncated_symbols": bool(sym_meta.get("truncated")),
         },
-        "modules": [
-            {
-                "id": _mod_id(name),
-                "path": name,
-                "kind": "file",
-                "label": Path(name).stem or name,
-                "file_count": 1,
-                "extensions": {ext: 1} if ext else {},
-                "signals": _signals_for_path(name),
-                "children": [],
-            }
-        ],
+        "modules": modules,
+        "files": files_layer,
+        "symbols": symbols_layer,
         "entrypoints": [{"path": name, "kind": "file", "marker": Path(name).name}],
         "edges": [],
         "annotations": [],
@@ -760,18 +903,50 @@ def _build_import_edges(
     return edges
 
 
+def _path_under_any(path: str, roots: list[str], *, allow_ancestor_root: bool = False) -> bool:
+    """True if *path* is equal to or nested under any root.
+
+    When *allow_ancestor_root* is True, also accept when a root is nested under
+    *path* (module path is a parent of the file's package). Default False so
+    ``packages/auth`` does not pull in ``packages/api/...`` via parent module
+    ``packages``.
+    """
+    p = normalize_relpath(path)
+    if not p:
+        return False
+    for r in roots:
+        if not r:
+            continue
+        rn = normalize_relpath(r)
+        if p == rn or p.startswith(rn.rstrip("/") + "/"):
+            return True
+        if allow_ancestor_root and rn.startswith(p.rstrip("/") + "/"):
+            return True
+    return False
+
+
 def slice_codemap(
     codemap: Optional[dict],
     *,
     path_hints: Optional[list[str]] = None,
     area: str = "",
     max_modules: int = 8,
+    max_files: int = 40,
+    max_symbols: int = 60,
     max_annotations: int = 12,
+    include_symbols: bool = True,
+    prefer_kinds: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Area/path-focused subset for hunt packets."""
+    """Area/path-focused subset for hunt packets and tools.
+
+    Full codemap may hold all symbols; this returns only insight near
+    *path_hints* / *area* (modules + files + ranked symbols).
+    """
     if not isinstance(codemap, dict):
         return {
             "modules": [],
+            "files": [],
+            "symbols": [],
             "entrypoints": [],
             "edges": [],
             "annotations": [],
@@ -784,6 +959,12 @@ def slice_codemap(
         for t in re.split(r"[\s/_\-]+", area_s)
         if len(t) >= 3 and t not in {"the", "and", "for", "with", "from", "app"}
     ]
+    kinds_pref = [
+        str(k).lower()
+        for k in (prefer_kinds or ["function", "method", "class"])
+        if k
+    ]
+    kind_rank = {k: i for i, k in enumerate(kinds_pref)}
 
     modules = [m for m in (codemap.get("modules") or []) if isinstance(m, dict)]
     matched: list[dict] = []
@@ -821,14 +1002,23 @@ def slice_codemap(
 
     mod_ids = {m.get("id") for m in matched}
     mod_paths = [normalize_relpath(str(m.get("path") or "")) for m in matched]
+    # Files/symbols scope: prefer explicit path_hints so parent module
+    # "packages" does not pull every sibling package into an auth hunt.
+    if hints:
+        file_scope_roots = list(hints)
+    else:
+        file_scope_roots = list(mod_paths)
 
     eps = []
+    ep_paths: set[str] = set()
     for ep in codemap.get("entrypoints") or []:
         if not isinstance(ep, dict):
             continue
         p = normalize_relpath(str(ep.get("path") or ""))
-        if any(p == mp or p.startswith(mp.rstrip("/") + "/") for mp in mod_paths if mp):
+        if _path_under_any(p, file_scope_roots if hints else mod_paths):
             eps.append(ep)
+            if p:
+                ep_paths.add(p)
         if len(eps) >= 12:
             break
 
@@ -846,18 +1036,85 @@ def slice_codemap(
         if not isinstance(a, dict):
             continue
         p = normalize_relpath(str(a.get("path") or ""))
-        if not p or any(
-            p == mp or p.startswith(mp.rstrip("/") + "/") or mp in p
-            for mp in mod_paths
-            if mp
-        ):
+        if not p or _path_under_any(p, file_scope_roots if hints else mod_paths):
             anns.append(a)
         if len(anns) >= max_annotations:
             break
 
+    # Files under path_hints (preferred) or matched modules
+    files_out: list[dict] = []
+    if max_files > 0:
+        for f in codemap.get("files") or []:
+            if not isinstance(f, dict):
+                continue
+            fp = normalize_relpath(str(f.get("path") or ""))
+            if not fp:
+                continue
+            if _path_under_any(fp, file_scope_roots):
+                files_out.append(f)
+            if len(files_out) >= max_files:
+                break
+
+    symbols_out: list[dict] = []
+    if include_symbols and max_symbols > 0:
+        ranked: list[tuple[tuple, dict]] = []
+        boost_tokens = set(tokens)
+        for h in hints:
+            for t in re.split(r"[/_\-.]+", h.lower()):
+                if len(t) >= 3:
+                    boost_tokens.add(t)
+        for s in codemap.get("symbols") or []:
+            if not isinstance(s, dict):
+                continue
+            sp = normalize_relpath(str(s.get("path") or ""))
+            if not _path_under_any(sp, file_scope_roots):
+                continue
+            kind = str(s.get("kind") or "other").lower()
+            name = str(s.get("name") or "").lower()
+            kr = kind_rank.get(kind, len(kind_rank) + 5)
+            score = 0
+            if kind in kind_rank:
+                score += 10 - min(kr, 9)
+            if sp in ep_paths:
+                score += 5
+            if any(t in name or t in sp.lower() for t in boost_tokens):
+                score += 8
+            for sig in (matched[0].get("signals") or []) if matched else []:
+                if str(sig).lower() in name:
+                    score += 3
+            ranked.append(
+                (
+                    (-score, kr, sp, int(s.get("line") or 0), name),
+                    s,
+                )
+            )
+        ranked.sort(key=lambda x: x[0])
+        symbols_out = [s for _, s in ranked[:max_symbols]]
+
+    full_summary = codemap.get("summary") if isinstance(codemap.get("summary"), dict) else {}
+    slice_summary = {
+        **{k: full_summary.get(k) for k in (
+            "file_count",
+            "languages",
+            "package_roots",
+            "symbol_backend",
+        ) if k in (full_summary or {})},
+        "module_count": len(matched),
+        "file_index_count": len(files_out),
+        "symbol_count_in_slice": len(symbols_out),
+        "symbol_count_full": int(
+            full_summary.get("symbol_count")
+            or len(codemap.get("symbols") or [])
+            or 0
+        ),
+        "entrypoint_count": len(eps),
+    }
+
     return {
-        "summary": codemap.get("summary") or {},
+        "summary": slice_summary,
         "modules": matched,
+        "files": files_out,
+        "symbols": symbols_out,
         "entrypoints": eps,
         "edges": edges,
         "annotations": anns,
@@ -873,23 +1130,48 @@ def format_codemap_for_packet(
     path_hints: Optional[list[str]] = None,
     area: str = "",
     sliced: bool = False,
+    cfg: Optional[dict] = None,
+    include_symbols: Optional[bool] = None,
 ) -> str:
-    """Compact text/JSON for LLM packets."""
+    """Compact text/JSON for LLM packets.
+
+    When *sliced* (hunt path), include area-local files/symbols only.
+    Recon overview omits bulk symbols unless include_symbols=True.
+    """
     if not isinstance(codemap, dict) or not (
-        codemap.get("modules") or codemap.get("entrypoints")
+        codemap.get("modules")
+        or codemap.get("entrypoints")
+        or codemap.get("symbols")
     ):
         return "(no codemap)"
-    data = (
-        slice_codemap(codemap, path_hints=path_hints, area=area)
-        if sliced or path_hints or area
-        else {
+    opts = _cfg_codemap(cfg)
+    do_slice = bool(sliced or path_hints or area)
+    want_syms = (
+        bool(include_symbols)
+        if include_symbols is not None
+        else do_slice  # hunts get symbols; recon overview does not by default
+    )
+    if do_slice:
+        data = slice_codemap(
+            codemap,
+            path_hints=path_hints,
+            area=area,
+            max_modules=opts["packet_max_modules"],
+            max_files=opts["packet_max_files"] if want_syms else 0,
+            max_symbols=opts["packet_max_symbols"] if want_syms else 0,
+            include_symbols=want_syms,
+            prefer_kinds=opts["packet_prefer_kinds"],
+        )
+    else:
+        data = {
             "summary": codemap.get("summary") or {},
             "modules": (codemap.get("modules") or [])[:20],
+            "files": [],
+            "symbols": (codemap.get("symbols") or [])[:0],
             "entrypoints": (codemap.get("entrypoints") or [])[:15],
             "edges": (codemap.get("edges") or [])[:15],
             "annotations": (codemap.get("annotations") or [])[:12],
         }
-    )
     # Slim modules for packet
     slim_mods = []
     for m in data.get("modules") or []:
@@ -901,19 +1183,55 @@ def format_codemap_for_packet(
                 "kind": m.get("kind"),
                 "label": m.get("label"),
                 "file_count": m.get("file_count"),
+                "symbol_count": m.get("symbol_count"),
                 "signals": (m.get("signals") or [])[:8],
             }
         )
-    payload = {
+    slim_files = []
+    for f in (data.get("files") or [])[: opts["packet_max_files"]]:
+        if not isinstance(f, dict):
+            continue
+        slim_files.append(
+            {
+                "path": f.get("path"),
+                "language": f.get("language"),
+                "symbol_count": f.get("symbol_count"),
+            }
+        )
+    slim_syms = []
+    for s in (data.get("symbols") or [])[: opts["packet_max_symbols"]]:
+        if not isinstance(s, dict):
+            continue
+        slim_syms.append(
+            {
+                "path": s.get("path"),
+                "name": s.get("name"),
+                "kind": s.get("kind"),
+                "line": s.get("line"),
+                "signature": (str(s.get("signature") or ""))[:160],
+                "parent": s.get("parent") or None,
+            }
+        )
+        if slim_syms[-1]["parent"] is None:
+            slim_syms[-1].pop("parent", None)
+    payload: dict[str, Any] = {
         "summary": data.get("summary"),
         "modules": slim_mods,
         "entrypoints": [
             e.get("path") if isinstance(e, dict) else e
             for e in (data.get("entrypoints") or [])[:12]
         ],
-        "edges": (data.get("edges") or [])[:12],
         "annotations": (data.get("annotations") or [])[:10],
     }
+    if slim_files:
+        payload["files"] = slim_files
+    if slim_syms:
+        payload["symbols"] = slim_syms
+    # Edges are noisy for hunts; keep a tiny sample only when not symbol-heavy
+    if not slim_syms:
+        payload["edges"] = (data.get("edges") or [])[:8]
+    elif data.get("edges"):
+        payload["edges"] = (data.get("edges") or [])[:5]
     import json
 
     text = json.dumps(payload, indent=2, ensure_ascii=True)
@@ -1054,14 +1372,20 @@ def codemap_summary_for_ui(codemap: Optional[dict]) -> dict[str, Any]:
             "languages": {},
             "entrypoint_count": 0,
             "annotation_count": 0,
+            "symbol_count": 0,
+            "file_index_count": 0,
+            "symbol_backend": None,
+            "truncated_symbols": False,
             "source": None,
             "generated_at": None,
         }
     summary = codemap.get("summary") if isinstance(codemap.get("summary"), dict) else {}
     mods = codemap.get("modules") or []
     anns = codemap.get("annotations") or []
+    syms = codemap.get("symbols") or []
+    files = codemap.get("files") or []
     return {
-        "has_codemap": bool(mods or codemap.get("entrypoints")),
+        "has_codemap": bool(mods or codemap.get("entrypoints") or syms),
         "module_count": len(mods)
         if isinstance(mods, list)
         else int(summary.get("module_count") or 0),
@@ -1076,7 +1400,73 @@ def codemap_summary_for_ui(codemap: Optional[dict]) -> dict[str, Any]:
         "edge_count": len(codemap.get("edges") or [])
         if isinstance(codemap.get("edges"), list)
         else 0,
+        "symbol_count": int(
+            summary.get("symbol_count")
+            if summary.get("symbol_count") is not None
+            else (len(syms) if isinstance(syms, list) else 0)
+        ),
+        "file_index_count": int(
+            summary.get("file_index_count")
+            if summary.get("file_index_count") is not None
+            else (len(files) if isinstance(files, list) else 0)
+        ),
+        "symbol_backend": summary.get("symbol_backend")
+        or codemap.get("symbol_backend"),
+        "truncated_symbols": bool(summary.get("truncated_symbols")),
         "source": codemap.get("source"),
         "generated_at": codemap.get("generated_at"),
         "target_kind": codemap.get("target_kind"),
+        "version": codemap.get("version"),
     }
+
+
+def slim_codemap_for_ui(
+    codemap: Optional[dict],
+    *,
+    include_symbols: bool = False,
+    path: str = "",
+    max_symbols: int = 200,
+) -> Optional[dict[str, Any]]:
+    """Mission / default API view: modules without full symbol dump.
+
+    Full symbols remain in DB; pass include_symbols or path to fetch a subset.
+    """
+    if not isinstance(codemap, dict):
+        return None
+    out = {
+        "version": codemap.get("version"),
+        "generated_at": codemap.get("generated_at"),
+        "source": codemap.get("source"),
+        "target_kind": codemap.get("target_kind"),
+        "symbol_backend": codemap.get("symbol_backend"),
+        "summary": codemap.get("summary") or {},
+        "modules": codemap.get("modules") or [],
+        "entrypoints": codemap.get("entrypoints") or [],
+        "edges": codemap.get("edges") or [],
+        "annotations": codemap.get("annotations") or [],
+    }
+    path_n = normalize_relpath(path) if path else ""
+    if include_symbols or path_n:
+        if path_n:
+            sliced = slice_codemap(
+                codemap,
+                path_hints=[path_n],
+                max_modules=50,
+                max_files=200,
+                max_symbols=max_symbols,
+                include_symbols=True,
+            )
+            out["files"] = sliced.get("files") or []
+            out["symbols"] = sliced.get("symbols") or []
+            out["modules"] = sliced.get("modules") or out["modules"]
+        else:
+            out["files"] = list(codemap.get("files") or [])[:500]
+            out["symbols"] = list(codemap.get("symbols") or [])[:max_symbols]
+            out["symbols_truncated"] = len(codemap.get("symbols") or []) > max_symbols
+    else:
+        # Counts only — avoid multi-MB mission snapshots
+        out["files"] = []
+        out["symbols"] = []
+        out["symbols_omitted"] = True
+        out["files_omitted"] = True
+    return out

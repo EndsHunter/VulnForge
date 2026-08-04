@@ -113,6 +113,63 @@ def _fix_citation_line(body: dict, toy_sqli: Path) -> None:
             break
 
 
+def test_citation_missing_line_rejected(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    body["citations"] = [{"path": "app.py", "symbol": "search_users"}]
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "rejected_mech"
+    assert any("citation_missing_line" in x for x in r.get("reasons") or [])
+    db.close()
+
+
+def test_citation_content_mismatch_rejected(tmp_path: Path, toy_sqli: Path):
+    """Cite a blank/comment line that does not mention the claim tokens."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    body["sink_symbol"] = "search_users"
+    # Line after the function is "# mutated" only — no claim tokens
+    text = (toy_sqli / "app.py").read_text(encoding="utf-8")
+    wrong = None
+    for i, line in enumerate(text.splitlines(), 1):
+        if line.strip() == "# mutated":
+            wrong = i
+            break
+    assert wrong is not None
+    body["citations"] = [
+        {"path": "app.py", "start_line": wrong, "symbol": "search_users"}
+    ]
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "rejected_mech"
+    assert any("citation_content_mismatch" in x for x in r.get("reasons") or [])
+    db.close()
+
+
+def test_citation_content_match_passes(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    body["sink_symbol"] = "search_users"
+    _fix_citation_line(body, toy_sqli)
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    db.close()
+
+
 def test_poc_relpath_missing_rejected_no_pack_fallback(tmp_path: Path, toy_sqli: Path):
     """M2: if poc_relpath set, that file must exist â€” other pack files do not count."""
     run_dir, db = _setup_run(tmp_path, toy_sqli)

@@ -22,7 +22,8 @@ submit_candidate
 Pure-code checks in `stages/validate_mech.py` `CHECKS`:
 
 - Schema / required fields
-- Citations resolve in target
+- Citations resolve in target (path exists, line in bounds)
+- **Citation content** — at least one `start_line`; cited slice non-empty; when claim tokens (sink symbol / title) exist, at least one must appear in the slice (±2 lines). Optional `stages.strict_citation_content: true` requires `start_line` on every path citation
 - Evidence pack exists
 - Target unmodified vs manifest fingerprint
 - Non-vacuous body (title/summary length; threat_model tokens; impact hedges; HIGH/CRITICAL needs concrete impact hints)
@@ -38,14 +39,16 @@ Dual adversarial disprove (`pack_disprove` + `disprove.md` + perspective files).
 
 Default: `stages.validate_llm: true`. Set **false** to skip for speed, debug, or when same-model disprove adds noise (mech pass → human directly). Same-model dual stand is still weak signal — never treat as proof.
 
+**Recommended multi-model:** set `llm.validate_models` to 2+ distinct model ids (Settings → Validate models). Empty list falls back to `[llm.model]` only. Rejection still requires **all** slots (model × perspective) to return `reject`.
+
 ## Quality recipe (better severity / impact results)
 
 | Lever | What to do |
 |-------|------------|
 | **Hunt upstream** | `seeds/system/PRINCIPLES.md` forces attacker→effect Z; cap HIGH/CRITICAL |
 | **Tool schema** | `submit_candidate` descriptions steer concrete threat_model + enum severity |
-| **Mech floor** | `check_non_vacuous` rejects stubs, hedges, vacuous privilege restatement |
-| **LLM disprove** | Default on; set `stages.validate_llm: false` to opt out; tighten `disprove*.md` / overrides |
+| **Mech floor** | `check_non_vacuous` + `check_citation_content` reject stubs and off-target citations |
+| **LLM disprove** | Default on; prefer 2+ `validate_models`; set `stages.validate_llm: false` to opt out |
 | **Human** | Report Accept/Reject is the real confirm and severity authority |
 
 ## validate_poc (operator / CLI)
@@ -66,6 +69,16 @@ Verdicts: `signal_observed` | `signal_absent` | `poc_broken` | `inconclusive` | 
 
 Config: `poc_harness.*` and `stages.validate_poc_referee` in `config/default.yaml`.
 
+**Safe defaults (v1):**
+
+| Key | Default | Notes |
+|-----|---------|--------|
+| `poc_harness.runner` | `docker` | Prefer isolation; set `local_subprocess` if Docker is unavailable |
+| `poc_harness.network` | `none` | Maps to `docker --network=none`; hub frontmatter may set `network: allow` |
+| `allow_write_target` | `false` | Never mounts the audit target |
+
+Without Docker on PATH, `validate_poc` returns `unsafe_skipped` / `spawn_error: docker_not_found` with an operator hint — it does **not** silently fall back to local.
+
 CLI:
 
 ```powershell
@@ -74,7 +87,7 @@ vf validate-poc --run-dir runs\<t>\run-001 --finding-id 3          # enqueue
 vf validate-poc --run-dir runs\<t>\run-001 --finding-id 3 --execute # in-process
 ```
 
-Report → Develop POC: **Run in harness** / **Export validation job**.
+Report → Develop POC: **Run in harness** / **Export validation job**. Workshop shows runner · network and a **Docker missing** badge when needed.
 
 ## Operator surfaces
 

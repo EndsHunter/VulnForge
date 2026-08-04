@@ -53,39 +53,47 @@ SPEC = ToolSpec(
 )
 
 
-def _load_sinks(ctx: dict, *, rescan: bool) -> list[dict[str, Any]]:
+def _load_sinks(
+    ctx: dict, *, rescan: bool
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     sinks: list[dict[str, Any]] = []
+    meta: dict[str, Any] | None = None
     # 1) task payload seed
     payload = ctx.get("task_payload") or {}
     raw = payload.get("seed_sinks")
     if isinstance(raw, list) and raw:
         sinks = [s for s in raw if isinstance(s, dict)]
-    # 2) architecture inventory
+    # 2) architecture inventory (+ truncation meta when present)
+    db = ctx.get("db")
+    arch: dict = {}
+    if db is not None:
+        try:
+            arch = db.get_architecture() or {}
+        except Exception:
+            arch = {}
+    if not arch and isinstance(ctx.get("architecture"), dict):
+        arch = ctx["architecture"]
+    inv = arch.get("inventory") if isinstance(arch.get("inventory"), dict) else {}
     if not sinks:
-        db = ctx.get("db")
-        arch: dict = {}
-        if db is not None:
-            try:
-                arch = db.get_architecture() or {}
-            except Exception:
-                arch = {}
-        if not arch and isinstance(ctx.get("architecture"), dict):
-            arch = ctx["architecture"]
-        inv = arch.get("inventory") or {}
         raw2 = inv.get("seed_sinks") or arch.get("seed_sinks") or []
         if isinstance(raw2, list):
             sinks = [s for s in raw2 if isinstance(s, dict)]
+    raw_meta = inv.get("seed_sinks_meta") or arch.get("seed_sinks_meta")
+    if isinstance(raw_meta, dict):
+        meta = raw_meta
     # 3) optional live rescan (or first-time build when empty + rescan)
     if rescan:
-        from vulnforge.tools.sink_preindex import build_sink_preindex
+        from vulnforge.tools.sink_preindex import build_sink_preindex_with_meta
 
         root = Path(str(ctx["target_root"]))
         ignore = list((ctx.get("cfg") or {}).get("run", {}).get("ignore_globs") or [])
         try:
-            sinks = build_sink_preindex(root, ignore, max_files=2000, max_sinks=300)
+            sinks, meta = build_sink_preindex_with_meta(
+                root, ignore, max_files=2000, max_sinks=300
+            )
         except Exception:
             sinks = sinks or []
-    return sinks
+    return sinks, meta
 
 
 def run(ctx: dict, **args: Any) -> dict[str, Any]:
@@ -113,7 +121,7 @@ def run(ctx: dict, **args: Any) -> dict[str, Any]:
     top_k = max(1, min(100, top_k))
     rescan = bool(args.get("rescan"))
 
-    sinks = _load_sinks(ctx, rescan=rescan)
+    sinks, sink_meta = _load_sinks(ctx, rescan=rescan)
     # Soft path_hints when no explicit path
     path_filter: list[str] = []
     if path:
@@ -136,6 +144,10 @@ def run(ctx: dict, **args: Any) -> dict[str, Any]:
 
     sess = ctx.setdefault("session", {})
     sess.setdefault("tools_used", []).append("query_sinks")
+    index_truncated = bool(
+        isinstance(sink_meta, dict)
+        and (sink_meta.get("files_capped") or sink_meta.get("sinks_capped"))
+    )
     result: dict[str, Any] = {
         "ok": True,
         "sinks": filtered,
@@ -143,7 +155,16 @@ def run(ctx: dict, **args: Any) -> dict[str, Any]:
         "kinds": sorted(kinds) if kinds else None,
         "path_filter": path_filter or None,
         "index_size": len(sinks),
+        "index_truncated": index_truncated,
     }
+    if isinstance(sink_meta, dict) and index_truncated:
+        result["index_meta"] = {
+            "files_scanned": sink_meta.get("files_scanned"),
+            "files_capped": sink_meta.get("files_capped"),
+            "sinks_capped": sink_meta.get("sinks_capped"),
+            "max_files": sink_meta.get("max_files"),
+            "max_sinks": sink_meta.get("max_sinks"),
+        }
     if not sinks:
         result["hint"] = (
             "No sink index in session/architecture. Call with rescan=true for a "

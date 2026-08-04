@@ -55,6 +55,68 @@ def _check_citations_on_target(body: dict, target_root: Path) -> list[str]:
     return errs
 
 
+def _check_citation_content_light(
+    body: dict, target_root: Path, cfg: dict | None = None
+) -> list[str]:
+    """Mirror validate_mech.check_citation_content for preflight (no Finding)."""
+    from vulnforge.stages.validate_mech import (
+        _read_citation_slice,
+        _resolve_citation_file,
+        citation_claim_tokens,
+    )
+
+    citations = body.get("citations") or []
+    if not citations:
+        return []
+    stages = (cfg or {}).get("stages") if isinstance(cfg, dict) else {}
+    if not isinstance(stages, dict):
+        stages = {}
+    strict = bool(stages.get("strict_citation_content"))
+    target = target_root if target_root.is_dir() or target_root.is_file() else Path(target_root)
+    root = target if target.is_dir() else target.parent
+    path_cites = [
+        c
+        for c in citations
+        if isinstance(c, dict) and normalize_relpath(str(c.get("path") or ""))
+    ]
+    if not path_cites:
+        return []
+    with_line = [c for c in path_cites if c.get("start_line") is not None]
+    if not with_line:
+        return ["citation_missing_line"]
+    if strict and len(with_line) < len(path_cites):
+        return ["citation_missing_line"]
+
+    tokens = citation_claim_tokens(body)
+    any_slice = False
+    any_hit = False
+    for c in with_line:
+        rel = normalize_relpath(str(c.get("path") or ""))
+        p = _resolve_citation_file(target, root, rel)
+        if p is None:
+            continue
+        try:
+            sl = int(c["start_line"])
+        except (TypeError, ValueError):
+            return [f"citation_missing_line:{rel}"]
+        el = c.get("end_line")
+        try:
+            el_i = int(el) if el is not None else None
+        except (TypeError, ValueError):
+            el_i = None
+        slice_txt = _read_citation_slice(p, sl, el_i, pad=2)
+        if slice_txt is None:
+            return [f"unreadable:{rel}"]
+        if not str(slice_txt).strip():
+            return [f"citation_empty_slice:{rel}:{sl}"]
+        any_slice = True
+        if tokens and any(tok in slice_txt.lower() for tok in tokens):
+            any_hit = True
+    if tokens and any_slice and not any_hit:
+        return ["citation_content_mismatch"]
+    return []
+
+
 def _check_non_vacuous_light(body: dict) -> list[str]:
     """Mirror of validate_mech non-vacuous checks (light copy, no Finding)."""
     from vulnforge.stages.validate_mech import (
@@ -210,6 +272,17 @@ def preflight_candidate(ctx: dict, body: dict | None = None, **kwargs: Any) -> d
     checks.append({"id": "citations_resolve", "ok": not cit_errs, "errors": cit_errs})
     if cit_errs:
         blockers.extend(cit_errs)
+
+    content_errs = (
+        _check_citation_content_light(body, target_root, ctx.get("cfg") or {})
+        if body.get("citations") and not cit_errs
+        else []
+    )
+    checks.append(
+        {"id": "citation_content", "ok": not content_errs, "errors": content_errs}
+    )
+    if content_errs:
+        blockers.extend(content_errs)
 
     # Evidence session gate (same policy as prepare_candidate_submission)
     written_ids = set(session.get("evidence_ids_written") or [])

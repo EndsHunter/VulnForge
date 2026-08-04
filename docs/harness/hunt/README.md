@@ -15,10 +15,14 @@
 | Surface | Action |
 |---------|--------|
 | Explorer | Select file/lines, pick class, enqueue hunt |
-| Coverage | Re-queue residual cells (shallow/aborted/none) |
+| Coverage | Re-queue residual cells (shallow/aborted/none); cell detail lists **sink residual** (preindex path:line:kind) with re-queue focus |
 | Report | Review findings; Develop POC workshop |
 | AI chat | Enqueue/requeue hunts (Confirm for mutators) |
 | Tasks | Queue / transcripts |
+
+**Sink coverage** (additive to area×class): recon plans `sink_coverage_facts` from task `seed_sinks`; hunt outcomes update `last_depth`. Not exploit proof — mechanical residual only.
+
+**Reachability tool:** `query_flows` (imports / call_heuristic) — prioritize reads; never treat edges as exploit proof.
 
 ## Skills (classes)
 

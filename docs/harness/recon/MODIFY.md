@@ -15,7 +15,9 @@
 | Change merge / batch / hunt planning logic | `vulnforge/stages/recon.py` |
 | Change recon packet packing | `vulnforge/packet.py` → `pack_recon` / `pack_recon_agent` |
 | Change Mission re-run UI | `vulnforge/ui/static/app.js` (`renderOperatorRerunCard`) + API in `ui/app.py` |
-| Change mechanical codemap | `vulnforge/tools/codemap.py` (not architecture) |
+| Change mechanical codemap | `vulnforge/tools/codemap.py` (not architecture); symbols: `vulnforge/tools/symbols/` |
+| Function-level extract / backends | `vulnforge/tools/symbols/` + `codemap.symbol_backend` in config |
+| Hunt area slice budgets | `config/default.yaml` → `codemap.packet_max_*` / `packet.max_codemap_chars` |
 
 ## Key files
 

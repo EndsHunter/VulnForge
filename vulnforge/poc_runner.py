@@ -42,19 +42,36 @@ VERDICTS = frozenset(
 )
 
 
+# Safe defaults: docker + network none. Operators opt into local_subprocess / network allow.
+DEFAULT_POC_RUNNER = "docker"
+DEFAULT_POC_NETWORK = "none"
+
+
 def harness_config(cfg: dict | None) -> dict[str, Any]:
     raw = (cfg or {}).get("poc_harness") if cfg else None
     if not isinstance(raw, dict):
         raw = {}
+    runner = str(raw.get("runner") or DEFAULT_POC_RUNNER).strip().lower()
+    if runner in ("local", "subprocess"):
+        runner = "local_subprocess"
+    network = str(raw.get("network") or DEFAULT_POC_NETWORK).strip().lower()
+    if network in ("off", "false", "0", "deny", "disabled"):
+        network = "none"
+    if network in ("on", "true", "1", "yes", "bridge"):
+        network = "allow"
     return {
         "enabled": bool(raw.get("enabled", True)),
-        "runner": str(raw.get("runner") or "local_subprocess").strip().lower(),
+        "runner": runner or DEFAULT_POC_RUNNER,
         "timeout_s": int(raw.get("timeout_s") or 60),
-        "network": str(raw.get("network") or "allow").strip().lower(),
+        "network": network or DEFAULT_POC_NETWORK,
         "allow_write_target": bool(raw.get("allow_write_target", False)),
         "docker_image": str(raw.get("docker_image") or "python:3.12-slim").strip(),
         "python": str(raw.get("python") or "").strip() or sys.executable,
     }
+
+
+def docker_available() -> bool:
+    return bool(shutil.which("docker"))
 
 
 def _truncate(s: str, max_chars: int = MAX_CAPTURE_CHARS) -> str:
@@ -373,7 +390,12 @@ def execute_poc_for_pack(
         command = (command or "").strip()
 
     timeout_s = int(meta.get("timeout_s") or hc["timeout_s"] or 60)
-    network = str(meta.get("network") or hc["network"] or "allow").lower()
+    # Hub frontmatter may opt into network: allow; config default is none.
+    network = str(meta.get("network") or hc["network"] or DEFAULT_POC_NETWORK).lower()
+    if network in ("off", "false", "0", "deny", "disabled"):
+        network = "none"
+    if network in ("on", "true", "1", "yes", "bridge"):
+        network = "allow"
     success_regex = str(meta.get("success_regex") or readiness.get("success_regex") or "").strip() or None
 
     env_merged: dict[str, str] = {}
@@ -383,12 +405,22 @@ def execute_poc_for_pack(
         env_merged.update({str(k): str(v) for k, v in env_extra.items()})
 
     skipped_reason = None
+    operator_hint: str | None = None
     if not hc["enabled"]:
         skipped_reason = "harness_disabled"
+        operator_hint = "Set poc_harness.enabled: true (or force) to run the harness."
     elif not command:
         skipped_reason = "no_run_command"
+        operator_hint = "Set hub frontmatter run: or an entry script in the evidence pack."
     elif readiness.get("issues") and "missing_poc_code" in (readiness.get("issues") or []):
         skipped_reason = "missing_poc_code"
+        operator_hint = "Add runnable PoC code under the evidence pack (e.g. poc.py)."
+    elif hc["runner"] == "docker" and not docker_available():
+        skipped_reason = "docker_not_found"
+        operator_hint = (
+            "Docker not on PATH. Install Docker, or set poc_harness.runner: local_subprocess "
+            "in config/default.yaml (less isolated; network not restricted)."
+        )
 
     if skipped_reason:
         result = {
@@ -412,10 +444,14 @@ def execute_poc_for_pack(
             network=network,
             env_extra=env_merged or None,
         )
+        if result.get("spawn_error") == "docker_not_found":
+            # Race: docker vanished between check and run
+            skipped_reason = "docker_not_found"
+            operator_hint = (
+                "Docker not on PATH. Install Docker, or set poc_harness.runner: "
+                "local_subprocess in config."
+            )
     else:
-        if hc["runner"] not in ("local_subprocess", "local", "subprocess"):
-            # unknown → local
-            pass
         result = run_poc_local(
             pack_dir,
             command,
@@ -429,21 +465,30 @@ def execute_poc_for_pack(
         result.get("stderr") or "",
         success_regex,
     )
-    verdict = classify_run_result(
-        ran=bool(result.get("ran")) and not result.get("spawn_error"),
-        exit_code=result.get("exit_code"),
-        timed_out=bool(result.get("timed_out")),
-        spawn_error=result.get("spawn_error"),
-        signal_matched=signal_matched,
-        skipped_reason=skipped_reason,
-    )
-    # refine: timed_out counts as ran for some fields but broken
-    if result.get("timed_out"):
+    spawn_err = result.get("spawn_error")
+    if spawn_err == "docker_not_found" and skipped_reason != "docker_not_found":
+        skipped_reason = "docker_not_found"
+        operator_hint = operator_hint or (
+            "Docker not on PATH. Set poc_harness.runner: local_subprocess to run locally."
+        )
+
+    # Config / environment skips vs broken PoC code
+    if skipped_reason in ("harness_disabled", "docker_not_found"):
+        verdict = "unsafe_skipped"
+    elif skipped_reason in ("no_run_command", "missing_poc_code"):
         verdict = "poc_broken"
-    if result.get("spawn_error") and verdict != "unsafe_skipped":
-        if skipped_reason:
-            verdict = "unsafe_skipped" if skipped_reason == "harness_disabled" else "poc_broken"
-        else:
+    else:
+        verdict = classify_run_result(
+            ran=bool(result.get("ran")) and not spawn_err,
+            exit_code=result.get("exit_code"),
+            timed_out=bool(result.get("timed_out")),
+            spawn_error=spawn_err,
+            signal_matched=signal_matched,
+            skipped_reason=None,
+        )
+        if result.get("timed_out"):
+            verdict = "poc_broken"
+        if spawn_err and verdict != "unsafe_skipped":
             verdict = "poc_broken"
 
     suggested = {
@@ -453,6 +498,8 @@ def execute_poc_for_pack(
         "inconclusive": "add_success_signal",
         "unsafe_skipped": "enable_or_configure_harness",
     }.get(verdict, "needs_human")
+    if skipped_reason == "docker_not_found":
+        suggested = "install_docker_or_set_local_subprocess"
 
     out = {
         "schema": "vulnforge.poc_run.v1",
@@ -466,7 +513,14 @@ def execute_poc_for_pack(
         "timeout_s": timeout_s,
         "network": network,
         "readiness": readiness,
-        "runner": result.get("runner"),
+        "runner": result.get("runner") or hc["runner"],
+        "harness": {
+            "runner": hc["runner"],
+            "network": network,
+            "timeout_s": timeout_s,
+            "docker_image": hc["docker_image"] if hc["runner"] == "docker" else None,
+            "docker_available": docker_available() if hc["runner"] == "docker" else None,
+        },
         "ran": bool(result.get("ran")),
         "exit_code": result.get("exit_code"),
         "timed_out": bool(result.get("timed_out")),
@@ -476,9 +530,11 @@ def execute_poc_for_pack(
         "stdout_excerpt": _truncate(result.get("stdout") or "", 8000),
         "stderr_excerpt": _truncate(result.get("stderr") or "", 4000),
         "suggested_finding_action": suggested,
+        "operator_hint": operator_hint,
         "caveats": [
             "PoC execution is not exploit proof of production impact.",
             "confirmed remains human-only.",
+            "Default harness is docker with network=none; hub frontmatter may set network: allow.",
         ],
         "docker_image": result.get("docker_image"),
         "docker_network": result.get("docker_network"),

@@ -451,6 +451,13 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
     arch = None
     codemap = None
     notes: list = []
+    coverage: dict[str, Any] = {"areas": [], "classes": [], "cells": []}
+    coverage_facts: list = []
+    sink_coverage_summary: dict[str, Any] = {
+        "total": 0,
+        "planned": 0,
+        "residual": 0,
+    }
     db = _open_db(run)
     try:
         tasks = []
@@ -488,6 +495,10 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         except Exception:
             coverage = {"areas": [], "classes": [], "cells": []}
             coverage_facts = []
+        try:
+            sink_coverage_summary = db.sink_coverage_summary()
+        except Exception:
+            sink_coverage_summary = {"total": 0, "planned": 0, "residual": 0}
     finally:
         db.close()
 
@@ -570,6 +581,7 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         from vulnforge.tools.codemap import (
             codemap_summary_for_ui,
             merge_annotations_into_codemap,
+            slim_codemap_for_ui,
         )
 
         if isinstance(codemap, dict):
@@ -581,6 +593,8 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
             if note_rows:
                 codemap = merge_annotations_into_codemap(codemap, note_rows)
             codemap_summary = codemap_summary_for_ui(codemap)
+            # Mission snapshot: modules only — full symbols stay in DB / dedicated API
+            codemap = slim_codemap_for_ui(codemap, include_symbols=False)
         else:
             codemap = None
             codemap_summary = codemap_summary_for_ui(None)
@@ -593,6 +607,7 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
             "languages": {},
             "entrypoint_count": 0,
             "annotation_count": 0,
+            "symbol_count": 0,
             "source": None,
             "generated_at": None,
         }
@@ -622,6 +637,19 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
             max_tasks = 50
 
     target_inv = _target_inventory(run, arch, tasks)
+    # Sink catalog truncation honesty (from recon inventory meta)
+    seed_sinks_meta: dict[str, Any] = {}
+    if isinstance(arch, dict):
+        inv = arch.get("inventory") if isinstance(arch.get("inventory"), dict) else {}
+        raw_meta = inv.get("seed_sinks_meta") or arch.get("seed_sinks_meta")
+        if isinstance(raw_meta, dict):
+            seed_sinks_meta = raw_meta
+    sinks_incomplete = bool(
+        seed_sinks_meta.get("files_capped") or seed_sinks_meta.get("sinks_capped")
+    )
+    if isinstance(target_inv, dict) and target_inv.get("planning_seed_partial"):
+        # planning seed is separate; still surface combined honesty for Coverage
+        pass
     # Preserve card-level counter maps before overwriting with full lists.
     # Live SSE compares these shapes; UI uses tasks[] / findings[] for tables.
     tasks_summary = card.get("tasks") if isinstance(card.get("tasks"), dict) else {}
@@ -650,6 +678,9 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         "coverage": coverage,
         "coverage_facts": coverage_facts,
         "coverage_policy": cov_policy,
+        "sink_coverage_summary": sink_coverage_summary,
+        "seed_sinks_meta": seed_sinks_meta or None,
+        "sinks_incomplete": sinks_incomplete,
         "hunt_classes": hunt_classes,
         "target_inventory": target_inv,
         "config": run_cfg,

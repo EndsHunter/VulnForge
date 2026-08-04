@@ -60,9 +60,12 @@
       .replace(/"/g, "&quot;");
   }
 
-  function badge(state) {
-    if (typeof window.badge === "function") return window.badge(state);
-    return `<span class="badge">${esc(state)}</span>`;
+  function badge(state, finding) {
+    if (typeof window.badge === "function") return window.badge(state, finding);
+    const s = String(state || "").toLowerCase();
+    let label = s;
+    if (typeof window.stateLabel === "function") label = window.stateLabel(s, finding);
+    return `<span class="badge ${esc(s)}" title="${esc(s)}">${esc(label)}</span>`;
   }
 
   function sevBadge(sev) {
@@ -154,9 +157,16 @@
     let tone = "llm-verify-mid";
     if (m.stood <= 0) tone = "llm-verify-none";
     else if (m.stood >= m.total) tone = "llm-verify-all";
-    return `<span class="badge llm-verify ${tone}" title="LLM verifiers that could not disprove (stand) / total">${esc(
+    const multi =
+      f?.body?.validation_llm?.multi_model_label ||
+      f?.body?.validation_llm?.multi_model?.label ||
+      "";
+    const title =
+      "LLM verifiers that could not disprove (stand) / total — not exploit proof" +
+      (multi ? ` · ${multi}` : "");
+    return `<span class="badge llm-verify ${tone}" title="${esc(title)}">${esc(
       m.label
-    )} llm verified</span>`;
+    )} llm survived${multi ? " · " + esc(String(multi)) : ""}</span>`;
   }
 
   function llmVerifyDetailHtml(f) {
@@ -179,8 +189,8 @@
       })
       .join("");
     return `<div class="report-llm-verify">
-      <h4>LLM verify <span class="badge llm-verify">${esc(m.label)} llm verified</span></h4>
-      <p class="controls-hint">Each verifier tries to <strong>disprove</strong> the finding. Score = how many returned <span class="mono">stand</span> (could not kill). Both must <span class="mono">reject</span> for auto <span class="mono">rejected_llm</span>.</p>
+      <h4>LLM disprove <span class="badge llm-verify">${esc(m.label)} llm survived</span></h4>
+      <p class="controls-hint">Each verifier tries to <strong>disprove</strong> the finding. Score = how many returned <span class="mono">stand</span> (could not kill). All slots must <span class="mono">reject</span> for auto <span class="mono">rejected_llm</span>. Not exploit proof.</p>
       ${rows}
     </div>`;
   }
@@ -394,13 +404,13 @@
         <button type="button" class="stat info stat-link${active("all")}" data-rfilter="all" title="Show all findings" aria-pressed="${ftr === "all"}">
           <div class="label">All</div><div class="value">${c.total}</div>
         </button>
-        <button type="button" class="stat warn stat-link${active("needs_human")}" data-rfilter="needs_human" title="Filter: needs human review" aria-pressed="${ftr === "needs_human"}">
-          <div class="label">Needs human</div><div class="value">${c.needs_human}</div>
+        <button type="button" class="stat warn stat-link${active("needs_human")}" data-rfilter="needs_human" title="Filter: needs human review (includes pending disprove)" aria-pressed="${ftr === "needs_human"}">
+          <div class="label">Needs review</div><div class="value">${c.needs_human}</div>
         </button>
-        <button type="button" class="stat good stat-link${active("confirmed")}" data-rfilter="confirmed" title="Filter: confirmed" aria-pressed="${ftr === "confirmed"}">
-          <div class="label">Confirmed</div><div class="value">${c.confirmed}</div>
+        <button type="button" class="stat good stat-link${active("confirmed")}" data-rfilter="confirmed" title="Filter: human-accepted findings" aria-pressed="${ftr === "confirmed"}">
+          <div class="label">Accepted</div><div class="value">${c.confirmed}</div>
         </button>
-        <button type="button" class="stat bad stat-link${active("rejected")}" data-rfilter="rejected" title="Filter: rejected" aria-pressed="${ftr === "rejected"}">
+        <button type="button" class="stat bad stat-link${active("rejected")}" data-rfilter="rejected" title="Filter: mech / LLM / human rejections" aria-pressed="${ftr === "rejected"}">
           <div class="label">Rejected</div><div class="value">${c.rejected}</div>
         </button>
         <button type="button" class="stat warn stat-link${active("near_dup")}" data-rfilter="near_dup" title="Filter: near-dup / overlaps" aria-pressed="${ftr === "near_dup"}">
@@ -409,8 +419,9 @@
       </div>
       <p class="controls-hint report-disclaimer">
         Click a count to filter the table.
-        <strong>needs_human</strong> = mechanical gates passed.
-        <strong>confirmed</strong> = human accepted (not exploit proof). Expand a row to review.
+        <strong>Needs review</strong> = mechanical gates passed (optional LLM disprove did not kill).
+        <strong>Accepted</strong> = human accepted — still not exploit proof.
+        Badges: <span class="mono">Rejected (mechanical)</span> / <span class="mono">Rejected (disprove)</span> / <span class="mono">Pending disprove</span>.
         Use checkboxes to build <strong>attack chains</strong>.
       </p>`;
     el.querySelectorAll("[data-rfilter]").forEach((btn) => {
@@ -494,7 +505,7 @@
                   isSelf ? "disabled" : ""
                 }>#${m.id}</button>
                 <span class="mono">${esc(m.class || "-")}</span>
-                ${badge(m.state)}
+                ${badge(m.state, m)}
                 <span class="report-related-title">${esc(m.title || "")}</span>
                 ${
                   !isSelf && !isPrimary && f.state !== "superseded"
@@ -572,7 +583,7 @@
         <div class="report-detail-head">
           <h3>${esc(b.title || f.stable_key || "Finding #" + f.id)}</h3>
           <div class="report-detail-badges">
-            ${badge(f.state)}
+            ${badge(f.state, f)}
             ${sevBadge(f.severity || b.severity_claim || "unknown")}
             <span class="badge info">${esc(b.weakness_class || "-")}</span>
             ${nearBadge}
@@ -949,11 +960,24 @@
     const issues = readiness.issues || [];
     const warnings = readiness.warnings || [];
     const latest = r && r.poc_validation_latest;
+    const harness = (r && r.harness) || (latest && latest.harness) || {};
     const parts = [];
     if (ready) {
       parts.push('<span class="badge ok">Harness ready</span>');
     } else {
       parts.push('<span class="badge warn">Not harness-ready</span>');
+    }
+    if (harness.runner || harness.network) {
+      const runLabel = harness.runner || "?";
+      const netLabel = harness.network || "?";
+      let harnessBadge = `<span class="badge info mono" title="poc_harness defaults for this run">${esc(
+        runLabel
+      )} · net=${esc(netLabel)}</span>`;
+      if (harness.runner === "docker" && harness.docker_available === false) {
+        harnessBadge +=
+          ' <span class="badge warn" title="Install Docker or set poc_harness.runner: local_subprocess">Docker missing</span>';
+      }
+      parts.push(harnessBadge);
     }
     if (issues.length) {
       parts.push(
@@ -966,10 +990,14 @@
       );
     }
     if (latest && latest.verdict) {
+      const hint =
+        latest.operator_hint || latest.spawn_error
+          ? ` (${esc(String(latest.operator_hint || latest.spawn_error))})`
+          : "";
       parts.push(
         `<span class="controls-hint">last run: <span class="mono">${esc(
           String(latest.verdict)
-        )}</span></span>`
+        )}</span>${hint}</span>`
       );
     } else if (latest && latest.action === "enqueue_validate" && latest.task_id) {
       parts.push(
@@ -1095,7 +1123,7 @@
       title.textContent = b.title || f.stable_key || `Finding #${f.id}`;
     }
     if (badges) {
-      badges.innerHTML = `${badge(f.state)} ${sevBadge(
+      badges.innerHTML = `${badge(f.state, f)} ${sevBadge(
         f.severity || b.severity_claim || "unknown"
       )} <span class="badge info">${esc(b.weakness_class || "-")}</span>
         <span class="badge">#${f.id}</span>`;
@@ -1494,7 +1522,7 @@
           <td class="report-title-cell">${esc(b.title || f.stable_key || "-")} ${near} ${llmBadge}</td>
           <td><span class="mono">${esc(b.weakness_class || "-")}</span></td>
           <td>${sevBadge(f.severity || b.severity_claim || "unknown")}</td>
-          <td>${badge(f.state)}</td>
+          <td>${badge(f.state, f)}</td>
           <td class="mono report-path-cell" title="${esc(pathLabel(p))}">${esc(pathLabel(p))}</td>
           <td class="report-row-action">${open ? "Hide" : "Details"}</td>
         </tr>`;
@@ -1914,7 +1942,7 @@
                 m.title || ""
               )}">
                 <span class="badge info mono">${esc(m.label)}</span>
-                #${m.id} ${badge(m.state)}
+                #${m.id} ${badge(m.state, m)}
                 <span class="mono">${esc(m.class || "-")}</span>
               </button>`
           )

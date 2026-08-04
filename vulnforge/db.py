@@ -136,6 +136,7 @@ class Database:
             # Soft-migrate additive tables/columns without bumping schema_version.
             self._ensure_architecture_revisions()
             self._ensure_codemap_column()
+            self._ensure_sink_coverage_table()
 
     @classmethod
     def create(cls, path: Path) -> "Database":
@@ -222,6 +223,21 @@ class Database:
               UNIQUE(area, attack_class, path)
             );
 
+            CREATE TABLE IF NOT EXISTS sink_coverage_facts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              sink_key TEXT NOT NULL,
+              path TEXT NOT NULL,
+              line INTEGER NOT NULL,
+              kind TEXT NOT NULL,
+              area TEXT NOT NULL DEFAULT '',
+              attack_class TEXT NOT NULL DEFAULT '',
+              visit_count INTEGER NOT NULL DEFAULT 0,
+              last_depth TEXT,
+              UNIQUE(sink_key, area, attack_class)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sink_coverage_cell
+              ON sink_coverage_facts(area, attack_class);
+
             CREATE TABLE IF NOT EXISTS notes (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               kind TEXT NOT NULL,
@@ -273,6 +289,32 @@ class Database:
         if "codemap_json" not in cols:
             self.conn.execute("ALTER TABLE runs ADD COLUMN codemap_json TEXT")
             self.conn.commit()
+
+    def _ensure_sink_coverage_table(self) -> None:
+        """Create sink_coverage_facts if missing (open path for older DBs)."""
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sink_coverage_facts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              sink_key TEXT NOT NULL,
+              path TEXT NOT NULL,
+              line INTEGER NOT NULL,
+              kind TEXT NOT NULL,
+              area TEXT NOT NULL DEFAULT '',
+              attack_class TEXT NOT NULL DEFAULT '',
+              visit_count INTEGER NOT NULL DEFAULT 0,
+              last_depth TEXT,
+              UNIQUE(sink_key, area, attack_class)
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sink_coverage_cell
+              ON sink_coverage_facts(area, attack_class)
+            """
+        )
+        self.conn.commit()
 
     def insert_run(
         self,
@@ -1176,6 +1218,149 @@ class Database:
                 (area, attack_class, path_n, visit_delta, last_depth),
             )
         self.conn.commit()
+
+    def upsert_sink_coverage_fact(
+        self,
+        sink_key: str,
+        path: str,
+        line: int,
+        kind: str,
+        area: str = "",
+        attack_class: str = "",
+        visit_delta: int = 0,
+        last_depth: str = "",
+    ) -> None:
+        """Insert or update per-sink residual coverage (additive to area×class)."""
+        sk = str(sink_key or "").strip()
+        if not sk:
+            return
+        path_n = normalize_relpath(path) if path else ""
+        try:
+            line_n = int(line)
+        except (TypeError, ValueError):
+            line_n = 0
+        kind_n = str(kind or "").strip().lower()
+        area_n = str(area or "")
+        class_n = str(attack_class or "")
+        row = self.conn.execute(
+            """
+            SELECT id, visit_count FROM sink_coverage_facts
+            WHERE sink_key=? AND area=? AND attack_class=?
+            """,
+            (sk, area_n, class_n),
+        ).fetchone()
+        if row:
+            self.conn.execute(
+                """
+                UPDATE sink_coverage_facts
+                SET visit_count=?, last_depth=?, path=?, line=?, kind=?
+                WHERE id=?
+                """,
+                (
+                    int(row["visit_count"]) + int(visit_delta),
+                    last_depth,
+                    path_n,
+                    line_n,
+                    kind_n,
+                    row["id"],
+                ),
+            )
+        else:
+            self.conn.execute(
+                """
+                INSERT INTO sink_coverage_facts(
+                  sink_key, path, line, kind, area, attack_class,
+                  visit_count, last_depth
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sk,
+                    path_n,
+                    line_n,
+                    kind_n,
+                    area_n,
+                    class_n,
+                    int(visit_delta),
+                    last_depth,
+                ),
+            )
+        self.conn.commit()
+
+    def list_sink_coverage_facts(
+        self,
+        area: str | None = None,
+        attack_class: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Sink-level coverage rows for UI / residual lists."""
+        if area is not None and attack_class is not None:
+            rows = self.conn.execute(
+                """
+                SELECT sink_key, path, line, kind, area, attack_class,
+                       visit_count, last_depth
+                FROM sink_coverage_facts
+                WHERE area=? AND attack_class=?
+                ORDER BY path, line, kind
+                """,
+                (str(area), str(attack_class)),
+            ).fetchall()
+        elif area is not None:
+            rows = self.conn.execute(
+                """
+                SELECT sink_key, path, line, kind, area, attack_class,
+                       visit_count, last_depth
+                FROM sink_coverage_facts
+                WHERE area=?
+                ORDER BY attack_class, path, line, kind
+                """,
+                (str(area),),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT sink_key, path, line, kind, area, attack_class,
+                       visit_count, last_depth
+                FROM sink_coverage_facts
+                ORDER BY area, attack_class, path, line, kind
+                """
+            ).fetchall()
+        return [
+            {
+                "sink_key": r["sink_key"],
+                "path": r["path"] or "",
+                "line": int(r["line"] or 0),
+                "kind": r["kind"] or "",
+                "area": r["area"] or "",
+                "attack_class": r["attack_class"] or "",
+                "visit_count": int(r["visit_count"] or 0),
+                "last_depth": r["last_depth"] or "",
+            }
+            for r in rows
+        ]
+
+    def sink_coverage_for_cell(
+        self, area: str, attack_class: str
+    ) -> list[dict[str, Any]]:
+        """Alias for cell_detail: sinks for one area × class."""
+        return self.list_sink_coverage_facts(area=area, attack_class=attack_class)
+
+    def sink_coverage_summary(self) -> dict[str, Any]:
+        """Rollup counts for Mission / Coverage honesty strip."""
+        rows = self.list_sink_coverage_facts()
+        residual_depths = {"", "planned", "shallow", "none", "aborted"}
+        residual = 0
+        planned = 0
+        for r in rows:
+            d = r.get("last_depth") or ""
+            if d == "planned" or (d == "" and int(r.get("visit_count") or 0) == 0):
+                planned += 1
+            if d in residual_depths:
+                residual += 1
+        return {
+            "total": len(rows),
+            "planned": planned,
+            "residual": residual,
+        }
 
     def insert_note(
         self, kind: str, payload: Any, task_id: Optional[int] = None

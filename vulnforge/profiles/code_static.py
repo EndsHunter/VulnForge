@@ -23,6 +23,7 @@ class CodeStaticProfile:
                 "find_symbol",
                 "query_sinks",
                 "query_codemap",
+                "query_flows",
                 "get_architecture",
                 "write_evidence",
                 "list_evidence",

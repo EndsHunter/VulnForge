@@ -85,7 +85,7 @@ vulnforge/
   db.py          # SQLite + RunLock (architecture_json + codemap_json)
 ```
 
-Mechanical codemap is path-backed structure stored in `runs.codemap_json` (built at recon); it is not the architecture map.
+Mechanical codemap is path-backed structure stored in `runs.codemap_json` (built at recon; v2 includes files + function/class symbols). Full map is stored; hunt packets get an **area slice** only. Optional `pip install 'vulnforge[codemap]'` enables tree-sitter; heuristic extraction works without it. It is not the architecture map.
 
 ## Extending
 

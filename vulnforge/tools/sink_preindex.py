@@ -117,23 +117,69 @@ def _ignored(rel: str, ignore_globs: list[str]) -> bool:
     return False
 
 
-def build_sink_preindex(
+def sink_key(path: str, line: int | str, kind: str) -> str:
+    """Stable sink identity for coverage facts: path:line:kind."""
+    p = normalize_relpath(str(path or ""))
+    try:
+        ln = int(line)
+    except (TypeError, ValueError):
+        ln = 0
+    k = str(kind or "").strip().lower()
+    return f"{p}:{ln}:{k}"
+
+
+def sink_key_from_record(sink: dict[str, Any]) -> str | None:
+    """Build sink_key from a seed_sinks record; None if unusable."""
+    if not isinstance(sink, dict):
+        return None
+    path = str(sink.get("path") or "").strip()
+    kind = str(sink.get("kind") or "").strip()
+    if not path or not kind:
+        return None
+    try:
+        line = int(sink.get("line") or 0)
+    except (TypeError, ValueError):
+        line = 0
+    if line < 1:
+        return None
+    return sink_key(path, line, kind)
+
+
+def empty_sink_meta(
+    *,
+    max_files: int = 4000,
+    max_sinks: int = 500,
+) -> dict[str, Any]:
+    return {
+        "files_scanned": 0,
+        "files_capped": False,
+        "sinks_capped": False,
+        "max_files": int(max_files),
+        "max_sinks": int(max_sinks),
+        "sink_count": 0,
+    }
+
+
+def build_sink_preindex_with_meta(
     target_root: Path,
     ignore_globs: list[str] | None = None,
     *,
     max_files: int = 4000,
     max_sinks: int = 500,
     max_file_bytes: int = 400_000,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    Scan target for mechanical sink lines.
+    Scan target for mechanical sink lines with truncation honesty.
 
-    Returns list of {path, line, kind, text} (text truncated).
+    Returns (sinks, meta) where sinks are {path, line, kind, text} and meta
+    records scan caps so operators know the index may be incomplete.
     """
     target_root = Path(target_root).resolve()
     globs = list(ignore_globs or [])
     sinks: list[dict[str, Any]] = []
     files_seen = 0
+    files_capped = False
+    sinks_capped = False
     for path in sorted(target_root.rglob("*")):
         if not path.is_file():
             continue
@@ -148,6 +194,8 @@ def build_sink_preindex(
             continue
         files_seen += 1
         if files_seen > max_files:
+            files_capped = True
+            files_seen = max_files
             break
         try:
             if path.stat().st_size > max_file_bytes:
@@ -169,9 +217,87 @@ def build_sink_preindex(
                         }
                     )
                     if len(sinks) >= max_sinks:
-                        return sinks
+                        sinks_capped = True
+                        meta = {
+                            "files_scanned": files_seen,
+                            "files_capped": files_capped,
+                            "sinks_capped": True,
+                            "max_files": int(max_files),
+                            "max_sinks": int(max_sinks),
+                            "sink_count": len(sinks),
+                        }
+                        return sinks, meta
                     break  # one kind per line
+    meta = {
+        "files_scanned": files_seen,
+        "files_capped": files_capped,
+        "sinks_capped": sinks_capped,
+        "max_files": int(max_files),
+        "max_sinks": int(max_sinks),
+        "sink_count": len(sinks),
+    }
+    return sinks, meta
+
+
+def build_sink_preindex(
+    target_root: Path,
+    ignore_globs: list[str] | None = None,
+    *,
+    max_files: int = 4000,
+    max_sinks: int = 500,
+    max_file_bytes: int = 400_000,
+) -> list[dict[str, Any]]:
+    """
+    Scan target for mechanical sink lines.
+
+    Returns list of {path, line, kind, text} (text truncated).
+    Prefer ``build_sink_preindex_with_meta`` when truncation honesty is needed.
+    """
+    sinks, _meta = build_sink_preindex_with_meta(
+        target_root,
+        ignore_globs,
+        max_files=max_files,
+        max_sinks=max_sinks,
+        max_file_bytes=max_file_bytes,
+    )
     return sinks
+
+
+def record_sink_coverage(
+    db: Any,
+    sinks: list[dict[str, Any]] | None,
+    *,
+    area: str,
+    attack_class: str,
+    visit_delta: int = 0,
+    last_depth: str = "",
+) -> int:
+    """Upsert sink_coverage_facts for each usable sink record. Returns count written."""
+    if db is None or not sinks:
+        return 0
+    n = 0
+    for s in sinks:
+        if not isinstance(s, dict):
+            continue
+        key = sink_key_from_record(s)
+        if not key:
+            continue
+        try:
+            line = int(s.get("line") or 0)
+        except (TypeError, ValueError):
+            continue
+        db.upsert_sink_coverage_fact(
+            sink_key=key,
+            path=normalize_relpath(str(s.get("path") or "")),
+            line=line,
+            kind=str(s.get("kind") or "").strip().lower(),
+            area=str(area or "app"),
+            attack_class=str(attack_class or "wildcard"),
+            visit_delta=visit_delta,
+            last_depth=last_depth,
+        )
+        n += 1
+    return n
 
 
 def filter_sinks_for_paths(

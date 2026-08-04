@@ -1,0 +1,50 @@
+{
+  "target": "fixtures/mono_synth",
+  "description": "Seed mono_synth intentional sinks for L0 mechanical recall (no bulk pad).",
+  "findings": [
+    {
+      "id": "api-sqli-search_users",
+      "class": "injection",
+      "sink_path": "packages/api/routes.py",
+      "sink_symbol": "search_users",
+      "kinds": ["sql"],
+      "match": {
+        "path_suffix": "packages/api/routes.py",
+        "symbol": "search_users"
+      }
+    },
+    {
+      "id": "api-sqli-get_item",
+      "class": "injection",
+      "sink_path": "packages/api/routes.py",
+      "sink_symbol": "get_item",
+      "kinds": ["sql"],
+      "match": {
+        "path_suffix": "packages/api/routes.py",
+        "symbol": "get_item"
+      }
+    },
+    {
+      "id": "worker-cmdi-run_export",
+      "class": "injection",
+      "sink_path": "packages/worker/jobs.py",
+      "sink_symbol": "run_export",
+      "kinds": ["exec"],
+      "match": {
+        "path_suffix": "packages/worker/jobs.py",
+        "symbol": "run_export"
+      }
+    },
+    {
+      "id": "worker-cmdi-cleanup_temp",
+      "class": "injection",
+      "sink_path": "packages/worker/jobs.py",
+      "sink_symbol": "cleanup_temp",
+      "kinds": ["exec"],
+      "match": {
+        "path_suffix": "packages/worker/jobs.py",
+        "symbol": "cleanup_temp"
+      }
+    }
+  ]
+}

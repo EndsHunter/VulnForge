@@ -43,6 +43,8 @@ def test_build_codemap_mono_synth():
     assert MONO_SYNTH.is_dir(), f"missing fixture {MONO_SYNTH}"
     cm = build_codemap(MONO_SYNTH)
     assert cm["target_kind"] == "directory"
+    assert cm.get("version") == 2
+    assert "files" in cm and "symbols" in cm
     assert int((cm.get("summary") or {}).get("file_count") or 0) > 0
 
     labels = _module_labels(cm)

@@ -12,7 +12,14 @@ from vulnforge.poc_handoff import (
     export_validation_job,
     parse_hub_frontmatter,
 )
-from vulnforge.poc_runner import classify_run_result, execute_poc_for_pack, run_poc_local
+from vulnforge.poc_runner import (
+    DEFAULT_POC_NETWORK,
+    DEFAULT_POC_RUNNER,
+    classify_run_result,
+    execute_poc_for_pack,
+    harness_config,
+    run_poc_local,
+)
 from vulnforge.stages import validate_poc
 from vulnforge.ui import ops as dashops
 from vulnforge.util import build_target_manifest, write_json
@@ -110,6 +117,46 @@ def test_run_poc_local_signal(tmp_path: Path):
     )
     assert result["verdict"] == "signal_observed"
     assert result["signal_matched"] is True
+
+
+def test_harness_config_safe_defaults():
+    """Default runner is docker with network none (operator may opt into local)."""
+    hc = harness_config(None)
+    assert hc["runner"] == DEFAULT_POC_RUNNER == "docker"
+    assert hc["network"] == DEFAULT_POC_NETWORK == "none"
+    assert hc["enabled"] is True
+    # Explicit local still works
+    hc2 = harness_config(
+        {"poc_harness": {"runner": "local_subprocess", "network": "allow"}}
+    )
+    assert hc2["runner"] == "local_subprocess"
+    assert hc2["network"] == "allow"
+    # Aliases
+    hc3 = harness_config({"poc_harness": {"runner": "local", "network": "bridge"}})
+    assert hc3["runner"] == "local_subprocess"
+    assert hc3["network"] == "allow"
+
+
+def test_execute_poc_docker_missing_skips(tmp_path: Path, monkeypatch):
+    """When runner=docker and docker is absent → unsafe_skipped with operator_hint."""
+    import vulnforge.poc_runner as pr
+
+    monkeypatch.setattr(pr, "docker_available", lambda: False)
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    (pack / "poc.py").write_text("print('ASSERT_OK')\n", encoding="utf-8")
+    result = execute_poc_for_pack(
+        pack,
+        cfg={"poc_harness": {"enabled": True, "runner": "docker", "network": "none"}},
+        hub_text="---\nrun: python poc.py\nsuccess_regex: ASSERT_OK\n---\n\n## Expected signal\nok\n",
+        finding_id=1,
+    )
+    assert result["verdict"] == "unsafe_skipped"
+    assert result["spawn_error"] == "docker_not_found"
+    assert result.get("operator_hint")
+    assert "local_subprocess" in (result.get("operator_hint") or "")
+    assert result.get("harness", {}).get("runner") == "docker"
+    assert result.get("network") == "none"
 
 
 def test_classify_verdicts():

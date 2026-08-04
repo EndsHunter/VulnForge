@@ -30,6 +30,11 @@ dev = [
 ]
 # Kept for older install hints: pip install 'vulnforge[export]'
 export = ["openpyxl>=3.1", "python-docx>=1.1", "pypdf>=4.0"]
+# Function-level codemap via tree-sitter (heuristic backend works without this)
+codemap = [
+  "tree-sitter>=0.22",
+  "tree-sitter-language-pack>=0.3",
+]
 
 [project.scripts]
 vf = "vulnforge.cli:main"

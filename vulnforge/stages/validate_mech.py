@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -147,6 +148,181 @@ def check_citations_resolve(finding, run_dir: Path, cfg: dict, db) -> tuple[bool
                 return False, f"line_oob:{rel}:{c['start_line']}"
             if c.get("end_line") is not None and int(c["end_line"]) < int(c["start_line"]):
                 return False, f"bad_line_range:{rel}"
+    return True, ""
+
+
+# Token extract: alphanumeric + underscore runs of length >= 4 (symbols / title words).
+_CITATION_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{3,}")
+
+
+def citation_claim_tokens(body: dict) -> list[str]:
+    """Conservative tokens for citation content overlap (may be empty → skip match)."""
+    seen: list[str] = []
+    out: list[str] = []
+
+    def _add(raw: object) -> None:
+        text = str(raw or "").strip()
+        if not text:
+            return
+        for m in _CITATION_TOKEN_RE.findall(text):
+            low = m.lower()
+            if low in seen:
+                continue
+            # Drop ultra-generic claim words that appear in almost every finding.
+            if low in {
+                "user",
+                "users",
+                "data",
+                "file",
+                "code",
+                "http",
+                "from",
+                "with",
+                "this",
+                "that",
+                "when",
+                "into",
+                "function",
+                "method",
+                "class",
+                "request",
+                "response",
+                "parameter",
+                "query",
+                "input",
+                "output",
+                "error",
+                "value",
+                "string",
+                "return",
+            }:
+                continue
+            seen.append(low)
+            out.append(low)
+
+    _add(body.get("sink_symbol"))
+    for c in body.get("citations") or []:
+        if isinstance(c, dict):
+            _add(c.get("symbol"))
+    # Title tokens (first few only) after symbols so symbols win priority
+    title = str(body.get("title") or "")
+    for m in _CITATION_TOKEN_RE.findall(title)[:6]:
+        _add(m)
+    return out[:8]
+
+
+def _resolve_citation_file(
+    target: Path, root: Path, rel: str
+) -> Path | None:
+    if target.is_file() and (
+        rel in (target.name, normalize_relpath(target.name))
+        or Path(rel).name == target.name
+    ):
+        return target.resolve()
+    p = (root / rel).resolve()
+    try:
+        p.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return p if p.is_file() else None
+
+
+def _read_citation_slice(
+    path: Path, start_line: int, end_line: int | None, *, pad: int = 2
+) -> str | None:
+    """Return text for [start-pad, end+pad] (1-indexed), or None if unreadable/empty."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    if not lines:
+        return ""
+    n = len(lines)
+    try:
+        sl = int(start_line)
+    except (TypeError, ValueError):
+        return None
+    el = sl
+    if end_line is not None:
+        try:
+            el = int(end_line)
+        except (TypeError, ValueError):
+            el = sl
+    lo = max(1, sl - pad)
+    hi = min(n, max(sl, el) + pad)
+    if lo > n or hi < 1:
+        return ""
+    return "\n".join(lines[lo - 1 : hi])
+
+
+def check_citation_content(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, str]:
+    """Ensure cited slices exist and (when claim tokens available) overlap the claim.
+
+    Conservative: empty token set skips content-match (does not reject).
+    Config ``stages.strict_citation_content`` requires start_line on every path citation.
+    """
+    body = finding.body or {}
+    citations = body.get("citations") or []
+    if not citations:
+        return True, ""  # schema gate owns missing citations
+
+    stages = (cfg or {}).get("stages") if isinstance(cfg, dict) else {}
+    if not isinstance(stages, dict):
+        stages = {}
+    strict = bool(stages.get("strict_citation_content"))
+
+    run = db.get_run()
+    if not run:
+        return False, "no_run"
+    target = Path(run["target_path"])
+    root = target if target.is_dir() else target.parent
+
+    path_cites = [
+        c
+        for c in citations
+        if isinstance(c, dict) and normalize_relpath(str(c.get("path") or ""))
+    ]
+    if not path_cites:
+        return True, ""
+
+    with_line = [c for c in path_cites if c.get("start_line") is not None]
+    if not with_line:
+        return False, "citation_missing_line"
+    if strict and len(with_line) < len(path_cites):
+        return False, "citation_missing_line"
+
+    tokens = citation_claim_tokens(body)
+    any_slice_checked = False
+    any_token_hit = False
+
+    for c in with_line:
+        rel = normalize_relpath(str(c.get("path") or ""))
+        p = _resolve_citation_file(target, root, rel)
+        if p is None:
+            # resolve gate should have caught; soft-skip
+            continue
+        try:
+            sl = int(c["start_line"])
+        except (TypeError, ValueError):
+            return False, f"citation_missing_line:{rel}"
+        el = c.get("end_line")
+        try:
+            el_i = int(el) if el is not None else None
+        except (TypeError, ValueError):
+            el_i = None
+        slice_txt = _read_citation_slice(p, sl, el_i, pad=2)
+        if slice_txt is None:
+            return False, f"unreadable:{rel}"
+        if not str(slice_txt).strip():
+            return False, f"citation_empty_slice:{rel}:{sl}"
+        any_slice_checked = True
+        if tokens:
+            low = slice_txt.lower()
+            if any(tok in low for tok in tokens):
+                any_token_hit = True
+
+    if tokens and any_slice_checked and not any_token_hit:
+        return False, "citation_content_mismatch"
     return True, ""
 
 
@@ -410,6 +586,7 @@ def check_severity_claim(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, s
 CHECKS: list[Callable] = [
     check_schema,
     check_citations_resolve,
+    check_citation_content,
     check_evidence_pack,
     check_target_unmodified,
     check_non_vacuous,

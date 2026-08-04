@@ -74,3 +74,31 @@ def test_run_snapshot_includes_codemap(tmp_path: Path, toy_sqli: Path):
     assert snap.get("has_codemap") is True
     assert isinstance(snap["codemap_summary"], dict)
     assert snap["codemap_summary"].get("has_codemap") is True
+    # Mission snapshot must not dump full symbol index
+    cm = snap.get("codemap") or {}
+    assert cm.get("symbols_omitted") is True or cm.get("symbols") in (None, [])
+
+
+def test_api_codemap_symbols_query(tmp_path: Path, toy_sqli: Path):
+    runs_root = tmp_path / "runs"
+    ref = _make_run(runs_root, toy_sqli)
+    app = create_app(runs_root=runs_root)
+    client = TestClient(app)
+    base = f"/api/runs/{ref.target_id}/{ref.run_id}"
+
+    r = client.get(f"{base}/codemap")
+    assert r.status_code == 200
+    body = r.json()
+    # default: symbols omitted from payload
+    cm = body.get("codemap") or {}
+    assert cm.get("symbols_omitted") is True or not (cm.get("symbols") or [])
+
+    r2 = client.get(f"{base}/codemap", params={"include_symbols": True, "max_symbols": 50})
+    assert r2.status_code == 200
+    body2 = r2.json()
+    cm2 = body2.get("codemap") or {}
+    # toy_sqli should extract search_users when heuristic backend runs
+    syms = cm2.get("symbols") or []
+    assert isinstance(syms, list)
+    if body2.get("summary", {}).get("symbol_count"):
+        assert len(syms) > 0

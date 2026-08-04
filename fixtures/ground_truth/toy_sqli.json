@@ -1,0 +1,17 @@
+{
+  "target": "fixtures/toy_sqli",
+  "description": "Known intentional SQLi for L0 mechanical recall (not live hunt score).",
+  "findings": [
+    {
+      "id": "toy-sqli-search_users",
+      "class": "injection",
+      "sink_path": "app.py",
+      "sink_symbol": "search_users",
+      "kinds": ["sql"],
+      "match": {
+        "path_suffix": "app.py",
+        "symbol": "search_users"
+      }
+    }
+  ]
+}

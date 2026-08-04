@@ -32,9 +32,11 @@ from vulnforge.tools.codemap import (
 from vulnforge.tools.grep_index import build_file_index
 from vulnforge.tools.queue_note import flush_notes_to_db
 from vulnforge.tools.sink_preindex import (
-    build_sink_preindex,
+    build_sink_preindex_with_meta,
     class_has_sink_family,
+    empty_sink_meta,
     filter_sinks_for_paths,
+    record_sink_coverage,
     sink_kinds_present,
 )
 from vulnforge.transcript import save_transcript
@@ -544,6 +546,15 @@ def store_merged_architecture(
         merge_method = "none"
 
     arch["seed_sinks"] = seed_sinks[:200]
+    # Truncation honesty for sink catalog (from inventory or caller).
+    meta = None
+    if isinstance(inventory, dict):
+        meta = inventory.get("seed_sinks_meta")
+    if isinstance(meta, dict):
+        arch["seed_sinks_meta"] = meta
+        inv_arch = arch.get("inventory")
+        if isinstance(inv_arch, dict):
+            inv_arch["seed_sinks_meta"] = meta
     if operator_brief:
         arch["operator_notes_applied"] = operator_brief[:2000]
     if recon_generation is not None:
@@ -770,6 +781,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             digest = ""
         # Scan only this file (never walk parent — may be Desktop / huge tree).
         seed_sinks: list = []
+        seed_sinks_meta = empty_sink_meta(max_files=1, max_sinks=100)
         try:
             text = target.read_text(encoding="utf-8", errors="replace")
             from vulnforge.tools.sink_preindex import _SINK_PATTERNS
@@ -788,9 +800,12 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                         )
                         break
                 if len(seed_sinks) >= 100:
+                    seed_sinks_meta["sinks_capped"] = True
                     break
         except OSError:
             seed_sinks = []
+        seed_sinks_meta["files_scanned"] = 1
+        seed_sinks_meta["sink_count"] = len(seed_sinks)
         from vulnforge.languages import attach_languages_to_inventory
 
         inventory = attach_languages_to_inventory(
@@ -801,6 +816,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 "entrypoints": [name],
                 "sample_paths": [name],
                 "seed_sinks": seed_sinks,
+                "seed_sinks_meta": seed_sinks_meta,
                 "dir_partitions": {".": [name]},
                 "single_file": {
                     "name": name,
@@ -816,10 +832,12 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
 
         # P2.1: mechanical sink preindex (also used for class routing / hunt seeds)
         try:
-            seed_sinks = build_sink_preindex(target, ignore)
+            seed_sinks, seed_sinks_meta = build_sink_preindex_with_meta(target, ignore)
         except OSError:
             seed_sinks = []
+            seed_sinks_meta = empty_sink_meta()
         inventory["seed_sinks"] = seed_sinks
+        inventory["seed_sinks_meta"] = seed_sinks_meta
         # Area names from stratified seed (full file_count remains authority for size).
         inventory["dir_partitions"] = partition_by_top_dir(
             inventory.get("sample_paths") or []
@@ -1506,6 +1524,9 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "entrypoints": inventory["entrypoints"],
             "extensions": inventory["extensions"],
             "seed_sinks": seed_sinks[:200],
+            "seed_sinks_meta": inventory.get("seed_sinks_meta")
+            or seed_sinks_meta
+            or empty_sink_meta(),
             "dir_partitions": inventory.get("dir_partitions") or [],
         }
         arch = store_merged_architecture(
@@ -1590,11 +1611,22 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                             )
                     t["parent_task_id"] = task.id
                     db.enqueue_task("hunt", t, priority=50)
+                    area_t = t.get("area", "app")
+                    class_t = t.get("class", "wildcard")
                     db.upsert_coverage_fact(
-                        t.get("area", "app"),
-                        t.get("class", "wildcard"),
+                        area_t,
+                        class_t,
                         path=(t.get("path_hints") or [""])[0],
                         visit_delta=0,
+                    )
+                    # Sink-level planned residual (additive to area×class matrix)
+                    record_sink_coverage(
+                        db,
+                        t.get("seed_sinks") or [],
+                        area=str(area_t),
+                        attack_class=str(class_t),
+                        visit_delta=0,
+                        last_depth="planned",
                     )
                 hunt_enqueued = len(tasks)
 
