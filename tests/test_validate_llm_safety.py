@@ -287,26 +287,27 @@ def test_flag_false_mech_needs_human_zero_validate_llm_enqueue(
     db.close()
 
 
-def test_default_yaml_validate_llm_false_zero_enqueue(
+def test_default_yaml_validate_llm_true_enqueues(
     tmp_path: Path, toy_sqli: Path
 ):
-    """Load real default.yaml stages → no validate_llm enqueue after mech pass."""
+    """Load real default.yaml stages → validate_llm enqueued after mech pass."""
     root = Path(__file__).resolve().parents[1]
     default_yaml = root / "config" / "default.yaml"
     assert default_yaml.is_file()
     raw = yaml.safe_load(default_yaml.read_text(encoding="utf-8"))
-    assert raw["stages"]["validate_llm"] is False
+    assert raw["stages"]["validate_llm"] is True
 
     run_dir, db = _setup_run(tmp_path, toy_sqli)
     body = _good_body(toy_sqli)
     _write_evidence(run_dir)
     fid = db.insert_finding(body, state="candidate")
     r = validate_mech_run(T(fid), db, run_dir, {"stages": raw["stages"]})
-    assert r["verdict"] == "needs_human"
+    assert r["verdict"] == "pending_llm"
+    assert db.get_finding(fid).state == "needs_human"
     n = db.conn.execute(
         "SELECT COUNT(*) AS c FROM tasks WHERE kind='validate_llm'"
     ).fetchone()["c"]
-    assert n == 0
+    assert n == 1
     db.close()
 
 
@@ -549,6 +550,6 @@ def test_unknown_task_kind_exit_config(tmp_path: Path, toy_sqli: Path):
     db.close()
 
 
-def test_load_config_default_validate_llm_false():
+def test_load_config_default_validate_llm_true():
     cfg = load_config()
-    assert (cfg.get("stages") or {}).get("validate_llm") is False
+    assert (cfg.get("stages") or {}).get("validate_llm") is True

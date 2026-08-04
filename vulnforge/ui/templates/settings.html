@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VulnForge | Settings</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body data-page="settings">
+  <header class="app-header">
+    <div class="brand">
+      <a href="/" class="home-link" title="Home — all runs">
+        <img class="logo" src="/static/logo-128.png" width="32" height="32" alt="" />
+        <div>
+          VulnForge
+          <div class="sub">Settings</div>
+        </div>
+      </a>
+    </div>
+    <div class="header-actions">
+      <a class="btn btn-primary home-btn" href="/" title="Home">⌂ Home</a>
+      <a class="btn" href="/settings" aria-current="page">⚙ Settings</a>
+      <a class="btn" href="/chat">AI Chat</a>
+      <a class="btn" href="/dev">Dev</a>
+      <span class="controls-hint mono">{{ runs_root }}</span>
+    </div>
+  </header>
+
+  <main class="main settings-page">
+    <div class="page-hero">
+      <div>
+        <h1>Settings</h1>
+        <p>
+          Endpoint, per-stage models, multi-model validation, and agent budgets.
+          Saved to <code>config/ui_settings.json</code> and applied on the next task lease.
+        </p>
+      </div>
+    </div>
+
+    <form id="settings-form" class="settings-page-form">
+      <div class="settings-page-grid">
+        <section class="card settings-card">
+          <h2>Endpoint</h2>
+          <div class="grid-2">
+            <div class="field">
+              <label class="field-label" for="set-host"><span class="label-text">Host or base URL</span></label>
+              <input id="set-host" required autocomplete="off" placeholder="10.0.0.232 or https://api.example.com" />
+              <p class="controls-hint">Bare host + port, or full <code>https://…</code> URL.</p>
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-port"><span class="label-text">Port</span></label>
+              <input id="set-port" type="number" required min="1" max="65535" />
+            </div>
+            <div class="field" style="grid-column:1/-1">
+              <label class="field-label" for="set-model"><span class="label-text">Default model id</span></label>
+              <input id="set-model" required autocomplete="off" placeholder="ornith-1.0-35b" />
+              <p class="controls-hint">Must match an id from the server’s <code>/v1/models</code>. Used when a stage override is blank.</p>
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-api-mode"><span class="label-text">API mode</span></label>
+              <select id="set-api-mode" class="settings-select">
+                <option value="chat_completions">chat-completions</option>
+                <option value="responses">responses</option>
+                <option value="messages">messages</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-api-key"><span class="label-text">API key</span></label>
+              <input id="set-api-key" type="password" autocomplete="off" placeholder="optional — blank or none" />
+            </div>
+          </div>
+        </section>
+
+        <section class="card settings-card">
+          <h2>Stage models</h2>
+          <p class="controls-hint" style="margin-top:0">
+            Optional overrides. Leave blank to use the default model.
+          </p>
+          <div class="grid-2">
+            <div class="field">
+              <label class="field-label" for="set-model-recon"><span class="label-text">Recon</span></label>
+              <input id="set-model-recon" autocomplete="off" placeholder="(default model)" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-model-hunt"><span class="label-text">Hunt</span></label>
+              <input id="set-model-hunt" autocomplete="off" placeholder="(default model)" />
+            </div>
+            <div class="field" style="grid-column:1/-1">
+              <label class="field-label" for="set-model-develop-poc"><span class="label-text">Develop PoC</span></label>
+              <input id="set-model-develop-poc" autocomplete="off" placeholder="(default model)" />
+            </div>
+          </div>
+        </section>
+
+        <section class="card settings-card">
+          <h2>Multi-model validation</h2>
+          <p class="controls-hint" style="margin-top:0">
+            One or more model ids that independently argue whether a finding holds.
+            Agreement across models is used to reduce false positives (auto-reject only when
+            <em>all</em> disprove slots reject; PoC “signal observed” needs consensus).
+            Never auto-confirms.
+          </p>
+          <div class="field">
+            <label class="field-label" for="set-validate-models">
+              <span class="label-text">Validation models (1+)</span>
+            </label>
+            <textarea id="set-validate-models" class="mono" rows="4" placeholder="one model id per line&#10;(empty = default model only)"></textarea>
+            <p class="controls-hint">Used for <code>validate_llm</code> disprove and PoC referee. Add a second (or third) model id when you have another endpoint model available.</p>
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label class="field-label" for="set-validate-consensus"><span class="label-text">Positive consensus</span></label>
+              <select id="set-validate-consensus" class="settings-select">
+                <option value="majority">majority</option>
+                <option value="all">all (strictest)</option>
+              </select>
+              <p class="controls-hint">Required agreement for positive signals (e.g. signal_observed).</p>
+            </div>
+            <div class="field">
+              <label class="field-label"><span class="label-text">Pipeline toggles</span></label>
+              <label class="settings-check">
+                <input type="checkbox" id="set-validate-poc-referee" checked />
+                PoC multi-model referee (after harness run)
+              </label>
+              <label class="settings-check">
+                <input type="checkbox" id="set-validate-llm" />
+                LLM disprove after mech pass
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <section class="card settings-card">
+          <h2>Agent budget</h2>
+          <div class="grid-2">
+            <div class="field">
+              <label class="field-label" for="set-workers"><span class="label-text">Max concurrent agents</span></label>
+              <input id="set-workers" type="number" min="1" step="1" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-ctx"><span class="label-text">Context window (tokens)</span></label>
+              <input id="set-ctx" type="number" min="1" step="1024" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-frac"><span class="label-text">Max context fraction</span></label>
+              <input id="set-frac" type="number" min="0.01" max="1" step="0.01" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-maxtok"><span class="label-text">Max completion tokens</span></label>
+              <input id="set-maxtok" type="number" min="1" step="256" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-rounds"><span class="label-text">Max tool rounds</span></label>
+              <input id="set-rounds" type="number" min="1" step="1" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-timeout"><span class="label-text">HTTP timeout (s)</span></label>
+              <input id="set-timeout" type="number" min="1" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-maxtasks"><span class="label-text">Default max tasks</span></label>
+              <input id="set-maxtasks" type="number" min="1" step="1" />
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="card settings-card settings-actions-card">
+        <div class="controls-hint" id="settings-effective"></div>
+        <pre class="controls-hint mono" id="settings-optimize-report" hidden style="margin-top:0.65rem;max-height:12rem;overflow:auto;white-space:pre-wrap;padding:0.5rem;border:1px solid var(--border);border-radius:6px"></pre>
+        <div class="modal-actions" style="margin-top:0.75rem">
+          <button type="button" class="btn" id="settings-optimize" title="Probe the endpoint and fill recommended values (does not save until you click Save)">Optimize AI settings</button>
+          <button type="submit" class="btn btn-primary" id="settings-save">Save settings</button>
+        </div>
+      </div>
+    </form>
+  </main>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/settings.js"></script>
+</body>
+</html>

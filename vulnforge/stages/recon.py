@@ -15,7 +15,8 @@ from vulnforge.hunt_profiles import (
     resolve_run_class_ids,
     skill_policy_from_run_cfg,
 )
-from vulnforge.llm import InfraError, classify_llm_failure, make_client
+from vulnforge.agent_runtime import run_tool_loop as run_agent_tool_loop
+from vulnforge.llm import InfraError, classify_llm_failure
 from vulnforge.packet import pack_recon_agent
 from vulnforge.recon_agents import (
     ReconAgentError,
@@ -945,10 +946,22 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     if not agents:
         return {"status": "failed_task", "error": "no_recon_agents"}
 
-    # Legacy / unsplit multi-agent payload: fan out remaining agents as sibling tasks
-    # so each profile gets its own Ralph loop, then run only the first here.
+    # Multi-agent orchestration (Phase 2–3):
+    #   ralph (default)  — fan out remaining agents as sibling Ralph tasks
+    #   inprocess        — run all agents sequentially in this task (legacy or strands loop)
+    #   graph            — strands Graph sequential pipeline in this task (requires strands)
     fanout_task_ids: list[int] = []
-    if len(agents) > 1 and not payload.get("recon_batch_id"):
+    recon_orch = str(
+        payload.get("recon_orchestrator")
+        or (cfg.get("llm") or {}).get("recon_orchestrator")
+        or "ralph"
+    ).strip().lower()
+    if recon_orch in ("", "default", "batch", "fanout"):
+        recon_orch = "ralph"
+    if recon_orch not in ("ralph", "inprocess", "graph"):
+        recon_orch = "ralph"
+    # graph requires strands runtime
+    if len(agents) > 1 and not payload.get("recon_batch_id") and recon_orch == "ralph":
         first = agents[0]
         all_ids = [str(a.get("id")) for a in agents if a.get("id")]
         from vulnforge.task_priority import RECON_CHILD_PRIORITY
@@ -969,6 +982,18 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             for pl, prio in expanded[1:]:
                 fanout_task_ids.append(db.enqueue_task("recon", pl, priority=prio))
             agents = active_agents(agent_ids=[str(first.get("id"))]) or [first]
+    elif len(agents) > 1 and not payload.get("recon_batch_id") and recon_orch in (
+        "inprocess",
+        "graph",
+    ):
+        # Keep full agent list; mark payload so retries do not re-fan-out as ralph.
+        try:
+            payload = {**payload, "recon_orchestrator": recon_orch, "inprocess_multi": True}
+            db.update_task_payload(task.id, payload)
+            if hasattr(task, "payload"):
+                task.payload = payload
+        except Exception:
+            pass
 
     # Batch follow-ups always refine the map already written by earlier siblings.
     merge_with_existing = bool(payload.get("merge_with_existing"))
@@ -988,7 +1013,9 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     indent=2,
                 )
 
-    client = make_client(cfg)
+    from vulnforge.llm_models import make_client_for_stage
+
+    client = make_client_for_stage(cfg, "recon")
     try:
         try:
             model_id = client.fingerprint_model()
@@ -1003,6 +1030,248 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         partial_archs: list[dict[str, Any]] = []
         arch_so_far_text = architecture_so_far
         last_result = None
+        recon_graph_meta: dict[str, Any] | None = None
+
+        # Phase 3: multi-agent as sequential Strands Graph (in-task; no Ralph fan-out).
+        if recon_orch == "graph" and len(agents) > 1:
+            from vulnforge.agent_runtime.recon_graph import run_recon_strands_graph
+            from vulnforge.packet import pack_recon_agent as _pack_ra
+            from vulnforge.recon_agents import get_body as _get_body
+
+            agent_packets: list[dict[str, Any]] = []
+            agent_meta: dict[str, dict[str, Any]] = {}
+            for agent in agents:
+                agent_id = str(agent.get("id") or "agent")
+                try:
+                    body_md = _get_body(agent_id)
+                except ReconAgentError as e:
+                    return {
+                        "status": "failed_task",
+                        "error": f"recon_agent_body: {e}",
+                        "model_id": model_id,
+                    }
+                tools_allow = agent.get("tools")
+                if tools_allow is not None and not isinstance(tools_allow, list):
+                    tools_allow = None
+                packet = _pack_ra(
+                    cfg,
+                    prompts_root,
+                    agent_body=body_md,
+                    inventory=inventory,
+                    architecture_so_far=architecture_so_far,
+                    operator_brief=operator_brief,
+                    focus_paths=focus_paths,
+                    tools_allowlist=tools_allow,
+                    agent_id=agent_id,
+                    codemap=codemap,
+                )
+                max_rounds = agent.get("max_tool_rounds")
+                if max_rounds is None:
+                    max_rounds = default_max_rounds
+                else:
+                    try:
+                        max_rounds = int(max_rounds)
+                    except (TypeError, ValueError):
+                        max_rounds = default_max_rounds
+                temp = agent.get("temperature")
+                if temp is None:
+                    temp = default_temp
+                else:
+                    try:
+                        temp = float(temp)
+                    except (TypeError, ValueError):
+                        temp = default_temp
+                agent_packets.append(
+                    {
+                        "id": agent_id,
+                        "packet": packet,
+                        "max_rounds": max_rounds,
+                        "temperature": temp,
+                    }
+                )
+                agent_meta[agent_id] = agent
+
+            try:
+                gres = run_recon_strands_graph(
+                    client,
+                    agent_packets,
+                    handler,
+                    temperature_default=default_temp,
+                    outer_session=session,
+                )
+            except ImportError as e:
+                return {
+                    "status": "failed_task",
+                    "error": f"strands_graph_unavailable: {e}",
+                    "model_id": model_id,
+                }
+            except Exception as e:
+                return {
+                    "status": "failed_infra",
+                    "error": f"strands_graph: {e}",
+                    "model_id": model_id,
+                }
+
+            recon_graph_meta = gres.get("graph")
+            for nr in gres.get("node_results") or []:
+                agent_id = str(nr.get("agent_id") or "")
+                result = nr.get("result")
+                last_result = result
+                agent = agent_meta.get(agent_id) or {"id": agent_id}
+                if result is None:
+                    agents_run.append(
+                        {"id": agent_id, "ok": False, "error": "no_result", "order": agent.get("order")}
+                    )
+                    continue
+                pass_usage = record_llm_result(
+                    run_dir,
+                    task_id=task.id,
+                    kind=f"recon:{agent_id}",
+                    model_id=model_id,
+                    result=result,
+                )
+                usage_fields = _merge_usage_fields(usage_fields, pass_usage)
+                try:
+                    save_transcript(
+                        run_dir,
+                        task.id,
+                        kind=f"recon:{agent_id}",
+                        model_id=model_id,
+                        messages=list(result.transcript or []),
+                        result={
+                            "ok": result.ok,
+                            "classification": result.classification.value,
+                            "error": result.error,
+                            "content": result.content,
+                            "recon_agent_id": agent_id,
+                            "recon_orchestrator": "graph",
+                            **pass_usage,
+                        },
+                        meta={
+                            "pass_key": agent_id,
+                            "recon_agent_id": agent_id,
+                            "agent_runtime": "strands",
+                            "recon_orchestrator": "graph",
+                            "payload": {
+                                "recon_agent_id": agent_id,
+                                "agent_id": agent_id,
+                            },
+                        },
+                        pass_key=str(agent_id),
+                    )
+                except OSError:
+                    pass
+
+                salvaged_from_content = False
+                if not result.ok:
+                    status = classify_llm_failure(result)
+                    err = result.error or result.classification.value
+                    can_salvage = (
+                        status != "failed_infra"
+                        and err in ("no_submit", "max_tool_rounds")
+                        and bool((result.content or "").strip())
+                    )
+                    if can_salvage:
+                        salvaged = parse_architecture(result, session)
+                        if salvaged.get("summary"):
+                            part = salvaged
+                            salvaged_from_content = True
+                        else:
+                            part = None
+                    else:
+                        part = None
+                    if not salvaged_from_content:
+                        agents_run.append(
+                            {
+                                "id": agent_id,
+                                "ok": False,
+                                "error": err,
+                                "order": agent.get("order"),
+                            }
+                        )
+                        if status == "failed_infra":
+                            return {
+                                "status": status,
+                                "error": err,
+                                "model_id": model_id,
+                                "transcript": f"task-{task.id}",
+                                "recon_agents_run": agents_run,
+                                "recon_orchestrator": "graph",
+                                **usage_fields,
+                            }
+                        out_fail = _failed_task_result(
+                            task,
+                            db,
+                            cfg,
+                            run_dir,
+                            err,
+                            model_id=model_id,
+                            transcript=f"task-{task.id}",
+                            recon_agents_run=agents_run,
+                        )
+                        out_fail.update(usage_fields)
+                        out_fail["recon_orchestrator"] = "graph"
+                        return out_fail
+                else:
+                    arch_snap = nr.get("architecture")
+                    if isinstance(arch_snap, dict) and arch_snap.get("summary"):
+                        part = {
+                            "summary": arch_snap.get("summary") or "",
+                            "trust_boundaries": arch_snap.get("trust_boundaries") or [],
+                            "components": arch_snap.get("components") or [],
+                            "input_surfaces": arch_snap.get("input_surfaces") or [],
+                            "hunt_focus": arch_snap.get("hunt_focus") or [],
+                        }
+                    else:
+                        # Temporarily restore snapshot into session for parse_architecture
+                        prev = session.get("architecture")
+                        if arch_snap:
+                            session["architecture"] = arch_snap
+                        part = parse_architecture(result, session)
+                        session["architecture"] = prev
+                    if not part.get("summary") and result.content:
+                        part = {
+                            "summary": result.content[:4000],
+                            "components": [],
+                            "trust_boundaries": [],
+                            "input_surfaces": [],
+                            "hunt_focus": [],
+                        }
+                if not part or not part.get("summary"):
+                    agents_run.append(
+                        {
+                            "id": agent_id,
+                            "ok": False,
+                            "error": "no_architecture",
+                            "order": agent.get("order"),
+                        }
+                    )
+                    return _failed_task_result(
+                        task,
+                        db,
+                        cfg,
+                        run_dir,
+                        "no_architecture",
+                        model_id=model_id,
+                        recon_agents_run=agents_run,
+                    )
+                agents_run.append(
+                    {
+                        "id": agent_id,
+                        "ok": True,
+                        "order": agent.get("order"),
+                        "title": agent.get("title") or agent_id,
+                        **(
+                            {"salvaged_from_content": True}
+                            if salvaged_from_content
+                            else {}
+                        ),
+                    }
+                )
+                partial_archs.append(part)
+
+            # Skip sequential for-loop; fall through to merge
+            agents = []  # empty → for-loop no-ops
 
         for agent in agents:
             agent_id = str(agent.get("id") or "agent")
@@ -1050,8 +1319,13 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 except (TypeError, ValueError):
                     temp = default_temp
 
-            result = client.run_tool_loop(
-                packet, handler, max_rounds=max_rounds, temperature=temp
+            result = run_agent_tool_loop(
+                client,
+                packet,
+                handler,
+                max_rounds=max_rounds,
+                temperature=temp,
+                cfg=cfg,
             )
             last_result = result
             pass_usage = record_llm_result(
@@ -1082,6 +1356,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                         "recon_agent_id": agent_id,
                         "temperature": temp,
                         "max_tool_rounds": max_rounds,
+                        "agent_runtime": "strands",
                         "payload": {
                             "recon_agent_id": agent_id,
                             "agent_id": agent_id,

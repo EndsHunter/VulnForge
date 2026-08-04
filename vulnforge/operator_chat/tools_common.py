@@ -31,6 +31,7 @@ MUTATE_TOOLS = frozenset(
         "rerun_recon",
         "review_finding",
         "enqueue_develop_poc",
+        "enqueue_validate_poc",
     }
 )
 
@@ -774,7 +775,46 @@ def mutation_summary(name: str, args: dict[str, Any]) -> str:
         return f"Init new run for target={args.get('target')}"
     if name == "review_finding":
         return f"Review finding {args.get('finding_id')} → {args.get('action') or args.get('decision')}"
+    if name == "enqueue_develop_poc":
+        return f"Enqueue develop_poc for finding {args.get('finding_id')}"
+    if name == "enqueue_validate_poc":
+        return f"Enqueue validate_poc harness for finding {args.get('finding_id')}"
     return f"Execute {name} with {args}"
+
+
+def enqueue_develop_poc_impl(run: RunRef, args: dict) -> dict[str, Any]:
+    from vulnforge.control import ops as dashops
+
+    fid = args.get("finding_id")
+    if fid is None:
+        return {"ok": False, "error": "finding_id required"}
+    r = dashops.save_finding_poc(
+        run.path,
+        int(fid),
+        content=None,
+        enqueue_agent=True,
+        operator_notes=str(args.get("notes") or args.get("operator_notes") or ""),
+        operator=str(args.get("operator") or "operator_chat"),
+    )
+    return {**r, "target_id": run.target_id, "run_id": run.run_id}
+
+
+def enqueue_validate_poc_impl(run: RunRef, args: dict) -> dict[str, Any]:
+    from vulnforge.control import ops as dashops
+
+    fid = args.get("finding_id")
+    if fid is None:
+        return {"ok": False, "error": "finding_id required"}
+    r = dashops.enqueue_validate_poc(
+        run.path,
+        int(fid),
+        operator=str(args.get("operator") or "operator_chat"),
+        operator_notes=str(args.get("notes") or args.get("operator_notes") or ""),
+        target_url=str(args.get("target_url") or ""),
+        referee=bool(args.get("referee")),
+        command=str(args.get("command") or ""),
+    )
+    return {**r, "target_id": run.target_id, "run_id": run.run_id}
 
 
 # Fleet helpers

@@ -4,8 +4,8 @@ llm:
   # OpenAI-compatible endpoint (LM Studio default local bind)
   base_url: "http://127.0.0.1:1234/v1"
   # Exact model id as exposed by /v1/models (LM Studio Ornith is usually lowercase)
-  model: "ornith-1.0-35b@4bit"
-  display_name: "Ornith 1.0 35B 4bit"
+  model: "ornith-1.0-35b"
+  display_name: "Ornith 1.0 35B"
   # Toolgen (Dev → Generate tool) uses these when present
   temperature_code: 0.15
   toolgen_max_tokens: 8192
@@ -19,6 +19,11 @@ llm:
   api_mode: chat_completions
   max_context_fraction: 0.25
   max_tool_rounds: 12
+  # Multi-agent recon when multiple recon agents are active:
+  #   ralph     — fan out one Ralph task per agent (default, durable)
+  #   inprocess — all agents sequential in one task (Strands loop)
+  #   graph     — sequential Strands Graph pipeline in one task
+  recon_orchestrator: ralph
   temperature_hunt: 0.4
   temperature_disprove: 0.1
   temperature_recon: 0.3
@@ -28,12 +33,25 @@ llm:
   max_tokens: 4096
   context_tokens: 32768
   # Dual adversarial disprove (validate_llm). Sole job: try to kill the finding.
-  # Per-slot model override is reserved for later (omit = inherit llm.model).
+  # Never confirms; never raises severity. Same-model disprove is still weak signal.
+  # Default ON (stages.validate_llm: true). Set false to skip for speed/debug and
+  # send mech-pass straight to human review. Override prompts under
+  # config/prompts/overrides/disprove*.md for stricter severity honesty.
+  # Per-slot model override still supported on each verifier entry.
+  # Prefer llm.validate_models (1+) for multi-model agreement — UI Settings page.
   disprove_verifiers:
     - id: threat_model
       prompt: disprove_threat.md
     - id: code_mitigation
       prompt: disprove_code.md
+  # Per-stage model overrides (blank → llm.model). Owned by Settings UI when present.
+  model_recon: ""
+  model_hunt: ""
+  model_develop_poc: ""
+  # Multi-model validation list (1+). Empty → [llm.model]. Disprove + PoC referee.
+  validate_models: []
+  # all | majority — agreement required for positive multi-model “valid” signals
+  validate_consensus: majority
 
 run:
   profile: code_static
@@ -75,7 +93,29 @@ run:
     - "**/$RECYCLE.BIN/**"
 
 stages:
-  validate_llm: false
+  # Dual-LLM disprove after validate_mech pass (default ON).
+  # true: run threat_model + code_mitigation verifiers; both reject → rejected_llm;
+  #       any stand/hold → still needs_human (never auto-confirmed).
+  # false: skip LLM disprove — mech pass → needs_human for human review only
+  #        (use for speed, debug, or when same-model disprove adds noise).
+  # See docs/harness/validate/README.md and seeds/system/disprove.md.
+  validate_llm: true
+  # Multi-model PoC referee after harness run (default on; never auto-confirm)
+  validate_poc_referee: true
+
+# Controlled PoC execution harness (validate_poc stage / Report workshop).
+# Never writes to the audit target. Never sets confirmed.
+poc_harness:
+  enabled: true
+  # local_subprocess | docker
+  runner: local_subprocess
+  timeout_s: 60
+  # allow | none  (none only enforced for docker --network=none)
+  network: allow
+  allow_write_target: false
+  docker_image: "python:3.12-slim"
+  # blank → sys.executable
+  python: ""
 
 # Mechanical codemap (structure scaffold for recon + hunt targeting)
 codemap:
@@ -99,7 +139,12 @@ packet:
 
 tools:
   max_read_bytes: 65536
+  max_read_bytes_hard: 262144
+  max_read_batch: 8
+  default_read_radius: 40
   max_grep_matches: 50
+  max_grep_line_chars: 200
+  max_grep_context: 10
   max_list_entries: 200
   max_inventory_entries: 2000
   max_inventory_depth: 10
@@ -107,3 +152,4 @@ tools:
   max_grep_pattern_len: 200
   grep_timeout_seconds: 8
   max_grep_files: 8000
+  max_symbol_matches: 40

@@ -308,7 +308,7 @@ flowchart TD
   RECON["recon LLM\narchitecture map"]
   HUNT["hunt LLM\narea × class"]
   MECH["validate_mech\nNO LLM"]
-  VLLM["validate_llm\noptional dual-disprove"]
+  VLLM["validate_llm\ndual-disprove (default on)"]
   HUMAN["Human review\nReport UI"]
   RENDER["render / project\non idle"]
   TGAPS["tool_gaps\noptional idle"]
@@ -338,7 +338,7 @@ flowchart TD
 | **`recon`** | Yes | ~10 | Map architecture; enqueue hunts (or batch finalize) |
 | **`hunt`** | Yes | ~40–100 | One area × weakness class investigation |
 | **`validate_mech`** | **No** | ~20 | Mechanical gates on finding |
-| **`validate_llm`** | Yes (if enabled) | ~25 | Dual adversarial disprove; never confirms |
+| **`validate_llm`** | Yes (default on) | ~25 | Dual adversarial disprove; never confirms |
 | **`develop_poc`** | Yes | operator | Runnable PoC under evidence pack |
 | **`render`** | No | — | Project projection (also idle path) |
 | **`tool_gaps`** | optional | ~90 | Mine missing-tool signals |
@@ -627,16 +627,26 @@ flowchart LR
     FI[file_inventory]
     RF[read_file]
     GR[grep]
+    FS[find_symbol]
   end
 
-  subgraph write["Write (jailed)"]
-    WE[write_evidence → evidence/ only]
+  subgraph index["Mechanical indexes"]
+    QS[query_sinks]
+    QC[query_codemap]
+    GA[get_architecture]
+  end
+
+  subgraph write["Write / pack (jailed)"]
+    WE[write_evidence]
+    LE[list_evidence]
+    RE[read_evidence]
   end
 
   subgraph meta["Meta / queue"]
     NT[note]
     LHP[list_hunt_profiles]
     RH[request_hunt]
+    PF[preflight_candidate]
   end
 
   subgraph terminal["Terminal (stage-bound)"]
@@ -646,7 +656,7 @@ flowchart LR
   end
 
   Handler["build_tool_handler(ctx)"]
-  Handler --> read & write & meta & terminal
+  Handler --> read & index & write & meta & terminal
   Handler --> Extra["extra_registry\noperator-integrated tools"]
 ```
 
@@ -656,10 +666,16 @@ flowchart LR
 | `file_inventory` | ✅ | ✅ | ✅ |
 | `read_file` | ✅ | ✅ | ✅ |
 | `grep` | ✅ | ✅ | ✅ |
+| `find_symbol` | ✅ | ✅ | ✅ |
+| `query_sinks` | ✅ | ✅ | — |
+| `query_codemap` | ✅ | ✅ | — |
+| `get_architecture` | — | ✅ | — |
 | `note` | ✅ | ✅ | ✅ |
 | `submit_architecture` | ✅ | — | — |
 | `submit_candidate` / `submit_none` | — | ✅ | — |
+| `preflight_candidate` | — | ✅ | — |
 | `write_evidence` | — | ✅ | ✅ |
+| `list_evidence` / `read_evidence` | — | ✅ | ✅ |
 | `list_hunt_profiles` / `request_hunt` | — | ✅ | — |
 
 - Paths relative to **target root** (or evidence pack for writes).
@@ -698,9 +714,9 @@ flowchart TD
 
 ---
 
-## 13. Optional LLM disprove (`validate_llm`)
+## 13. LLM disprove (`validate_llm`)
 
-Enabled only when `stages.validate_llm: true`.
+Default **on** (`stages.validate_llm: true`). Set false to skip for speed/debug.
 
 ```mermaid
 flowchart TD
@@ -730,6 +746,14 @@ flowchart TD
 - Tools: read target + `write_evidence` only (no `submit_*`).
 - Writes runnable scripts under `evidence/<pack>/` + hub `poc_develop.md`.
 - Does **not** confirm findings.
+
+### `validate_poc` (PoC harness)
+
+- Trigger: Report **Run in harness**, `vf validate-poc`, or operator chat `enqueue_validate_poc`.
+- Runs pack PoC under `poc_harness` (local_subprocess | docker); writes `poc_run.json`.
+- Optional LLM referee (`stages.validate_poc_referee` / `referee_poc.md`).
+- Export handoff: `vf export-validation-job` → `HANDOFF.md` + zip under `exports/`.
+- Does **not** confirm findings (evidence / annotation only).
 
 ### `generate_skill` / `generate_run_skills`
 
@@ -893,7 +917,7 @@ sequenceDiagram
 | Concurrency | `run.max_leases_parallel` | Parallel Ralph workers |
 | Retries | `run.max_task_attempts`, `max_recon_auto_retries` | Infra vs recon recovery |
 | Split | `run.max_split_depth` | Auto-split aborted hunts |
-| Stages | `stages.validate_llm` | Optional dual-disprove arm |
+| Stages | `stages.validate_llm` | Dual-disprove arm (default on; set false to opt out) |
 | Packet slim | `packet.max_architecture_chars`, `max_seed_sinks`, … | Context budget |
 | Tools caps | `tools.max_read_bytes`, grep/inventory caps | Jail resource limits |
 | Skill policy | `run.hunt_skill_mode`, `hunt_skill_ids` | Restrict classes for a run |

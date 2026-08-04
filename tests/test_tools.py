@@ -383,3 +383,248 @@ def test_write_evidence_rejects_evidence_under_target(tmp_path: Path):
         r.get("error") or ""
     ).lower()
     assert _hash_tree(target) == before
+
+
+def test_grep_context_path_literal_case(tmp_path: Path):
+    root = tmp_path / "tgt"
+    root.mkdir()
+    (root / "pkg").mkdir()
+    (root / "pkg" / "a.py").write_text(
+        "def before():\n    pass\nSELECT secret\ndef after():\n    return 1\n",
+        encoding="utf-8",
+    )
+    (root / "other.py").write_text("select lower\n", encoding="utf-8")
+    ctx = {
+        "target_root": str(root),
+        "cfg": {"tools": {}, "run": {"ignore_globs": []}},
+        "session": {},
+    }
+    h = build_tool_handler(ctx)
+
+    g = h(
+        "grep",
+        {
+            "pattern": "SELECT",
+            "path": "pkg",
+            "context_before": 1,
+            "context_after": 1,
+        },
+    )
+    assert g["ok"], g
+    assert g["matches"]
+    m = g["matches"][0]
+    assert m["path"].endswith("a.py")
+    assert m.get("before")
+    assert m.get("after")
+    assert g.get("path_roots") == ["pkg"]
+
+    # path-scoped: other.py should not match
+    assert all("other" not in x["path"] for x in g["matches"])
+
+    ci = h("grep", {"pattern": "select", "case_insensitive": True, "path": "pkg"})
+    assert ci["ok"] and ci["matches"]
+
+    lit = h("grep", {"pattern": "SELECT secret", "literal": True})
+    assert lit["ok"] and lit["matches"]
+
+    # alias
+    alias = h("search", {"pattern": "after", "path": "pkg"})
+    assert alias["ok"] and alias["matches"]
+
+
+def test_read_file_around_line_batch_and_metadata(tmp_path: Path):
+    root = tmp_path / "tgt"
+    root.mkdir()
+    lines = "\n".join(f"line{i}" for i in range(1, 21))
+    (root / "a.py").write_text(lines + "\n", encoding="utf-8")
+    (root / "b.py").write_text("hello world\n", encoding="utf-8")
+    ctx = {
+        "target_root": str(root),
+        "cfg": {"tools": {"default_read_radius": 2}, "run": {"ignore_globs": []}},
+        "session": {},
+    }
+    h = build_tool_handler(ctx)
+    r = h("read_file", {"path": "a.py", "around_line": 10, "radius": 2})
+    assert r["ok"], r
+    assert "line10" in r["content"]
+    assert r["start_line"] == 8
+    assert r["end_line"] == 12
+    assert r.get("sha256_16")
+    assert r.get("total_lines") == 20
+
+    batch = h("read_file", {"paths": ["a.py", "b.py"], "start_line": 1, "end_line": 2})
+    assert batch["ok"], batch
+    assert batch.get("batch")
+    assert len(batch["files"]) == 2
+    assert all(f.get("ok") for f in batch["files"])
+
+    miss = h("read_file", {"path": "missing.py"})
+    assert not miss["ok"]
+    assert miss.get("hint")
+
+
+def test_evidence_list_read_append(toy_sqli: Path, tmp_path: Path):
+    ctx = {
+        "target_root": str(toy_sqli),
+        "evidence_root": str(tmp_path / "evidence"),
+        "task_id": 7,
+        "cfg": {"tools": {}, "run": {"ignore_globs": []}},
+        "session": {},
+    }
+    h = build_tool_handler(ctx)
+    w1 = h(
+        "write_evidence",
+        {"relpath": "notes.md", "content": "first chunk of evidence notes here"},
+    )
+    assert w1["ok"], w1
+    w2 = h(
+        "write_evidence",
+        {
+            "relpath": "notes.md",
+            "content": "\nsecond chunk appended",
+            "append": True,
+        },
+    )
+    assert w2["ok"], w2
+    assert w2.get("mode") == "append"
+
+    listed = h("list_evidence", {})
+    assert listed["ok"], listed
+    assert any(f["path"] == "notes.md" for f in listed["files"])
+
+    rd = h("read_evidence", {"relpath": "notes.md"})
+    assert rd["ok"], rd
+    assert "first chunk" in rd["content"]
+    assert "second chunk" in rd["content"]
+
+    # pack tools must not read target
+    bad = h("read_evidence", {"relpath": "../x"})
+    assert not bad["ok"]
+
+
+def test_find_symbol_and_query_sinks(tmp_path: Path):
+    root = tmp_path / "tgt"
+    root.mkdir()
+    (root / "app.py").write_text(
+        "def search_users(q):\n"
+        "    cur.execute('SELECT * FROM users')\n"
+        "    return q\n",
+        encoding="utf-8",
+    )
+    ctx = {
+        "target_root": str(root),
+        "cfg": {"tools": {}, "run": {"ignore_globs": []}},
+        "session": {},
+        "task_payload": {
+            "seed_sinks": [
+                {
+                    "path": "app.py",
+                    "line": 2,
+                    "kind": "sql",
+                    "text": "cur.execute('SELECT * FROM users')",
+                }
+            ]
+        },
+    }
+    h = build_tool_handler(ctx)
+    sym = h("find_symbol", {"symbol": "search_users"})
+    assert sym["ok"], sym
+    assert sym["matches"]
+    assert sym["matches"][0]["kind"] == "definition"
+    assert sym["matches"][0]["path"] == "app.py"
+
+    sinks = h("query_sinks", {"kind": "sql"})
+    assert sinks["ok"], sinks
+    assert sinks["count"] >= 1
+    assert sinks["sinks"][0]["kind"] == "sql"
+
+
+def test_query_codemap_rebuild(tmp_path: Path):
+    root = tmp_path / "tgt"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "main.py").write_text("print(1)\n", encoding="utf-8")
+    (root / "README.md").write_text("# hi\n", encoding="utf-8")
+    ctx = {
+        "target_root": str(root),
+        "cfg": {"tools": {}, "run": {"ignore_globs": []}},
+        "session": {},
+    }
+    h = build_tool_handler(ctx)
+    cm = h("query_codemap", {"rebuild": True})
+    assert cm["ok"], cm
+    assert cm.get("summary") is not None
+    # modules or entrypoints may be present depending on tree shape
+    assert isinstance(cm.get("modules"), list)
+
+
+def test_preflight_candidate_ready_path(toy_sqli: Path, tmp_path: Path):
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    session: dict = {
+        "tools_used": [],
+        "evidence_id": None,
+        "evidence_ids_written": [],
+    }
+    ctx = {
+        "target_root": str(toy_sqli),
+        "evidence_root": str(evidence_root),
+        "task_id": 3,
+        "cfg": {"tools": {}, "run": {"ignore_globs": []}},
+        "session": session,
+        "db": None,
+    }
+    h = build_tool_handler(ctx)
+    body = _candidate_body()
+    early = h("preflight_candidate", body)
+    assert early["ok"]
+    assert early["ready"] is False
+    assert early["blockers"]
+
+    ev = h(
+        "write_evidence",
+        {"relpath": "notes.md", "content": "enough evidence bytes for the gate xx"},
+    )
+    assert ev["ok"]
+    body["evidence_id"] = ev["evidence_id"]
+    # toy app.py exists — use a real line if possible
+    ready = h("preflight_candidate", body)
+    assert ready["ok"]
+    assert ready["ready"] is True, ready
+    assert not ready["blockers"]
+
+
+def test_get_architecture_brief(tmp_path: Path):
+    class _FakeDb:
+        def get_architecture(self):
+            return {
+                "summary": "Demo app with SQL search.",
+                "trust_boundaries": ["HTTP → SQL"],
+                "components": [
+                    {"name": "web", "path_hints": ["app.py"], "role": "api"}
+                ],
+            }
+
+        def list_findings(self):
+            return []
+
+        def get_run(self):
+            return {"profile": "code_static"}
+
+    ctx = {
+        "target_root": str(tmp_path),
+        "cfg": {},
+        "session": {},
+        "db": _FakeDb(),
+        "task_payload": {
+            "area": "web",
+            "class": "injection",
+            "path_hints": ["app.py"],
+            "seed_sinks": [{"kind": "sql"}],
+        },
+    }
+    h = build_tool_handler(ctx)
+    r = h("get_architecture", {})
+    assert r["ok"], r
+    assert "Demo app" in r["summary"]
+    assert r["task"]["class"] == "injection"
+    assert r["task"]["path_hints"] == ["app.py"]

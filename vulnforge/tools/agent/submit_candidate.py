@@ -37,26 +37,35 @@ SPEC = ToolSpec(
         },
         "threat_model": {
             "type": "object",
-            "description": "Who attacks, what boundary, what impact.",
+            "description": (
+                "Who attacks, what trust boundary is crossed, and concrete "
+                "impact. Avoid placeholders (n/a, unknown) and vacuous lines "
+                "like 'could be bad' or 'if they have write access…'."
+            ),
             "properties": {
                 "attacker": {
                     "type": "string",
                     "description": (
-                        "Who can reach the sink "
-                        "(e.g. local CLI user, remote PKCS#11 client)."
+                        "Who can reach the sink with what capability "
+                        "(e.g. unauthenticated HTTP client, local CLI user, "
+                        "tenant-scoped API token). Not n/a/unknown."
                     ),
                 },
                 "boundary": {
                     "type": "string",
                     "description": (
-                        "Trust boundary crossed (e.g. untrusted APDU → parser)."
+                        "Trust boundary crossed "
+                        "(e.g. untrusted query param → SQL engine; "
+                        "user A → user B object). Not n/a/none/unknown."
                     ),
                 },
                 "impact": {
                     "type": "string",
                     "description": (
-                        "Concrete impact if exploited "
-                        "(RCE, auth bypass, secret leak, DoS…)."
+                        "Concrete damage if exploited: exact effect "
+                        "(RCE, authz bypass, secret/PII leak, tenant data "
+                        "read, DoS…). One sentence: attacker does X → gets Z. "
+                        "Not 'security risk' or 'could potentially…'."
                     ),
                 },
             },
@@ -109,9 +118,11 @@ SPEC = ToolSpec(
                 "INFORMATIONAL",
             ],
             "description": (
-                "Optional severity rating only — one of CRITICAL, HIGH, "
-                "MEDIUM, LOW, INFORMATIONAL. Not free-text impact prose "
-                "(put impact in threat_model.impact / summary)."
+                "Optional severity rating only — CRITICAL, HIGH, MEDIUM, "
+                "LOW, or INFORMATIONAL. Not free-text impact (use "
+                "threat_model.impact). Cap at MEDIUM when many attacker "
+                "preconditions or non-prod-only impact. HIGH/CRITICAL need "
+                "concrete impact (authz, secrets, RCE, data, …)."
             ),
         },
     },

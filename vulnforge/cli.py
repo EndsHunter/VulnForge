@@ -1,12 +1,14 @@
 """
 CLI entrypoints for vulnforge.
 
-Commands: vf init | run-once | status | project | apply-candidate | delete-run | dashboard | tool-gaps
+Commands: vf init | run-once | status | project | apply-candidate | delete-run |
+dashboard | tool-gaps | export-validation-job | validate-poc
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import traceback
@@ -59,6 +61,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_delete_run(args, cfg)
         if cmd == "tool-gaps":
             return cmd_tool_gaps(args, cfg)
+        if cmd == "export-validation-job":
+            return cmd_export_validation_job(args, cfg)
+        if cmd == "validate-poc":
+            return cmd_validate_poc(args, cfg)
         print(f"unknown command: {cmd}", file=sys.stderr)
         return EXIT_CONFIG
     except SystemExit as e:
@@ -204,6 +210,51 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="Hard-stop runner if alive; allow delete even without harness.db",
+    )
+
+    evj = sub.add_parser(
+        "export-validation-job",
+        help="Export a finding + evidence pack as a validation handoff bundle",
+    )
+    evj.add_argument("--finding-id", type=int, required=True)
+    evj.add_argument("--run-dir", type=Path, default=None)
+    evj.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output directory (default: <run>/exports/validation-job-finding-N)",
+    )
+    evj.add_argument(
+        "--no-zip",
+        action="store_true",
+        help="Skip writing the .zip sibling",
+    )
+    evj.add_argument(
+        "--no-citations",
+        action="store_true",
+        help="Do not slice cited target files into the bundle",
+    )
+
+    vp = sub.add_parser(
+        "validate-poc",
+        help="Enqueue (or run-once) validate_poc harness for a finding",
+    )
+    vp.add_argument("--finding-id", type=int, required=True)
+    vp.add_argument("--run-dir", type=Path, default=None)
+    vp.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run validate_poc immediately in-process (else only enqueue)",
+    )
+    vp.add_argument(
+        "--referee",
+        action="store_true",
+        help="Also run optional LLM referee (or set stages.validate_poc_referee)",
+    )
+    vp.add_argument(
+        "--target-url",
+        default="",
+        help="Optional TARGET_URL env for the PoC process",
     )
 
     tg = sub.add_parser(
@@ -673,10 +724,10 @@ def cmd_status(args, cfg: dict) -> int:
     stages = cfg.get("stages") or {}
     if stages.get("validate_llm"):
         print(
-            "warning: stages.validate_llm is ON — mech-pass is needs_human; "
+            "note: stages.validate_llm is ON (default) — after mech pass, dual "
             "disprove may rejected_llm only (never auto-confirm). Same model "
-            "as hunter is weak signal; leave false unless you want the extra "
-            "LLM pass.",
+            "as hunter is weak signal; set stages.validate_llm: false to skip "
+            "for speed or debug.",
             file=sys.stderr,
         )
     return EXIT_PROGRESS
@@ -1049,6 +1100,10 @@ def dispatch_task(task, db: Database, run_dir: Path, cfg: dict) -> dict[str, Any
         from vulnforge.stages import develop_poc
 
         return develop_poc.run(task, db, run_dir, cfg)
+    if kind == "validate_poc":
+        from vulnforge.stages import validate_poc
+
+        return validate_poc.run(task, db, run_dir, cfg)
     if kind == "render":
         from vulnforge.stages import render
 
@@ -1087,6 +1142,110 @@ def cmd_project(args, cfg: dict) -> int:
     finally:
         db.close()
 
+
+
+def cmd_export_validation_job(args, cfg: dict) -> int:
+    """Export finding + pack as HANDOFF bundle for external/in-process harness."""
+    try:
+        run_dir = resolve_run_dir(args, cfg)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_CONFIG
+    fid = int(args.finding_id)
+    db = Database.open(run_dir / "harness.db")
+    try:
+        finding = db.get_finding(fid)
+        if finding is None:
+            print(f"finding not found: {fid}", file=sys.stderr)
+            return EXIT_CONFIG
+        run_row = db.get_run()
+        target_path = (run_row["target_path"] if run_row else "") or ""
+        run_id = (run_row["id"] if run_row else "") or run_dir.name
+        from vulnforge.poc_handoff import export_validation_job
+
+        r = export_validation_job(
+            run_dir,
+            finding,
+            target_path=str(target_path),
+            run_id=str(run_id),
+            out_dir=Path(args.out) if getattr(args, "out", None) else None,
+            as_zip=not bool(getattr(args, "no_zip", False)),
+            include_citations=not bool(getattr(args, "no_citations", False)),
+        )
+        if not r.get("ok"):
+            print(r.get("error") or "export failed", file=sys.stderr)
+            return EXIT_CONFIG
+        print("out_dir:", r.get("out_dir"))
+        if r.get("zip_path"):
+            print("zip:", r.get("zip_path"))
+        ready = (r.get("readiness") or {}).get("ready")
+        print("harness_ready:", ready)
+        issues = (r.get("readiness") or {}).get("issues") or []
+        if issues:
+            print("issues:", ", ".join(issues))
+        return EXIT_PROGRESS
+    finally:
+        db.close()
+
+
+def cmd_validate_poc(args, cfg: dict) -> int:
+    """Enqueue validate_poc, or execute immediately with --execute."""
+    try:
+        run_dir = resolve_run_dir(args, cfg)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_CONFIG
+    fid = int(args.finding_id)
+    payload: dict[str, Any] = {
+        "finding_id": fid,
+        "operator": "cli",
+    }
+    if getattr(args, "referee", False):
+        payload["referee"] = True
+    url = str(getattr(args, "target_url", "") or "").strip()
+    if url:
+        payload["TARGET_URL"] = url
+
+    db = Database.open(run_dir / "harness.db")
+    try:
+        finding = db.get_finding(fid)
+        if finding is None:
+            print(f"finding not found: {fid}", file=sys.stderr)
+            return EXIT_CONFIG
+        if getattr(args, "execute", False):
+            from types import SimpleNamespace
+
+            from vulnforge.stages import validate_poc
+
+            task = SimpleNamespace(
+                id=0,
+                kind="validate_poc",
+                payload=payload,
+            )
+            result = validate_poc.run(task, db, run_dir, cfg)
+            print(json.dumps({k: result.get(k) for k in (
+                "status", "finding_id", "verdict", "signal_matched",
+                "exit_code", "evidence_id", "error",
+            ) if k in result or result.get(k) is not None}, indent=2))
+            if result.get("status") == "failed_infra":
+                return EXIT_INFRA
+            if result.get("status") != "succeeded":
+                return EXIT_CONFIG
+            return EXIT_PROGRESS
+        task_id = db.enqueue_task("validate_poc", payload, priority=28)
+        append_event(
+            run_dir,
+            {
+                "source": "vf",
+                "event": "poc_validate_enqueued",
+                "finding_id": fid,
+                "task_id": task_id,
+            },
+        )
+        print(f"enqueued validate_poc task_id={task_id} finding_id={fid}")
+        return EXIT_PROGRESS
+    finally:
+        db.close()
 
 
 def cmd_tool_gaps(args, cfg: dict) -> int:

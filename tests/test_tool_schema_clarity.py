@@ -32,9 +32,39 @@ def test_grep_documents_narrowing_and_empty_pattern_mode():
     assert "extension" in desc.lower() or "glob" in desc.lower()
     assert "empty" in desc.lower()
     props = (fn.get("parameters") or {}).get("properties") or {}
-    for key in ("pattern", "glob", "extension", "files_only", "match_path", "max_matches"):
+    for key in (
+        "pattern",
+        "glob",
+        "extension",
+        "files_only",
+        "match_path",
+        "max_matches",
+        "path",
+        "context",
+        "case_insensitive",
+        "literal",
+    ):
         assert key in props
         assert props[key].get("description"), f"{key} needs description"
+
+
+def test_read_file_documents_around_line_and_batch():
+    fn = _by_name("hunt")["read_file"]
+    props = (fn.get("parameters") or {}).get("properties") or {}
+    assert "around_line" in props
+    assert "radius" in props
+    assert "paths" in props
+
+
+def test_query_and_preflight_schemas_present():
+    hunt = _by_name("hunt")
+    assert "query_sinks" in hunt
+    assert "query_codemap" in hunt
+    assert "find_symbol" in hunt
+    assert "preflight_candidate" in hunt
+    assert "get_architecture" in hunt
+    assert "list_evidence" in hunt
+    assert "read_evidence" in hunt
 
 
 def test_submit_architecture_finish_contract():

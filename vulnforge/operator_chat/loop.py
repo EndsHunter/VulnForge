@@ -34,6 +34,8 @@ def run_operator_loop(
     """
     Run LLM + tools until final assistant text or pending mutation confirm.
 
+    Production clients use Strands. FakeLLM uses the scripted chat loop below.
+
     max_rounds:
       None  — no operator-facing tool limit (safety ceiling SAFETY_MAX_TOOL_ROUNDS)
       int   — stop after that many LLM rounds (tests / explicit overrides)
@@ -41,6 +43,27 @@ def run_operator_loop(
     Returns dict with keys: messages (new UI-facing turns), pending_confirm,
     ui_hints, error, model_id.
     """
+    from vulnforge.llm import FakeLLMClient
+
+    if not isinstance(client, FakeLLMClient):
+        from vulnforge.agent_runtime.operator_strands import (
+            run_operator_loop_strands,
+        )
+
+        return run_operator_loop_strands(
+            client=client,
+            system=system,
+            history=history,
+            user_message=user_message,
+            tools=tools,
+            dispatch=dispatch,
+            max_rounds=max_rounds,
+            session_id=session_id,
+            scope=scope,
+            run_key=run_key,
+            temperature=temperature,
+        )
+
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     # history: only user/assistant/tool for model (skip pure UI meta)
     for m in history:

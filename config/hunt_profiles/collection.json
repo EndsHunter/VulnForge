@@ -523,60 +523,6 @@
       "created_at": "",
       "origin_target_id": "",
       "origin_run_id": ""
-    },
-    {
-      "id": "empty-listener-stub",
-      "title": "Empty Listener Stub Audit",
-      "description": "Audits empty files named like network listeners to ensure they aren't being dynamically loaded or executed in deployment.",
-      "active": false,
-      "body_file": "bodies/empty-listener-stub.md",
-      "source": "generated",
-      "tags": [
-        "python",
-        "deployment",
-        "stubs"
-      ],
-      "languages": [],
-      "cwe": [
-        "CWE-000"
-      ],
-      "angle_ids": [
-        1,
-        5
-      ],
-      "sink_families": [],
-      "specificity": 0,
-      "version": 1,
-      "tools": null,
-      "created_at": "",
-      "origin_target_id": "",
-      "origin_run_id": ""
-    },
-    {
-      "id": "drone-py",
-      "title": "Empty Stub Verification",
-      "description": "Use when hunting a single file that appears empty, contains only stubs/placeholders, or is explicitly documented as part of an uninitialized/empty repository. Also when the operator needs to verify no hidden functionality, dynamic imports, or side-effect loading exists in a minimal codebase. Prefer this skill when the architecture context confirms zero functional code, sinks, or trust boundaries. Do not use when the file contains actual implementation, data handling, network calls, or user input",
-      "active": false,
-      "body_file": "bodies/drone-py.md",
-      "source": "generated",
-      "tags": [
-        "stub",
-        "verification",
-        "empty"
-      ],
-      "languages": [],
-      "cwe": [],
-      "angle_ids": [
-        1,
-        2
-      ],
-      "sink_families": [],
-      "specificity": 0,
-      "version": 1,
-      "tools": null,
-      "created_at": "2026-07-16T02:16:09Z",
-      "origin_target_id": "Drones-724d685b",
-      "origin_run_id": "run-001"
     }
   ]
 }

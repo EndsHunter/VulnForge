@@ -57,13 +57,13 @@ def with_runner_flags(
     rstate = (runner or {}).get("state") or "idle"
     card["incomplete"] = incomplete_from_flags(bool(card.get("has_work")), rstate)
     stages = (cfg or {}).get("stages") or {}
-    # Mech-pass always awaits human; optional validate_llm may auto-reject only.
+    # Mech-pass awaits human; validate_llm (default on) may auto-reject only.
     card["validate_llm_on"] = bool(stages.get("validate_llm"))
     card["validate_llm_suppresses_confirm"] = True  # confirmed is always human-gated
     card["validate_llm_note"] = (
-        "mech-pass -> needs_human; optional disprove may reject_llm (never auto-confirm)"
+        "mech-pass -> dual disprove -> needs_human or rejected_llm (never auto-confirm)"
         if stages.get("validate_llm")
-        else "mech-pass -> needs_human; human confirms or rejects"
+        else "mech-pass -> needs_human; human confirms or rejects (validate_llm off)"
     )
     return card
 
@@ -181,6 +181,15 @@ class SettingsBody(BaseModel):
     api_mode: Optional[str] = None  # chat_completions | responses | messages
     # Optional; blank / "none" / "null" clear the key (local servers need none).
     api_key: Optional[str] = None
+    # Per-stage model overrides (blank → default model)
+    model_recon: Optional[str] = None
+    model_hunt: Optional[str] = None
+    model_develop_poc: Optional[str] = None
+    # Multi-model validation (list or newline/comma string accepted in save)
+    validate_models: Optional[list[str]] = None
+    validate_consensus: Optional[str] = None  # all | majority
+    validate_poc_referee: Optional[bool] = None
+    validate_llm: Optional[bool] = None
     max_concurrent_agents: Optional[int] = None
     context_tokens: Optional[int] = None
     max_context_fraction: Optional[float] = None
@@ -442,6 +451,23 @@ class FindingPocBody(BaseModel):
     operator: str = "operator"
 
 
+class FindingValidatePocBody(BaseModel):
+    """Enqueue validate_poc harness task (never auto-confirms)."""
+
+    operator: str = "operator"
+    operator_notes: str = ""
+    target_url: str = ""
+    referee: bool = False
+    command: str = ""
+
+
+class FindingExportValidationJobBody(BaseModel):
+    """Export validation handoff bundle."""
+
+    as_zip: bool = True
+    include_citations: bool = True
+
+
 class FindingsMergeBody(BaseModel):
     """Operator merge: supersede drop_ids into keep_id (never auto-confirm)."""
 
@@ -583,6 +609,15 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         return TEMPLATES.TemplateResponse(
             request,
             "chat.html",
+            {"runs_root": str(app.state.runs_root)},
+        )
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page(request: Request):
+        """Dedicated LLM / stage-model / multi-validate settings page."""
+        return TEMPLATES.TemplateResponse(
+            request,
+            "settings.html",
             {"runs_root": str(app.state.runs_root)},
         )
 
@@ -1796,6 +1831,52 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             raise HTTPException(400, r.get("error") or "poc save failed")
         return r
 
+    @app.post("/api/runs/{target_id}/{run_id}/findings/{finding_id}/validate-poc")
+    def api_finding_validate_poc(
+        target_id: str, run_id: str, finding_id: int, body: FindingValidatePocBody
+    ):
+        """Enqueue validate_poc harness task; never auto-confirms."""
+        run = _get_run(target_id, run_id)
+        r = dashops.enqueue_validate_poc(
+            run.path,
+            finding_id,
+            operator=body.operator or "operator",
+            operator_notes=body.operator_notes or "",
+            target_url=body.target_url or "",
+            referee=bool(body.referee),
+            command=body.command or "",
+        )
+        if not r.get("ok"):
+            raise HTTPException(
+                404 if r.get("error") == "finding_not_found" else 400,
+                r.get("error") or "validate-poc enqueue failed",
+            )
+        return r
+
+    @app.post(
+        "/api/runs/{target_id}/{run_id}/findings/{finding_id}/export-validation-job"
+    )
+    def api_finding_export_validation_job(
+        target_id: str,
+        run_id: str,
+        finding_id: int,
+        body: FindingExportValidationJobBody = FindingExportValidationJobBody(),
+    ):
+        """Export finding + pack as validation handoff bundle under run exports/."""
+        run = _get_run(target_id, run_id)
+        r = dashops.export_validation_job_op(
+            run.path,
+            finding_id,
+            as_zip=bool(body.as_zip),
+            include_citations=bool(body.include_citations),
+        )
+        if not r.get("ok"):
+            raise HTTPException(
+                404 if r.get("error") == "finding_not_found" else 400,
+                r.get("error") or "export failed",
+            )
+        return r
+
     # ---------- Findings clusters / merge (PR-D) ----------
 
     @app.get("/api/runs/{target_id}/{run_id}/findings/clusters")
@@ -1900,6 +1981,11 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
     @app.get("/api/settings")
     def api_get_settings():
+        from vulnforge.llm_models import (
+            normalize_consensus,
+            normalize_model_list,
+            resolve_validate_models,
+        )
         from vulnforge.settings import normalize_api_key
 
         ui = load_ui_settings()
@@ -1907,12 +1993,27 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         eff = load_config()
         llm = eff.get("llm") or {}
         run = eff.get("run") or {}
+        stages = eff.get("stages") or {}
         key = normalize_api_key(llm.get("api_key") if "api_key" in llm else ui.get("api_key"))
+        vmodels = resolve_validate_models(eff)
         return {
             "settings": ui,
             "effective": {
                 "base_url": llm.get("base_url"),
                 "model": llm.get("model"),
+                "model_recon": llm.get("model_recon") or "",
+                "model_hunt": llm.get("model_hunt") or "",
+                "model_develop_poc": llm.get("model_develop_poc") or "",
+                "validate_models": vmodels,
+                "validate_consensus": normalize_consensus(
+                    llm.get("validate_consensus") or ui.get("validate_consensus")
+                ),
+                "validate_poc_referee": bool(
+                    stages.get("validate_poc_referee", ui.get("validate_poc_referee", True))
+                ),
+                "validate_llm": bool(
+                    stages.get("validate_llm", ui.get("validate_llm", True))
+                ),
                 "api_mode": llm.get("api_mode") or "chat_completions",
                 # Do not echo secrets; only whether a key is configured.
                 "api_key_set": bool(key),
@@ -1932,6 +2033,18 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         updates = body.model_dump(exclude_none=True)
         if "api_key" in body.model_fields_set:
             updates["api_key"] = body.api_key if body.api_key is not None else ""
+        # Explicit bool clears (False is valid)
+        for bkey in ("validate_poc_referee", "validate_llm"):
+            if bkey in body.model_fields_set:
+                updates[bkey] = bool(getattr(body, bkey))
+        if "validate_models" in body.model_fields_set:
+            updates["validate_models"] = body.validate_models or []
+        if "model_recon" in body.model_fields_set:
+            updates["model_recon"] = body.model_recon or ""
+        if "model_hunt" in body.model_fields_set:
+            updates["model_hunt"] = body.model_hunt or ""
+        if "model_develop_poc" in body.model_fields_set:
+            updates["model_develop_poc"] = body.model_develop_poc or ""
         saved = save_ui_settings(updates)
         # refresh app config for init paths in this process
         app.state.config = load_config()

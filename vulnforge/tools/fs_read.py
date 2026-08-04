@@ -332,48 +332,212 @@ def file_inventory(
         return {"ok": False, "error": str(e)}
 
 
-def read_file(
+def _read_one_file(
     ctx: dict,
     path: str,
+    *,
     start_line: int | None = None,
     end_line: int | None = None,
+    around_line: int | None = None,
+    radius: int | None = None,
+    max_bytes: int | None = None,
 ) -> dict[str, Any]:
+    """Read a single path; returns ok dict or error dict (no session append)."""
+    soft = maybe_soft_jail(ctx, path or "")
+    if soft is not None:
+        return soft
+    root = Path(ctx["target_root"])
     try:
-        soft = maybe_soft_jail(ctx, path or "")
-        if soft is not None:
-            return soft
-        root = Path(ctx["target_root"])
         p = resolve_target_path(root, path)
-        if not p.is_file():
-            return {"ok": False, "error": "not a file"}
-        max_bytes = int((ctx.get("cfg") or {}).get("tools", {}).get("max_read_bytes", 65536))
-        text = p.read_text(encoding="utf-8", errors="replace")
-        lines = text.splitlines()
-        total = len(lines)
-        if start_line is not None or end_line is not None:
-            s = max(1, int(start_line or 1)) - 1
-            e = int(end_line) if end_line is not None else total
-            e = max(s, e)
-            chunk_lines = lines[s:e]
+    except PermissionError as e:
+        return {"ok": False, "error": str(e), "path": normalize_relpath(path or "")}
+    rel = normalize_relpath(path or "")
+    if not p.exists():
+        # Suggest siblings under parent when possible
+        hint = "Path not found. Use file_inventory or list_dir on the parent."
+        try:
+            parent = p.parent
+            if parent.is_dir() and root.resolve() in (parent.resolve(), *parent.resolve().parents):
+                names = sorted(e.name for e in parent.iterdir())[:12]
+                if names:
+                    hint += f" Parent contains: {', '.join(names)}"
+        except OSError:
+            pass
+        return {"ok": False, "error": "path not found", "path": rel, "hint": hint}
+    if not p.is_file():
+        return {
+            "ok": False,
+            "error": "not a file",
+            "path": rel,
+            "hint": "Use list_dir or file_inventory for directories.",
+        }
+
+    tools_cfg = (ctx.get("cfg") or {}).get("tools") or {}
+    budget = int(
+        max_bytes
+        if max_bytes is not None
+        else tools_cfg.get("max_read_bytes", 65536)
+    )
+    budget = max(1024, min(budget, int(tools_cfg.get("max_read_bytes_hard", 262144))))
+
+    try:
+        raw = p.read_bytes()
+    except OSError as e:
+        return {"ok": False, "error": f"unreadable: {e}", "path": rel}
+
+    import hashlib
+
+    sha = hashlib.sha256(raw).hexdigest()[:16]
+    text = raw.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    total = len(lines)
+
+    # around_line + radius takes precedence when set
+    if around_line is not None:
+        try:
+            center = int(around_line)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "around_line must be an integer", "path": rel}
+        try:
+            rad = int(radius if radius is not None else tools_cfg.get("default_read_radius", 40))
+        except (TypeError, ValueError):
+            rad = 40
+        rad = max(0, min(200, rad))
+        if center < 1:
+            center = 1
+        if center > total and total > 0:
+            center = total
+        s = max(0, center - 1 - rad)
+        e = min(total, center + rad)
+        chunk_lines = lines[s:e]
+        start_1 = s + 1
+        end_1 = e
+    elif start_line is not None or end_line is not None:
+        s = max(1, int(start_line or 1)) - 1
+        e = int(end_line) if end_line is not None else total
+        e = max(s, e)
+        chunk_lines = lines[s:e]
+        start_1 = s + 1
+        end_1 = min(total, e) if total else 0
+    else:
+        chunk_lines = lines
+        start_1 = 1 if total else 0
+        end_1 = total
+
+    joined = "\n".join(chunk_lines)
+    truncated = False
+    encoded = joined.encode("utf-8", errors="replace")
+    if len(encoded) > budget:
+        joined = encoded[:budget].decode("utf-8", errors="replace")
+        truncated = True
+
+    return {
+        "ok": True,
+        "path": rel,
+        "content": joined,
+        "total_lines": total,
+        "start_line": start_1,
+        "end_line": end_1,
+        "truncated": truncated,
+        "sha256_16": sha,
+        "size_bytes": len(raw),
+    }
+
+
+def read_file(
+    ctx: dict,
+    path: str | None = None,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    *,
+    around_line: int | None = None,
+    radius: int | None = None,
+    max_bytes: int | None = None,
+    paths: list[str] | None = None,
+) -> dict[str, Any]:
+    """Read a text file (or line range / around a line) from the audit target.
+
+    Batch mode: pass ``paths`` (list of relative paths) with a shared line window
+    and per-file byte budget. Returns ``files`` array; overall ok if any succeed.
+    """
+    try:
+        tools_cfg = (ctx.get("cfg") or {}).get("tools") or {}
+        batch_paths: list[str] = []
+        if paths is not None:
+            if isinstance(paths, str):
+                batch_paths = [paths]
+            elif isinstance(paths, list):
+                batch_paths = [str(p) for p in paths if p]
+        if path and str(path).strip():
+            # Single path wins when paths not used; if both, path is first
+            p0 = str(path).strip()
+            if not batch_paths:
+                batch_paths = [p0]
+            elif p0 not in batch_paths:
+                batch_paths.insert(0, p0)
+
+        if not batch_paths:
+            return {
+                "ok": False,
+                "error": "path or paths required",
+                "hint": "Pass path='file.py' or paths=['a.py','b.py'].",
+            }
+
+        max_batch = int(tools_cfg.get("max_read_batch", 8))
+        max_batch = max(1, min(20, max_batch))
+        if len(batch_paths) > max_batch:
+            batch_paths = batch_paths[:max_batch]
+            batch_truncated = True
         else:
-            chunk_lines = lines
-        joined = "\n".join(chunk_lines)
-        truncated = False
-        if len(joined.encode("utf-8", errors="replace")) > max_bytes:
-            joined = joined.encode("utf-8", errors="replace")[:max_bytes].decode(
-                "utf-8", errors="replace"
-            )
-            truncated = True
-        # track tool use
+            batch_truncated = False
+
+        # Per-file budget shrinks in batch mode
+        per_budget = max_bytes
+        if per_budget is None and len(batch_paths) > 1:
+            base = int(tools_cfg.get("max_read_bytes", 65536))
+            per_budget = max(4096, base // len(batch_paths))
+
         sess = ctx.setdefault("session", {})
         sess.setdefault("tools_used", []).append("read_file")
-        result = {
-            "ok": True,
-            "path": normalize_relpath(path),
-            "content": joined,
-            "total_lines": total,
-            "truncated": truncated,
+
+        if len(batch_paths) == 1:
+            result = _read_one_file(
+                ctx,
+                batch_paths[0],
+                start_line=start_line,
+                end_line=end_line,
+                around_line=around_line,
+                radius=radius,
+                max_bytes=per_budget,
+            )
+            return attach_scope_warning(result, ctx)
+
+        files_out: list[dict[str, Any]] = []
+        any_ok = False
+        for bp in batch_paths:
+            one = _read_one_file(
+                ctx,
+                bp,
+                start_line=start_line,
+                end_line=end_line,
+                around_line=around_line,
+                radius=radius,
+                max_bytes=per_budget,
+            )
+            files_out.append(one)
+            if one.get("ok"):
+                any_ok = True
+        result: dict[str, Any] = {
+            "ok": any_ok,
+            "files": files_out,
+            "file_count": len(files_out),
+            "batch": True,
         }
+        if batch_truncated:
+            result["batch_truncated"] = True
+            result["max_read_batch"] = max_batch
+        if not any_ok:
+            result["error"] = "all paths failed"
         return attach_scope_warning(result, ctx)
     except Exception as e:
         return {"ok": False, "error": str(e)}

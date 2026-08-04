@@ -23,7 +23,7 @@
     <div class="header-actions">
       <a class="btn btn-ghost home-btn" href="/" title="Home">Home</a>
       <a class="btn btn-primary" href="/chat" title="AI Chat">AI</a>
-      <button class="btn" id="btn-settings" type="button">⚙ Settings</button>
+      <a class="btn" href="/settings" id="btn-settings" title="LLM &amp; validation settings">⚙ Settings</a>
       <span class="controls-hint mono">{{ runs_root }}</span>
     </div>
   </header>
@@ -40,18 +40,6 @@
     </div>
     <div id="operator-chat-root" class="operator-chat-root"></div>
   </main>
-
-  <!-- Settings modal reused from home/run via app.js patterns: minimal stub -->
-  <dialog id="settings-modal" class="modal">
-    <form method="dialog" class="modal-card settings-form" id="settings-form">
-      <header class="modal-head">
-        <h2>LLM settings</h2>
-        <button type="submit" class="btn btn-ghost" value="cancel">Close</button>
-      </header>
-      <p class="controls-hint">Open Settings from Home for the full editor, or use the run page Settings.</p>
-      <p><a class="btn" href="/">Back to Home → Settings</a></p>
-    </form>
-  </dialog>
 
   <script src="/static/chat.js"></script>
   <script>

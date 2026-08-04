@@ -16,6 +16,17 @@ Before filing a candidate you MUST state:
 - **boundary** — what trust boundary is crossed
 - **impact** — concrete damage
 
+**Impact formula (required shape):** one sentence  
+`attacker does X via Y → gets Z`  
+where Z is a real effect (data read/write, authz bypass, secret/PII exposure, code execution, money movement, durable DoS).  
+
+**Fail these impact lines** (mechanical validation and human review will):
+
+- Placeholders: `n/a`, `unknown`, `tbd`, `security risk`, `vulnerability`
+- Hedges: `could potentially…`, `might be vulnerable`, `could be bad`
+- Vacuous privilege: `if they have write access they can write…`
+- Vague system-speak without Z: `compromise the system` with no effect named
+
 ## Defense-in-depth gaps are not vulnerabilities
 
 If Layer A blocks the attack, missing Layer B is a hardening note, not a finding.
@@ -23,6 +34,17 @@ If Layer A blocks the attack, missing Layer B is a hardening note, not a finding
 ## Severity requires impact
 
 Likelihood × impact. Do not inflate from checklists (OWASP is not a bug list).
+
+| `severity_claim` | Use when |
+|------------------|----------|
+| **CRITICAL** | Unauth or low-priv → RCE, mass secret/PII theft, full tenant takeover |
+| **HIGH** | Clear authz bypass, sensitive data leak, or reliable high-impact exploit path |
+| **MEDIUM** | Real bug with limited blast radius, heavy preconditions, or partial impact |
+| **LOW** | Narrow, hard-to-reach, or low-damage but still a true security bug |
+| **INFORMATIONAL** | Hardening / defense-in-depth only if you must file — prefer `submit_none` |
+
+Cap at **MEDIUM or below** when many simultaneous preconditions, admin-only, test-only, or non-prod surfaces.  
+HIGH/CRITICAL without a concrete Z in `threat_model.impact` is overclaim — fix impact or lower severity.
 
 ## Exclusion gates (do not report)
 
@@ -56,14 +78,16 @@ Before `submit_candidate`, gate the claim. Fail any → drop or `submit_none`.
 | **CITED** | Real file:line (or path+symbol) citations you read. Source and sink when both exist; single-site issues may reuse one ref. No line-level proof of flow → do not emit. |
 
 **Severity sanity:** stack many "must already have X" preconditions, or non-prod-only impact → cap MEDIUM or below.  
-`severity_claim` (optional) is a rating only: `CRITICAL` | `HIGH` | `MEDIUM` | `LOW` | `INFORMATIONAL` — not free-text impact (use `threat_model.impact`).
+`severity_claim` (optional) is a rating only: `CRITICAL` | `HIGH` | `MEDIUM` | `LOW` | `INFORMATIONAL` — not free-text impact (use `threat_model.impact`).  
+Evidence pack should restate the exploit story (steps + expected Z), not only the title.
 
 ## Evidence rules (`evidence_id`)
 
 1. Before `submit_candidate`, call `write_evidence` at least once (e.g. `poc_notes.md` with attack steps and payload).  
 2. Put the returned **`evidence_id`** on the candidate.  
-3. Candidates without a session-written `evidence_id` are rejected by mechanical validation.  
-4. Target is **read-only** — never edit it to force a PoC.
+3. Optional: call **`preflight_candidate`** with the same fields to dry-run schema, citations, evidence, and near-dup hints before the terminal submit.  
+4. Candidates without a session-written `evidence_id` are rejected by mechanical validation.  
+5. Target is **read-only** — never edit it to force a PoC. Use `list_evidence` / `read_evidence` only for the pack.
 
 ## Anti-patterns
 
@@ -84,5 +108,6 @@ Before `submit_candidate`, gate the claim. Fail any → drop or `submit_none`.
 
 ## Tools
 
-Use only provided tools. Write artifacts only via `write_evidence`.  
+Use only provided tools. Write artifacts only via `write_evidence` (pack `list_evidence` / `read_evidence` to inspect).  
+Prefer `query_sinks` / `find_symbol` / `grep(context=…)` / `read_file(around_line=…)` over blind thrash.  
 Close every hunt with `submit_candidate` or `submit_none`.

@@ -27,8 +27,15 @@ def test_agent_tool_names_includes_builtins():
         "file_inventory",
         "read_file",
         "grep",
+        "find_symbol",
+        "query_sinks",
+        "query_codemap",
+        "get_architecture",
         "note",
         "write_evidence",
+        "list_evidence",
+        "read_evidence",
+        "preflight_candidate",
         "list_hunt_profiles",
         "request_hunt",
         "submit_architecture",
@@ -45,6 +52,15 @@ def test_file_inventory_aliases_resolve():
     assert get_agent_spec("dir_tree").name == "file_inventory"
 
 
+def test_new_tool_aliases_resolve():
+    assert resolve_canonical_name("search") == "grep"
+    assert resolve_canonical_name("cat") == "read_file"
+    assert resolve_canonical_name("find_def") == "find_symbol"
+    assert resolve_canonical_name("list_sinks") == "query_sinks"
+    assert resolve_canonical_name("get_codemap") == "query_codemap"
+    assert resolve_canonical_name("check_candidate") == "preflight_candidate"
+
+
 def test_critical_tools_for_stages():
     assert "submit_architecture" in critical_tools_for("recon")
     hunt = critical_tools_for("hunt")
@@ -52,7 +68,11 @@ def test_critical_tools_for_stages():
     assert "submit_none" in hunt
     assert "list_hunt_profiles" in hunt
     assert "request_hunt" in hunt
-    assert "write_evidence" in critical_tools_for("develop_poc")
+    assert "preflight_candidate" in hunt
+    poc = critical_tools_for("develop_poc")
+    assert "write_evidence" in poc
+    assert "list_evidence" in poc
+    assert "read_evidence" in poc
 
 
 def test_stage_schema_membership():
@@ -70,6 +90,9 @@ def test_stage_schema_membership():
     }
     assert "submit_candidate" in hunt_names
     assert "request_hunt" in hunt_names
+    assert "preflight_candidate" in hunt_names
+    assert "query_sinks" in hunt_names
+    assert "get_architecture" in hunt_names
     assert "submit_architecture" not in hunt_names
 
     poc_names = {
@@ -77,6 +100,8 @@ def test_stage_schema_membership():
         for t in openai_schemas_for_stage("develop_poc")
     }
     assert "write_evidence" in poc_names
+    assert "list_evidence" in poc_names
+    assert "read_evidence" in poc_names
     assert "submit_none" not in poc_names
 
 

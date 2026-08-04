@@ -89,13 +89,14 @@ LM Studio / the local server must accept concurrent chat completions for N>1 to 
 
 ```
 candidate → rejected_mech | needs_human
-needs_human → [optional validate_llm: rejected_llm | needs_human]
+needs_human → [validate_llm (default on): rejected_llm | needs_human]
 needs_human | rejected_* | confirmed  ↔  human review (confirm | reject | reopen)
 confirmed | rejected_human | rejected_mech | rejected_llm | superseded
 ```
 
 **`needs_human`** = mechanical gates passed (schema, citations, evidence or justified
-`no_poc`, non-vacuous threat model, cited files vs manifest). Not exploit proof.
+`no_poc`, non-vacuous threat model, cited files vs manifest), and dual disprove did
+not kill the claim when `stages.validate_llm` is on (default). Not exploit proof.
 
 **`confirmed`** = a human accepted the finding after review (optional notes/docs).
 Automation never auto-confirms.
@@ -103,7 +104,7 @@ Automation never auto-confirms.
 ## Pipeline
 
 ```
-init → recon → hunt × N → validate_mech → [optional validate_llm]
+init → recon → hunt × N → validate_mech → validate_llm (default on; set false to skip)
      → idle project projection
      → [optional tool_gaps on idle if run.auto_tool_gaps]
 ```

@@ -933,6 +933,122 @@
         (codes && codes[0]) || b.poc_relpath || "poc_develop.md";
       openPocEvidence(pack, rel);
     });
+    $("#poc-validate")?.addEventListener("click", () => {
+      if (pocFindingId != null) enqueueValidatePoc(pocFindingId);
+    });
+    $("#poc-export-job")?.addEventListener("click", () => {
+      if (pocFindingId != null) exportValidationJob(pocFindingId);
+    });
+  }
+
+  function renderPocReadiness(r) {
+    const el = $("#poc-readiness");
+    if (!el) return;
+    const ready = r && (r.harness_ready || r.readiness?.ready);
+    const readiness = (r && r.readiness) || {};
+    const issues = readiness.issues || [];
+    const warnings = readiness.warnings || [];
+    const latest = r && r.poc_validation_latest;
+    const parts = [];
+    if (ready) {
+      parts.push('<span class="badge ok">Harness ready</span>');
+    } else {
+      parts.push('<span class="badge warn">Not harness-ready</span>');
+    }
+    if (issues.length) {
+      parts.push(
+        `<span class="controls-hint">issues: ${esc(issues.join(", "))}</span>`
+      );
+    }
+    if (warnings.length) {
+      parts.push(
+        `<span class="controls-hint">warnings: ${esc(warnings.join(", "))}</span>`
+      );
+    }
+    if (latest && latest.verdict) {
+      parts.push(
+        `<span class="controls-hint">last run: <span class="mono">${esc(
+          String(latest.verdict)
+        )}</span></span>`
+      );
+    } else if (latest && latest.action === "enqueue_validate" && latest.task_id) {
+      parts.push(
+        `<span class="controls-hint">validate_poc queued #${esc(
+          String(latest.task_id)
+        )}</span>`
+      );
+    }
+    el.innerHTML = parts.join(" · ");
+  }
+
+  async function enqueueValidatePoc(fid) {
+    const tid = meta.target_id;
+    const rid = meta.run_id;
+    const api = typeof window.api === "function" ? window.api : null;
+    if (!tid || !rid || !api) {
+      toast("API unavailable", true);
+      return;
+    }
+    const notes = buildPocOperatorNotes();
+    setPocStatus("Queuing validate_poc harness…");
+    try {
+      const r = await api(
+        `/api/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}/findings/${encodeURIComponent(fid)}/validate-poc`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            operator: "operator",
+            operator_notes: notes,
+          }),
+        }
+      );
+      const msg = r.task_id
+        ? `Queued validate_poc #${r.task_id} — watch Tasks; Reload for poc_run.json`
+        : "validate_poc enqueued";
+      toast(msg);
+      setPocStatus(msg);
+      if (typeof window.loadRunFull === "function") {
+        await window.loadRunFull();
+        loadPocDraft(fid).catch(() => {});
+      }
+    } catch (e) {
+      setPocStatus(e.message || String(e), true);
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async function exportValidationJob(fid) {
+    const tid = meta.target_id;
+    const rid = meta.run_id;
+    const api = typeof window.api === "function" ? window.api : null;
+    if (!tid || !rid || !api) {
+      toast("API unavailable", true);
+      return;
+    }
+    setPocStatus("Exporting validation job…");
+    try {
+      const r = await api(
+        `/api/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}/findings/${encodeURIComponent(fid)}/export-validation-job`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ as_zip: true, include_citations: true }),
+        }
+      );
+      const ready = r.readiness?.ready ? "ready" : "not ready";
+      const msg = r.zip_path
+        ? `Exported zip (${ready}): ${r.zip_path}`
+        : `Exported dir (${ready}): ${r.out_dir || "?"}`;
+      toast(msg);
+      setPocStatus(msg);
+      if (r.readiness) {
+        renderPocReadiness({ readiness: r.readiness, harness_ready: r.readiness.ready });
+      }
+    } catch (e) {
+      setPocStatus(e.message || String(e), true);
+      toast(e.message || String(e), true);
+    }
   }
 
   function renderPocHistory(f) {
@@ -1063,6 +1179,7 @@
       if (f) fillPocWorkshopHeader(f, r);
       else renderPocArtifacts(r, null);
       const nCode = (r.poc_code_files || []).length;
+      renderPocReadiness(r);
       if (r.exists) {
         setPocStatus(
           nCode

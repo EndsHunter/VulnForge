@@ -12,6 +12,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Shared FS/grep backends (not one-tool-one-file) | `vulnforge/tools/fs_read.py`, `grep_index.py`, `evidence_write.py`, … |
 | Extra tools (toolgen integrate) | `vulnforge/tools/extra_registry.py` + optional `tools/extra/` |
 | Stage / task kind | `vulnforge/stages/<kind>.py` — behavior + modify guides: [`docs/harness/`](harness/) |
+| PoC handoff / harness | `vulnforge/poc_handoff.py`, `poc_runner.py`, stage `validate_poc` |
 | System prompt catalog (impact of edits) | [`docs/system/`](system/) |
 | Packet builders + prompt packing | `vulnforge/packet.py` (schemas live on tool SPECs; **`packets/` package split deferred**) |
 | System / stage markdown prompts | `seeds/system/` — see `paths.system_prompts_root()`; impact catalog: [`docs/system/`](system/) |
@@ -20,7 +21,8 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Recon agent **runtime** | `config/recon_agents/` |
 | Recon agent **seeds** | `seeds/recon_agents/` |
 | Config knobs (yaml) | `config/default.yaml` |
-| UI / runtime overrides | `config/ui_settings.json` (+ env `VF_*`) |
+| UI / runtime overrides | `config/ui_settings.json` (+ env `VF_*`) — edit via **`/settings`** page |
+| Stage / multi-model routing | `vulnforge/llm_models.py` + Settings `model_*` / `validate_models` |
 | Load path helpers | `vulnforge/paths.py` |
 | Config load | `vulnforge/settings/load.py` (`cli.load_config` is a shim) |
 | Operator chat tools (control plane) | `vulnforge/operator_chat/tools_*.py` — **not** agent tools |
@@ -37,6 +39,8 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Surface | Audience | Location |
 |---------|----------|----------|
 | **Agent tools** | Hunt/recon LLM during Ralph | `vulnforge/tools/agent/*` via `build_tool_handler` |
+| **Agent tool-loop runtime** | Hunt/recon/PoC/operator LLM↔tools | `vulnforge/agent_runtime/` (Strands Agents) |
+| **Recon multi-agent orchestrator** | How multi recon agents run | `llm.recon_orchestrator`: `ralph` \| `inprocess` \| `graph` |
 | **Operator chat tools** | Home / run AI co-pilot | `vulnforge/operator_chat/` — Confirm for mutators |
 
 Do not mix names: chat cannot call `grep`/`submit_candidate` as code tools; agent loop cannot call chat fleet tools.

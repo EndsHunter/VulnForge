@@ -32,7 +32,7 @@
       <button class="btn btn-warn" id="btn-pause" type="button" title="Pause after current task" hidden>Pause</button>
       <button class="btn btn-primary" id="btn-resume" type="button" title="Resume Ralph" hidden>Resume</button>
       <button class="btn" id="btn-refresh" type="button" title="Refresh snapshot">Refresh</button>
-      <button class="btn" id="btn-settings" type="button" title="LLM settings">Settings</button>
+      <a class="btn" href="/settings" id="btn-settings" title="LLM &amp; validation settings">Settings</a>
       <details class="danger-menu">
         <summary class="btn btn-ghost" title="More actions">··· More</summary>
         <div class="danger-menu-body">
@@ -519,6 +519,15 @@
                 <button type="button" class="btn" id="poc-reload">Reload from disk</button>
                 <button type="button" class="btn" id="poc-open-ev">Open pack in Evidence</button>
               </div>
+              <div class="report-poc-actions" style="margin-top:0.5rem">
+                <button type="button" class="btn" id="poc-validate" title="Queue validate_poc harness (controlled run; never confirms)">
+                  Run in harness
+                </button>
+                <button type="button" class="btn" id="poc-export-job" title="Export finding + pack as validation handoff zip">
+                  Export validation job
+                </button>
+              </div>
+              <p class="controls-hint" id="poc-readiness" style="margin:0.4rem 0 0"></p>
               <p class="controls-hint report-poc-status" id="poc-status" aria-live="polite"></p>
             </section>
 

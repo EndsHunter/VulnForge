@@ -8,7 +8,9 @@ from typing import Any
 from vulnforge.operator_chat.tools_common import (
     MUTATE_TOOLS,
     browse_target_impl,
+    enqueue_develop_poc_impl,
     enqueue_hunt_impl,
+    enqueue_validate_poc_impl,
     explain_product_impl,
     get_architecture_impl,
     get_codemap_impl,
@@ -173,6 +175,27 @@ def schemas() -> list[dict]:
             {"workers": {"type": "integer"}, "max_tasks": {"type": "integer"}},
         ),
         openai_tool("hard_stop_run", "Hard-stop Ralph (confirm).", {}),
+        openai_tool(
+            "enqueue_develop_poc",
+            "Queue develop_poc agent to write runnable PoC code (confirm).",
+            {
+                "finding_id": {"type": "integer"},
+                "notes": {"type": "string"},
+            },
+            ["finding_id"],
+        ),
+        openai_tool(
+            "enqueue_validate_poc",
+            "Queue validate_poc harness to run PoC under control (confirm; never auto-confirms).",
+            {
+                "finding_id": {"type": "integer"},
+                "notes": {"type": "string"},
+                "target_url": {"type": "string"},
+                "referee": {"type": "boolean"},
+                "command": {"type": "string"},
+            },
+            ["finding_id"],
+        ),
         openai_tool("explain_product", "Short product handbook.", {}),
     ]
 
@@ -237,6 +260,10 @@ def dispatch(
         return read_target_file_impl(run, args)
     if name in ("start_run", "pause_run", "resume_run", "hard_stop_run"):
         return runner_action(run, name, args)
+    if name == "enqueue_develop_poc":
+        return enqueue_develop_poc_impl(run, args)
+    if name == "enqueue_validate_poc":
+        return enqueue_validate_poc_impl(run, args)
     if name == "explain_product":
         return explain_product_impl(args)
     return {"ok": False, "error": f"unknown tool: {name}"}

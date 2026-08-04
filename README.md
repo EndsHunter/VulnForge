@@ -2,7 +2,7 @@
 
 Local, model-agnostic vulnerability discovery harness for LM Studio (or any OpenAI-compatible endpoint) and coding agents.
 
-It runs a durable audit loop: **recon → hunt → mechanical validation → human review**, with a research-cockpit dashboard for steering live campaigns.
+It runs a durable audit loop: **recon → hunt → mechanical validation → human review**, with a research-cockpit dashboard for steering live campaigns. LLM tool-use stages use the **[Strands Agents](https://strandsagents.com/)** runtime by default.
 
 | Label | Meaning |
 |-------|---------|
@@ -67,12 +67,12 @@ vf --help
 
 1. Open **`config/default.yaml`** and set:
    - `llm.base_url` — LM Studio (or proxy) base, usually `http://127.0.0.1:1234/v1`
-   - `llm.model` — **exact** id from `GET /v1/models` (Ornith is often `ornith-1.0-35b@4bit`, not a `models/…` path)
+   - `llm.model` — **exact** id from `GET /v1/models` (e.g. `ornith-1.0-35b`, not a `models/…` path)
    - `llm.api_mode` — `chat_completions` (LM Studio default), or `responses` / `messages` if needed
    - For AI tool generation: keep `llm.max_tokens` / `llm.toolgen_max_tokens` high (reasoning models burn tokens on chain-of-thought first)
 2. Start your local model server and load a model (recommended: **LM Studio + Ornith** on `:1234`).
 3. Dashboard **Settings → Optimize AI settings → Save** writes `config/ui_settings.json` (host/model/max_tokens) and overrides YAML.
-4. Env overrides: `VF_BASE_URL`, `VF_MODEL`, `VF_HOST`+`VF_PORT`.
+4. Env overrides: `VF_BASE_URL`, `VF_MODEL`, `VF_HOST`+`VF_PORT`, `VF_RECON_ORCHESTRATOR`.
 
 **Ornith notes:** Toolgen (Dev → Generate tool) is JSON text generation. Recon/hunt need reliable **tool_calls** — Optimize’s tool probe warns if the model ignores tools. The optional `./start_ornith_server.sh` mlx stack defaults to another host/port and a low server token cap; prefer LM Studio for VulnForge unless you reconfigure both sides (see `toolgen.md` → Local Ornith).
 

@@ -27,6 +27,11 @@ def test_ui_settings_merge(tmp_path: Path, monkeypatch):
             "max_concurrent_agents": 2,
             "context_tokens": 16384,
             "max_context_fraction": 0.2,
+            "model_hunt": "hunt-model",
+            "validate_models": ["m1", "m2", "m1"],
+            "validate_consensus": "all",
+            "validate_poc_referee": True,
+            "validate_llm": True,
         }
     )
     ui = load_ui_settings()
@@ -34,11 +39,21 @@ def test_ui_settings_merge(tmp_path: Path, monkeypatch):
     assert ui["port"] == 9999
     assert ui["api_mode"] == "responses"
     assert ui["api_key"] == "sk-test"
-    cfg = apply_ui_settings_to_cfg({"llm": {}, "run": {}}, ui)
+    assert ui["model_hunt"] == "hunt-model"
+    assert ui["validate_models"] == ["m1", "m2"]  # deduped
+    assert ui["validate_consensus"] == "all"
+    assert ui["validate_poc_referee"] is True
+    assert ui["validate_llm"] is True
+    cfg = apply_ui_settings_to_cfg({"llm": {}, "run": {}, "stages": {}}, ui)
     assert cfg["llm"]["base_url"] == "http://192.168.1.5:9999/v1"
     assert cfg["llm"]["model"] == "test-model"
     assert cfg["llm"]["api_mode"] == "responses"
     assert cfg["llm"]["api_key"] == "sk-test"
+    assert cfg["llm"]["model_hunt"] == "hunt-model"
+    assert cfg["llm"]["validate_models"] == ["m1", "m2"]
+    assert cfg["llm"]["validate_consensus"] == "all"
+    assert cfg["stages"]["validate_poc_referee"] is True
+    assert cfg["stages"]["validate_llm"] is True
     assert cfg["run"]["max_leases_parallel"] == 2
     assert cfg["llm"]["context_tokens"] == 16384
 

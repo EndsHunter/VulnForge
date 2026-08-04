@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from vulnforge.llm import InfraError, classify_llm_failure, make_client
+from vulnforge.agent_runtime import run_tool_loop as run_agent_tool_loop
+from vulnforge.llm import InfraError, classify_llm_failure
 from vulnforge.packet import pack_hunt, refuse_if_over_budget
 from vulnforge.tools import build_tool_handler
 from vulnforge.tools.queue_note import flush_notes_to_db
@@ -145,7 +146,9 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     except Exception as e:
         return {"status": "failed_task", "error": f"over_budget: {e}"}
 
-    client = make_client(cfg)
+    from vulnforge.llm_models import make_client_for_stage
+
+    client = make_client_for_stage(cfg, "hunt")
     try:
         try:
             model_id = client.fingerprint_model()
@@ -153,8 +156,13 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             return {"status": "failed_infra", "error": str(e)}
         max_rounds = int((cfg.get("llm") or {}).get("max_tool_rounds", 12))
         temp = float((cfg.get("llm") or {}).get("temperature_hunt", 0.4))
-        result = client.run_tool_loop(
-            packet, handler, max_rounds=max_rounds, temperature=temp
+        result = run_agent_tool_loop(
+            client,
+            packet,
+            handler,
+            max_rounds=max_rounds,
+            temperature=temp,
+            cfg=cfg,
         )
         hunt_class = str(payload.get("class") or "wildcard").strip() or "wildcard"
         usage_fields = record_llm_result(
@@ -209,6 +217,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     "files_created": files_created,
                     "temperature": temp,
                     "max_tool_rounds": max_rounds,
+                    "agent_runtime": "strands",
                 },
             )
         except OSError:

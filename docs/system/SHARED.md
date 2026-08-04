@@ -14,9 +14,9 @@
 
 | | |
 |--|--|
-| **What** | Core security-audit doctrine: report exploitable impact, threat model before claim, exclusion gates, severity discipline. |
+| **What** | Core security-audit doctrine: report exploitable impact (attacker does X → gets Z), threat model before claim, exclusion gates, severity table (CRITICAL…INFORMATIONAL). |
 | **Loaded by** | `packet.py` hunt packing (`load_prompt_slice(..., "PRINCIPLES.md")`). |
-| **Impact** | Dominant effect on **candidate volume and quality**: tighter exclusions → fewer FPs; looser → more noise. Does not change mech gates or human confirm rules. |
+| **Impact** | Dominant effect on **candidate volume and quality**: tighter exclusions → fewer FPs; looser → more noise. Severity/impact wording shapes what hunts submit; mech `check_non_vacuous` is a separate floor. Does not change human confirm rules. |
 | **Override** | `config/prompts/overrides/PRINCIPLES.md` |
 | **Do not break** | Honesty: theoretical-only risk should stay non-findings; do not instruct models to auto-confirm or write outside evidence. |
 

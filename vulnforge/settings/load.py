@@ -40,6 +40,13 @@ def load_config(path: Optional[Path] = None) -> dict[str, Any]:
         cfg.setdefault("llm", {})["base_url"] = (
             f"http://{os.environ['VF_HOST']}:{os.environ['VF_PORT']}/v1"
         )
+    if os.environ.get("VF_RECON_ORCHESTRATOR"):
+        cfg.setdefault("llm", {})["recon_orchestrator"] = os.environ[
+            "VF_RECON_ORCHESTRATOR"
+        ]
+    # Drop removed dual-runtime keys if present in older configs.
+    llm = cfg.setdefault("llm", {})
+    llm.pop("agent_runtime", None)
     cfg["_config_path"] = str(cfg_path.resolve())
     return cfg
 

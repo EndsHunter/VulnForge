@@ -8,7 +8,8 @@ You still follow the shared disprove contract. In this pass, **prioritize killin
 |-------|----------|
 | **Attacker** | Claimed capability (unauth / user / admin / supply-chain / physical) match the real path? Over-scoped? |
 | **Boundary** | Is a real trust boundary crossed (tenant, user, privilege, network, process)? Or only same-trust noise? |
-| **Impact** | Concrete damage (data, authz, code exec, money) — not “could be bad”, crash-only, or vacuous? |
+| **Impact** | Concrete damage (data, authz, code exec, money) — not “could be bad”, crash-only, or vacuous? Must name effect **Z**, not “security risk”. |
+| **Severity vs impact** | HIGH/CRITICAL only if Z matches; else treat as overclaim (kill or hold). Never raise severity. |
 | **Scope** | Test-only, dead code, admin-only, local CLI, client-only with server enforcement? |
 | **Preconditions** | Severity needs many simultaneous attacker-forced conditions? |
 

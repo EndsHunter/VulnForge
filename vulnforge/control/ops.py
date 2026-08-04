@@ -2064,7 +2064,7 @@ def review_finding(
 
     Flow (automation):
       candidate -> validate_mech -> rejected_mech | needs_human
-      [optional validate_llm may set rejected_llm or keep needs_human]
+      [validate_llm default on: may set rejected_llm or keep needs_human]
 
     Flow (human):
       needs_human | confirmed | rejected_* -> confirm | reject | needs_human
@@ -2279,6 +2279,14 @@ def build_poc_scaffold(
     )
     title = body.get("title") or finding.stable_key or f"Finding #{finding.id}"
     parts = [
+        "---",
+        "run: python poc.py",
+        "entry: poc.py",
+        "success_regex: ASSERT_OK",
+        "timeout_s: 60",
+        "network: allow",
+        "---",
+        "",
         f"# PoC development: {title}",
         "",
         f"- **finding_id:** {finding.id}",
@@ -2308,7 +2316,8 @@ def build_poc_scaffold(
         "## How to run",
         "",
         "_Deps, env vars, host/port/URL, and the exact command to run the script "
-        "(e.g. `python poc.py --url http://127.0.0.1:8000`)._",
+        "(e.g. `python poc.py --url http://127.0.0.1:8000`). "
+        "Keep frontmatter `run:` / `success_regex:` in sync for the harness._",
         "",
         "Optional manual steps:",
         "",
@@ -2323,16 +2332,19 @@ def build_poc_scaffold(
         "",
         "```python",
         "# TODO: runnable probe or exploit sketch",
+        "# print('ASSERT_OK') when the success signal is observed",
         "",
         "```",
         "",
         "## Expected signal",
         "",
-        "_What observable output proves the issue (status code, body marker, crash)?_",
+        "_What observable output proves the issue (status code, body marker, crash)? "
+        "Must be non-empty before harness-ready; align with frontmatter success_regex._",
         "",
         "## Residual risk / mitigations",
         "",
-        "_What would block or reduce exploitability? Note: agent did not execute this PoC._",
+        "_What would block or reduce exploitability? Note: develop_poc does not execute "
+        "this PoC; use validate_poc / Export validation job for controlled runs._",
         "",
         "---",
         "",
@@ -2380,6 +2392,21 @@ def get_finding_poc(run_dir: Path, finding_id: int) -> dict[str, Any]:
             )
         else:
             code_files = code_from_disk
+        from vulnforge.poc_handoff import assess_poc_readiness
+
+        pack_dir = run_dir / "evidence" / eid
+        readiness = assess_poc_readiness(
+            finding_body=body,
+            pack_dir=pack_dir if pack_dir.is_dir() else None,
+            hub_text=content if exists else content,
+            finding_state=str(finding.state or ""),
+        )
+        # Prefer disk code files + readiness list
+        if readiness.get("code_files"):
+            code_files = sorted(
+                set(code_files) | set(readiness.get("code_files") or [])
+            )
+        latest_val = body.get("poc_validation_latest")
         return {
             "ok": True,
             "finding_id": finding.id,
@@ -2392,6 +2419,9 @@ def get_finding_poc(run_dir: Path, finding_id: int) -> dict[str, Any]:
             "content": content,
             "pack_files": pack_files,
             "poc_code_files": code_files,
+            "readiness": readiness,
+            "harness_ready": bool(readiness.get("ready")),
+            "poc_validation_latest": latest_val if isinstance(latest_val, dict) else None,
         }
     finally:
         db.close()
@@ -2542,6 +2572,14 @@ def save_finding_poc(
             pass
 
         pack_after = _list_pack_files(run_dir, eid)
+        from vulnforge.poc_handoff import assess_poc_readiness
+
+        readiness = assess_poc_readiness(
+            finding_body=body,
+            pack_dir=pack_dir,
+            hub_text=text,
+            finding_state=str(prev_state or ""),
+        )
         return {
             "ok": True,
             "finding_id": finding.id,
@@ -2551,6 +2589,8 @@ def save_finding_poc(
             "pack_files": pack_after,
             "poc_code_files": _poc_code_files_from_names(pack_after),
             "task_id": task_id,
+            "readiness": readiness,
+            "harness_ready": bool(readiness.get("ready")),
             "finding": {
                 "id": finding.id,
                 "state": prev_state,
@@ -2559,6 +2599,141 @@ def save_finding_poc(
                 "body": body,
             },
         }
+    finally:
+        db.close()
+
+
+def enqueue_validate_poc(
+    run_dir: Path,
+    finding_id: int,
+    *,
+    operator: str = "operator",
+    operator_notes: str = "",
+    target_url: str = "",
+    referee: bool = False,
+    command: str = "",
+    priority: int = 28,
+) -> dict[str, Any]:
+    """Enqueue validate_poc harness task. Never auto-confirms."""
+    from vulnforge.util import utc_now_iso
+
+    db = _open_db(run_dir)
+    try:
+        finding = db.get_finding(int(finding_id))
+        if not finding:
+            return {"ok": False, "error": "finding_not_found"}
+        body = dict(finding.body or {})
+        eid = finding.evidence_id or body.get("evidence_id") or f"human-{finding.id}"
+        payload: dict[str, Any] = {
+            "finding_id": finding.id,
+            "evidence_id": str(eid),
+            "operator": operator or "operator",
+        }
+        notes = (operator_notes or "").strip()
+        if notes:
+            payload["operator_notes"] = notes[:4000]
+        if target_url:
+            payload["TARGET_URL"] = str(target_url).strip()
+        if referee:
+            payload["referee"] = True
+        if command:
+            payload["command"] = str(command).strip()
+        task_id = db.enqueue_task("validate_poc", payload, priority=int(priority))
+        now = utc_now_iso()
+        hist = body.get("poc_validation")
+        if not isinstance(hist, list):
+            hist = []
+        entry = {
+            "at": now,
+            "action": "enqueue_validate",
+            "operator": operator or "operator",
+            "task_id": task_id,
+        }
+        hist.append(entry)
+        body["poc_validation"] = hist[-50:]
+        body["poc_validation_latest"] = entry
+        db.conn.execute(
+            """
+            UPDATE findings SET body_json=?, updated_at=? WHERE id=?
+            """,
+            (json.dumps(body), now, finding.id),
+        )
+        db.conn.commit()
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "dashboard",
+                    "event": "poc_validate_enqueued",
+                    "finding_id": finding.id,
+                    "evidence_id": str(eid),
+                    "task_id": task_id,
+                },
+            )
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "finding_id": finding.id,
+            "state": finding.state,
+            "evidence_id": str(eid),
+            "task_id": task_id,
+            "kind": "validate_poc",
+        }
+    finally:
+        db.close()
+
+
+def export_validation_job_op(
+    run_dir: Path,
+    finding_id: int,
+    *,
+    out_dir: Optional[Path] = None,
+    as_zip: bool = True,
+    include_citations: bool = True,
+) -> dict[str, Any]:
+    """Export validation handoff bundle for one finding."""
+    from vulnforge.poc_handoff import export_validation_job
+
+    db = _open_db(run_dir)
+    try:
+        finding = db.get_finding(int(finding_id))
+        if not finding:
+            return {"ok": False, "error": "finding_not_found"}
+        run_row = db.get_run()
+        target_path = ""
+        run_id = ""
+        if run_row:
+            try:
+                target_path = run_row["target_path"] or ""
+                run_id = run_row["id"] or ""
+            except (KeyError, TypeError, IndexError):
+                pass
+        r = export_validation_job(
+            run_dir,
+            finding,
+            target_path=str(target_path),
+            run_id=str(run_id or Path(run_dir).name),
+            out_dir=out_dir,
+            as_zip=as_zip,
+            include_citations=include_citations,
+        )
+        if r.get("ok"):
+            try:
+                append_event(
+                    run_dir,
+                    {
+                        "source": "dashboard",
+                        "event": "validation_job_exported",
+                        "finding_id": int(finding_id),
+                        "out_dir": r.get("out_dir"),
+                        "zip_path": r.get("zip_path"),
+                        "harness_ready": (r.get("readiness") or {}).get("ready"),
+                    },
+                )
+            except OSError:
+                pass
+        return r
     finally:
         db.close()
 

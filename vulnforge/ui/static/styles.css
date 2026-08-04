@@ -936,7 +936,293 @@ button.cov-plan-action.is-current {
   padding-left: 0 !important;
 }
 
-/* Architecture summary (full-width, no explorer) */
+/* ── Architecture page (Mission → Architecture) ── */
+.arch-page {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+.arch-page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+}
+.arch-page-title {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--text);
+}
+.arch-page-sub {
+  margin: 0;
+  max-width: 46rem;
+  line-height: 1.45;
+}
+.arch-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+.arch-stats {
+  margin-bottom: 0;
+}
+.arch-stats .stat .value {
+  font-size: 1.25rem;
+}
+
+.arch-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 1fr);
+  gap: 0.85rem;
+  align-items: start;
+}
+@media (max-width: 960px) {
+  .arch-body { grid-template-columns: 1fr; }
+}
+.arch-main,
+.arch-side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.arch-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.75rem;
+  margin-bottom: 0.65rem;
+}
+.arch-section-head h3,
+.arch-section-head h2 {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.arch-section-count {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.12rem 0.5rem;
+}
+.arch-section-empty {
+  margin: 0;
+}
+
+.arch-summary-card {
+  width: 100%;
+}
+.arch-summary-text {
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0;
+}
+.arch-summary-text.md-prose {
+  white-space: normal;
+}
+.arch-summary-text.md-prose > :first-child {
+  margin-top: 0;
+}
+.arch-summary-text.md-prose > :last-child {
+  margin-bottom: 0;
+}
+
+/* Component cards */
+.arch-comp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.55rem;
+}
+.arch-comp-grid-compact {
+  grid-template-columns: 1fr;
+}
+.arch-comp-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  min-width: 0;
+}
+.arch-comp-name {
+  font-weight: 700;
+  font-size: 13.5px;
+  color: #f0f4fa;
+  line-height: 1.3;
+  word-break: break-word;
+}
+.arch-comp-role {
+  margin: 0.3rem 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* Structured list items */
+.arch-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 13px;
+  max-height: 280px;
+  overflow: auto;
+}
+.arch-list-plain {
+  list-style: none;
+  padding-left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.arch-item {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+  margin: 0;
+  min-width: 0;
+}
+.arch-item-empty {
+  background: transparent;
+  border-style: dashed;
+  padding: 0.55rem 0.65rem;
+}
+.arch-item-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+  word-break: break-word;
+}
+.arch-item-desc {
+  margin-top: 0.25rem;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+/* Chips (paths, stats, roots) */
+.arch-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+.arch-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: var(--text);
+  background: rgba(90, 160, 220, 0.1);
+  border: 1px solid rgba(90, 160, 220, 0.28);
+  border-radius: 6px;
+  padding: 0.18rem 0.45rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.arch-chip strong {
+  font-weight: 700;
+  color: #9ec4e8;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.arch-chip.mono {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.arch-chip-muted {
+  background: rgba(154, 138, 156, 0.1);
+  border-color: rgba(154, 138, 156, 0.28);
+  color: var(--muted);
+}
+
+/* Meta / revision grids */
+.arch-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+@media (max-width: 700px) {
+  .arch-meta-grid { grid-template-columns: 1fr; }
+}
+.arch-meta-block {
+  min-width: 0;
+}
+.arch-meta-block .arch-list {
+  max-height: 200px;
+}
+
+/* History, edit, refine */
+.arch-history-panel,
+.arch-edit-panel,
+.arch-refine,
+.codemap-card,
+.arch-raw-card {
+  width: 100%;
+}
+.arch-history-list {
+  margin-top: 0.5rem;
+}
+.arch-rev-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.arch-rev-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  padding: 0.55rem 0.65rem;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.arch-rev-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.55rem;
+  min-width: 0;
+  flex: 1;
+}
+.arch-rev-note {
+  flex-basis: 100%;
+  opacity: 0.9;
+}
+.arch-rev-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
 .arch-rev-link {
   color: var(--link, var(--accent, #6af));
   text-decoration: underline;
@@ -950,34 +1236,105 @@ button.cov-plan-action.is-current {
 .arch-history-detail {
   max-height: min(70vh, 720px);
   overflow: auto;
+  margin-top: 0.75rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
 }
-.arch-summary-card {
-  width: 100%;
+.arch-rev-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
 }
-.arch-summary-text {
-  font-size: 14px;
-  line-height: 1.55;
-  margin: 0 0 1rem;
-}
-.arch-summary-text.md-prose {
-  white-space: normal;
-}
-.arch-meta-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.85rem;
-}
-@media (max-width: 900px) {
-  .arch-meta-grid { grid-template-columns: 1fr; }
-}
-.arch-list {
+.arch-rev-detail-title {
   margin: 0;
-  padding-left: 1.1rem;
-  font-size: 13px;
-  max-height: 160px;
-  overflow: auto;
+  flex: 1;
+  min-width: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
 }
-.arch-raw { margin-top: 0.75rem; }
+.arch-edit-panel .field,
+.arch-refine .field {
+  margin-top: 0.55rem;
+}
+.arch-edit-panel .field:first-of-type,
+.arch-refine .field:first-of-type {
+  margin-top: 0.35rem;
+}
+.arch-edit-panel input.op-notes {
+  width: 100%;
+  box-sizing: border-box;
+}
+.arch-toolbar-actions {
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+}
+
+/* Raw JSON / details */
+.arch-raw,
+.arch-raw-card {
+  margin-top: 0;
+}
+.arch-raw > summary,
+.arch-raw-card > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0.15rem 0;
+  user-select: none;
+}
+.arch-raw > summary:hover,
+.arch-raw-card > summary:hover {
+  color: var(--text);
+}
+.arch-raw > summary + *,
+.arch-raw-card > summary + * {
+  margin-top: 0.55rem;
+}
+.arch-raw-card {
+  padding: 0.85rem 1rem;
+}
+
+/* Codemap on architecture page */
+.codemap-card .arch-section-head {
+  align-items: flex-start;
+}
+.codemap-empty {
+  padding: 0.5rem 0 0.15rem;
+}
+.codemap-empty p {
+  margin: 0 0 0.35rem;
+}
+.codemap-meta-block {
+  margin-top: 0.65rem;
+}
+.codemap-meta-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+.codemap-ann-hint {
+  margin: 0.55rem 0 0;
+}
+.codemap-card .arch-raw {
+  margin-top: 0.75rem;
+}
+.codemap-card .arch-list {
+  max-height: 320px;
+  margin-top: 0.45rem;
+}
 
 /* Operator re-run panel (base colors from shared form controls above) */
 .operator-rerun-card .op-notes,
@@ -2634,6 +2991,58 @@ tr.task-row .task-actions-cell .btn {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--accent);
+}
+
+/* Dedicated /settings page */
+.settings-page-form {
+  max-width: 1100px;
+}
+.settings-page-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+@media (min-width: 960px) {
+  .settings-page-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .settings-page-grid .settings-card:first-child {
+    grid-column: 1 / -1;
+  }
+}
+.settings-card h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+}
+.settings-card .field {
+  margin-bottom: 0.65rem;
+}
+.settings-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0.4rem 0;
+  color: var(--text);
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+.settings-check input {
+  margin-top: 0.2rem;
+}
+.settings-actions-card {
+  margin-top: 1rem;
+  max-width: 1100px;
+}
+#set-validate-models {
+  width: 100%;
+  min-height: 5.5rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
 }
 
 /*  -  -  Tabs  -  -  */

@@ -40,7 +40,7 @@ Follow `seeds/system/PRINCIPLES.md` for the full exploitability bar, threat mode
 - **`needs_human`** = passed **mechanical gates** (shape, citations, evidence pack or justified `no_poc`, threat model non-vacuous, manifest check). **Not** exploit proof.
 - **`confirmed`** = a **human** accepted the finding after review. Automation never auto-confirms. Still **not** exploit proof.
 - **`rejected_mech`** = failed mechanical gates.
-- Optional `validate_llm` (default off) may demote to `rejected_llm` only — weak same-model signal, never auto-confirm.
+- `validate_llm` (default on) may demote to `rejected_llm` only — weak same-model signal, never auto-confirm. Opt out with `stages.validate_llm: false` for speed/debug.
 - Prefer honest `submit_none` over inventing findings.
 
 ## Rules quick reference
@@ -70,7 +70,7 @@ Follow `seeds/system/PRINCIPLES.md` for the full exploitability bar, threat mode
 |------|---------|
 | needs_human | Mechanical pass only — not exploit proof |
 | confirmed | Human accept only — automation never auto-confirms |
-| validate_llm | Optional demote only; never auto-confirm |
+| validate_llm | Default-on demote only; never auto-confirm; set false to skip |
 | submit_none | Required honesty when nothing solid after real work |
 
 ## Decision tree (which surface to use)

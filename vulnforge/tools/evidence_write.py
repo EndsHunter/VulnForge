@@ -113,11 +113,25 @@ def assert_evidence_disjoint_from_target(ctx: dict) -> None:
         pass
 
 
+def _resolve_pack_id(ctx: dict, evidence_id: str | None = None) -> str:
+    """Prefer explicit id, then session / default pack id."""
+    if evidence_id is not None and str(evidence_id).strip():
+        return sanitize_evidence_id(str(evidence_id).strip())
+    default = (
+        ctx.get("default_evidence_id")
+        or (ctx.get("session") or {}).get("evidence_id")
+        or str(ctx.get("task_id") or "default")
+    )
+    return sanitize_evidence_id(str(default))
+
+
 def write_evidence(
     ctx: dict,
     relpath: str,
     content: str,
     evidence_id: str | None = None,
+    *,
+    append: bool = False,
 ) -> dict[str, Any]:
     try:
         assert_evidence_disjoint_from_target(ctx)
@@ -125,7 +139,27 @@ def write_evidence(
         if not rel or rel.startswith("..") or ".." in Path(rel).parts:
             return {"ok": False, "error": "invalid relpath"}
         max_b = int((ctx.get("cfg") or {}).get("tools", {}).get("max_evidence_bytes", 1048576))
-        data = content.encode("utf-8")
+        root = Path(ctx["evidence_root"]).resolve()
+        d = evidence_dir(ctx, evidence_id)
+        if not _under_root(root, d):
+            return {"ok": False, "error": "evidence_id escapes evidence_root"}
+        dest = (d / rel).resolve()
+        if not _under_root(d, dest):
+            return {"ok": False, "error": "path escape"}
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        new_bytes = content.encode("utf-8")
+        if append and dest.is_file():
+            try:
+                existing = dest.read_bytes()
+            except OSError as e:
+                return {"ok": False, "error": f"cannot read existing for append: {e}"}
+            data = existing + new_bytes
+            mode = "append"
+        else:
+            data = new_bytes
+            mode = "write"
+
         if len(data) > max_b:
             return {"ok": False, "error": f"evidence too large ({len(data)} > {max_b})"}
         if len(data) < MIN_EVIDENCE_FILE_BYTES:
@@ -136,14 +170,6 @@ def write_evidence(
                     "write a non-vacuous PoC note"
                 ),
             }
-        root = Path(ctx["evidence_root"]).resolve()
-        d = evidence_dir(ctx, evidence_id)
-        if not _under_root(root, d):
-            return {"ok": False, "error": "evidence_id escapes evidence_root"}
-        dest = (d / rel).resolve()
-        if not _under_root(d, dest):
-            return {"ok": False, "error": "path escape"}
-        dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_suffix(dest.suffix + ".tmp")
         tmp.write_bytes(data)
         tmp.replace(dest)
@@ -155,11 +181,141 @@ def write_evidence(
         if d.name not in written:
             written.append(d.name)
         sess.setdefault("tools_used", []).append("write_evidence")
-        return {"ok": True, "path": rel, "evidence_id": d.name}
+        return {
+            "ok": True,
+            "path": rel,
+            "evidence_id": d.name,
+            "mode": mode,
+            "bytes": len(data),
+        }
     except InvalidEvidenceId as e:
         return {"ok": False, "error": f"invalid evidence_id: {e}"}
     except ValueError as e:
         # Disjoint-root guard and other validation
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def list_evidence(
+    ctx: dict,
+    evidence_id: str | None = None,
+    *,
+    max_entries: int | None = None,
+) -> dict[str, Any]:
+    """List files under this task's evidence pack (not the audit target)."""
+    try:
+        assert_evidence_disjoint_from_target(ctx)
+        root = Path(ctx["evidence_root"]).resolve()
+        eid = _resolve_pack_id(ctx, evidence_id)
+        d = (root / eid).resolve()
+        if not _under_root(root, d) or d == root or len(d.relative_to(root).parts) != 1:
+            return {"ok": False, "error": "invalid evidence_id"}
+        if not d.is_dir():
+            return {
+                "ok": True,
+                "evidence_id": eid,
+                "files": [],
+                "file_count": 0,
+                "hint": "Pack does not exist yet — write_evidence creates it.",
+            }
+        cap = max_entries or int(
+            (ctx.get("cfg") or {}).get("tools", {}).get("max_list_entries", 200)
+        )
+        cap = max(1, int(cap))
+        files: list[dict[str, Any]] = []
+        truncated = False
+        for p in sorted(d.rglob("*")):
+            if not p.is_file():
+                continue
+            if p.name.endswith(".tmp"):
+                continue
+            try:
+                rel = normalize_relpath(str(p.relative_to(d)))
+                size = p.stat().st_size
+            except (ValueError, OSError):
+                continue
+            files.append({"path": rel, "bytes": size})
+            if len(files) >= cap:
+                truncated = True
+                break
+        sess = ctx.setdefault("session", {})
+        sess.setdefault("tools_used", []).append("list_evidence")
+        return {
+            "ok": True,
+            "evidence_id": eid,
+            "files": files,
+            "file_count": len(files),
+            "truncated": truncated,
+        }
+    except InvalidEvidenceId as e:
+        return {"ok": False, "error": f"invalid evidence_id: {e}"}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def read_evidence(
+    ctx: dict,
+    relpath: str,
+    evidence_id: str | None = None,
+    *,
+    max_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Read a file from the evidence pack only (never the audit target)."""
+    try:
+        assert_evidence_disjoint_from_target(ctx)
+        rel = normalize_relpath(relpath)
+        if not rel or rel.startswith("..") or ".." in Path(rel).parts:
+            return {"ok": False, "error": "invalid relpath"}
+        root = Path(ctx["evidence_root"]).resolve()
+        eid = _resolve_pack_id(ctx, evidence_id)
+        d = (root / eid).resolve()
+        if not _under_root(root, d) or d == root or len(d.relative_to(root).parts) != 1:
+            return {"ok": False, "error": "invalid evidence_id"}
+        if not d.is_dir():
+            return {
+                "ok": False,
+                "error": "pack not found",
+                "evidence_id": eid,
+                "hint": "write_evidence first, or list_evidence to see packs.",
+            }
+        dest = (d / rel).resolve()
+        if not _under_root(d, dest):
+            return {"ok": False, "error": "path escape"}
+        if not dest.is_file():
+            return {
+                "ok": False,
+                "error": "file not found",
+                "path": rel,
+                "evidence_id": eid,
+                "hint": "Use list_evidence to see pack files.",
+            }
+        budget = int(
+            max_bytes
+            if max_bytes is not None
+            else (ctx.get("cfg") or {}).get("tools", {}).get("max_read_bytes", 65536)
+        )
+        budget = max(1024, min(budget, 262144))
+        data = dest.read_bytes()
+        truncated = len(data) > budget
+        if truncated:
+            data = data[:budget]
+        text = data.decode("utf-8", errors="replace")
+        sess = ctx.setdefault("session", {})
+        sess.setdefault("tools_used", []).append("read_evidence")
+        return {
+            "ok": True,
+            "path": rel,
+            "evidence_id": eid,
+            "content": text,
+            "bytes": dest.stat().st_size,
+            "truncated": truncated,
+        }
+    except InvalidEvidenceId as e:
+        return {"ok": False, "error": f"invalid evidence_id: {e}"}
+    except ValueError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
         return {"ok": False, "error": str(e)}

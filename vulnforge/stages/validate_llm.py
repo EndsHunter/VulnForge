@@ -1,21 +1,22 @@
 """
-Stage: validate_llm (OPTIONAL — default off)
+Stage: validate_llm (default ON via stages.validate_llm)
 
 Adversarial dual-disprove pass after validate_mech when stages.validate_llm is true.
 
 Two sequential LLM verifiers (threat-model + code/mitigation perspectives) each
 try to kill the finding. Can only demote/reject. Never create findings. Never
-raise severity. Never auto-confirm.
+raise severity. Never auto-confirm. Same-model dual disprove is weak signal.
 
 Aggregation:
   - both reject → rejected_llm
   - any stand / needs_human / parse fail → needs_human
   - stood = count of VERDICT=stand; Report shows stood/total llm verified
 
-When the flag is **off**, a leased validate_llm task (e.g. enqueued while the
-flag was on, then config flipped) treats mech as terminal for automation:
-promote still-open findings that already passed validate_mech to
-``needs_human`` (never auto-``confirmed`` — that is a human decision).
+When the flag is **off** (opt out for speed/debug), a leased validate_llm task
+(e.g. enqueued while the flag was on, then config flipped) treats mech as
+terminal for automation: promote still-open findings that already passed
+validate_mech to ``needs_human`` (never auto-``confirmed`` — that is a human
+decision).
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from vulnforge.llm import InfraError, classify_llm_failure, make_client, messages_from_packet
+from vulnforge.llm import InfraError, classify_llm_failure, messages_from_packet
 from vulnforge.packet import pack_disprove
 from vulnforge.transcript import save_transcript
 from vulnforge.usage import record_llm_result
@@ -212,150 +213,206 @@ def _run_disprove(
     body = dict(finding.body or {})
     verifiers = resolve_disprove_verifiers(cfg)
 
-    client = make_client(cfg)
-    model_id: str | None = None
-    verifier_results: list[dict[str, Any]] = []
-    try:
-        try:
-            model_id = client.fingerprint_model()
-        except InfraError as e:
-            return {
-                "status": "failed_infra",
-                "error": str(e),
-                "finding_id": fid,
-            }
+    from vulnforge.llm_models import (
+        make_client_for_model,
+        multi_model_disprove_meta,
+        resolve_validate_consensus,
+        resolve_validate_models,
+    )
 
+    validate_models = resolve_validate_models(cfg)
+    if not validate_models:
+        validate_models = [str((cfg.get("llm") or {}).get("model") or "")]
+    consensus_mode = resolve_validate_consensus(cfg)
+    model_id: str | None = validate_models[0] if validate_models else None
+    verifier_results: list[dict[str, Any]] = []
+    open_clients: list[Any] = []
+    try:
         temp = float((cfg.get("llm") or {}).get("temperature_disprove", 0.2))
 
-        for slot in verifiers:
-            slot_id = str(slot.get("id") or "verifier")
-            perspective = str(slot.get("prompt") or "")
-            # Future: per-slot model override recorded when present
-            slot_model = slot.get("model")
-            recorded_model = str(slot_model) if slot_model else model_id
-
+        # Multi-model × dual perspectives: independent arguments; all must reject
+        # to auto-reject_llm (low false-positive automation).
+        for mid in validate_models:
+            client = make_client_for_model(cfg, mid or None)
+            open_clients.append(client)
             try:
-                packet = pack_disprove(
-                    cfg,
-                    prompts_root,
-                    body,
-                    slices,
-                    perspective=perspective or None,
-                    verifier_id=slot_id,
-                )
-            except FileNotFoundError as e:
-                verifier_results.append(
-                    {
-                        "id": slot_id,
-                        "prompt": perspective,
-                        "verdict": "needs_human",
-                        "parse_reason": "missing_prompts",
-                        "model_id": recorded_model,
-                        "reasoning": "",
-                        "at": utc_now_iso(),
-                        "error": str(e),
-                    }
-                )
-                continue
+                resolved = client.fingerprint_model()
+            except InfraError as e:
+                if verifier_results:
+                    _stamp_partial_llm(
+                        db,
+                        fid,
+                        verifier_results,
+                        error=str(e),
+                    )
+                return {
+                    "status": "failed_infra",
+                    "error": str(e),
+                    "finding_id": fid,
+                    "model_id": mid,
+                }
+            model_id = resolved
 
-            messages = messages_from_packet(packet)
-            result = client.chat(messages, tools=None, temperature=temp)
-            if result.usage is None or result.usage.source == "none":
-                from vulnforge.llm import estimate_usage_from_messages
+            for slot in verifiers:
+                slot_id = str(slot.get("id") or "verifier")
+                perspective = str(slot.get("prompt") or "")
+                # Per-verifier model override wins over validate_models entry
+                slot_model = slot.get("model")
+                recorded_model = str(slot_model) if slot_model else resolved
+                active_client = client
+                if slot_model and str(slot_model) != mid:
+                    active_client = make_client_for_model(cfg, str(slot_model))
+                    open_clients.append(active_client)
+                    try:
+                        recorded_model = active_client.fingerprint_model()
+                    except InfraError as e:
+                        if verifier_results:
+                            _stamp_partial_llm(
+                                db, fid, verifier_results, error=str(e)
+                            )
+                        return {
+                            "status": "failed_infra",
+                            "error": str(e),
+                            "finding_id": fid,
+                            "model_id": str(slot_model),
+                            "verifier_id": slot_id,
+                        }
 
-                result.usage = estimate_usage_from_messages(
-                    messages, result.content, result.tool_calls
+                # Unique id when multiple models share perspective ids
+                result_id = (
+                    f"{slot_id}@{recorded_model}"
+                    if len(validate_models) > 1
+                    else slot_id
                 )
-            usage_fields = record_llm_result(
-                run_dir,
-                task_id=getattr(task, "id", 0) or 0,
-                kind="validate_llm",
-                model_id=recorded_model,
-                result=result,
-            )
-            try:
-                save_transcript(
+
+                try:
+                    packet = pack_disprove(
+                        cfg,
+                        prompts_root,
+                        body,
+                        slices,
+                        perspective=perspective or None,
+                        verifier_id=result_id,
+                    )
+                except FileNotFoundError as e:
+                    verifier_results.append(
+                        {
+                            "id": result_id,
+                            "prompt": perspective,
+                            "verdict": "needs_human",
+                            "parse_reason": "missing_prompts",
+                            "model_id": recorded_model,
+                            "reasoning": "",
+                            "at": utc_now_iso(),
+                            "error": str(e),
+                        }
+                    )
+                    continue
+
+                messages = messages_from_packet(packet)
+                result = active_client.chat(
+                    messages, tools=None, temperature=temp
+                )
+                if result.usage is None or result.usage.source == "none":
+                    from vulnforge.llm import estimate_usage_from_messages
+
+                    result.usage = estimate_usage_from_messages(
+                        messages, result.content, result.tool_calls
+                    )
+                usage_fields = record_llm_result(
                     run_dir,
-                    getattr(task, "id", 0) or 0,
+                    task_id=getattr(task, "id", 0) or 0,
                     kind="validate_llm",
                     model_id=recorded_model,
-                    messages=list(result.transcript or messages)
-                    + (
-                        [{"role": "assistant", "content": result.content or ""}]
-                        if result.content
-                        else []
-                    ),
-                    result={
-                        "ok": result.ok,
-                        "classification": result.classification.value,
-                        "error": result.error,
-                        "content": result.content,
-                        **usage_fields,
-                    },
-                    meta={
-                        "finding_id": fid,
-                        "stage": "disprove",
-                        "verifier_id": slot_id,
-                        "perspective": perspective,
-                    },
-                    pass_key=f"disprove-{slot_id}",
+                    result=result,
                 )
-            except OSError:
-                pass
+                try:
+                    save_transcript(
+                        run_dir,
+                        getattr(task, "id", 0) or 0,
+                        kind="validate_llm",
+                        model_id=recorded_model,
+                        messages=list(result.transcript or messages)
+                        + (
+                            [{"role": "assistant", "content": result.content or ""}]
+                            if result.content
+                            else []
+                        ),
+                        result={
+                            "ok": result.ok,
+                            "classification": result.classification.value,
+                            "error": result.error,
+                            "content": result.content,
+                            **usage_fields,
+                        },
+                        meta={
+                            "finding_id": fid,
+                            "stage": "disprove",
+                            "verifier_id": result_id,
+                            "perspective": perspective,
+                            "model_id": recorded_model,
+                        },
+                        pass_key=f"disprove-{result_id}",
+                    )
+                except OSError:
+                    pass
 
-            if not result.ok:
-                status = classify_llm_failure(result)
-                if status == "failed_infra":
-                    # Do not finalize reject on partial dual pass; retry whole task.
-                    if verifier_results:
-                        _stamp_partial_llm(
-                            db,
-                            fid,
-                            verifier_results,
-                            error=result.error or result.classification.value,
-                        )
-                    return {
-                        "status": "failed_infra",
-                        "error": result.error or result.classification.value,
-                        "finding_id": fid,
-                        "model_id": recorded_model,
-                        "verifier_id": slot_id,
-                        "partial_verifiers": len(verifier_results),
-                        **usage_fields,
-                    }
-                # Model thrash / empty → slot needs_human; continue other slots
+                if not result.ok:
+                    status = classify_llm_failure(result)
+                    if status == "failed_infra":
+                        if verifier_results:
+                            _stamp_partial_llm(
+                                db,
+                                fid,
+                                verifier_results,
+                                error=result.error
+                                or result.classification.value,
+                            )
+                        return {
+                            "status": "failed_infra",
+                            "error": result.error
+                            or result.classification.value,
+                            "finding_id": fid,
+                            "model_id": recorded_model,
+                            "verifier_id": result_id,
+                            "partial_verifiers": len(verifier_results),
+                            **usage_fields,
+                        }
+                    verifier_results.append(
+                        {
+                            "id": result_id,
+                            "prompt": perspective,
+                            "verdict": "needs_human",
+                            "parse_reason": result.error
+                            or result.classification.value,
+                            "model_id": recorded_model,
+                            "reasoning": (result.content or "")[:8000],
+                            "at": utc_now_iso(),
+                            "llm_failed": True,
+                        }
+                    )
+                    continue
+
+                parsed = parse_disprove_verdict(result.content or "")
+                v = parsed["verdict"]
+                reasoning = (result.content or "").strip()
+                if len(reasoning) > 8000:
+                    reasoning = reasoning[:8000] + "\n…[truncated]"
                 verifier_results.append(
                     {
-                        "id": slot_id,
+                        "id": result_id,
                         "prompt": perspective,
-                        "verdict": "needs_human",
-                        "parse_reason": result.error
-                        or result.classification.value,
+                        "verdict": v,
+                        "parse_reason": parsed.get("reason") or "ok",
                         "model_id": recorded_model,
-                        "reasoning": (result.content or "")[:8000],
+                        "reasoning": reasoning,
                         "at": utc_now_iso(),
-                        "llm_failed": True,
                     }
                 )
-                continue
 
-            parsed = parse_disprove_verdict(result.content or "")
-            v = parsed["verdict"]
-            reasoning = (result.content or "").strip()
-            if len(reasoning) > 8000:
-                reasoning = reasoning[:8000] + "\n…[truncated]"
-            verifier_results.append(
-                {
-                    "id": slot_id,
-                    "prompt": perspective,
-                    "verdict": v,
-                    "parse_reason": parsed.get("reason") or "ok",
-                    "model_id": recorded_model,
-                    "reasoning": reasoning,
-                    "at": utc_now_iso(),
-                }
-            )
-
+        multi = multi_model_disprove_meta(
+            verifier_results, mode=consensus_mode
+        )
         return _apply_dual_verdict(
             task,
             db,
@@ -363,12 +420,14 @@ def _run_disprove(
             fid,
             verifier_results=verifier_results,
             model_id=model_id,
+            multi_model=multi,
         )
     finally:
-        try:
-            client.close()
-        except Exception:
-            pass
+        for c in open_clients:
+            try:
+                c.close()
+            except Exception:
+                pass
 
 
 def _stamp_partial_llm(
@@ -415,11 +474,12 @@ def _apply_dual_verdict(
     verifier_results: list[dict[str, Any]],
     model_id: str | None,
     extra: dict[str, Any] | None = None,
+    multi_model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Map dual disprove results -> finding state.
 
-    Both reject -> rejected_llm
+    All slots reject -> rejected_llm
     Else -> needs_human (never auto-confirm; human is the gate)
     """
     finding = db.get_finding(fid)
@@ -489,10 +549,15 @@ def _apply_dual_verdict(
         "verifiers": verifier_results,
         "at": utc_now_iso(),
         "residual_risk": (
-            "Same-model dual disprove is still weak signal; "
-            "human is the confirm gate."
+            "Multi-model / dual-perspective disprove can only auto-reject when "
+            "all slots reject. Agreement that a finding stands is not exploit "
+            "proof — human is the confirm gate."
         ),
     }
+    if multi_model:
+        llm_meta["multi_model"] = multi_model
+        if multi_model.get("multi_model_label"):
+            llm_meta["multi_model_label"] = multi_model["multi_model_label"]
     if extra:
         safe_extra = {k: extra[k] for k in extra if k != "parse"}
         llm_meta.update(safe_extra)

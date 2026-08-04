@@ -22,7 +22,7 @@
     </div>
     <div class="header-actions">
       <a class="btn btn-primary home-btn" href="/" title="Home">⌂ Home</a>
-      <button class="btn" id="btn-settings" type="button">⚙ Settings</button>
+      <a class="btn" href="/settings" id="btn-settings" title="LLM &amp; validation settings">⚙ Settings</a>
       <span class="controls-hint mono">{{ runs_root }}</span>
       <button class="btn btn-primary" id="btn-new-run" type="button">+ New audit</button>
     </div>
@@ -442,7 +442,7 @@
                     </span>
                   </button>
                 </label>
-                <input id="set-model" required placeholder="ornith-1.0-35b@4bit" />
+                <input id="set-model" required placeholder="ornith-1.0-35b" />
               </div>
               <div class="field" style="grid-column:1/-1">
                 <label class="field-label" for="set-api-mode">

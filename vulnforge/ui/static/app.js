@@ -3267,33 +3267,23 @@ function closeTranscript() {
 window.openStepIO = openStepIO;
 window.openTranscript = openTranscript;
 
+/** Navigate to the dedicated Settings page (modal kept only as legacy fallback). */
 async function openSettings() {
+  // Prefer full settings page — multi-model + stage routing no longer fit a modal.
+  if (document.body?.dataset?.page !== "settings") {
+    window.location.href = "/settings";
+    return;
+  }
+  // On /settings, page script owns the form.
+  if (window.VFSettingsPage?.loadSettings) {
+    return window.VFSettingsPage.loadSettings();
+  }
   try {
     const data = await api("/api/settings");
     const s = data.settings || {};
-    $("#set-host").value = s.host || "";
-    $("#set-port").value = s.port || 1234;
-    $("#set-model").value = s.model || "";
-    const apiModeEl = $("#set-api-mode");
-    if (apiModeEl) {
-      const mode = s.api_mode || "chat_completions";
-      apiModeEl.value = mode;
-      if (apiModeEl.value !== mode) apiModeEl.value = "chat_completions";
-    }
-    const apiKeyEl = $("#set-api-key");
-    if (apiKeyEl) apiKeyEl.value = s.api_key || "";
-    $("#set-workers").value = s.max_concurrent_agents || 1;
-    $("#set-ctx").value = s.context_tokens || 32768;
-    $("#set-frac").value = s.max_context_fraction ?? 0.25;
-    $("#set-maxtok").value = s.max_tokens || 4096;
-    $("#set-rounds").value = s.max_tool_rounds || 12;
-    $("#set-timeout").value = s.timeout_seconds || 600;
-    $("#set-maxtasks").value = s.max_tasks || 50;
-    const eff = data.effective || {};
-    const dash = "-";
-    const keyNote = eff.api_key_set ? "api key set" : "no api key";
-    $("#settings-effective").textContent =
-      `Effective: ${eff.base_url || dash} | model ${eff.model || dash} | api ${eff.api_mode || "chat_completions"} | ${keyNote} | concurrent agents ${eff.max_leases_parallel || 1} | ctx ${eff.context_tokens || dash} × ${eff.max_context_fraction ?? dash}`;
+    if ($("#set-host")) $("#set-host").value = s.host || "";
+    if ($("#set-port")) $("#set-port").value = s.port || 1234;
+    if ($("#set-model")) $("#set-model").value = s.model || "";
     $("#settings-modal")?.classList.add("open");
   } catch (e) {
     toast(e.message, true);
@@ -3644,11 +3634,135 @@ function inlineMd(s) {
   return t;
 }
 
-/* ---------- Architecture (summary only) ---------- */
+/* ---------- Architecture (Mission → Architecture tab) ---------- */
 
-function renderArchListItems(items, formatter) {
-  if (!items || !items.length) return "<li class='controls-hint'> — </li>";
-  return items.map(formatter).join("");
+function archEmptyItem(label) {
+  return `<li class="arch-item arch-item-empty"><span class="controls-hint">${label || "None recorded"}</span></li>`;
+}
+
+function archListOrEmpty(itemsHtml, emptyLabel) {
+  return itemsHtml || archEmptyItem(emptyLabel);
+}
+
+function archPathChips(hints, limit) {
+  const list = Array.isArray(hints) ? hints.filter(Boolean) : [];
+  if (!list.length) return "";
+  const lim = limit != null ? limit : 6;
+  const shown = list.slice(0, lim);
+  const more = list.length > lim ? list.length - lim : 0;
+  return `<div class="arch-chip-row">${shown
+    .map((h) => `<span class="arch-chip mono" title="${esc(String(h))}">${esc(String(h))}</span>`)
+    .join("")}${
+    more ? `<span class="arch-chip arch-chip-muted">+${more}</span>` : ""
+  }</div>`;
+}
+
+function archComponentCard(c) {
+  if (!c || typeof c !== "object") {
+    return `<article class="arch-comp-card"><div class="arch-comp-name">${esc(String(c || "?"))}</div></article>`;
+  }
+  const name = esc(c.name || c.id || "?");
+  const role = c.role ? `<p class="arch-comp-role">${esc(String(c.role))}</p>` : "";
+  const paths = archPathChips(c.path_hints, 8);
+  return `<article class="arch-comp-card">
+    <div class="arch-comp-name">${name}</div>
+    ${role}
+    ${paths}
+  </article>`;
+}
+
+function archFormatSurfaceItem(x) {
+  if (typeof x === "string") {
+    return `<li class="arch-item">${esc(x)}</li>`;
+  }
+  if (x && typeof x === "object") {
+    const name = x.name || x.id || x.surface || "";
+    const desc = x.description || x.role || x.kind || "";
+    const paths = archPathChips(x.path_hints || x.paths, 4);
+    return `<li class="arch-item">
+      <div class="arch-item-title">${esc(String(name || JSON.stringify(x)))}</div>
+      ${desc ? `<div class="arch-item-desc">${esc(String(desc))}</div>` : ""}
+      ${paths}
+    </li>`;
+  }
+  return `<li class="arch-item">${esc(JSON.stringify(x))}</li>`;
+}
+
+function archFormatBoundItem(x) {
+  if (typeof x === "string") {
+    return `<li class="arch-item">${esc(x)}</li>`;
+  }
+  if (x && typeof x === "object") {
+    const name = x.name || x.id || "";
+    const desc = x.description || x.role || "";
+    return `<li class="arch-item">
+      <div class="arch-item-title">${esc(String(name || "Boundary"))}</div>
+      ${desc ? `<div class="arch-item-desc">${esc(String(desc))}</div>` : !name ? `<div class="arch-item-desc mono">${esc(JSON.stringify(x))}</div>` : ""}
+    </li>`;
+  }
+  return `<li class="arch-item">${esc(JSON.stringify(x))}</li>`;
+}
+
+function archFormatFocusItem(x) {
+  if (typeof x === "string") {
+    return `<li class="arch-item"><span class="mono">${esc(x)}</span></li>`;
+  }
+  if (x && typeof x === "object") {
+    const area = esc(String(x.area || x.name || x.component || "?"));
+    const cls = x.class || x.weakness_class || x.hunt_class || "";
+    const note = x.note || x.reason || x.why || "";
+    const paths = archPathChips(x.path_hints || x.paths, 4);
+    return `<li class="arch-item">
+      <div class="arch-item-title">
+        <span class="mono">${area}</span>
+        ${cls ? `<span class="badge">${esc(String(cls))}</span>` : ""}
+      </div>
+      ${note ? `<div class="arch-item-desc">${esc(String(note))}</div>` : ""}
+      ${paths}
+    </li>`;
+  }
+  return `<li class="arch-item">${esc(JSON.stringify(x))}</li>`;
+}
+
+function archFormatSinkItem(x) {
+  if (!x || typeof x !== "object") {
+    return `<li class="arch-item mono">${esc(String(x || ""))}</li>`;
+  }
+  const sym = esc(String(x.symbol || x.name || "?"));
+  const kind = x.kind ? `<span class="badge">${esc(String(x.kind))}</span>` : "";
+  const addr = x.address
+    ? `<span class="mono controls-hint">${esc(String(x.address))}</span>`
+    : "";
+  return `<li class="arch-item">
+    <div class="arch-item-title"><span class="mono">${sym}</span>${kind}${addr}</div>
+  </li>`;
+}
+
+function archFormatAgentItem(a) {
+  const id = esc(a?.id || "?");
+  const title = a?.title ? esc(String(a.title)) : "";
+  const ok = a?.ok === true ? "ok" : a?.ok === false ? "fail" : "";
+  const badge = ok
+    ? ` <span class="badge ${ok === "ok" ? "good" : "bad"}">${ok}</span>`
+    : "";
+  return `<li class="arch-item">
+    <div class="arch-item-title"><span class="mono">${id}</span>${badge}</div>
+    ${title ? `<div class="arch-item-desc">${title}</div>` : ""}
+  </li>`;
+}
+
+function archSectionCard(title, count, bodyHtml, extraClass) {
+  const countHtml =
+    count != null
+      ? `<span class="arch-section-count">${esc(String(count))}</span>`
+      : "";
+  return `<section class="card arch-section ${extraClass || ""}">
+    <header class="arch-section-head">
+      <h3>${esc(title)}</h3>
+      ${countHtml}
+    </header>
+    ${bodyHtml}
+  </section>`;
 }
 
 function renderArchitecture(arch, summary, snap) {
@@ -3658,17 +3772,26 @@ function renderArchitecture(arch, summary, snap) {
   const pageTitle = s.title || "Architecture";
   const has = !!(s.has_architecture || arch);
   if (!has) {
-    el.innerHTML = `<div class="card">
-      <div class="empty empty-cta">
-        <p><strong>No architecture yet</strong></p>
-        <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored in the run DB after submit_architecture (or free-text salvage) — not under project/. Map the target first, then hunt from Explorer or Coverage.</p>
-        ${reconFailureHint(snap)}
-        <div class="empty-cta-actions">
-          <button type="button" class="btn btn-primary" id="arch-go-mission">Run recon with brief</button>
-          <button type="button" class="btn" id="arch-go-explorer">Open Explorer</button>
+    el.innerHTML = `<div class="arch-page">
+      <header class="arch-page-header">
+        <div>
+          <h2 class="arch-page-title">${esc(pageTitle)}</h2>
+          <p class="controls-hint arch-page-sub">LLM recon map of the target — stored in the run DB only (not under project/).</p>
+        </div>
+      </header>
+      <div class="card">
+        <div class="empty empty-cta">
+          <p><strong>No architecture yet</strong></p>
+          <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored after submit_architecture (or free-text salvage). Map the target first, then hunt from Explorer or Coverage.</p>
+          ${reconFailureHint(snap)}
+          <div class="empty-cta-actions">
+            <button type="button" class="btn btn-primary" id="arch-go-mission">Run recon with brief</button>
+            <button type="button" class="btn" id="arch-go-explorer">Open Explorer</button>
+          </div>
         </div>
       </div>
-    </div>${renderCodemapCardHtml(snap)}`;
+      ${renderCodemapCardHtml(snap)}
+    </div>`;
     $("#arch-go-mission")?.addEventListener("click", () => {
       if (window.VulnForgeModes?.setMode) {
         window.VulnForgeModes.setMode("mission", "overview");
@@ -3681,123 +3804,172 @@ function renderArchitecture(arch, summary, snap) {
     bindCodemapHandlers();
     return;
   }
-  const comps = (s.components || [])
-    .map(
-      (c) =>
-        `<li><strong>${esc(c.name)}</strong>${
-          c.role ? `  —  ${esc(c.role)}` : ""
-        }${
-          (c.path_hints || []).length
-            ? ` <span class="mono controls-hint">${esc((c.path_hints || []).slice(0, 3).join(", "))}</span>`
-            : ""
-        }</li>`
-    )
-    .join("");
-  const surfaces = (s.input_surfaces || [])
-    .map((x) => `<li>${esc(typeof x === "string" ? x : JSON.stringify(x))}</li>`)
-    .join("");
-  const bounds = (s.trust_boundaries || [])
-    .map((x) => {
-      if (typeof x === "string") return `<li>${esc(x)}</li>`;
-      if (x && typeof x === "object") {
-        const name = x.name || x.id || "";
-        const desc = x.description || x.role || "";
-        return `<li><strong>${esc(String(name))}</strong>${desc ? ` — ${esc(String(desc))}` : ""}</li>`;
-      }
-      return `<li>${esc(JSON.stringify(x))}</li>`;
-    })
-    .join("");
+
+  const components = Array.isArray(s.components) ? s.components : [];
+  const surfaces = Array.isArray(s.input_surfaces) ? s.input_surfaces : [];
+  const bounds = Array.isArray(s.trust_boundaries) ? s.trust_boundaries : [];
+  const huntFocus = Array.isArray(s.hunt_focus) ? s.hunt_focus : [];
+  const seedSinks = Array.isArray(s.seed_sinks) ? s.seed_sinks : [];
   const agentsRun = Array.isArray(s.recon_agents_run) ? s.recon_agents_run : [];
-  const agentsHtml = agentsRun.length
-    ? agentsRun
-        .map((a) => {
-          const id = esc(a?.id || "?");
-          const title = a?.title ? esc(a.title) : "";
-          const ok =
-            a?.ok === true ? "ok" : a?.ok === false ? "fail" : "";
-          const badge = ok
-            ? ` <span class="badge ${ok === "ok" ? "good" : "bad"}">${ok}</span>`
-            : "";
-          return `<li><span class="mono">${id}</span>${title ? ` — ${title}` : ""}${badge}</li>`;
-        })
-        .join("")
-    : "";
+
+  const compsHtml = components.map(archComponentCard).join("");
+  const surfacesHtml = surfaces.map(archFormatSurfaceItem).join("");
+  const boundsHtml = bounds.map(archFormatBoundItem).join("");
+  const focusHtml = huntFocus.map(archFormatFocusItem).join("");
+  const sinksHtml = seedSinks.map(archFormatSinkItem).join("");
+  const agentsHtml = agentsRun.map(archFormatAgentItem).join("");
 
   const summaryHtml = renderMarkdown(s.summary || "(no summary)");
 
-  const metaGrid = `<div class="arch-meta-grid">
-        <div>
-          <h3>Components</h3>
-          <ul class="arch-list">${comps || "<li class='controls-hint'> — </li>"}</ul>
-        </div>
-        <div>
-          <h3>Input surfaces</h3>
-          <ul class="arch-list">${surfaces || "<li class='controls-hint'> — </li>"}</ul>
-        </div>
-        <div>
-          <h3>Trust boundaries</h3>
-          <ul class="arch-list">${bounds || "<li class='controls-hint'> — </li>"}</ul>
-        </div>
-      </div>`;
+  const stats = [
+    { label: "Components", value: components.length, tone: "info" },
+    { label: "Surfaces", value: surfaces.length, tone: "" },
+    { label: "Boundaries", value: bounds.length, tone: "" },
+    { label: "Hunt focus", value: huntFocus.length, tone: huntFocus.length ? "warn" : "" },
+    { label: "Agents", value: agentsRun.length, tone: agentsRun.length ? "good" : "" },
+  ]
+    .map(
+      (st) =>
+        `<div class="stat ${st.tone}">
+          <div class="label">${esc(st.label)}</div>
+          <div class="value">${esc(String(st.value))}</div>
+        </div>`
+    )
+    .join("");
+
+  const sideSections = [
+    archSectionCard(
+      "Input surfaces",
+      surfaces.length,
+      `<ul class="arch-list arch-list-plain">${archListOrEmpty(surfacesHtml)}</ul>`
+    ),
+    archSectionCard(
+      "Trust boundaries",
+      bounds.length,
+      `<ul class="arch-list arch-list-plain">${archListOrEmpty(boundsHtml)}</ul>`
+    ),
+    archSectionCard(
+      "Hunt focus",
+      huntFocus.length,
+      `<ul class="arch-list arch-list-plain">${archListOrEmpty(focusHtml, "No hunt_focus yet")}</ul>`
+    ),
+  ];
+  if (seedSinks.length) {
+    sideSections.push(
+      archSectionCard(
+        "Seed sinks",
+        seedSinks.length,
+        `<ul class="arch-list arch-list-plain">${sinksHtml}</ul>`
+      )
+    );
+  }
+  if (agentsRun.length) {
+    sideSections.push(
+      archSectionCard(
+        "Recon agents",
+        agentsRun.length,
+        `<ul class="arch-list arch-list-plain">${agentsHtml}</ul>`,
+        "arch-section-agents"
+      )
+    );
+  }
 
   el.innerHTML = `
-    <div class="card arch-summary-card">
-      <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.4rem">
-        <h2 style="margin:0;flex:1">${esc(pageTitle)}</h2>
-        <button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit architecture</button>
-        <button type="button" class="btn btn-sm" id="arch-history-toggle">History</button>
+    <div class="arch-page">
+      <header class="arch-page-header">
+        <div>
+          <h2 class="arch-page-title">${esc(pageTitle)}</h2>
+          <p class="controls-hint arch-page-sub">LLM recon map — stored in the run DB only. Not exploit proof; use Coverage and Explorer to drive hunts.</p>
+        </div>
+        <div class="arch-page-actions">
+          <button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit</button>
+          <button type="button" class="btn btn-sm" id="arch-history-toggle">History</button>
+        </div>
+      </header>
+
+      <div class="stats arch-stats">${stats}</div>
+
+      <div class="arch-body">
+        <div class="arch-main">
+          <section class="card arch-summary-card">
+            <header class="arch-section-head">
+              <h3>Summary</h3>
+            </header>
+            <div class="arch-summary-text md-prose">${summaryHtml}</div>
+          </section>
+
+          <section class="card arch-section arch-components-section">
+            <header class="arch-section-head">
+              <h3>Components</h3>
+              <span class="arch-section-count">${esc(String(components.length))}</span>
+            </header>
+            ${
+              compsHtml
+                ? `<div class="arch-comp-grid">${compsHtml}</div>`
+                : `<p class="controls-hint arch-section-empty">No components recorded.</p>`
+            }
+          </section>
+
+          <details class="card arch-raw-card">
+            <summary>Raw architecture JSON</summary>
+            <pre class="arch-box">${esc(JSON.stringify(arch || s, null, 2))}</pre>
+          </details>
+        </div>
+
+        <aside class="arch-side">
+          ${sideSections.join("")}
+        </aside>
       </div>
-      <div class="arch-summary-text md-prose">${summaryHtml}</div>
-      ${
-        agentsHtml
-          ? `<div style="margin:0.65rem 0 0.25rem"><h3 style="margin:0 0 0.35rem">Recon agents (merged)</h3><ul class="arch-list">${agentsHtml}</ul></div>`
-          : ""
-      }
-      ${metaGrid}
-      <details class="arch-raw">
-        <summary>Raw architecture JSON</summary>
-        <pre class="arch-box">${esc(JSON.stringify(arch || s, null, 2))}</pre>
-      </details>
-      <div id="arch-history-panel" class="arch-history-panel" style="display:none;margin-top:1rem;padding-top:0.85rem;border-top:1px solid var(--border)">
-        <h3 style="margin:0 0 0.4rem">Architecture history</h3>
-        <p class="controls-hint">Prior maps (last 50). Click a revision to view that version. Restore replaces the current map and archives it.</p>
-        <div id="arch-history-list" class="controls-hint">Loading…</div>
-        <div id="arch-history-detail" class="arch-history-detail" style="display:none;margin-top:0.85rem;padding:0.75rem;border:1px solid var(--border);border-radius:6px;background:var(--surface-2, transparent)"></div>
+
+      <div id="arch-history-panel" class="card arch-history-panel" style="display:none">
+        <header class="arch-section-head">
+          <h3>Architecture history</h3>
+        </header>
+        <p class="controls-hint">Prior maps (last 50). View a revision or restore it — restore archives the current map first.</p>
+        <div id="arch-history-list" class="arch-history-list controls-hint">Loading…</div>
+        <div id="arch-history-detail" class="arch-history-detail" style="display:none"></div>
       </div>
-      <div id="arch-edit-panel" class="arch-edit-panel" style="display:none;margin-top:1rem;padding-top:0.85rem;border-top:1px solid var(--border)">
-        <h3 style="margin:0 0 0.4rem">Edit architecture</h3>
+
+      <div id="arch-edit-panel" class="card arch-edit-panel" style="display:none">
+        <header class="arch-section-head">
+          <h3>Edit architecture</h3>
+        </header>
         <p class="controls-hint">Edit summary and/or full JSON. Saved as source <span class="mono">manual</span> (DB only).</p>
         <div class="field">
           <label for="arch-edit-summary">Summary</label>
           <textarea id="arch-edit-summary" class="op-notes" rows="4" placeholder="Architecture summary…"></textarea>
         </div>
-        <div class="field" style="margin-top:0.5rem">
+        <div class="field">
           <label for="arch-edit-json">Full architecture JSON</label>
           <textarea id="arch-edit-json" class="op-notes mono" rows="12" spellcheck="false"></textarea>
         </div>
-        <div class="field" style="margin-top:0.5rem">
+        <div class="field">
           <label for="arch-edit-note">Note (optional)</label>
-          <input type="text" id="arch-edit-note" class="op-notes" placeholder="Why this edit?" style="width:100%" />
+          <input type="text" id="arch-edit-note" class="op-notes" placeholder="Why this edit?" />
         </div>
-        <div class="toolbar" style="gap:0.5rem;margin-top:0.5rem">
+        <div class="toolbar arch-toolbar-actions">
           <button type="button" class="btn btn-primary" id="arch-edit-save">Save</button>
           <button type="button" class="btn" id="arch-edit-cancel">Cancel</button>
         </div>
       </div>
-      <div class="arch-refine" style="margin-top:1rem;padding-top:0.85rem;border-top:1px solid var(--border)">
-        <h3 style="margin:0 0 0.4rem">Refine recon</h3>
+
+      <section class="card arch-refine">
+        <header class="arch-section-head">
+          <h3>Refine recon</h3>
+        </header>
         <p class="controls-hint">Re-run recon with guidance. Prior architecture is included so the model can correct and deepen the map.</p>
         <div class="field">
           <label for="arch-recon-notes">Operator brief</label>
           <textarea id="arch-recon-notes" class="op-notes" rows="3" placeholder="What did recon miss? Which areas need better path_hints?"></textarea>
         </div>
-        <div class="toolbar" style="gap:0.5rem;margin-top:0.5rem">
+        <div class="toolbar arch-toolbar-actions">
           <button type="button" class="btn btn-primary" id="arch-recon-rerun">Re-run recon</button>
           <button type="button" class="btn" id="arch-recon-only">Architecture only</button>
         </div>
-      </div>
-    </div>
-    ${renderCodemapCardHtml(snap)}`;
+      </section>
+
+      ${renderCodemapCardHtml(snap)}
+    </div>`;
   $("#arch-recon-rerun")?.addEventListener("click", () =>
     submitArchRecon(true)
   );
@@ -3825,16 +3997,16 @@ function renderCodemapCardHtml(snap) {
     !!(sum.has_codemap || (snap && snap.has_codemap) || (map && (map.modules || []).length));
   if (!has) {
     return `
-    <div class="card" id="codemap-card" style="margin-top:1rem">
-      <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.4rem">
-        <h2 style="margin:0;flex:1">Codemap</h2>
-        <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild codemap</button>
+    <section class="card codemap-card" id="codemap-card">
+      <header class="arch-section-head">
+        <h3>Codemap</h3>
+        <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild</button>
+      </header>
+      <div class="empty empty-cta codemap-empty">
+        <p><strong>No codemap yet</strong></p>
+        <p class="controls-hint">Run recon or Rebuild after init. Mechanical structure is stored in the run DB (not under project/) and does not replace architecture.</p>
       </div>
-      <div class="empty empty-cta" style="padding:0.75rem 0">
-        <p style="margin:0"><strong>No codemap yet</strong></p>
-        <p class="controls-hint" style="margin:0.35rem 0 0">No codemap yet — run recon (or Rebuild after init). Mechanical structure is stored in the run DB (not under project/) and does not replace architecture.</p>
-      </div>
-    </div>`;
+    </section>`;
   }
   const fileCount = sum.file_count != null ? sum.file_count : (map.summary && map.summary.file_count) || 0;
   const moduleCount =
@@ -3880,7 +4052,7 @@ function renderCodemapCardHtml(snap) {
     .join("");
   const rootChips = (roots || [])
     .slice(0, 12)
-    .map((r) => `<span class="arch-chip mono">${esc(String(r))}</span>`)
+    .map((r) => `<span class="arch-chip mono" title="${esc(String(r))}">${esc(String(r))}</span>`)
     .join("");
   const modules = Array.isArray(map && map.modules) ? map.modules : [];
   const modLimit = 40;
@@ -3889,22 +4061,28 @@ function renderCodemapCardHtml(snap) {
     .map((m) => {
       if (!m || typeof m !== "object") return "";
       const path = esc(String(m.path || m.name || "?"));
-      const kind = m.kind ? ` <span class="badge">${esc(String(m.kind))}</span>` : "";
+      const kind = m.kind ? `<span class="badge">${esc(String(m.kind))}</span>` : "";
       const signals = Array.isArray(m.signals)
         ? m.signals
         : Array.isArray(m.security_signals)
           ? m.security_signals
           : [];
-      const sigStr = signals.length
-        ? ` <span class="mono controls-hint">${esc(signals.slice(0, 6).join(", "))}</span>`
+      const sigChips = signals.length
+        ? `<div class="arch-chip-row">${signals
+            .slice(0, 6)
+            .map((sig) => `<span class="arch-chip arch-chip-muted mono">${esc(String(sig))}</span>`)
+            .join("")}</div>`
         : "";
-      return `<li><span class="mono">${path}</span>${kind}${sigStr}</li>`;
+      return `<li class="arch-item">
+        <div class="arch-item-title"><span class="mono">${path}</span>${kind}</div>
+        ${sigChips}
+      </li>`;
     })
     .filter(Boolean)
     .join("");
   const moreMods =
     modules.length > modLimit
-      ? `<li class="controls-hint">…and ${modules.length - modLimit} more</li>`
+      ? `<li class="arch-item arch-item-empty"><span class="controls-hint">…and ${modules.length - modLimit} more</span></li>`
       : "";
   const anns = Array.isArray(map && map.annotations) ? map.annotations : [];
   const annItems = anns
@@ -3912,49 +4090,54 @@ function renderCodemapCardHtml(snap) {
     .map((a) => {
       if (!a || typeof a !== "object") return "";
       const p = a.path ? `<span class="mono">${esc(String(a.path))}</span>` : "";
-      const sym = a.symbol ? ` <span class="badge">${esc(String(a.symbol))}</span>` : "";
+      const sym = a.symbol ? `<span class="badge">${esc(String(a.symbol))}</span>` : "";
       const note = a.note ? esc(String(a.note).slice(0, 200)) : "";
-      return `<li>${p}${sym}${p || sym ? " — " : ""}${note || "<span class='controls-hint'>(empty)</span>"}</li>`;
+      return `<li class="arch-item">
+        <div class="arch-item-title">${p}${sym}</div>
+        ${note ? `<div class="arch-item-desc">${note}</div>` : `<div class="arch-item-desc controls-hint">(empty)</div>`}
+      </li>`;
     })
     .filter(Boolean)
     .join("");
   return `
-    <div class="card" id="codemap-card" style="margin-top:1rem">
-      <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.4rem">
-        <h2 style="margin:0;flex:1">Codemap</h2>
-        <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild codemap</button>
-      </div>
-      <p class="controls-hint" style="margin:0 0 0.5rem">Mechanical path-backed modules from the target tree. Rebuild does not wipe architecture.</p>
+    <section class="card codemap-card" id="codemap-card">
+      <header class="arch-section-head">
+        <div>
+          <h3>Codemap</h3>
+          <p class="controls-hint arch-page-sub">Mechanical path-backed modules. Rebuild does not wipe architecture.</p>
+        </div>
+        <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild</button>
+      </header>
       <div class="arch-chip-row">${chips}</div>
       ${
         langChips
-          ? `<div style="margin-top:0.5rem"><h3 style="margin:0 0 0.35rem">Languages</h3><div class="arch-chip-row">${langChips}</div></div>`
+          ? `<div class="codemap-meta-block"><div class="codemap-meta-label">Languages</div><div class="arch-chip-row">${langChips}</div></div>`
           : ""
       }
       ${
         rootChips
-          ? `<div style="margin-top:0.5rem"><h3 style="margin:0 0 0.35rem">Package roots</h3><div class="arch-chip-row">${rootChips}</div></div>`
+          ? `<div class="codemap-meta-block"><div class="codemap-meta-label">Package roots</div><div class="arch-chip-row">${rootChips}</div></div>`
           : ""
       }
-      <details class="arch-raw" style="margin-top:0.75rem" open>
+      <details class="arch-raw" open>
         <summary>Modules (${moduleCount})</summary>
-        <ul class="arch-list" style="margin-top:0.4rem">${modItems || "<li class='controls-hint'> — </li>"}${moreMods}</ul>
+        <ul class="arch-list arch-list-plain">${modItems || archEmptyItem()}${moreMods}</ul>
       </details>
       ${
         annItems
-          ? `<details class="arch-raw" style="margin-top:0.5rem">
+          ? `<details class="arch-raw">
               <summary>Agent annotations (${annCount})</summary>
-              <ul class="arch-list" style="margin-top:0.4rem">${annItems}</ul>
+              <ul class="arch-list arch-list-plain">${annItems}</ul>
             </details>`
           : annCount
-            ? `<p class="controls-hint" style="margin-top:0.5rem">${annCount} annotation(s) present</p>`
+            ? `<p class="controls-hint codemap-ann-hint">${annCount} annotation(s) present</p>`
             : ""
       }
-      <details class="arch-raw" style="margin-top:0.5rem">
+      <details class="arch-raw">
         <summary>Raw codemap JSON</summary>
         <pre class="arch-box">${esc(JSON.stringify(map || sum, null, 2))}</pre>
       </details>
-    </div>`;
+    </section>`;
 }
 
 function bindCodemapHandlers() {
@@ -3984,6 +4167,7 @@ async function toggleArchHistory() {
   const show = panel.style.display === "none";
   panel.style.display = show ? "block" : "none";
   if (!show) return;
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   const list = $("#arch-history-list");
   const detail = $("#arch-history-detail");
   if (detail) {
@@ -3999,7 +4183,7 @@ async function toggleArchHistory() {
       list.innerHTML = "<p class='controls-hint' style='margin:0'>No prior revisions yet.</p>";
       return;
     }
-    list.innerHTML = `<ul class="arch-list" style="list-style:none;padding:0;margin:0">${revs
+    list.innerHTML = `<ul class="arch-rev-list">${revs
       .map((rev) => {
         const id = rev.id;
         const src = esc(rev.source || "—");
@@ -4007,18 +4191,25 @@ async function toggleArchHistory() {
         const note = rev.note ? esc(String(rev.note).slice(0, 120)) : "";
         const gen =
           rev.recon_generation != null
-            ? ` · gen ${esc(String(rev.recon_generation))}`
+            ? `gen ${esc(String(rev.recon_generation))}`
             : "";
-        const agents = Array.isArray(rev.agent_ids) && rev.agent_ids.length
-          ? ` · agents: <span class="mono">${esc(rev.agent_ids.join(", "))}</span>`
-          : "";
-        return `<li style="display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center;margin:0.35rem 0;padding:0.35rem 0;border-bottom:1px solid var(--border)">
-          <a href="#arch-rev-${esc(String(id))}" class="mono arch-rev-link" data-rev-id="${esc(String(id))}" title="View this revision">#${esc(String(id))}</a>
-          <span class="badge">${src}</span>
-          <span class="controls-hint">${when}${gen}${agents}</span>
-          ${note ? `<span class="controls-hint">— ${note}</span>` : ""}
-          <button type="button" class="btn btn-sm arch-view-btn" data-rev-id="${esc(String(id))}">View</button>
-          <button type="button" class="btn btn-sm arch-restore-btn" data-rev-id="${esc(String(id))}">Restore</button>
+        const agents =
+          Array.isArray(rev.agent_ids) && rev.agent_ids.length
+            ? `<span class="mono">${esc(rev.agent_ids.join(", "))}</span>`
+            : "";
+        return `<li class="arch-rev-row">
+          <div class="arch-rev-meta">
+            <a href="#arch-rev-${esc(String(id))}" class="mono arch-rev-link" data-rev-id="${esc(String(id))}" title="View this revision">#${esc(String(id))}</a>
+            <span class="badge">${src}</span>
+            <span class="controls-hint">${when}</span>
+            ${gen ? `<span class="controls-hint">${gen}</span>` : ""}
+            ${agents ? `<span class="controls-hint">agents: ${agents}</span>` : ""}
+            ${note ? `<span class="controls-hint arch-rev-note">${note}</span>` : ""}
+          </div>
+          <div class="arch-rev-actions">
+            <button type="button" class="btn btn-sm arch-view-btn" data-rev-id="${esc(String(id))}">View</button>
+            <button type="button" class="btn btn-sm arch-restore-btn" data-rev-id="${esc(String(id))}">Restore</button>
+          </div>
         </li>`;
       })
       .join("")}</ul>`;
@@ -4057,56 +4248,43 @@ function renderArchSnapshotHtml(snap, title) {
   const s = snap && typeof snap === "object" ? snap : {};
   const comps = (s.components || [])
     .map((c) => {
-      if (typeof c === "string") return `<li>${esc(c)}</li>`;
-      const name = esc(c?.name || "?");
-      const role = c?.role ? ` — ${esc(c.role)}` : "";
-      const paths =
-        Array.isArray(c?.path_hints) && c.path_hints.length
-          ? ` <span class="mono controls-hint">${esc(c.path_hints.slice(0, 4).join(", "))}</span>`
-          : "";
-      return `<li><strong>${name}</strong>${role}${paths}</li>`;
+      if (typeof c === "string") return archComponentCard({ name: c });
+      return archComponentCard(c);
     })
     .join("");
-  const surfaces = (s.input_surfaces || [])
-    .map((x) => `<li>${esc(typeof x === "string" ? x : JSON.stringify(x))}</li>`)
-    .join("");
-  const bounds = (s.trust_boundaries || [])
-    .map((x) => `<li>${esc(typeof x === "string" ? x : JSON.stringify(x))}</li>`)
-    .join("");
-  const focus = (s.hunt_focus || [])
-    .map((x) => {
-      if (typeof x === "string") return `<li>${esc(x)}</li>`;
-      const area = esc(x?.area || "?");
-      const cls = x?.class ? ` / ${esc(x.class)}` : "";
-      return `<li><span class="mono">${area}${cls}</span></li>`;
-    })
-    .join("");
+  const surfaces = (s.input_surfaces || []).map(archFormatSurfaceItem).join("");
+  const bounds = (s.trust_boundaries || []).map(archFormatBoundItem).join("");
+  const focus = (s.hunt_focus || []).map(archFormatFocusItem).join("");
   const summaryHtml = renderMarkdown(s.summary || "(no summary)");
   return `
-    <div class="toolbar" style="margin:0 0 0.5rem;flex-wrap:wrap;gap:0.4rem">
-      <h4 style="margin:0;flex:1">${title}</h4>
+    <div class="arch-rev-detail-head">
+      <h4 class="arch-rev-detail-title">${title}</h4>
       <button type="button" class="btn btn-sm" id="arch-history-detail-close">Close</button>
     </div>
     <div class="arch-summary-text md-prose">${summaryHtml}</div>
-    <div class="arch-meta-grid" style="margin-top:0.65rem">
-      <div>
-        <h3>Components</h3>
-        <ul class="arch-list">${comps || "<li class='controls-hint'>—</li>"}</ul>
+    <div class="arch-meta-grid">
+      <div class="arch-meta-block">
+        <div class="codemap-meta-label">Components</div>
+        ${
+          comps
+            ? `<div class="arch-comp-grid arch-comp-grid-compact">${comps}</div>`
+            : `<p class="controls-hint">—</p>`
+        }
       </div>
-      <div>
-        <h3>Input surfaces</h3>
-        <ul class="arch-list">${surfaces || "<li class='controls-hint'>—</li>"}</ul>
+      <div class="arch-meta-block">
+        <div class="codemap-meta-label">Input surfaces</div>
+        <ul class="arch-list arch-list-plain">${archListOrEmpty(surfaces)}</ul>
       </div>
-      <div>
-        <h3>Trust boundaries</h3>
-        <ul class="arch-list">${bounds || "<li class='controls-hint'>—</li>"}</ul>
+      <div class="arch-meta-block">
+        <div class="codemap-meta-label">Trust boundaries</div>
+        <ul class="arch-list arch-list-plain">${archListOrEmpty(bounds)}</ul>
       </div>
-      <div>
-        <h3>Hunt focus</h3>
-        <ul class="arch-list">${focus || "<li class='controls-hint'>—</li>"}</ul>
+      <div class="arch-meta-block">
+        <div class="codemap-meta-label">Hunt focus</div>
+        <ul class="arch-list arch-list-plain">${archListOrEmpty(focus, "None")}</ul>
       </div>
     </div>
-    <details class="arch-raw" style="margin-top:0.65rem">
+    <details class="arch-raw">
       <summary>Raw revision JSON</summary>
       <pre class="arch-box">${esc(JSON.stringify(s, null, 2))}</pre>
     </details>`;
@@ -4150,6 +4328,7 @@ function toggleArchEdit(arch) {
   const show = panel.style.display === "none";
   panel.style.display = show ? "block" : "none";
   if (!show) return;
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   const base = arch && typeof arch === "object" ? arch : {};
   const sumEl = $("#arch-edit-summary");
   const jsonEl = $("#arch-edit-json");
@@ -4161,6 +4340,7 @@ function toggleArchEdit(arch) {
       jsonEl.value = "{}";
     }
   }
+  sumEl?.focus?.();
 }
 
 async function saveArchEdit() {
@@ -5107,7 +5287,11 @@ window.loadHomeToolGaps = loadHomeToolGapsSummary;
 
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.dataset.page;
-  $("#btn-settings")?.addEventListener("click", openSettings);
+  // Settings is a dedicated page (/settings). Only bind if still a button (legacy).
+  const settingsBtn = $("#btn-settings");
+  if (settingsBtn && settingsBtn.tagName === "BUTTON") {
+    settingsBtn.addEventListener("click", openSettings);
+  }
   $("#settings-cancel")?.addEventListener("click", closeSettings);
   $("#settings-optimize")?.addEventListener("click", () => optimizeSettings());
   $("#settings-form")?.addEventListener("submit", saveSettings);

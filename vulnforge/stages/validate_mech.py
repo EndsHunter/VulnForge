@@ -59,7 +59,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         }
 
     # Mech passed → never auto-confirm. Confirmed is a human decision.
-    # Optional validate_llm may still demote/reject; stand/hold also land as needs_human.
+    # validate_llm (default on) may still demote/reject; stand/hold also land as needs_human.
     body = dict(finding.body)
     body["validation_mech"] = {
         "status": "passed",
@@ -233,18 +233,163 @@ def check_target_unmodified(finding, run_dir: Path, cfg: dict, db) -> tuple[bool
     return True, ""
 
 
+# Placeholder / non-answer tokens for threat_model fields and summary stubs.
+_VACUOUS_TOKENS: frozenset[str] = frozenset(
+    {
+        "n/a",
+        "na",
+        "none",
+        "unknown",
+        "tbd",
+        "todo",
+        "tbc",
+        "-",
+        "—",
+        ".",
+        "see summary",
+        "see above",
+        "same",
+        "various",
+        "misc",
+        "other",
+        "general",
+        "security issue",
+        "security risk",
+        "security concern",
+        "vulnerability",
+        "potential issue",
+        "potential risk",
+    }
+)
+
+# Substrings that mark impact prose as non-actionable (case-insensitive).
+# Keep narrow — avoid phrases that appear inside otherwise concrete claims.
+_VACUOUS_IMPACT_SNIPPETS: tuple[str, ...] = (
+    "if they have write access",
+    "with write access you can write",
+    "if they have admin",
+    "if attacker has root",
+    "if the attacker is root",
+    "could be bad",
+    "could potentially",
+    "might be vulnerable",
+    "may be vulnerable",
+    "potential vulnerability",
+    "potential security issue",
+    "potential security risk",
+    "could lead to issues",
+    "could cause problems",
+    "bad things could happen",
+)
+
+# Weak impact that needs more specificity when severity is HIGH/CRITICAL.
+_IMPACT_CONCRETE_HINTS: tuple[str, ...] = (
+    "rce",
+    "remote code",
+    "code exec",
+    "code execution",
+    "command injection",
+    "shell",
+    "auth",
+    "bypass",
+    "privilege",
+    "escalat",
+    "secret",
+    "credential",
+    "password",
+    "token",
+    "session",
+    "leak",
+    "exfil",
+    "inject",
+    "sql",
+    "xss",
+    "ssrf",
+    "path traversal",
+    "arbitrary",
+    "unauthorized",
+    "unauthenticated",
+    "cross-user",
+    "cross user",
+    "tenant",
+    "idor",
+    "overwrite",
+    "delete",
+    "modify",
+    "read ",
+    "write ",
+    "forge",
+    "spoof",
+    "deserial",
+    "memory",
+    "heap",
+    "buffer",
+    "pii",
+    "payment",
+    "money",
+    "dos",
+    "denial",
+    "crash",
+    "file",
+    "data",
+)
+
+
+def _norm_field(value: object) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _is_vacuous_token(text: str) -> bool:
+    return text in _VACUOUS_TOKENS or not text
+
+
+def _impact_has_concrete_hint(impact: str) -> bool:
+    return any(h in impact for h in _IMPACT_CONCRETE_HINTS)
+
+
 def check_non_vacuous(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, str]:
-    tm = finding.body.get("threat_model") or {}
-    impact = str(tm.get("impact") or "").lower()
-    boundary = str(tm.get("boundary") or "").lower()
-    # crude vacuous patterns
-    if "if they have write access" in impact and "write" in impact:
-        return False, "vacuous_impact"
-    if boundary in ("n/a", "none", "unknown"):
-        return False, "vacuous_boundary"
-    title = str(finding.body.get("title") or "")
+    """Reject stub / circular threat models and severity-without-impact claims.
+
+    Intent: raise the floor for Report-ready candidates without inventing a score.
+    Keep patterns conservative — prefer false-pass over false-reject on edge prose.
+    """
+    body = finding.body or {}
+    title = str(body.get("title") or "").strip()
     if len(title) < 5:
         return False, "title_too_short"
+
+    summary = _norm_field(body.get("summary"))
+    if _is_vacuous_token(summary) or len(summary) < 20:
+        return False, "summary_too_short"
+
+    tm = body.get("threat_model") or {}
+    if not isinstance(tm, dict):
+        tm = {}
+
+    attacker = _norm_field(tm.get("attacker"))
+    boundary = _norm_field(tm.get("boundary"))
+    impact = _norm_field(tm.get("impact"))
+
+    if _is_vacuous_token(attacker) or len(attacker) < 8:
+        return False, "vacuous_attacker"
+    if _is_vacuous_token(boundary) or len(boundary) < 8:
+        return False, "vacuous_boundary"
+    if _is_vacuous_token(impact) or len(impact) < 16:
+        return False, "vacuous_impact"
+
+    for snip in _VACUOUS_IMPACT_SNIPPETS:
+        if snip in impact:
+            return False, "vacuous_impact"
+
+    # Circular privilege restatement: "with X you can do X"
+    if "write access" in impact and "write" in impact and "if" in impact:
+        return False, "vacuous_impact"
+
+    sev = str(body.get("severity_claim") or "").strip().upper()
+    if sev in ("CRITICAL", "HIGH") and not _impact_has_concrete_hint(impact):
+        # HIGH/CRITICAL must name a concrete damage class, not vague "bad outcome".
+        return False, "vacuous_impact_for_severity"
+
     return True, ""
 
 

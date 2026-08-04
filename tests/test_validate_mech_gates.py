@@ -206,6 +206,74 @@ def test_severity_free_text_soft_drop_needs_human(tmp_path: Path, toy_sqli: Path
     db.close()
 
 
+def test_vacuous_impact_hedge_rejected(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    body["threat_model"]["impact"] = "could potentially be a security risk"
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    _fix_citation_line(body, toy_sqli)
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "rejected_mech"
+    assert any("vacuous_impact" in x for x in r.get("reasons") or []), r
+    db.close()
+
+
+def test_vacuous_boundary_token_rejected(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    body["threat_model"]["boundary"] = "unknown"
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    _fix_citation_line(body, toy_sqli)
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "rejected_mech"
+    assert any("vacuous_boundary" in x for x in r.get("reasons") or []), r
+    db.close()
+
+
+def test_high_severity_without_concrete_impact_rejected(tmp_path: Path, toy_sqli: Path):
+    """HIGH/CRITICAL need concrete impact hints (authz, data, RCE, …)."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    body["severity_claim"] = "CRITICAL"
+    body["threat_model"]["impact"] = "bad outcome for the application runtime"
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    _fix_citation_line(body, toy_sqli)
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "rejected_mech"
+    assert any(
+        "vacuous_impact_for_severity" in x for x in r.get("reasons") or []
+    ), r
+    db.close()
+
+
+def test_summary_too_short_rejected(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    body["summary"] = "SQL bug"
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    _fix_citation_line(body, toy_sqli)
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "rejected_mech"
+    assert any("summary_too_short" in x for x in r.get("reasons") or []), r
+    db.close()
+
+
 def test_meta_fingerprint_detects_real_mutation(tmp_path: Path, toy_sqli: Path):
     run_dir, db = _setup_run(tmp_path, toy_sqli)
     man_path = run_dir / "target_manifest.json"

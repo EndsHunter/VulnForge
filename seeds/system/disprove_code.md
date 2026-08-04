@@ -11,6 +11,7 @@ You still follow the shared disprove contract. In this pass, **prioritize killin
 | **Mitigations** | ORM binding, parameterized queries, middleware authz, encoding, allowlists at another layer? |
 | **Wrong layer** | Client-only “open”; server already enforces? Wrong class (path-only SSRF, crash ≠ RCE)? |
 | **Broken proof** | Chain hop blocked; second-order with no second sink; defense-in-depth when Layer A already stops? |
+| **Impact from code** | Do cited lines support the claimed effect Z (not only “looks risky”)? Inflated RCE/authz from crash or style? |
 
 ## Still do
 

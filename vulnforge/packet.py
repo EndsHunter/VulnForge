@@ -380,9 +380,10 @@ def pack_recon_agent(
         )
     agent_label = (agent_id or "recon").strip() or "recon"
     tool_hint = (
-        "Tools: prefer file_inventory over many list_dir; grep to find symbols; "
-        "read_file with 1-based line ranges for long files; paths are relative to "
-        "the target root. Call submit_architecture once when done.\n"
+        "Tools: prefer file_inventory over many list_dir; query_codemap for modules; "
+        "query_sinks for mechanical sink seeds; find_symbol / grep for names; "
+        "read_file with around_line or 1-based ranges; paths relative to target root. "
+        "Call submit_architecture once when done.\n"
     )
     system = (
         preamble
@@ -637,10 +638,13 @@ def pack_hunt(
     scope_note = (
         "Tools prefer path_hints (soft jail). list_dir/read_file/file_inventory: first "
         "out-of-scope call soft-blocks (widen_available); retry widens once. "
-        "grep is silently limited to path_hints roots until widened via list/read/inventory. "
+        "grep/find_symbol/query_sinks are limited to path_hints until widened via list/read/inventory. "
         "Use file_inventory once for tree structure (not dozens of list_dir). "
-        "grep: extension/glob for file type; files_only / match_path for path discovery; "
-        "do not thrash empty greps — change pattern or call file_inventory. "
+        "Prefer query_sinks / query_codemap / get_architecture over re-deriving the map. "
+        "grep: path=, context=, literal=, case_insensitive; extension/glob; files_only/match_path. "
+        "read_file: around_line+radius after hits; paths=[] for small batches. "
+        "write_evidence then preflight_candidate before submit_candidate. "
+        "list_evidence/read_evidence for the pack only. "
         "Hard deny only outside the target tree. force_depth does not lift the soft jail.\n"
     )
     if force:
@@ -685,8 +689,9 @@ def pack_hunt(
         f"{sinks_block}"
         f"{known_block}\n"
         f"## Codemap notes\n{notes}\n\n"
-        "Use tools. End with submit_candidate or submit_none.\n"
-        "Do not re-file issues already listed under Known findings.\n"
+        "Use tools. Prefer preflight_candidate then submit_candidate, or submit_none.\n"
+        "Do not re-file issues already listed under Known findings "
+        "(preflight near_duplicates / Known findings).\n"
         "If another hunt skill is needed, list_hunt_profiles then request_hunt "
         "(one profile per call). If the tool says that profile is already under way "
         "or circular, do not retry the same profile — finish this task instead.\n"
@@ -893,6 +898,79 @@ def pack_develop_poc(
             "budget": budget,
             "stage": "develop_poc",
             "evidence_id": eid,
+        },
+        over_budget=total > budget * 1.5,
+    )
+
+
+def pack_poc_referee(
+    cfg: dict,
+    prompts_root: Path,
+    finding_body: dict,
+    file_slices: list[dict],
+    *,
+    poc_run: dict | None = None,
+) -> Packet:
+    """Text-only referee for PoC run artifacts. Never tools; annotate only."""
+    try:
+        preamble = load_prompt_slice(prompts_root, "preamble.md")
+    except FileNotFoundError:
+        preamble = ""
+    system = (
+        (preamble + "\n" if preamble else "")
+        + "## Stage: poc_referee\n"
+        + "You judge whether a controlled PoC *run* supports the finding claim. "
+        + "Distinguish broken PoC vs absent signal vs observed signal. "
+        + "Never set confirmed; never invent new bugs.\n\n"
+        + _principles_without_hunt_tools(prompts_root)
+    )
+    try:
+        stage_md = load_prompt_slice(prompts_root, "referee_poc.md")
+    except FileNotFoundError:
+        stage_md = (
+            "Given the finding and poc_run.json, output:\n"
+            "VERDICT=signal_observed|signal_absent|poc_broken|inconclusive|unsafe_skipped\n"
+            "CONFIDENCE=low|medium|high\n"
+            "REASONING=one short paragraph\n"
+        )
+    pkt = cfg.get("packet") or {}
+    max_slice = int(pkt.get("max_file_slice_chars", 4000))
+    slices_txt: list[str] = []
+    for s in file_slices:
+        body = s.get("content") if s.get("content") is not None else s.get("text")
+        err = s.get("error")
+        head = f"### {s.get('path')}"
+        if s.get("start_line") is not None:
+            head += f" (L{s.get('start_line')}-{s.get('end_line')})"
+        if err:
+            slices_txt.append(f"{head}\n_error: {err}_\n")
+            continue
+        slices_txt.append(
+            f"{head}\n```\n"
+            + truncate(str(body or ""), max_slice, "slice")
+            + "\n```\n"
+        )
+    run_json = json.dumps(poc_run or {}, indent=2)[:14000]
+    user = (
+        stage_md
+        + "\n\n## Finding JSON\n```json\n"
+        + json.dumps(finding_body, indent=2)[:10000]
+        + "\n```\n\n## poc_run.json\n```json\n"
+        + run_json
+        + "\n```\n\n## Cited slices\n"
+        + ("\n".join(slices_txt) if slices_txt else "_(none)_")
+    )
+    budget = _budget_chars(cfg)
+    total = len(system) + len(user)
+    over = total > budget
+    return Packet(
+        system=system,
+        user=truncate(user, budget - len(system), "poc_referee") if over else user,
+        tools_schema=[],
+        meta={
+            "chars": total,
+            "budget": budget,
+            "stage": "poc_referee",
         },
         over_budget=total > budget * 1.5,
     )

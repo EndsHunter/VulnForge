@@ -7,7 +7,7 @@ runs generate spec → impl → validate → optional one fix → dry-run integr
 Usage (repo root, venv active, model server up)::
 
     python scripts/live_toolgen_smoke.py
-    VF_MODEL=ornith-1.0-35b@4bit python scripts/live_toolgen_smoke.py
+    VF_MODEL=ornith-1.0-35b python scripts/live_toolgen_smoke.py
 
 Does **not** apply integrate (never writes package tools by default).
 Pass ``--apply`` only after reviewing impl.py (mutates the package).

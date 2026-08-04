@@ -3,7 +3,7 @@
 VulnForge’s campaign loop is a **task queue** over a read-only target tree:
 
 ```text
-init → recon → hunt → validate_mech → [optional validate_llm] → human review → project/*
+init → recon → hunt → validate_mech → validate_llm (default on) → human review → project/*
 ```
 
 Ralph (`scripts/ralph.py` / `vf run-once`) leases one task, runs the stage handler, and exits. Durable state lives in `harness.db`, `evidence/`, transcripts, and events.
@@ -13,7 +13,7 @@ Ralph (`scripts/ralph.py` / `vf run-once`) leases one task, runs the stage handl
 | **Recon** | `recon` | Yes | [recon/](recon/) |
 | **Hunt** | `hunt` | Yes | [hunt/](hunt/) |
 | **Validate (mech)** | `validate_mech` | No | [validate/](validate/) |
-| **Validate (LLM)** | `validate_llm` | Optional | [validate/](validate/) |
+| **Validate (LLM)** | `validate_llm` | Yes (default; opt out via config) | [validate/](validate/) |
 
 Related (not covered here as full folders): `develop_poc`, `generate_skill`, `tool_gaps`, `render`. Near-dup merge is `stages/dedup.py` (not a leased kind).
 

@@ -10,10 +10,12 @@
 2. **recon** (LLM) — map architecture; enqueue **hunt** tasks. When a map already exists, each recon **merges** (LLM merge with mechanical fallback) instead of blank-overwriting; Mission **History** can view/restore prior revisions. Mechanical **codemap** (`runs.codemap_json`) is structure-only (modules/entrypoints), separate from architecture.
 3. **hunt** (LLM) — one area × weakness class; candidate or `submit_none`
 4. **validate_mech** (no LLM) — mechanical gates → `needs_human` or `rejected_mech`
-5. **human review** (dashboard Report) — accept → `confirmed`, reject → `rejected_human`, optional notes/docs
-6. **project projection** — regenerates `project/*` on idle `run-once` / `vf project`
+5. **validate_llm** (default on) — dual adversarial disprove; both reject → `rejected_llm`, else stay `needs_human`. Never auto-confirms. Set `stages.validate_llm: false` to skip for speed/debug.
+6. **human review** (dashboard Report) — accept → `confirmed`, reject → `rejected_human`, optional notes/docs
+7. **develop_poc / validate_poc** (operator) — write runnable PoC under `evidence/`; optional controlled harness run → `poc_run.json` (never auto-`confirmed`)
+8. **project projection** — regenerates `project/*` on idle `run-once` / `vf project`
 
-**`needs_human` = mech gates passed. `confirmed` = human accepted.** Neither is exploit proof.
+**`needs_human` = mech gates passed (and disprove did not kill, if enabled). `confirmed` = human accepted.** Neither is exploit proof.
 
 ## Quick start
 
@@ -42,7 +44,7 @@ The dashboard is the main operator surface:
 | **AI** | Campaign co-pilot: start/query hunts, status, findings, runner control (confirm mutators) |
 | **Harness** | Live agent graph (loop profiles are dev/API only — not operator UI) |
 
-**Home** (`/`): all runs + **AI Chat** (`/chat`, fleet co-pilot) + **Tool gaps** (`/tool-gaps`) + **Dev dashboard** (`/dev`, hunt skills).
+**Home** (`/`): all runs + **AI Chat** (`/chat`, fleet co-pilot) + **Tool gaps** (`/tool-gaps`) + **Dev dashboard** (`/dev`, hunt skills) + **Settings** (`/settings` — endpoint, per-stage models, multi-model validation).
 
 ### Operator AI chat
 
@@ -56,7 +58,14 @@ The dashboard is the main operator surface:
 1. Start Ralph from the mission bar.
 2. **Explorer**: open a file, optionally select lines, pick a hunt class, add notes, **Enqueue hunt**.
 3. **Coverage**: click residual cells (shallow/aborted/none) → re-queue with notes.
-4. **Report**: open a finding → **Open Evidence**; **Develop POC** opens a **workshop modal** (not a mode tab) — hub is `evidence/<pack>/poc_develop.md`; optional Ralph `develop_poc` writes **runnable** PoC code (not a narrative rewrite); **Accept / Reject / Needs review** with optional notes. None of these auto-prove exploitability.
+4. **Report**: open a finding → **Open Evidence**; **Develop POC** opens a **workshop modal** (not a mode tab) — hub is `evidence/<pack>/poc_develop.md`; optional Ralph `develop_poc` writes **runnable** PoC code (not a narrative rewrite); **Run in harness** queues `validate_poc` (writes `poc_run.json`); **Export validation job** builds a handoff zip; **Accept / Reject / Needs review** with optional notes. None of these auto-prove exploitability.
+
+CLI handoff / harness:
+
+```powershell
+vf export-validation-job --run-dir runs\<target_id>\run-001 --finding-id 3
+vf validate-poc --run-dir runs\<target_id>\run-001 --finding-id 3 --execute
+```
 
 Keyboard: `e` focuses Explorer.
 
@@ -148,6 +157,22 @@ Ralph can pick up a no-LLM task if enqueued:
 
 Optional: set `run.auto_tool_gaps: true` in config so idle `run-once` writes gaps after render (default false).
 
+## Agent loop runtime (Strands)
+
+VulnForge uses **[Strands Agents](https://strandsagents.com/)** for all production LLM↔tools work (hunt, recon, develop_poc, operator chat). Implementation: `vulnforge/agent_runtime/`. Core dependency: `strands-agents[openai]`.
+
+Operator chat **mutations still require UI Confirm**. Offline tests use `FakeLLMClient` (scripted; no network).
+
+**Multi-agent recon** (`llm.recon_orchestrator` / `VF_RECON_ORCHESTRATOR`):
+
+| Mode | Behavior |
+|------|----------|
+| `ralph` (default) | One durable Ralph task per recon agent (fan-out) |
+| `inprocess` | All agents sequential in one task |
+| `graph` | Sequential Strands Graph pipeline in one task |
+
+Never auto-`confirmed`; human review unchanged.
+
 ## Scope
 
 VulnForge is **source-code analysis only** (`code_static`). PE / binary reverse-engineering (Ghidra, `binary_re`) has been removed.
@@ -157,5 +182,5 @@ VulnForge is **source-code analysis only** (`code_static`). PE / binary reverse-
 - Target tree is **read-only** for agents.
 - Evidence only under `evidence/`.
 - `project/*` is projection, not authority.
-- Do not treat same-model `validate_llm` as strong proof.
+- Do not treat same-model `validate_llm` as strong proof (default on; demote-only).
 - Automation never sets `confirmed`; only human review does.

@@ -224,6 +224,7 @@ _ERROR_PATTERNS = re.compile(
 
 class LLMClient:
     def __init__(self, cfg: dict):
+        self._cfg = cfg
         llm = cfg.get("llm") or {}
         self.base_url = str(llm.get("base_url", "http://127.0.0.1:1234/v1")).rstrip("/")
         self.model = llm.get("model") or ""
@@ -240,6 +241,8 @@ class LLMClient:
         # Reasoning models (e.g. Ornith) spend tokens on reasoning_content first;
         # a low max_tokens yields empty content + finish_reason=length.
         self.default_max_tokens = int(llm.get("max_tokens", 4096))
+        # Alias used by Strands OpenAIModel bridge
+        self.max_tokens = self.default_max_tokens
 
         self.api_mode = normalize_api_mode(llm.get("api_mode"))
         headers: dict[str, str] = {}
@@ -420,190 +423,13 @@ class LLMClient:
             return out
         return classify_messages_api(out["status_code"], out["body"], model=model)
 
-    def run_tool_loop(
-        self,
-        packet: Any,
-        tool_handler: Callable[[str, dict], dict],
-        max_rounds: int,
-        temperature: float,
-    ) -> LLMResult:
-        messages = messages_from_packet(packet)
-        tools = getattr(packet, "tools_schema", None) or []
-        last: Optional[LLMResult] = None
-        submit_seen = False  # Track if any submit_* was attempted
-        usage_acc = TokenUsage(source="none", llm_calls=0)
-
-        def _accumulate(res: LLMResult) -> None:
-            nonlocal usage_acc
-            u = res.usage
-            if u is None or u.source == "none":
-                u = estimate_usage_from_messages(
-                    messages, res.content, res.tool_calls
-                )
-                res.usage = u
-            usage_acc = usage_acc.add(u) if usage_acc.llm_calls else u
-
-        def _with_acc(res: LLMResult) -> LLMResult:
-            res.usage = usage_acc if usage_acc.llm_calls else res.usage
-            return res
-
-        for _ in range(max_rounds):
-            last = self.chat(messages, tools=tools or None, temperature=temperature)
-            _accumulate(last)
-            if not last.ok:
-                last.transcript = list(messages)
-                return _with_acc(last)
-
-            # Warn only for tool names not present in this stage's schema
-            # (or terminal submit_* tools). Recon tools like read_file/grep are
-            # legitimate when offered — do not treat them as non-compliance.
-            if last.tool_calls:
-                schema_names: set[str] = {
-                    "submit_candidate",
-                    "submit_none",
-                    "submit_architecture",
-                }
-                for t in tools or []:
-                    if not isinstance(t, dict):
-                        continue
-                    fn = t.get("function") if isinstance(t.get("function"), dict) else t
-                    if isinstance(fn, dict) and fn.get("name"):
-                        schema_names.add(str(fn["name"]))
-                invalid_calls = [
-                    tc["name"]
-                    for tc in last.tool_calls
-                    if tc.get("name") and str(tc["name"]) not in schema_names
-                ]
-                if invalid_calls:
-                    import logging
-
-                    logger = logging.getLogger(__name__)
-                    logger.warning(
-                        "LLM called unknown tools: %s. "
-                        "This may indicate non-compliance with expected tool schema.",
-                        invalid_calls,
-                    )
-
-                asst: dict[str, Any] = {
-                    "role": "assistant",
-                    "content": last.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.get("id") or f"call_{i}",
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": json.dumps(tc.get("arguments") or {}),
-                            },
-                        }
-                        for i, tc in enumerate(last.tool_calls)
-                    ],
-                }
-                if last.reasoning_content:
-                    asst["reasoning_content"] = last.reasoning_content
-                messages.append(asst)
-
-                # Track if any submit_* call was made
-                has_submit = False
-                stop = False
-
-                for tc in last.tool_calls:
-                    name = tc["name"]
-                    args = tc.get("arguments") or {}
-                    if not isinstance(args, dict):
-                        try:
-                            args = json.loads(args)
-                        except Exception:
-                            args = {}
-
-                    out = tool_handler(name, args)
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.get("id") or "call",
-                            "name": name,
-                            "content": json.dumps(out),
-                        }
-                    )
-
-                    # Track submit_* calls for compliance checking
-                    if name in ("submit_candidate", "submit_none", "submit_architecture"):
-                        submit_seen = True
-                        has_submit = True
-                        if isinstance(out, dict) and out.get("ok") is True:
-                            stop = True
-
-                if stop:
-                    last.transcript = list(messages)
-                    return _with_acc(last)
-
-                # If no submit_* was called in this round, continue to next round
-                if not has_submit:
-                    continue
-
-            # Free text exit (no tool_calls) — silent failure path
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": last.content or "",
-                    **(
-                        {"reasoning_content": last.reasoning_content}
-                        if last.reasoning_content
-                        else {}
-                    ),
-                }
-            )
-            last.transcript = list(messages)
-
-            # If we've exhausted rounds without any submit, mark as no_submit
-            if not submit_seen and _ >= max_rounds - 1:
-                return _with_acc(
-                    LLMResult(
-                        ok=False,
-                        classification=ResponseClass.TRUNCATED,
-                        content=last.content if last else None,
-                        tool_calls=last.tool_calls if last else [],
-                        raw=None,
-                        model_id=self._resolved_model or self.model,
-                        error="no_submit",  # Explicit no_submit error
-                        transcript=list(messages),
-                    )
-                )
-
-            return _with_acc(last)
-
-        # Exhausted all rounds without successful submit
-        if not submit_seen:
-            return _with_acc(
-                LLMResult(
-                    ok=False,
-                    classification=ResponseClass.TRUNCATED,
-                    content=last.content if last else None,
-                    tool_calls=last.tool_calls if last else [],
-                    raw=None,
-                    model_id=self._resolved_model or self.model,
-                    error="no_submit",  # Explicit no_submit error when rounds exhausted
-                    transcript=list(messages),
-                )
-            )
-
-        return _with_acc(
-            LLMResult(
-                ok=False,
-                classification=ResponseClass.TRUNCATED,
-                content=last.content if last else None,
-                tool_calls=last.tool_calls if last else [],
-                raw=None,
-                model_id=self._resolved_model or self.model,
-                error="max_tool_rounds",
-                transcript=list(messages),
-            )
-        )
-
-
 @dataclass
 class FakeLLMClient:
-    """Scripted LLM for tests — no network."""
+    """Scripted LLM for tests — no network.
+
+    Implements ``run_tool_loop`` for offline stage tests. Production traffic
+    uses Strands via ``vulnforge.agent_runtime.run_tool_loop``.
+    """
 
     responses: list[LLMResult] = field(default_factory=list)
     model_id: str = "fake-model"
@@ -1371,12 +1197,20 @@ def messages_from_packet(packet: Any) -> list[dict]:
     ]
 
 
-def make_client(cfg: dict) -> Any:
-    """Factory: fake if cfg['llm']['fake'] else real."""
+def make_client(cfg: dict, model: str | None = None) -> Any:
+    """Factory: fake if cfg['llm']['fake'] else real.
+
+    Optional ``model`` overrides ``llm.model`` for this client only (stage routing
+    and multi-model validation). Prefer ``vulnforge.llm_models.make_client_for_stage``.
+    """
+    if model:
+        from vulnforge.llm_models import cfg_with_model
+
+        cfg = cfg_with_model(cfg, model)
     llm = cfg.get("llm") or {}
     if llm.get("fake"):
         return FakeLLMClient(
             responses=llm.get("fake_responses") or [],
-            model_id=llm.get("model") or "fake",
+            model_id=llm.get("model") or model or "fake",
         )
     return LLMClient(cfg)

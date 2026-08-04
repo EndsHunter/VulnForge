@@ -21,8 +21,10 @@ Confirm the finding states, or infer from body:
 | **Attacker** | Capability (unauth / user / admin / supply-chain / physical) matches the path |
 | **Boundary** | Which trust boundary is crossed (tenant, user, privilege, network, process) |
 | **Impact** | Concrete damage (data, authz, code exec, money) — not “could be bad” |
+| **Severity** | Optional claim only; never raise it. Flag inflation (HIGH/CRITICAL with soft impact) |
 
-If threat_model is missing or vacuous → prefer `reject` or `needs_human`, not `stand`.
+If threat_model is missing or vacuous → prefer `reject` or `needs_human`, not `stand`.  
+If `severity_claim` is HIGH/CRITICAL but impact is hedge/vacuous or needs many unforced preconditions → lean `reject` or `needs_human`, not `stand`.
 
 ## Process (mandatory order)
 
@@ -49,6 +51,8 @@ Use these as structured attacks on the claim:
 - Designed public behavior under the stated product model  
 - Placeholder secrets when prod loads from vault/KMS (and code path proves that)  
 - Missing hardening (headers, rate limits, logging) without a concrete exploit path  
+- Impact is placeholder/hedge only: “security risk”, “could potentially…”, “compromise the system” with no named effect Z  
+- Severity overclaim: CRITICAL/HIGH while Z is style nit, crash-only, or defense-in-depth gap  
 
 ### C. Wrong layer / wrong class of bug
 - Server control already enforced; only client UI is “open”  
@@ -73,6 +77,8 @@ Use these as structured attacks on the claim:
 - Severity requires many simultaneous preconditions the attacker cannot force  
 - Vacuous claim (“with DB write you can write the DB”)  
 - Duplicate of designed admin capability  
+- `severity_claim` outruns impact (e.g. CRITICAL for local CLI crash with no trust boundary)  
+- Summary fluent but threat_model.impact does not state attacker → effect Z
 
 ## Alternative explanation (required)
 

@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from vulnforge.control.ops import POC_CODE_EXTS, POC_DEVELOP_RELPATH
-from vulnforge.llm import InfraError, classify_llm_failure, make_client
+from vulnforge.agent_runtime import run_tool_loop as run_agent_tool_loop
+from vulnforge.llm import InfraError, classify_llm_failure
 from vulnforge.packet import pack_develop_poc, refuse_if_over_budget
 from vulnforge.tools import build_tool_handler
 from vulnforge.transcript import save_transcript
@@ -171,7 +172,9 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "finding_id": fid,
         }
 
-    client = make_client(cfg)
+    from vulnforge.llm_models import make_client_for_stage
+
+    client = make_client_for_stage(cfg, "develop_poc")
     model_id: str | None = None
     try:
         try:
@@ -185,8 +188,13 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
 
         max_rounds = int((cfg.get("llm") or {}).get("max_tool_rounds", 12))
         temp = float((cfg.get("llm") or {}).get("temperature_hunt", 0.3))
-        result = client.run_tool_loop(
-            packet, handler, max_rounds=max_rounds, temperature=temp
+        result = run_agent_tool_loop(
+            client,
+            packet,
+            handler,
+            max_rounds=max_rounds,
+            temperature=temp,
+            cfg=cfg,
         )
         usage_fields = record_llm_result(
             run_dir,

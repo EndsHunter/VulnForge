@@ -29,6 +29,7 @@ Loader: `vulnforge.packet.load_prompt_slice` prefers override for top-level base
 | `disprove_threat.md` | [VALIDATE.md](VALIDATE.md) | perspective slice | validate_llm |
 | `disprove_code.md` | [VALIDATE.md](VALIDATE.md) | perspective slice | validate_llm |
 | `develop_poc.md` | [DEVELOP_POC.md](DEVELOP_POC.md) | develop_poc packet | develop_poc task |
+| `referee_poc.md` | [VALIDATE.md](VALIDATE.md) | `pack_poc_referee` | optional after validate_poc |
 | `generate_skill.md` | [GENERATE_SKILL.md](GENERATE_SKILL.md) | hunt skill author | generate_skill / Dev |
 | `tool_gaps.md` | [TOOL_GAPS.md](TOOL_GAPS.md) | tool_gaps hybrid LLM | tool gap analysis |
 | `toolgen_spec.md` | [TOOLGEN.md](TOOLGEN.md) | toolgen pipeline | Dev Tools |
