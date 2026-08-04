@@ -593,6 +593,136 @@ def test_preflight_candidate_ready_path(toy_sqli: Path, tmp_path: Path):
     assert not ready["blockers"]
 
 
+def test_write_evidence_rewrites_target_absolute_path(toy_sqli: Path, tmp_path: Path):
+    """Models that pass target paths get pack-relative rewrite, not thrash."""
+    evidence_root = tmp_path / "evidence"
+    evidence_root.mkdir()
+    target_file = (toy_sqli / "app.py").resolve()
+    ctx = {
+        "target_root": str(toy_sqli),
+        "evidence_root": str(evidence_root),
+        "task_id": 11,
+        "cfg": {"tools": {}},
+        "session": {},
+    }
+    h = build_tool_handler(ctx)
+    r = h(
+        "write_evidence",
+        {
+            "relpath": str(target_file),
+            "content": "attack notes with enough bytes for the min gate",
+        },
+    )
+    assert r["ok"], r
+    assert r.get("rewritten")
+    assert r["path"] == "app.py"
+    assert (evidence_root / "11" / "app.py").is_file()
+    # path= alias
+    r2 = h(
+        "write_evidence",
+        {
+            "path": "../escape.md",
+            "content": "should not escape pack with enough content bytes xx",
+        },
+    )
+    assert not r2["ok"]
+    assert r2.get("code") in ("path_escape", "invalid_evidence_path")
+    assert r2.get("suggested_relpath")
+
+
+def test_list_dir_structured_outside_target(toy_sqli: Path, tmp_path: Path):
+    ctx = {
+        "target_root": str(toy_sqli),
+        "cfg": {"tools": {}, "run": {"ignore_globs": []}},
+        "session": {},
+        "scope": {"enabled": False},
+    }
+    h = build_tool_handler(ctx)
+    bad = h("list_dir", {"path": str(tmp_path / "nope")})
+    assert not bad["ok"]
+    assert bad.get("code") == "outside_target" or bad.get("error") == "outside_target"
+    assert bad.get("hint")
+
+    # Absolute under target → trim and succeed
+    abs_ok = h("list_dir", {"path": str(toy_sqli.resolve())})
+    assert abs_ok["ok"], abs_ok
+    assert abs_ok["path"] in (".", "")
+
+
+def test_force_submit_on_round_limit(tmp_path: Path):
+    from vulnforge.agent_runtime import run_tool_loop
+    from vulnforge.llm import FakeLLMClient, LLMResult, ResponseClass, TokenUsage
+    from vulnforge.packet import Packet
+
+    # Exhaust rounds without submit → harness forces submit_none
+    client = FakeLLMClient(
+        responses=[
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="",
+                tool_calls=[
+                    {
+                        "id": "1",
+                        "name": "list_dir",
+                        "arguments": {"path": "."},
+                    }
+                ],
+                raw=None,
+                model_id="fake",
+                usage=TokenUsage(
+                    prompt_tokens=1,
+                    completion_tokens=1,
+                    total_tokens=2,
+                    source="provider",
+                ),
+            )
+            for _ in range(3)
+        ]
+    )
+    packet = Packet(
+        system="sys",
+        user="user",
+        tools_schema=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_dir",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "submit_none",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ],
+    )
+    stored: dict = {}
+
+    def handler(name, args):
+        if name == "list_dir":
+            return {"ok": True, "entries": []}
+        if name == "submit_none":
+            stored["none"] = args
+            return {"ok": True, "stored": "none"}
+        return {"ok": False, "error": f"unknown {name}"}
+
+    result = run_tool_loop(
+        client,
+        packet,
+        handler,
+        max_rounds=2,
+        temperature=0.1,
+        cfg={"llm": {"force_submit_on_round_limit": True}},
+    )
+    assert result.ok, result
+    assert stored.get("none")
+    assert "max_tool_rounds" in str(stored["none"].get("reason") or "")
+
+
 def test_get_architecture_brief(tmp_path: Path):
     class _FakeDb:
         def get_architecture(self):

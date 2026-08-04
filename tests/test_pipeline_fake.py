@@ -167,12 +167,13 @@ def test_hunt_max_tool_rounds_is_failed_task(tmp_path: Path, toy_sqli: Path):
     )
     task = db.lease_next_task("w", 60)
     assert task is not None
-    # 3 read-noise rounds with max_rounds=2 â†’ max_tool_rounds
+    # 3 read-noise rounds with max_rounds=2 → max_tool_rounds (abort path)
     cfg = {
         "llm": {
             "fake": True,
             "fake_responses": [_read_noise(), _read_noise(), _read_noise()],
             "max_tool_rounds": 2,
+            "force_submit_on_round_limit": False,
         },
         "run": {"ignore_globs": []},
         "packet": {},
@@ -198,6 +199,7 @@ def test_recon_max_tool_rounds_is_failed_task(tmp_path: Path, toy_sqli: Path):
             "fake": True,
             "fake_responses": [_read_noise(), _read_noise(), _read_noise()],
             "max_tool_rounds": 2,
+            "force_submit_on_round_limit": False,
         },
         "run": {"ignore_globs": [], "max_recon_auto_retries": 2},
         "packet": {},
@@ -235,6 +237,7 @@ def test_recon_auto_retry_respects_cap(tmp_path: Path, toy_sqli: Path):
             "fake": True,
             "fake_responses": [_read_noise(), _read_noise(), _read_noise()],
             "max_tool_rounds": 2,
+            "force_submit_on_round_limit": False,
         },
         "run": {"ignore_globs": [], "max_recon_auto_retries": 1},
         "packet": {},
@@ -290,6 +293,7 @@ def test_poison_hunt_does_not_block_sibling(tmp_path: Path, toy_sqli: Path):
             "fake": True,
             "fake_responses": [_read_noise(), _read_noise(), _read_noise()],
             "max_tool_rounds": 2,
+            "force_submit_on_round_limit": False,
         },
         "run": {"ignore_globs": [], "max_task_attempts": 3},
         "packet": {},

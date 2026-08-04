@@ -89,6 +89,7 @@ def maybe_soft_jail(ctx: dict, rel: str) -> dict[str, Any] | None:
         return {
             "ok": False,
             "error": "out_of_scope",
+            "code": "out_of_scope",
             "path": rel_n,
             "path_hints": hints,
             "hint": (

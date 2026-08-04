@@ -6,6 +6,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from vulnforge.tools.path_coerce import coerce_target_relpath
 from vulnforge.tools.scope import attach_scope_warning, maybe_soft_jail
 from vulnforge.util import normalize_relpath
 
@@ -27,13 +28,45 @@ def resolve_target_path(target_root: Path, rel: str) -> Path:
 
 def list_dir(ctx: dict, path: str = ".", max_entries: int | None = None) -> dict[str, Any]:
     try:
-        soft = maybe_soft_jail(ctx, path or ".")
+        rel, cerr = coerce_target_relpath(ctx, path, default=".", tool="list_dir")
+        if cerr is not None:
+            return cerr
+        assert rel is not None
+        soft = maybe_soft_jail(ctx, rel)
         if soft is not None:
+            # Ensure soft jail always exposes structured out_of_scope
+            soft.setdefault("code", soft.get("error") or "out_of_scope")
             return soft
         root = Path(ctx["target_root"])
-        p = resolve_target_path(root, path)
+        try:
+            p = resolve_target_path(root, rel)
+        except PermissionError:
+            return {
+                "ok": False,
+                "error": "path_escape",
+                "code": "path_escape",
+                "path": rel,
+                "hint": (
+                    "list_dir: path escapes the audit target. "
+                    "Use a relative path under the target root (e.g. '.')."
+                ),
+            }
+        if not p.exists():
+            return {
+                "ok": False,
+                "error": "path_not_found",
+                "code": "path_not_found",
+                "path": rel,
+                "hint": "Path does not exist under the target. Try file_inventory or list_dir on parent.",
+            }
         if not p.is_dir():
-            return {"ok": False, "error": "not a directory"}
+            return {
+                "ok": False,
+                "error": "not_a_directory",
+                "code": "not_a_directory",
+                "path": rel,
+                "hint": "list_dir needs a directory. Use read_file for files.",
+            }
         cap = max_entries or int((ctx.get("cfg") or {}).get("tools", {}).get("max_list_entries", 200))
         try:
             cap = max(1, int(cap))
@@ -46,15 +79,27 @@ def list_dir(ctx: dict, path: str = ".", max_entries: int | None = None) -> dict
             entries.append({"name": e.name, "is_dir": e.is_dir()})
         result = {
             "ok": True,
-            "path": path,
+            "path": rel,
             "entries": entries,
             "total": total,
             "truncated": total > len(entries),
             "max_entries": cap,
         }
+        if path and normalize_relpath(str(path)) not in (rel, normalize_relpath(rel)):
+            # Absolute-under-target was trimmed
+            if str(path).replace("\\", "/") != rel:
+                result["rewritten"] = True
+                result["original_path"] = path
         return attach_scope_warning(result, ctx)
+    except PermissionError as e:
+        return {
+            "ok": False,
+            "error": "path_escape",
+            "code": "path_escape",
+            "hint": str(e),
+        }
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "code": "list_dir_error"}
 
 
 def _norm_extension(extension: str | None) -> str | None:
@@ -222,12 +267,27 @@ def file_inventory(
     extension/glob filters (e.g. find all ``.cu`` files).
     """
     try:
-        soft = maybe_soft_jail(ctx, path or ".")
+        rel, cerr = coerce_target_relpath(ctx, path, default=".", tool="file_inventory")
+        if cerr is not None:
+            return cerr
+        assert rel is not None
+        soft = maybe_soft_jail(ctx, rel)
         if soft is not None:
+            soft.setdefault("code", soft.get("error") or "out_of_scope")
             return soft
 
         root = Path(ctx["target_root"]).resolve()
-        base = resolve_target_path(root, path)
+        try:
+            base = resolve_target_path(root, rel)
+        except PermissionError:
+            return {
+                "ok": False,
+                "error": "path_escape",
+                "code": "path_escape",
+                "path": rel,
+                "hint": "file_inventory: path escapes the audit target.",
+            }
+        path = rel  # normalized for display below
         if not base.exists():
             return {"ok": False, "error": "path not found", "path": path}
         if base.is_file():
@@ -343,15 +403,31 @@ def _read_one_file(
     max_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Read a single path; returns ok dict or error dict (no session append)."""
-    soft = maybe_soft_jail(ctx, path or "")
+    rel, cerr = coerce_target_relpath(ctx, path, default="", tool="read_file")
+    if cerr is not None:
+        return cerr
+    if not rel:
+        return {
+            "ok": False,
+            "error": "path_required",
+            "code": "path_required",
+            "hint": "read_file requires path relative to the target root.",
+        }
+    soft = maybe_soft_jail(ctx, rel)
     if soft is not None:
+        soft.setdefault("code", soft.get("error") or "out_of_scope")
         return soft
     root = Path(ctx["target_root"])
     try:
-        p = resolve_target_path(root, path)
-    except PermissionError as e:
-        return {"ok": False, "error": str(e), "path": normalize_relpath(path or "")}
-    rel = normalize_relpath(path or "")
+        p = resolve_target_path(root, rel)
+    except PermissionError:
+        return {
+            "ok": False,
+            "error": "path_escape",
+            "code": "path_escape",
+            "path": rel,
+            "hint": "read_file: path escapes the audit target.",
+        }
     if not p.exists():
         # Suggest siblings under parent when possible
         hint = "Path not found. Use file_inventory or list_dir on the parent."

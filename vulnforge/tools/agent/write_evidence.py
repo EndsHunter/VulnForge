@@ -57,7 +57,8 @@ SPEC = ToolSpec(
     stages=("hunt", "develop_poc"),
     description=(
         "Write a text file into this task's evidence pack under evidence/ "
-        "(never into the audit target). "
+        "(never into the audit target — absolute/target paths are auto-rewritten "
+        "to pack-relative basenames or rejected with suggested_relpath). "
         "Use for notes, excerpts, or draft PoC material. "
         "relpath is relative to the pack root (e.g. 'notes.md', 'excerpt.c'). "
         "append=true appends to an existing file. "
@@ -91,9 +92,13 @@ SPEC = ToolSpec(
 
 
 def run(ctx: dict, **args: Any) -> dict[str, Any]:
+    # Models often pass path= (target-style) instead of relpath= — accept both.
+    rel = args.get("relpath")
+    if rel is None or str(rel).strip() == "":
+        rel = args.get("path") or args.get("file") or ""
     return _write_evidence(
         ctx,
-        relpath=args.get("relpath", ""),
+        relpath=str(rel or ""),
         content=args.get("content", ""),
         evidence_id=args.get("evidence_id"),
         append=bool(args.get("append")),

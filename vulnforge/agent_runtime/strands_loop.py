@@ -242,6 +242,7 @@ def run_strands_tool_loop(
     tool_handler: Callable[[str, dict], dict],
     max_rounds: int,
     temperature: float,
+    cfg: Optional[dict[str, Any]] = None,
 ) -> LLMResult:
     """Run one VulnForge packet through a Strands Agent; return LLMResult."""
     _require_strands()
@@ -257,6 +258,16 @@ def run_strands_tool_loop(
     model = _model_from_client(client, temperature)
     system = str(getattr(packet, "system", "") or "")
     user = str(getattr(packet, "user", "") or "")
+    # Round-budget nudge so models finish with submit_* before the hard limit.
+    turns = max(1, int(max_rounds))
+    if turns >= 2 and "max_tool_rounds" not in user.lower():
+        user = (
+            user
+            + f"\n\n## Tool budget\nYou have at most **{turns}** tool rounds. "
+            "If you are near the limit, call the terminal tool now "
+            "(submit_candidate / submit_none / submit_architecture). "
+            "Do not thrash on failed tools — fix args or submit_none.\n"
+        )
 
     agent = Agent(
         model=model,
@@ -270,7 +281,6 @@ def run_strands_tool_loop(
     # Also strip before invoke in case of prior state (fresh agent, no-op)
     strip_reasoning_from_strands_messages(list(agent.messages))
 
-    turns = max(1, int(max_rounds))
     try:
         result = agent(
             user,

@@ -486,7 +486,19 @@ class FakeLLMClient:
             res.usage = usage_acc if usage_acc.llm_calls else res.usage
             return res
 
-        for _ in range(max_rounds):
+        for round_i in range(max_rounds):
+            # Nudge on the last round so scripted + live models finish cleanly.
+            if round_i == max_rounds - 1 and max_rounds >= 2:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "LAST tool round. You MUST call submit_candidate, "
+                            "submit_none, or submit_architecture now — do not "
+                            "call more exploration tools."
+                        ),
+                    }
+                )
             last = self.chat(messages, tools=packet.tools_schema, temperature=temperature)
             _accumulate(last)
             if not last.ok:

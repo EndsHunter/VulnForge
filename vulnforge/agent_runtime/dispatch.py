@@ -21,20 +21,33 @@ def run_tool_loop(
 ) -> LLMResult:
     """Run the agent tool loop via Strands (or FakeLLM scripted loop in tests).
 
-    ``cfg`` is accepted for call-site compatibility (stages pass harness config)
-    but does not select an alternate backend.
+    Applies ``force_submit_on_round_limit`` fallback when the model thrashs
+    without a successful submit_* (default on).
     """
-    del cfg  # always Strands for live clients
-
+    from vulnforge.agent_runtime.round_limit import apply_round_limit_fallback
     from vulnforge.llm import FakeLLMClient
 
     if isinstance(client, FakeLLMClient):
-        return client.run_tool_loop(
+        result = client.run_tool_loop(
             packet, tool_handler, max_rounds=max_rounds, temperature=temperature
+        )
+        return apply_round_limit_fallback(
+            result,
+            tool_handler,
+            packet,
+            max_rounds=max_rounds,
+            cfg=cfg,
         )
 
     from vulnforge.agent_runtime.strands_loop import run_strands_tool_loop
 
-    return run_strands_tool_loop(
-        client, packet, tool_handler, max_rounds, temperature
+    result = run_strands_tool_loop(
+        client, packet, tool_handler, max_rounds, temperature, cfg=cfg
+    )
+    return apply_round_limit_fallback(
+        result,
+        tool_handler,
+        packet,
+        max_rounds=max_rounds,
+        cfg=cfg,
     )

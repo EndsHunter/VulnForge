@@ -257,6 +257,8 @@ def test_auto_split_on_max_rounds(tmp_path: Path, toy_sqli: Path):
             "fake": True,
             "fake_responses": [noise, noise, noise],
             "max_tool_rounds": 2,
+            # Exercise abort + auto-split path (default now forces submit_none).
+            "force_submit_on_round_limit": False,
         },
         "run": {"ignore_globs": [], "max_tasks": 50, "max_split_depth": 2},
         "packet": {},
