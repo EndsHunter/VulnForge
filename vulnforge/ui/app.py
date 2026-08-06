@@ -368,8 +368,9 @@ class CoverageModeBody(BaseModel):
     mode: str = "auto"  # auto | all | select
     areas: Optional[list[str]] = None
     classes: Optional[list[str]] = None
-    path_targets: Optional[list[dict]] = None  # [{path, is_dir}] from Coverage path picker
+    path_targets: Optional[list[dict]] = None  # [{path, is_dir}] from Hunts path picker
     enqueue: bool = True
+    uncapped: bool = False  # select: ignore run.max_tasks (all is always uncapped)
 
 
 class CoverageGenerateSkillBody(BaseModel):
@@ -1083,25 +1084,54 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
     def api_export_findings(
         target_id: str,
         run_id: str,
-        format: str = Query("json", alias="format"),
+        format: str = Query(
+            "json",
+            alias="format",
+            description="One format or comma-separated list (multi → zip): json,md,csv,html,xlsx,docx",
+        ),
         include_poc: bool = Query(
             False,
             description="Embed evidence pack / PoC file contents in the export",
         ),
+        include_findings: bool = Query(True, description="Include findings table/detail"),
+        include_architecture: bool = Query(
+            False, description="Include recon architecture map"
+        ),
+        include_hunts: bool = Query(
+            False, description="Include hunt coverage matrix + hunt task list"
+        ),
+        include_summary: bool = Query(
+            False, description="Include campaign / task summary"
+        ),
+        include_codemap: bool = Query(
+            False, description="Include mechanical codemap brief"
+        ),
     ):
-        """Download findings for a run (json|md|csv|html|xlsx|docx)."""
+        """Download audit report for a run (json|md|csv|html|xlsx|docx; multi → zip)."""
         from vulnforge.db import Database
-        from vulnforge.export_findings import export_bytes, export_filename
+        from vulnforge.export_findings import (
+            ExportOptions,
+            export_bundle,
+            export_filename,
+        )
 
         run = _get_run(target_id, run_id)
         db_path = run.path / "harness.db"
         if not db_path.is_file():
             raise HTTPException(404, "harness.db not found")
+        opts = ExportOptions(
+            include_findings=bool(include_findings),
+            include_architecture=bool(include_architecture),
+            include_hunts=bool(include_hunts),
+            include_summary=bool(include_summary),
+            include_poc=bool(include_poc),
+            include_codemap=bool(include_codemap),
+        )
         db = Database.open(db_path)
         try:
             try:
-                payload, ext, media = export_bytes(
-                    format, run.path, db, include_poc=include_poc
+                payload, ext, media = export_bundle(
+                    format, run.path, db, options=opts
                 )
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
@@ -1564,6 +1594,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         body: ArchitectureRestoreBody = ArchitectureRestoreBody(),
     ):
         from vulnforge.db import Database
+        from vulnforge.util import append_event
 
         run = _get_run(target_id, run_id)
         note = body.note or ""
@@ -1572,6 +1603,17 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             snap = db.restore_architecture_revision(rev_id, note=note)
             if snap is None:
                 raise HTTPException(404, "revision not found or empty")
+            comps = snap.get("components") if isinstance(snap, dict) else None
+            n_comps = len(comps) if isinstance(comps, list) else 0
+            append_event(
+                run.path,
+                {
+                    "event": "architecture_updated",
+                    "source": "restore",
+                    "rev_id": rev_id,
+                    "components": n_comps,
+                },
+            )
             return {
                 "ok": True,
                 "restored_id": rev_id,
@@ -1584,6 +1626,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
     def api_architecture_put(target_id: str, run_id: str, body: ArchitectureEditBody):
         """Manual architecture edit — validates basic structure, DB only."""
         from vulnforge.db import Database
+        from vulnforge.util import append_event
 
         run = _get_run(target_id, run_id)
         arch = body.architecture
@@ -1619,7 +1662,18 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 source="manual",
                 note=str(body.note or "")[:2000],
             )
-            return {"ok": True, "architecture": db.get_architecture()}
+            out_arch = db.get_architecture() or {}
+            comps = out_arch.get("components") if isinstance(out_arch, dict) else None
+            n_comps = len(comps) if isinstance(comps, list) else 0
+            append_event(
+                run.path,
+                {
+                    "event": "architecture_updated",
+                    "source": "manual",
+                    "components": n_comps,
+                },
+            )
+            return {"ok": True, "architecture": out_arch}
         finally:
             db.close()
 
@@ -1744,6 +1798,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             classes=body.classes,
             path_targets=body.path_targets,
             enqueue=body.enqueue,
+            uncapped=bool(body.uncapped),
         )
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "mode failed")

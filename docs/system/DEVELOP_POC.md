@@ -20,9 +20,12 @@ run: python poc.py --url http://127.0.0.1:8000
 entry: poc.py
 success_regex: ASSERT_OK
 timeout_s: 60
-network: allow
+network: none
 ---
 ```
+
+Hub default is ``network: none`` (matches harness safe default). Set
+``network: allow`` only when the PoC must reach a local/lab service.
 
 Soft readiness (`harness_ready`) requires runnable code + success criteria
 (`success_regex` and/or non-placeholder **Expected signal**). Not a mech gate.

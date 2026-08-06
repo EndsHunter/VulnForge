@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Optional
 
 from vulnforge.llm import LLMResult, ResponseClass
@@ -31,17 +32,73 @@ def tool_names_from_schema(tools_schema: list | None) -> set[str]:
     return names
 
 
+def architecture_from_content(content: str | None) -> dict[str, Any] | None:
+    """Parse structured architecture JSON with a non-empty summary from free text.
+
+    Shared by force-submit salvage skip and recon free-text salvage
+    (``stages.recon.parse_architecture``). Strips markdown fences, then accepts
+    whole-text JSON or first ``{`` … last ``}`` slice. Returns None when there
+    is no non-empty ``summary`` (never invents structure).
+    """
+    if not content or not str(content).strip():
+        return None
+    text = str(content).strip()
+    # Strip common markdown fences (```json … ```)
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    data = None
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            data = json.loads(text[start : end + 1])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+    if not isinstance(data, dict):
+        return None
+    summary = str(data.get("summary") or "").strip()
+    if not summary:
+        return None
+
+    def _list_field(key: str) -> list:
+        v = data.get(key)
+        if isinstance(v, list):
+            return list(v)
+        return []
+
+    return {
+        "summary": summary,
+        "trust_boundaries": _list_field("trust_boundaries"),
+        "components": _list_field("components"),
+        "input_surfaces": _list_field("input_surfaces"),
+        "hunt_focus": _list_field("hunt_focus"),
+    }
+
+
 def try_force_terminal_submit(
     tool_handler: Callable[[str, dict], dict],
     tools_schema: list | None,
     *,
     max_rounds: int,
     reason_prefix: str = "auto",
+    content: str | None = None,
 ) -> tuple[str | None, dict[str, Any] | None]:
     """Call submit_none or submit_architecture when rounds are exhausted.
 
-    Prefer submit_none (hunt). Recon gets a minimal architecture summary so the
-    task does not die without a terminal.
+    Prefer submit_none (hunt). For recon:
+      - If free-text content already has parseable architecture with a summary,
+        skip force so the stage salvage path can win (no incomplete stub).
+      - Otherwise force a minimal architecture summary so the task is not
+        aborted without a terminal.
     Returns (tool_name, result) on success, else (None, None).
     """
     names = tool_names_from_schema(tools_schema)
@@ -63,6 +120,10 @@ def try_force_terminal_submit(
             return "submit_none", out
 
     if "submit_architecture" in names:
+        # Do not force an incomplete stub when content is salvageable — recon
+        # stage free-text salvage must win over force-submit thrash fallback.
+        if architecture_from_content(content) is not None:
+            return None, None
         body = {
             "summary": (
                 "Incomplete recon: hit max_tool_rounds before a full architecture "
@@ -100,6 +161,9 @@ def apply_round_limit_fallback(
 
     When successful, returns ok=True so hunt/recon stages store the fallback
     none/architecture instead of aborted coverage thrash.
+
+    Recon: if content already parses as architecture JSON with a summary, leave
+    result failed so stage salvage can store the real map (not an incomplete stub).
     """
     if not force_submit_enabled(cfg):
         return result
@@ -112,7 +176,10 @@ def apply_round_limit_fallback(
 
     schema = getattr(packet, "tools_schema", None) or []
     name, out = try_force_terminal_submit(
-        tool_handler, schema, max_rounds=max_rounds
+        tool_handler,
+        schema,
+        max_rounds=max_rounds,
+        content=result.content,
     )
     if not name or not out:
         return result
@@ -122,7 +189,7 @@ def apply_round_limit_fallback(
         {
             "role": "tool",
             "name": name,
-            "content": __import__("json").dumps(out),
+            "content": json.dumps(out),
         }
     )
     tr.append(

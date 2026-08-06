@@ -87,6 +87,83 @@ def test_good_candidate_needs_human(tmp_path: Path, toy_sqli: Path):
     db.close()
 
 
+def test_validate_mech_skips_terminal_human_states(tmp_path: Path, toy_sqli: Path):
+    """confirmed / rejected_human must not be rewritten by validate_mech."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    (run_dir / "evidence" / "e1").mkdir()
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    text = (toy_sqli / "app.py").read_text(encoding="utf-8")
+    for i, line in enumerate(text.splitlines(), 1):
+        if "search_users" in line:
+            body["citations"][0]["start_line"] = i
+            break
+    for i, terminal in enumerate(("confirmed", "rejected_human")):
+        # Unique stable_key per state so inserts do not collide
+        b = {
+            **body,
+            "title": terminal,
+            "citations": [
+                {
+                    **body["citations"][0],
+                    "path": f"app.py",
+                    "symbol": f"search_users_{i}",
+                }
+            ],
+        }
+        fid = db.insert_finding(b, state=terminal, stable_key=f"term-{terminal}")
+        r = validate_run(T(fid), db, run_dir, {"stages": {}})
+        assert r.get("skipped") is True, r
+        assert r.get("reason") == "already_terminal"
+        assert db.get_finding(fid).state == terminal
+    db.close()
+
+
+def test_validate_mech_skips_needs_human_after_mech_pass(tmp_path: Path, toy_sqli: Path):
+    """needs_human with validation_mech.passed must not be demoted by re-run."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    body["validation_mech"] = {"status": "passed", "pending_llm": False}
+    body["needs_human"] = True
+    # Broken citation would reject if gates re-ran
+    body["citations"] = [{"path": "nope_missing.py"}]
+    fid = db.insert_finding(body, state="needs_human", stable_key="nh-protect")
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r.get("skipped") is True, r
+    assert r.get("reason") == "already_needs_human"
+    assert db.get_finding(fid).state == "needs_human"
+    db.close()
+
+
+def test_validate_mech_rearms_after_deadlettered(tmp_path: Path, toy_sqli: Path):
+    """deadlettered + validate_llm on → re-arm pending_llm and enqueue disprove."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body()
+    body["validation_mech"] = {
+        "status": "passed",
+        "pending_llm": False,
+        "deadlettered": True,
+    }
+    body["needs_human"] = True
+    # Broken citation would demote if gates re-ran — must not re-run gates
+    body["citations"] = [{"path": "nope_missing.py"}]
+    fid = db.insert_finding(body, state="needs_human", stable_key="nh-rearm")
+    r = validate_run(T(fid), db, run_dir, {"stages": {"validate_llm": True}})
+    assert r.get("verdict") == "pending_llm", r
+    assert r.get("rearmed") is True
+    f = db.get_finding(fid)
+    assert f is not None and f.state == "needs_human"
+    assert (f.body.get("validation_mech") or {}).get("pending_llm") is True
+    assert not (f.body.get("validation_mech") or {}).get("deadlettered")
+    n = db.conn.execute(
+        "SELECT COUNT(*) AS c FROM tasks WHERE kind='validate_llm'"
+    ).fetchone()["c"]
+    assert n == 1
+    db.close()
+
+
 def test_vacuous_empty_evidence_rejected(tmp_path: Path, toy_sqli: Path):
     run_dir, db = _setup_run(tmp_path, toy_sqli)
     body = _good_body()

@@ -87,7 +87,7 @@ Need durable hunt state?
 Driving a run?
 ├─ New target → vf init --target <path>
 ├─ Drain queue → vf run-once | ralph | dashboard Start
-├─ Operator hunt focus → Coverage / requeue with class + path_hints
+├─ Operator hunt focus → Hunts planner / requeue with class + path_hints
 ├─ Custom hunt skill → Dev dashboard / generate skill (collection, not free-form essay)
 └─ Stuck → vf status + events.jsonl (failed_task thrash vs failed_infra / deadletter)
 ```

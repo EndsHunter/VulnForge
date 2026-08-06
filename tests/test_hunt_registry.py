@@ -170,6 +170,7 @@ def test_import_replace(hunt_root: Path):
 def test_normalize_class_aliases_and_unknown(hunt_root: Path):
     ensure_collection()
     assert normalize_class("sqli") == "injection"
+    assert normalize_class("xss") == "client-side"
     assert normalize_class("gql") == "graphql"
     assert normalize_class("totally-unknown-xyz") == "wildcard"
     assert normalize_class(None) == "wildcard"

@@ -1677,189 +1677,310 @@
     return buckets;
   }
 
-  function wantIncludePoc() {
-    return !!$("#report-export-include-poc")?.checked;
-  }
+  const EXPORT_SECTION_IDS = {
+    findings: "export-sec-findings",
+    architecture: "export-sec-architecture",
+    hunts: "export-sec-hunts",
+    summary: "export-sec-summary",
+    codemap: "export-sec-codemap",
+    poc: "export-sec-poc",
+  };
 
-  function exportJSON() {
-    // PoC packs live on disk — use server export when including them.
-    if (wantIncludePoc()) {
-      exportServerFormat("json");
-      return;
-    }
-    const c = summaryCounts();
-    const payload = {
-      exported_at: new Date().toISOString(),
-      disclaimer: EXPORT_DISCLAIMER,
-      include_poc: false,
-      target_id: meta.target_id,
-      run_id: meta.run_id,
-      target_path: meta.target_path,
-      counts: c,
-      rows: cache.map(findingToRow),
-      findings: cache,
-    };
-    downloadBlob(
-      `${exportBaseName()}.json`,
-      JSON.stringify(payload, null, 2) + "\n",
-      "application/json"
-    );
-    toast("Exported findings JSON");
-  }
-
-  function exportCSV() {
-    if (wantIncludePoc()) {
-      exportServerFormat("csv");
-      return;
-    }
-    const cols = [
-      "id",
-      "state",
-      "severity",
-      "weakness_class",
-      "title",
-      "summary",
-      "path",
-      "start_line",
-      "end_line",
-      "symbol",
-      "attacker",
-      "boundary",
-      "impact",
-      "evidence_id",
-      "poc_relpath",
-      "poc_files",
-      "stable_key",
-      "citations",
-      "human_review_action",
-      "human_review_notes",
-      "validation_reasons",
-    ];
-    const escapeCell = (v) => {
-      const s = String(v ?? "");
-      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-      return s;
-    };
-    const lines = [`# ${EXPORT_DISCLAIMER}`, cols.join(",")];
-    for (const f of cache) {
-      const row = findingToRow(f);
-      lines.push(cols.map((c) => escapeCell(row[c])).join(","));
-    }
-    downloadBlob(`${exportBaseName()}.csv`, lines.join("\n") + "\n", "text/csv");
-    toast("Exported findings CSV");
-  }
-
-  function mdFindingBlock(f) {
-    const b = bodyOf(f);
-    const tm = b.threat_model || {};
-    const hr = humanReviewLatest(b);
-    const lines = [];
-    lines.push(`### [${f.id}] ${b.title || f.stable_key || "Finding"}`, "");
-    lines.push(`- **state:** ${f.state}`);
-    lines.push(`- **class:** ${b.weakness_class || "-"}`);
-    lines.push(`- **severity:** ${f.severity || b.severity_claim || "-"}`);
-    lines.push(`- **stable_key:** \`${f.stable_key || "-"}\``);
-    if (tm.attacker) lines.push(`- **attacker:** ${tm.attacker}`);
-    if (tm.boundary) lines.push(`- **boundary:** ${tm.boundary}`);
-    if (tm.impact) lines.push(`- **impact:** ${tm.impact}`);
-    const p = primaryPath(f);
-    if (p && p.path) lines.push(`- **location:** \`${pathLabel(p)}\``);
-    const eid = f.evidence_id || b.evidence_id;
-    if (eid) lines.push(`- **evidence:** \`${eid}\``);
-    if (hr && hr.action) {
-      lines.push(
-        `- **human_review:** ${hr.action}${hr.notes ? " — " + hr.notes : ""}`
+  function ensureExportMeta() {
+    if (meta.target_id && meta.run_id) return meta;
+    // Fall back to /runs/{target_id}/{run_id} so export works before first snap.
+    try {
+      const m = (location.pathname || "").match(
+        /\/runs\/([^/]+)\/([^/]+)/i
       );
-    }
-    const vr = validationReasonsFlat(b);
-    if (vr) lines.push(`- **validation_reasons:** ${vr}`);
-    lines.push("", b.summary || "", "", "**Citations:**", "");
-    const cites = b.citations || [];
-    if (cites.length) {
-      for (const cit of cites) {
-        if (!cit || !cit.path) continue;
-        lines.push(
-          `- \`${pathLabel(cit)}\`${cit.symbol ? " (" + cit.symbol + ")" : ""}`
-        );
+      if (m) {
+        meta = {
+          target_id: decodeURIComponent(m[1]) || meta.target_id,
+          run_id: decodeURIComponent(m[2]) || meta.run_id,
+          target_path: meta.target_path || "",
+        };
       }
-    } else {
-      lines.push("- _none_");
+    } catch {
+      /* ignore */
     }
-    lines.push("");
-    return lines;
+    return meta;
   }
 
-  function exportMarkdown() {
-    if (wantIncludePoc()) {
-      exportServerFormat("md");
+  function openExportModal(ev) {
+    if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
+    if (ev && typeof ev.stopPropagation === "function") ev.stopPropagation();
+    ensureExportMeta();
+    const modal = document.getElementById("report-export-modal");
+    if (!modal) {
+      // Fallback if template not present — go straight to download
+      exportReport({ formats: ["md", "html"], sections: defaultExportSections() });
+      return false;
+    }
+    // Show modal: remove hidden *and* add .open (CSS uses .open { display:flex !important })
+    modal.removeAttribute("hidden");
+    modal.hidden = false;
+    modal.classList.add("open");
+    modal.setAttribute("aria-hidden", "false");
+    updateExportHint();
+    // Defer focus so the modal is painted first
+    setTimeout(() => {
+      try {
+        $("#report-export-download")?.focus();
+      } catch {
+        /* ignore */
+      }
+    }, 0);
+    return false;
+  }
+
+  function closeExportModal() {
+    const modal = document.getElementById("report-export-modal");
+    if (!modal) return;
+    modal.classList.remove("open");
+    modal.hidden = true;
+    modal.setAttribute("hidden", "");
+    modal.setAttribute("aria-hidden", "true");
+  }
+
+  function defaultExportSections() {
+    return {
+      findings: true,
+      architecture: true,
+      hunts: true,
+      summary: true,
+      codemap: false,
+      poc: false,
+    };
+  }
+
+  function readExportSections() {
+    const out = defaultExportSections();
+    for (const [key, id] of Object.entries(EXPORT_SECTION_IDS)) {
+      const el = document.getElementById(id);
+      if (el) out[key] = !!el.checked;
+    }
+    return out;
+  }
+
+  function readExportFormats() {
+    return Array.from(
+      document.querySelectorAll(
+        "#report-export-modal input[type=checkbox][data-fmt]"
+      )
+    )
+      .filter((el) => el.checked)
+      .map((el) => el.getAttribute("data-fmt"))
+      .filter(Boolean);
+  }
+
+  function setExportSectionChecks(on) {
+    for (const id of Object.values(EXPORT_SECTION_IDS)) {
+      const el = document.getElementById(id);
+      if (el) el.checked = !!on;
+    }
+    updateExportHint();
+  }
+
+  function setExportFormatChecks(on) {
+    document
+      .querySelectorAll("#report-export-modal input[type=checkbox][data-fmt]")
+      .forEach((el) => {
+        el.checked = !!on;
+      });
+    updateExportHint();
+  }
+
+  function updateExportHint() {
+    const hint = $("#report-export-hint");
+    if (!hint) return;
+    const secs = readExportSections();
+    const fmts = readExportFormats();
+    const secNames = Object.entries(secs)
+      .filter(([, v]) => v)
+      .map(([k]) => k);
+    if (!secNames.length) {
+      hint.textContent = "Select at least one section.";
+      hint.style.color = "var(--bad, #f31260)";
       return;
     }
-    const lines = [
-      "# VulnForge findings export",
-      "",
-      `Target: \`${meta.target_path || meta.target_id || "-"}\``,
-      `Run: \`${meta.target_id || "-"} / ${meta.run_id || "-"}\``,
-      `Exported: ${new Date().toISOString()}`,
-      "Include PoC: `no`",
-      "",
-      `> **Disclaimer:** ${EXPORT_DISCLAIMER}`,
-      "",
-    ];
-    const c = summaryCounts();
-    lines.push(
-      `Needs human: ${c.needs_human} | Confirmed (human): ${c.confirmed} | ` +
-        `Candidates: ${c.candidate} | Rejected: ${c.rejected} | Total: ${c.total}`,
-      ""
-    );
-    if (!cache.length) {
-      lines.push("_No findings._", "");
-    } else {
-      const buckets = partitionFindings(cache);
-      const sections = [
-        ["needs_human", "## Needs human review (mech-passed)"],
-        ["confirmed", "## Confirmed findings (human-accepted)"],
-        ["candidate", "## Candidates"],
-        ["rejected", "## Rejected"],
-        ["other", "## Other"],
-      ];
-      for (const [key, heading] of sections) {
-        const group = buckets[key] || [];
-        if (key === "other" && !group.length) continue;
-        lines.push(heading, "");
-        if (!group.length) {
-          lines.push("_None._", "");
-          continue;
-        }
-        for (const f of group) {
-          lines.push(...mdFindingBlock(f));
-        }
-      }
+    if (!fmts.length) {
+      hint.textContent = "Select at least one format.";
+      hint.style.color = "var(--bad, #f31260)";
+      return;
     }
-    downloadBlob(
-      `${exportBaseName()}.md`,
-      lines.join("\n"),
-      "text/markdown;charset=utf-8"
-    );
-    toast("Exported findings Markdown");
+    const multi = fmts.length > 1 ? " (zip bundle)" : "";
+    const csvNote =
+      fmts.includes("csv") &&
+      (secs.architecture || secs.hunts || secs.summary || secs.codemap)
+        ? " CSV is findings-only."
+        : "";
+    hint.style.color = "";
+    hint.textContent = `Will download: ${fmts.join(", ")}${multi}. Sections: ${secNames.join(", ")}.${csvNote}`;
   }
 
-
-  function exportServerFormat(fmt) {
+  function exportReport(opts) {
+    ensureExportMeta();
     if (!meta.target_id || !meta.run_id) {
       toast("No run loaded", true);
       return;
     }
-    const poc = wantIncludePoc() ? "&include_poc=true" : "";
+    const sections = opts?.sections || readExportSections();
+    const formats = opts?.formats || readExportFormats();
+    if (!formats.length) {
+      toast("Select at least one format", true);
+      return;
+    }
+    const anySection = Object.values(sections).some(Boolean);
+    if (!anySection) {
+      toast("Select at least one section", true);
+      return;
+    }
+    // Findings required for CSV-only when other narrative sections alone
+    if (
+      formats.every((f) => f === "csv") &&
+      !sections.findings &&
+      !sections.poc
+    ) {
+      toast("CSV export needs Findings (or PoC) selected", true);
+      return;
+    }
+    const params = new URLSearchParams();
+    params.set("format", formats.join(","));
+    params.set("include_findings", sections.findings ? "true" : "false");
+    params.set("include_architecture", sections.architecture ? "true" : "false");
+    params.set("include_hunts", sections.hunts ? "true" : "false");
+    params.set("include_summary", sections.summary ? "true" : "false");
+    params.set("include_codemap", sections.codemap ? "true" : "false");
+    params.set("include_poc", sections.poc ? "true" : "false");
     const url =
-      `/api/runs/${encodeURIComponent(meta.target_id)}/${encodeURIComponent(meta.run_id)}/export?format=${encodeURIComponent(fmt)}${poc}`;
-    // Attachment response: navigate triggers download with Content-Disposition
-    window.location.href = url;
-    toast(
-      wantIncludePoc()
-        ? `Exporting findings (${fmt}) with PoC…`
-        : `Exporting findings (${fmt})...`
-    );
+      `/api/runs/${encodeURIComponent(meta.target_id)}/${encodeURIComponent(meta.run_id)}/export?` +
+      params.toString();
+    // Prefer temporary <a download> so SPA hash state is not disrupted
+    try {
+      const a = document.createElement("a");
+      a.href = url;
+      a.rel = "noopener";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch {
+      window.location.href = url;
+    }
+    const label =
+      formats.length > 1
+        ? `Exporting report zip (${formats.join(", ")})…`
+        : `Exporting report (${formats[0]})…`;
+    toast(label);
+    closeExportModal();
   }
+
+  /** @deprecated Prefer exportReport — kept for console/API compatibility */
+  function exportJSON() {
+    exportReport({
+      formats: ["json"],
+      sections: { ...defaultExportSections(), findings: true },
+    });
+  }
+
+  function exportCSV() {
+    exportReport({
+      formats: ["csv"],
+      sections: {
+        findings: true,
+        architecture: false,
+        hunts: false,
+        summary: false,
+        codemap: false,
+        poc: false,
+      },
+    });
+  }
+
+  function exportMarkdown() {
+    exportReport({
+      formats: ["md"],
+      sections: defaultExportSections(),
+    });
+  }
+
+  function exportServerFormat(fmt) {
+    exportReport({
+      formats: [fmt],
+      sections: defaultExportSections(),
+    });
+  }
+
+  let exportModalBound = false;
+
+  function setupExportModal() {
+    // Bind even if modal markup is late; retry once on next tick.
+    const bindOnce = () => {
+      if (exportModalBound) return true;
+      const openBtn = document.getElementById("report-export-open");
+      const modal = document.getElementById("report-export-modal");
+      // Open button can bind without modal (fallback path in openExportModal)
+      if (!openBtn) return false;
+
+      openBtn.addEventListener("click", openExportModal);
+      // Also set property handler as a belt-and-suspenders fallback
+      openBtn.onclick = openExportModal;
+
+      if (modal) {
+        document
+          .getElementById("report-export-close")
+          ?.addEventListener("click", closeExportModal);
+        document
+          .getElementById("report-export-cancel")
+          ?.addEventListener("click", closeExportModal);
+        document
+          .getElementById("report-export-download")
+          ?.addEventListener("click", () => exportReport());
+        document
+          .getElementById("export-sec-all")
+          ?.addEventListener("click", () => setExportSectionChecks(true));
+        document
+          .getElementById("export-sec-none")
+          ?.addEventListener("click", () => setExportSectionChecks(false));
+        document
+          .getElementById("export-fmt-all")
+          ?.addEventListener("click", () => setExportFormatChecks(true));
+        document
+          .getElementById("export-fmt-none")
+          ?.addEventListener("click", () => setExportFormatChecks(false));
+        modal
+          .querySelectorAll("input[type=checkbox]")
+          .forEach((el) => el.addEventListener("change", updateExportHint));
+        // Keep closed on load
+        if (!modal.classList.contains("open")) {
+          modal.hidden = true;
+          modal.setAttribute("aria-hidden", "true");
+        }
+      }
+
+      document.addEventListener("keydown", (e) => {
+        const m = document.getElementById("report-export-modal");
+        if (e.key === "Escape" && m && m.classList.contains("open")) {
+          closeExportModal();
+        }
+      });
+
+      exportModalBound = true;
+      return true;
+    };
+
+    if (!bindOnce()) {
+      // Button not in DOM yet (should be rare) — try after paint
+      setTimeout(bindOnce, 0);
+      document.addEventListener("DOMContentLoaded", bindOnce, { once: true });
+    }
+  }
+
+  // Bind export UI immediately — do not wait for first snapshot / renderReport.
+  // Previously handlers only attached inside renderReport → setupChrome, so the
+  // button could appear with no listener (click did nothing).
+  setupExportModal();
+  ensureExportMeta();
 
   async function exportRawProjection(name) {
     if (!meta.target_id || !meta.run_id) {
@@ -2285,19 +2406,9 @@
   }
 
   function setupChrome() {
-    const bind = (id, fn) => {
-      const el = $(id);
-      if (el && !el.dataset.bound) {
-        el.dataset.bound = "1";
-        el.addEventListener("click", fn);
-      }
-    };
-    bind("#report-export-json", exportJSON);
-    bind("#report-export-md", exportMarkdown);
-    bind("#report-export-csv", exportCSV);
-    bind("#report-export-html", () => exportServerFormat("html"));
-    bind("#report-export-xlsx", () => exportServerFormat("xlsx"));
-    bind("#report-export-docx", () => exportServerFormat("docx"));
+    // Idempotent — also called from renderReport after snap updates meta.
+    setupExportModal();
+    ensureExportMeta();
     $$("[data-export-proj]").forEach((btn) => {
       if (btn.dataset.bound) return;
       btn.dataset.bound = "1";
@@ -2452,6 +2563,9 @@
     exportMarkdown,
     exportCSV,
     exportServerFormat,
+    exportReport,
+    openExportModal,
+    closeExportModal,
   };
   window.renderReport = renderReport;
 })();

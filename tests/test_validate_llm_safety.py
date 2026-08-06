@@ -58,6 +58,18 @@ def _good_body(toy_sqli: Path, evidence_id: str = "e1") -> dict:
     return body
 
 
+def _stamp_mech_pass(body: dict, *, pending_llm: bool = True) -> dict:
+    """Mark body as validate_mech-passed (required before validate_llm disprove)."""
+    out = dict(body)
+    out["validation_mech"] = {
+        "status": "passed",
+        "pending_llm": pending_llm,
+        "at": "2020-01-01T00:00:00Z",
+    }
+    out["needs_human"] = True
+    return out
+
+
 def _write_evidence(run_dir: Path, eid: str = "e1") -> None:
     (run_dir / "evidence" / eid).mkdir(parents=True, exist_ok=True)
     (run_dir / "evidence" / eid / "note.txt").write_text(
@@ -122,12 +134,129 @@ _NEEDS = "VERDICT=needs_human\nUnclear host binding."
 _PARSE_FAIL = "I would reject this finding but forgot the tag."
 
 
-def test_flag_on_disprove_reject(tmp_path: Path, toy_sqli: Path):
-    """Both dual verifiers must reject for rejected_llm."""
+def test_flag_on_disprove_rejects_bare_candidate_without_mech(tmp_path: Path, toy_sqli: Path):
+    """validate_llm must not mint needs_human without validation_mech.passed."""
     run_dir, db = _setup_run(tmp_path, toy_sqli)
     body = _good_body(toy_sqli)
     _write_evidence(run_dir)
     fid = db.insert_finding(body, state="candidate")
+    cfg = _fake_cfg(_STAND, _STAND)
+    r = validate_llm.run(T(fid), db, run_dir, cfg)
+    assert r["status"] == "failed_task"
+    assert r.get("error") == "mech_not_passed"
+    assert db.get_finding(fid).state == "candidate"
+    db.close()
+
+
+def test_pending_llm_alone_without_status_passed_is_not_mech(tmp_path: Path, toy_sqli: Path):
+    """pending_llm=True without status=passed must not free-ride disprove."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _good_body(toy_sqli)
+    body["validation_mech"] = {"pending_llm": True}  # no status=passed
+    _write_evidence(run_dir)
+    fid = db.insert_finding(body, state="needs_human")
+    cfg = _fake_cfg(_REJECT, _REJECT)
+    r = validate_llm.run(T(fid), db, run_dir, cfg)
+    assert r["status"] == "failed_task"
+    assert r.get("error") == "mech_not_passed"
+    assert db.get_finding(fid).state == "needs_human"
+    db.close()
+
+
+def test_second_validate_llm_after_disprove_does_not_redemote(
+    tmp_path: Path, toy_sqli: Path
+):
+    """Completed disprove clears pending_llm; stale re-run must not demote."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _stamp_mech_pass(_good_body(toy_sqli), pending_llm=True)
+    _write_evidence(run_dir)
+    fid = db.insert_finding(body, state="needs_human")
+    cfg = _fake_cfg(_STAND, _STAND)
+    r1 = validate_llm.run(T(fid), db, run_dir, cfg)
+    assert r1["status"] == "succeeded"
+    f1 = db.get_finding(fid)
+    assert f1 is not None and f1.state == "needs_human"
+    assert (f1.body.get("validation_mech") or {}).get("pending_llm") is False
+
+    # Stale second task: would reject if re-entry were allowed
+    cfg2 = _fake_cfg(_REJECT, _REJECT)
+    r2 = validate_llm.run(T(fid), db, run_dir, cfg2)
+    assert r2["status"] == "succeeded"
+    assert r2.get("skipped") is True
+    assert r2.get("reason") == "not_pending_llm"
+    f2 = db.get_finding(fid)
+    assert f2 is not None and f2.state == "needs_human"
+    assert f2.state != "rejected_llm"
+    db.close()
+
+
+def test_operator_rearm_allows_second_disprove(tmp_path: Path, toy_sqli: Path):
+    """Explicit rearm=true re-sets pending_llm so dual disprove can re-run."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _stamp_mech_pass(_good_body(toy_sqli), pending_llm=True)
+    _write_evidence(run_dir)
+    fid = db.insert_finding(body, state="needs_human")
+    r1 = validate_llm.run(T(fid), db, run_dir, _fake_cfg(_STAND, _STAND))
+    assert r1["status"] == "succeeded"
+    assert (db.get_finding(fid).body.get("validation_mech") or {}).get(  # type: ignore[union-attr]
+        "pending_llm"
+    ) is False
+
+    # Explicit re-arm: reject both → rejected_llm
+    r2 = validate_llm.run(
+        T(fid, payload={"finding_id": fid, "rearm": True}),
+        db,
+        run_dir,
+        _fake_cfg(_REJECT, _REJECT),
+    )
+    assert r2["status"] == "succeeded", r2
+    assert r2.get("skipped") is not True
+    f = db.get_finding(fid)
+    assert f is not None and f.state == "rejected_llm"
+    db.close()
+
+
+def test_enqueue_validate_llm_rearm_control_plane(tmp_path: Path, toy_sqli: Path):
+    """control.ops.enqueue_validate_llm re-arms and enqueues validate_llm."""
+    from vulnforge.control import ops as dashops
+
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _stamp_mech_pass(_good_body(toy_sqli), pending_llm=False)
+    body["validation_mech"]["deadlettered"] = True
+    _write_evidence(run_dir)
+    fid = db.insert_finding(body, state="needs_human")
+    db.close()
+
+    out = dashops.enqueue_validate_llm(run_dir, fid, rearm=True, operator="test")
+    assert out.get("ok") is True, out
+    assert out.get("rearmed") is True
+    assert out.get("task_id")
+
+    db = Database.open(run_dir / "harness.db")
+    f = db.get_finding(fid)
+    assert f is not None
+    assert (f.body.get("validation_mech") or {}).get("pending_llm") is True
+    assert not (f.body.get("validation_mech") or {}).get("deadlettered")
+    row = db.conn.execute(
+        "SELECT kind, payload_json FROM tasks WHERE id=?", (out["task_id"],)
+    ).fetchone()
+    assert row is not None and row["kind"] == "validate_llm"
+    payload = json.loads(row["payload_json"])
+    assert payload.get("rearm") is True
+
+    # Terminal human states refuse re-arm
+    db.update_finding_state(fid, "confirmed")
+    db.close()
+    bad = dashops.enqueue_validate_llm(run_dir, fid, rearm=True)
+    assert bad.get("ok") is False
+
+
+def test_flag_on_disprove_reject(tmp_path: Path, toy_sqli: Path):
+    """Both dual verifiers must reject for rejected_llm."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _stamp_mech_pass(_good_body(toy_sqli))
+    _write_evidence(run_dir)
+    fid = db.insert_finding(body, state="needs_human")
     cfg = _fake_cfg(_REJECT, _REJECT)
     r = validate_llm.run(T(fid), db, run_dir, cfg)
     assert r["status"] == "succeeded"
@@ -154,9 +283,9 @@ def test_flag_on_disprove_reject(tmp_path: Path, toy_sqli: Path):
 def test_flag_on_disprove_single_reject_not_enough(tmp_path: Path, toy_sqli: Path):
     """One reject + one stand → needs_human, 1/2 llm verified."""
     run_dir, db = _setup_run(tmp_path, toy_sqli)
-    body = _good_body(toy_sqli)
+    body = _stamp_mech_pass(_good_body(toy_sqli))
     _write_evidence(run_dir)
-    fid = db.insert_finding(body, state="candidate")
+    fid = db.insert_finding(body, state="needs_human")
     cfg = _fake_cfg(_REJECT, _STAND)
     r = validate_llm.run(T(fid), db, run_dir, cfg)
     assert r["status"] == "succeeded"
@@ -175,9 +304,9 @@ def test_flag_on_disprove_single_reject_not_enough(tmp_path: Path, toy_sqli: Pat
 
 def test_flag_on_disprove_stand_needs_human(tmp_path: Path, toy_sqli: Path):
     run_dir, db = _setup_run(tmp_path, toy_sqli)
-    body = _good_body(toy_sqli)
+    body = _stamp_mech_pass(_good_body(toy_sqli))
     _write_evidence(run_dir)
-    fid = db.insert_finding(body, state="candidate")
+    fid = db.insert_finding(body, state="needs_human")
     cfg = _fake_cfg(_STAND, _STAND)
     r = validate_llm.run(T(fid), db, run_dir, cfg)
     assert r["status"] == "succeeded"
@@ -196,9 +325,9 @@ def test_flag_on_disprove_parse_fail_needs_human_never_confirms(
     tmp_path: Path, toy_sqli: Path
 ):
     run_dir, db = _setup_run(tmp_path, toy_sqli)
-    body = _good_body(toy_sqli)
+    body = _stamp_mech_pass(_good_body(toy_sqli))
     _write_evidence(run_dir)
-    fid = db.insert_finding(body, state="candidate")
+    fid = db.insert_finding(body, state="needs_human")
     cfg = _fake_cfg(_PARSE_FAIL, _PARSE_FAIL)
     r = validate_llm.run(T(fid), db, run_dir, cfg)
     assert r["status"] == "succeeded"
@@ -438,9 +567,9 @@ def test_pack_disprove_includes_perspective():
 def test_dispatch_validate_llm_no_crash(tmp_path: Path, toy_sqli: Path):
     """cli.dispatch_task runs full dual disprove without raising."""
     run_dir, db = _setup_run(tmp_path, toy_sqli)
-    body = _good_body(toy_sqli)
+    body = _stamp_mech_pass(_good_body(toy_sqli))
     _write_evidence(run_dir)
-    fid = db.insert_finding(body, state="candidate")
+    fid = db.insert_finding(body, state="needs_human")
     task_id = db.enqueue_task("validate_llm", {"finding_id": fid}, priority=25)
     row = db.conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
     task = db._row_to_task(row)

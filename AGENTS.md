@@ -36,13 +36,12 @@ The dashboard is the main operator surface:
 | Mode | Job |
 |------|-----|
 | **Mission** | Overview, architecture, campaign status |
-| **Coverage** | Residual-risk matrix; re-queue shallow/aborted/none cells |
+| **Hunts** | Plan hunts (areas × skills) + residual-risk matrix; re-queue shallow/aborted/none cells |
 | **Explorer** | Browse target, select code, enqueue hunts |
 | **Report** | Structured findings table + exports; detail links to Evidence |
 | **Evidence** | On-disk evidence packs (browse / open from Report) |
 | **Tasks** | Task queue / transcripts, event timeline (mode id `audit`) |
 | **AI** | Campaign co-pilot: start/query hunts, status, findings, runner control (confirm mutators) |
-| **Harness** | Live agent graph (loop profiles are dev/API only — not operator UI) |
 
 **Home** (`/`): all runs + **AI Chat** (`/chat`, fleet co-pilot) + **Tool gaps** (`/tool-gaps`) + **Dev dashboard** (`/dev`, hunt skills) + **Settings** (`/settings` — endpoint, per-stage models, multi-model validation).
 
@@ -57,7 +56,7 @@ The dashboard is the main operator surface:
 
 1. Start Ralph from the mission bar.
 2. **Explorer**: open a file, optionally select lines, pick a hunt class, add notes, **Enqueue hunt**.
-3. **Coverage**: click residual cells (shallow/aborted/none) → re-queue with notes.
+3. **Hunts**: plan area×skill batches, or click residual cells (shallow/aborted/none) → re-queue with notes.
 4. **Report**: open a finding → **Open Evidence**; **Develop POC** opens a **workshop modal** (not a mode tab) — hub is `evidence/<pack>/poc_develop.md`; optional Ralph `develop_poc` writes **runnable** PoC code (not a narrative rewrite); **Run in harness** queues `validate_poc` (writes `poc_run.json`); **Export validation job** builds a handoff zip; **Accept / Reject / Needs review** with optional notes. None of these auto-prove exploitability.
 
 CLI handoff / harness:

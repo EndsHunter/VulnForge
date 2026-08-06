@@ -11,6 +11,18 @@ from vulnforge.tools.evidence_write import evidence_exists
 from vulnforge.util import match_manifest_fingerprint, normalize_relpath, read_json
 
 
+# States that validate_mech must not reopen or rewrite (mirror validate_llm).
+_TERMINAL_FINDING_STATES = frozenset(
+    (
+        "confirmed",
+        "rejected_human",
+        "rejected_mech",
+        "rejected_llm",
+        "superseded",
+    )
+)
+
+
 def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     fid = (task.payload or {}).get("finding_id")
     if fid is None:
@@ -22,6 +34,63 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     import json
     from vulnforge.findings.severity import apply_severity_claim
     from vulnforge.util import utc_now_iso
+
+    # Do not demote human terminals or re-open closed rejects via mech re-run.
+    if finding.state in _TERMINAL_FINDING_STATES:
+        return {
+            "status": "succeeded",
+            "skipped": True,
+            "reason": "already_terminal",
+            "finding_id": finding.id,
+            "finding_state": finding.state,
+            "verdict": "skipped",
+        }
+
+    # needs_human with a prior mech pass is human-queue / pending disprove —
+    # do not re-run gates (path drift / stricter gates must not demote).
+    # Exception: explicit re-arm of dual disprove when operator sets payload
+    # rearm=true, or after validate_llm deadletter stamped deadlettered=True.
+    if finding.state == "needs_human":
+        mech0 = (finding.body or {}).get("validation_mech")
+        if isinstance(mech0, dict) and mech0.get("status") == "passed":
+            rearm = bool((task.payload or {}).get("rearm"))
+            deadlettered = bool(mech0.get("deadlettered"))
+            flag_on = bool((cfg.get("stages") or {}).get("validate_llm"))
+            if (rearm or deadlettered) and flag_on:
+                from vulnforge.stages.validate_llm import rearm_pending_llm
+
+                arm = rearm_pending_llm(db, finding.id)
+                if arm.get("ok"):
+                    db.enqueue_task(
+                        "validate_llm",
+                        {
+                            "finding_id": finding.id,
+                            "parent_task_id": getattr(task, "id", None),
+                            "rearm": True,
+                        },
+                        priority=25,
+                    )
+                    return {
+                        "status": "succeeded",
+                        "verdict": "pending_llm",
+                        "rearmed": bool(arm.get("rearmed") or arm.get("already_pending")),
+                        "finding_id": finding.id,
+                        "finding_state": "needs_human",
+                    }
+                return {
+                    "status": "failed_task",
+                    "error": arm.get("error") or "rearm_failed",
+                    "finding_id": finding.id,
+                    "finding_state": finding.state,
+                }
+            return {
+                "status": "succeeded",
+                "skipped": True,
+                "reason": "already_needs_human",
+                "finding_id": finding.id,
+                "finding_state": finding.state,
+                "verdict": "skipped",
+            }
 
     # Optional severity_claim: canonicalize aliases or soft-drop free-text before
     # gates so bad_severity alone never discards an otherwise solid candidate.

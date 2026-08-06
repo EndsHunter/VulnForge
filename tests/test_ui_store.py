@@ -51,9 +51,11 @@ def test_target_inventory_from_arch_and_recon(tmp_path: Path, toy_sqli: Path):
                 "inventory": {"file_count": 612},
             }
         )
-        # init already enqueued recon â€” complete it with honesty fields
+        # init already enqueued recon — lease then complete with honesty fields
         recon = next(t for t in db.list_tasks() if t.kind == "recon")
-        db.complete_task(
+        leased = db.lease_next_task("w-test", ttl_seconds=60)
+        assert leased is not None and leased.id == recon.id
+        assert db.complete_task(
             recon.id,
             {
                 "status": "succeeded",
@@ -89,7 +91,9 @@ def test_target_inventory_hunt_focus(tmp_path: Path, toy_sqli: Path):
             }
         )
         recon = next(t for t in db.list_tasks() if t.kind == "recon")
-        db.complete_task(
+        leased = db.lease_next_task("w-test", ttl_seconds=60)
+        assert leased is not None and leased.id == recon.id
+        assert db.complete_task(
             recon.id,
             {
                 "status": "succeeded",
@@ -119,7 +123,9 @@ def test_inventory_last_recon_failure(tmp_path: Path, toy_sqli: Path):
     db = Database.open(ref.path / "harness.db")
     try:
         recon = next(t for t in db.list_tasks() if t.kind == "recon")
-        db.fail_task(
+        leased = db.lease_next_task("w-test", ttl_seconds=60)
+        assert leased is not None and leased.id == recon.id
+        assert db.fail_task(
             recon.id,
             "failed_task",
             "no_submit",
@@ -181,7 +187,9 @@ def test_target_inventory_arch_precedes_manifest(tmp_path: Path, toy_sqli: Path)
             }
         )
         recon = next(t for t in db.list_tasks() if t.kind == "recon")
-        db.complete_task(
+        leased = db.lease_next_task("w-test", ttl_seconds=60)
+        assert leased is not None and leased.id == recon.id
+        assert db.complete_task(
             recon.id,
             {
                 "status": "succeeded",

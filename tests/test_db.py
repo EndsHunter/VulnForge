@@ -193,6 +193,91 @@ def test_finding_upsert_by_stable_key(tmp_path: Path):
     db.close()
 
 
+def test_insert_finding_does_not_demote_human_terminals(tmp_path: Path):
+    """stable_key collision must not demote confirmed / needs_human / rejected_human."""
+    db = Database.create(tmp_path / "harness.db")
+    for i, terminal in enumerate(("confirmed", "needs_human", "rejected_human")):
+        # Distinct citation path → distinct stable_key per terminal case
+        body = {
+            "title": terminal,
+            "summary": "original",
+            "weakness_class": "injection",
+            "threat_model": {
+                "attacker": "user",
+                "boundary": "api",
+                "impact": "data",
+            },
+            "citations": [{"path": f"app{i}.py"}],
+            "evidence_id": "ev-keep",
+        }
+        fid = db.insert_finding(body, state=terminal)
+        demote = {
+            **body,
+            "title": "demoted",
+            "summary": "should not land",
+            "evidence_id": "ev-foreign",
+        }
+        fid2 = db.insert_finding(demote, state="candidate")
+        assert fid2 == fid
+        f = db.get_finding(fid)
+        assert f is not None
+        assert f.state == terminal
+        assert f.body.get("title") == terminal
+        assert f.body.get("evidence_id") == "ev-keep"
+    # Same-state annotate still allowed
+    body = {
+        "title": "kept",
+        "summary": "original",
+        "weakness_class": "injection",
+        "threat_model": {"attacker": "user", "boundary": "api", "impact": "data"},
+        "citations": [{"path": "annotate.py"}],
+        "evidence_id": "ev-keep",
+    }
+    fid = db.insert_finding(body, state="confirmed")
+    annotated = {**body, "title": "annotated", "merged_classes": ["ai-llm"]}
+    db.insert_finding(annotated, state="confirmed")
+    f = db.get_finding(fid)
+    assert f is not None and f.state == "confirmed"
+    assert f.body.get("title") == "annotated"
+    db.close()
+
+
+def test_complete_and_fail_task_require_leased(tmp_path: Path):
+    """complete_task / fail_task must not overwrite non-leased (halt/reclaim races)."""
+    db = Database.create(tmp_path / "harness.db")
+    db.insert_run("r", str(tmp_path / "t"), "code_static", "pin", {})
+    tid = db.enqueue_task("hunt", {"class": "injection"}, priority=50)
+    # Still queued — no-op
+    assert db.complete_task(tid, {"ok": True}) is False
+    t = db.get_task(tid)
+    assert t is not None and t.state == "queued"
+
+    leased = db.lease_next_task("w1", ttl_seconds=60)
+    assert leased is not None and leased.id == tid
+    assert db.complete_task(tid, {"ok": True}) is True
+    t2 = db.get_task(tid)
+    assert t2 is not None and t2.state == "succeeded"
+    # Second complete after terminal — no-op
+    assert db.complete_task(tid, {"ok": False}) is False
+    assert db.get_task(tid).state == "succeeded"  # type: ignore[union-attr]
+
+    tid2 = db.enqueue_task("hunt", {"class": "x"}, priority=50)
+    leased2 = db.lease_next_task("w2", ttl_seconds=60)
+    assert leased2 is not None and leased2.id == tid2
+    # Halt first (terminal cancel)
+    assert db.halt_task(tid2) is not None
+    assert db.get_task(tid2).state == "cancelled"  # type: ignore[union-attr]
+    assert db.fail_task(tid2, "failed_task", "late") is False
+    assert db.get_task(tid2).state == "cancelled"  # type: ignore[union-attr]
+
+    tid3 = db.enqueue_task("hunt", {"class": "y"}, priority=50)
+    leased3 = db.lease_next_task("w3", ttl_seconds=60)
+    assert leased3 is not None
+    assert db.fail_task(tid3, "failed_task", "boom") is True
+    assert db.get_task(tid3).state == "failed_task"  # type: ignore[union-attr]
+    db.close()
+
+
 def test_coverage_matrix_includes_hunt_task_classes(tmp_path: Path):
     """Matrix columns must include domain packs used in hunts, not only facts/core."""
     db = Database.create(tmp_path / "harness.db")
@@ -214,6 +299,33 @@ def test_coverage_matrix_includes_hunt_task_classes(tmp_path: Path):
     cell_keys = {(c["area"], c["class"]) for c in m["cells"]}
     assert ("app", "ai-llm") in cell_keys
     assert ("worker", "feature-abuse") in cell_keys
+    db.close()
+
+
+def test_coverage_matrix_includes_architecture_areas_without_hunts(tmp_path: Path):
+    """After recon (or map edit), architecture areas appear with no hunts yet."""
+    db = Database.create(tmp_path / "harness.db")
+    db.insert_run("r", "/t", "code_static", "pin", {})
+    db.set_architecture(
+        {
+            "summary": "test",
+            "components": [
+                {"name": "auth", "path_hints": ["src/auth"]},
+                {"name": "api", "path_hints": ["src/api"]},
+            ],
+            "inventory": {
+                "dir_partitions": [{"dir": "packages/worker", "file_count": 3}]
+            },
+        },
+        source="recon",
+    )
+    m = db.coverage_matrix()
+    assert "auth" in m["areas"]
+    assert "api" in m["areas"]
+    assert "packages/worker" in m["areas"]
+    # No hunts/facts → no class columns or invents planned cells
+    assert m["classes"] == []
+    assert m["cells"] == []
     db.close()
 
 
@@ -243,10 +355,33 @@ def test_requeue_and_deadletter(tmp_path: Path):
     task2 = db.lease_next_task("w", ttl_seconds=60)
     assert task2 is not None
     assert task2.attempt == 2
-    db.deadletter_task(tid, "connection refused")
+    assert db.deadletter_task(tid, "connection refused") is True
     t2 = db.get_task(tid)
     assert t2 is not None
     assert t2.state == "deadletter"
     counts = db.count_tasks_by_state()
     assert counts.get("deadletter") == 1
+    db.close()
+
+
+def test_deadletter_works_after_reclaim_to_queued(tmp_path: Path):
+    """deadletter is not leased-only — poison after reclaim must stick."""
+    db = Database.create(tmp_path / "harness.db")
+    db.insert_run("r", "/t", "code_static", "pin", {})
+    tid = db.enqueue_task("hunt", {})
+    task = db.lease_next_task("w", ttl_seconds=60)
+    assert task is not None
+    # Simulate TTL reclaim → queued (worker still at attempt cap)
+    db.conn.execute(
+        "UPDATE tasks SET lease_until=? WHERE id=?",
+        ("2000-01-01T00:00:00Z", tid),
+    )
+    db.conn.commit()
+    assert db.reclaim_expired_leases() == 1
+    assert db.get_task(tid).state == "queued"  # type: ignore[union-attr]
+    assert db.deadletter_task(tid, "infra_exhausted") is True
+    assert db.get_task(tid).state == "deadletter"  # type: ignore[union-attr]
+    # Already terminal → no-op
+    assert db.deadletter_task(tid, "again") is False
+    assert db.get_task(tid).state == "deadletter"  # type: ignore[union-attr]
     db.close()

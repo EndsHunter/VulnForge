@@ -509,8 +509,11 @@ def test_set_task_priority_tier(tmp_path: Path, toy_sqli: Path):
     a = db.enqueue_task("hunt", {"area": "a", "class": "injection"}, priority=50)
     b = db.enqueue_task("hunt", {"area": "b", "class": "injection"}, priority=50)
     c = db.enqueue_task("hunt", {"area": "c", "class": "injection"}, priority=50)
-    # Complete one so only queued can be reordered
-    db.complete_task(c, {"ok": True}, state="succeeded")
+    # Complete c so only a/b remain queued (lease requires leased state)
+    db.set_task_priority(c, 1)
+    leased_c = db.lease_next_task("w0", ttl_seconds=60)
+    assert leased_c is not None and leased_c.id == c
+    assert db.complete_task(c, {"ok": True}, state="succeeded")
     db.close()
 
     r = dashops.set_task_priority_tier(run, b, "run_next")
@@ -544,7 +547,9 @@ def test_set_task_priority_tier(tmp_path: Path, toy_sqli: Path):
 
     # reject non-queued
     db = Database.open(run2 / "harness.db")
-    db.complete_task(tid, {"ok": True})
+    leased = db.lease_next_task("w-done", ttl_seconds=60)
+    assert leased is not None and leased.id == tid
+    assert db.complete_task(tid, {"ok": True})
     db.close()
     bad = dashops.set_task_priority_tier(run2, tid, "high")
     assert bad["ok"] is False

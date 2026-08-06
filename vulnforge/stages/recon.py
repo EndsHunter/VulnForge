@@ -246,42 +246,22 @@ def _arch_json_for_merge(arch: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def parse_architecture_merge_content(content: str | None) -> dict[str, Any] | None:
-    """Parse LLM merge reply into a structured architecture dict, or None."""
-    if not content or not str(content).strip():
+    """Parse LLM merge reply into a structured architecture dict, or None.
+
+    Delegates to shared free-text parser (same as force-submit salvage skip).
+    """
+    from vulnforge.agent_runtime.round_limit import architecture_from_content
+
+    parsed = architecture_from_content(content)
+    if not parsed:
         return None
-    text = str(content).strip()
-    # Strip common markdown fences
-    if text.startswith("```"):
-        lines = text.split("\n")
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    data = None
-    try:
-        data = json.loads(text)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                data = json.loads(text[start : end + 1])
-            except (json.JSONDecodeError, TypeError, ValueError):
-                return None
-        else:
-            return None
-    if not isinstance(data, dict):
-        return None
-    summary = str(data.get("summary") or "").strip()
-    if not summary:
-        return None
+    # Coerce list fields for double-encoded JSON strings (local models).
     return {
-        "summary": summary,
-        "trust_boundaries": _coerce_list_field(data.get("trust_boundaries")),
-        "components": _coerce_list_field(data.get("components")),
-        "input_surfaces": _coerce_list_field(data.get("input_surfaces")),
-        "hunt_focus": _coerce_list_field(data.get("hunt_focus")),
+        "summary": parsed.get("summary") or "",
+        "trust_boundaries": _coerce_list_field(parsed.get("trust_boundaries")),
+        "components": _coerce_list_field(parsed.get("components")),
+        "input_surfaces": _coerce_list_field(parsed.get("input_surfaces")),
+        "hunt_focus": _coerce_list_field(parsed.get("hunt_focus")),
     }
 
 
@@ -1943,23 +1923,18 @@ def parse_architecture(llm_result, session: dict) -> dict:
             "input_surfaces": _coerce_list_field(a.get("input_surfaces")),
             "hunt_focus": _coerce_list_field(a.get("hunt_focus")),
         }
-    # try JSON block in content
-    content = llm_result.content or ""
-    try:
-        start = content.find("{")
-        end = content.rfind("}")
-        if start >= 0 and end > start:
-            data = json.loads(content[start : end + 1])
-            if isinstance(data, dict) and data.get("summary"):
-                return {
-                    "summary": data.get("summary") or "",
-                    "trust_boundaries": _coerce_list_field(data.get("trust_boundaries")),
-                    "components": _coerce_list_field(data.get("components")),
-                    "input_surfaces": _coerce_list_field(data.get("input_surfaces")),
-                    "hunt_focus": _coerce_list_field(data.get("hunt_focus")),
-                }
-    except json.JSONDecodeError:
-        pass
+    # Shared free-text / JSON-slice parser (force-submit salvage uses the same).
+    from vulnforge.agent_runtime.round_limit import architecture_from_content
+
+    parsed = architecture_from_content(getattr(llm_result, "content", None))
+    if parsed and parsed.get("summary"):
+        return {
+            "summary": parsed.get("summary") or "",
+            "trust_boundaries": _coerce_list_field(parsed.get("trust_boundaries")),
+            "components": _coerce_list_field(parsed.get("components")),
+            "input_surfaces": _coerce_list_field(parsed.get("input_surfaces")),
+            "hunt_focus": _coerce_list_field(parsed.get("hunt_focus")),
+        }
     return {
         "summary": "",
         "trust_boundaries": [],

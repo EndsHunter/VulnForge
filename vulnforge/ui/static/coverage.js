@@ -1,4 +1,6 @@
-/* VulnForge Coverage mode — residual-risk matrix cockpit */
+/* VulnForge Hunts mode — plan hunts + residual-risk matrix cockpit
+ * (legacy module name / DOM ids still use "coverage" for API stability)
+ */
 
 (function () {
   const $ = (sel, el = document) => el.querySelector(sel);
@@ -7,10 +9,13 @@
   let covFilter = "all"; // all | residual | shallow | none | aborted | has_finding
   let covSelected = null; // { area, class }
   let covCache = null;
-  let selectFormOpen = false;
   /** @type {{path: string, is_dir: boolean}[]} */
   let customPathTargets = [];
   let pathPickerBrowse = ".";
+  /** Remember last uncapped preference in this session */
+  let preferUncapped = false;
+  /** Plan hunts form is collapsed by default so the residual matrix dominates */
+  let planFormOpen = false;
 
   const RESIDUAL_DEPTHS = new Set(["", "planned", "shallow", "none", "aborted"]);
   const FINDING_DEPTHS = new Set(["candidate", "confirmed", "needs_human"]);
@@ -170,8 +175,9 @@
   }
 
   /**
-   * Ensure matrix axes include every hunt skill/area actually used in this run
-   * (task payloads), not only what coverage_facts rolled up — domain packs etc.
+   * Ensure matrix axes include architecture areas, catalog skills, and every
+   * hunt skill/area used in this run — not only coverage_facts rollups.
+   * Architecture areas appear after recon even when no hunts have started.
    */
   function enrichCoverageAxes(cov, snap) {
     const base = cov && typeof cov === "object" ? cov : { areas: [], classes: [], cells: [] };
@@ -187,6 +193,40 @@
       ...(cat.default || []),
     ];
     const orderIdx = new Map(catalogOrder.map((c, i) => [String(c), i]));
+
+    // Architecture components / partitions — visible without hunts
+    const arch = snap?.architecture || {};
+    const archSum = snap?.architecture_summary || {};
+    const comps = archSum.components || arch.components || [];
+    if (Array.isArray(comps)) {
+      for (const c of comps) {
+        if (typeof c === "string" && c.trim()) areas.add(c.trim());
+        else if (c && (c.name || c.id)) areas.add(String(c.name || c.id).trim());
+      }
+    }
+    for (const key of ["partitions", "areas"]) {
+      const list = arch[key];
+      if (Array.isArray(list)) {
+        for (const a of list) {
+          if (typeof a === "string" && a.trim()) areas.add(a.trim());
+          else if (a && (a.name || a.dir || a.id))
+            areas.add(String(a.name || a.dir || a.id).trim());
+        }
+      }
+    }
+    const inv = arch.inventory && typeof arch.inventory === "object" ? arch.inventory : {};
+    for (const p of inv.dir_partitions || []) {
+      if (p && p.dir) areas.add(String(p.dir).trim());
+    }
+
+    // Active catalog skills → residual empty columns once areas exist
+    const active = cat.active || cat.default || [];
+    if (Array.isArray(active) && areas.size) {
+      for (const c of active) {
+        const id = String(c || "").trim();
+        if (id) classes.add(id);
+      }
+    }
 
     const tasks = snap?.tasks || window.__VF_last_snap?.tasks || [];
     for (const t of tasks) {
@@ -360,7 +400,7 @@
     if (!window.confirm(label)) return;
     let ok = 0;
     let fail = 0;
-    const notes = "bulk residual re-queue from Coverage";
+    const notes = "bulk residual re-queue from Hunts";
     for (const cell of cells) {
       try {
         await api(`${runApiBase()}/coverage/requeue`, {
@@ -436,7 +476,7 @@
     return knownClasses();
   }
 
-  /** Group skill ids by provenance for Coverage custom picker. */
+  /** Group skill ids by provenance for Hunts skill picker. */
   function skillGroupsForPicker() {
     const cat = window.__VF_hunt_classes || {};
     const all = knownClasses();
@@ -483,7 +523,7 @@
     return false;
   }
 
-  /** Operator run.max_tasks ceiling (Coverage estimates / confirm dialogs). */
+  /** Operator run.max_tasks ceiling (Hunts estimates / confirm dialogs). */
   function maxTasksCap() {
     const snap = window.__VF_last_snap;
     const n = Number(
@@ -498,35 +538,37 @@
 
   function modeStatusCopy(mode, policy) {
     const p = policy || {};
-    const cap = maxTasksCap();
     if (mode === "all") {
       return {
         badge: "all",
-        title: "Bulk: all architecture areas",
+        title: "Last queue: all areas × active skills",
         detail:
-          "Last action filled the queue with active hunt skills × all known areas (no max_tasks cap). Ralph drains those hunts while it runs.",
+          "Uncapped full product of architecture areas and active skills. Ralph drains those hunts while it runs. Residual re-queues still work below.",
       };
     }
     if (mode === "select") {
       const nA = (p.areas || []).length;
       const nC = (p.classes || []).length;
+      const nP = (p.path_targets || []).length;
       const areaHint = nA
         ? `${nA} area${nA === 1 ? "" : "s"}`
-        : "architecture areas";
+        : nP
+          ? `${nP} path target${nP === 1 ? "" : "s"}`
+          : "architecture areas";
       const skillHint = nC
         ? `${nC} skill${nC === 1 ? "" : "s"}`
-        : "active skills";
+        : "selected skills";
       return {
         badge: "custom",
-        title: "Custom enqueue",
-        detail: `Last custom queue used ${areaHint} × ${skillHint}. Open the builder below to queue another batch.`,
+        title: "Last queue: selected areas × skills",
+        detail: `Queued ${areaHint} × ${skillHint}${nP && nA ? ` (+ ${nP} path target${nP === 1 ? "" : "s"})` : ""}. Adjust the form below and queue again anytime.`,
       };
     }
     return {
       badge: "recon",
-      title: "Following recon plan",
+      title: "Queue from recon + residual",
       detail:
-        "No bulk override. Recon and residual re-queues decide what gets hunted. Use the buttons only when you want to flood the queue yourself.",
+        "No operator bulk queue yet. Recon (if enabled) and residual cell re-queues decide work. Use the planner below to add a batch anytime.",
     };
   }
 
@@ -534,7 +576,7 @@
     const nAreas = Math.max(knownAreas().length, 1);
     const nCore = activeClassesList().length || 5;
     const raw = nAreas * nCore;
-    // Cover-all is uncapped (no run.max_tasks ceiling)
+    // Cover-all style is uncapped (no run.max_tasks ceiling)
     return { raw, capped: raw, nAreas, nCore, cap: null, uncapped: true };
   }
 
@@ -770,16 +812,21 @@
     const nC = checked + extraSkills;
     const raw = nA * nC;
     const cap = maxTasksCap();
-    const capped = Math.min(raw, cap);
+    const uncapped = !!$("#cov-uncapped")?.checked;
+    const shown = uncapped ? raw : Math.min(raw, cap);
     const extraPaths = ($("#cov-extra-areas")?.value || "")
       .split(",")
       .map((s) => s.trim())
       .filter((s) => s && looksLikePath(s)).length;
     const pathN = customPathTargets.length + extraPaths;
     estEl.textContent = nC
-      ? `About ${capped} hunt${capped === 1 ? "" : "s"} will be queued` +
+      ? `About ${shown} hunt${shown === 1 ? "" : "s"} will be queued` +
         (pathN ? ` (${pathN} path target${pathN === 1 ? "" : "s"})` : "") +
-        (raw > cap ? ` (capped at ${cap})` : "") +
+        (uncapped
+          ? " (uncapped)"
+          : raw > cap
+            ? ` (capped at ${cap})`
+            : "") +
         "."
       : "Select at least one hunt skill.";
   }
@@ -791,9 +838,10 @@
     const mode = p.mode || "auto";
     const status = modeStatusCopy(mode, p);
     const est = estimateAllAreasJobs();
+    const cap = maxTasksCap();
 
-    // Restore path targets from policy when opening form first time
-    if (selectFormOpen && !customPathTargets.length && (p.path_targets || []).length) {
+    // Restore path targets from last policy once
+    if (!customPathTargets.length && (p.path_targets || []).length) {
       customPathTargets = (p.path_targets || [])
         .filter((t) => t && t.path)
         .map((t) => ({ path: String(t.path), is_dir: !!t.is_dir }));
@@ -803,23 +851,35 @@
     const activeClasses = activeClassesList();
     const groups = skillGroupsForPicker();
     const pathSet = new Set(customPathTargets.map((t) => t.path));
+    const selectableAreas = areas.filter((a) => !pathSet.has(a));
+
+    // Default: all areas selected when policy has no explicit area list (or last mode was "all")
+    const policyAreas = (p.areas || [])
+      .map(String)
+      .filter((a) => !pathSet.has(a) && !looksLikePath(a));
     const selAreas = new Set(
-      (p.areas || []).map(String).filter((a) => !pathSet.has(a) && !looksLikePath(a))
+      policyAreas.length
+        ? policyAreas
+        : mode === "select" && (p.path_targets || []).length
+          ? []
+          : selectableAreas
     );
     const selClasses = new Set((p.classes || []).map(String));
     if (!selClasses.size && activeClasses.length) {
       for (const c of activeClasses) selClasses.add(c);
     }
 
-    const areaChecks = areas.length
-      ? areas
-          .filter((a) => !pathSet.has(a))
+    // Uncapped default when last mode was "all" or session preference
+    const uncappedDefault = preferUncapped || mode === "all";
+
+    const areaChecks = selectableAreas.length
+      ? selectableAreas
           .map(
             (a) =>
               `<label class="cov-check"><input type="checkbox" data-cov-area value="${esc(a)}" ${selAreas.has(a) ? "checked" : ""}/> <span class="mono">${esc(a)}</span></label>`
           )
           .join("")
-      : `<span class="controls-hint">No architecture areas yet — use the path picker or type paths/names below.</span>`;
+      : `<span class="controls-hint">No architecture areas yet — run recon, or use the path picker / type paths below.</span>`;
 
     const skillBlock = (title, list, hint) => {
       if (!list.length) return "";
@@ -849,117 +909,145 @@
         ? ""
         : groups.allCustomGenerated.length
           ? `<div class="controls-hint cov-skill-note">Custom/generated skills appear under Active (marked custom).</div>`
-          : `<div class="controls-hint cov-skill-note">No custom/generated skills yet — create or generate under Dev → Hunt skills.</div>`) +
+          : `<div class="controls-hint cov-skill-note">No custom/generated skills yet — create or generate under Dev → Hunt skills, or use Generate below.</div>`) +
       skillBlock("Optional seed skills", groups.optionalSeed);
+
+    // Collapsed by default: compact strip + open button so the residual matrix wins space.
+    if (!planFormOpen) {
+      el.innerHTML = `
+        <div class="cov-plan-card cov-plan-card-compact">
+          <div class="cov-plan-compact-row">
+            <div class="cov-plan-compact-main">
+              <span class="cov-plan-badge cov-plan-badge-${esc(status.badge)}">${esc(status.title)}</span>
+              <span class="controls-hint cov-plan-compact-detail">${esc(status.detail)}</span>
+            </div>
+            <button type="button" class="btn btn-primary" id="cov-plan-open" title="Open hunt planner (areas × skills)">
+              Plan hunts
+            </button>
+          </div>
+        </div>`;
+      $("#cov-plan-open")?.addEventListener("click", () => {
+        planFormOpen = true;
+        renderModeBar(p);
+      });
+      return;
+    }
 
     el.innerHTML = `
       <div class="cov-plan-card">
-        <div class="cov-plan-head">
-          <div>
-            <div class="cov-plan-kicker">Hunt planning</div>
+        <div class="cov-plan-head cov-plan-head-open">
+          <div class="cov-plan-compact-main">
+            <div class="cov-plan-kicker">Plan hunts</div>
             <div class="cov-plan-status">
               <span class="cov-plan-badge cov-plan-badge-${esc(status.badge)}">${esc(status.title)}</span>
             </div>
             <p class="controls-hint cov-plan-detail">${esc(status.detail)}</p>
           </div>
+          <button type="button" class="btn btn-ghost" id="cov-plan-close" title="Collapse planner">Close</button>
         </div>
 
-        <div class="cov-plan-actions" role="group" aria-label="Queue more hunts">
-          <button type="button" class="cov-plan-action ${mode === "auto" && !selectFormOpen ? "is-current" : ""}" data-cov-mode="auto" id="cov-plan-auto">
-            <span class="cov-plan-action-title">Follow recon only</span>
-            <span class="cov-plan-action-desc">Clear bulk override. Do not enqueue a new batch — leave planning to recon and cell re-queues.</span>
-          </button>
-          <button type="button" class="cov-plan-action ${mode === "all" && !selectFormOpen ? "is-current" : ""}" data-cov-mode="all" id="cov-plan-all">
-            <span class="cov-plan-action-title">Cover all areas (active)</span>
-            <span class="cov-plan-action-desc">Queue about ${est.raw} hunt${est.raw === 1 ? "" : "s"}: ${est.nCore} active skills × ${est.nAreas} area${est.nAreas === 1 ? "" : "s"} (no max_tasks cap). Starts work immediately if Ralph is running.</span>
-          </button>
-          <button type="button" class="cov-plan-action ${selectFormOpen || mode === "select" ? "is-current" : ""}" data-cov-mode="select" id="cov-plan-custom">
-            <span class="cov-plan-action-title">Custom areas &amp; skills…</span>
-            <span class="cov-plan-action-desc">Pick areas/paths and skills — or generate a new custom skill and queue it.</span>
-          </button>
+        <div class="cov-select-form" id="cov-select-form">
+          <div class="cov-select-form-title">Areas × skills</div>
+          <p class="controls-hint" style="margin:0 0 0.65rem">
+            Full-matrix or focused batches. Architecture areas appear after recon
+            (even before any hunt starts). Path targets optional. Cap
+            <strong>${cap}</strong> (<span class="mono">run.max_tasks</span>) unless
+            <strong>Uncapped</strong>.
+          </p>
+
+          <div class="cov-select-quick" style="margin-bottom:0.65rem" role="group" aria-label="Presets">
+            <button type="button" class="btn btn-sm" id="cov-preset-all" title="Select all architecture areas × active skills, uncapped">
+              Preset: all areas × active (uncapped)
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm" id="cov-preset-active" title="Select all areas × active skills, respect max_tasks">
+              Preset: all areas × active (capped)
+            </button>
+            <span class="controls-hint">~${est.raw} if all×active</span>
+          </div>
+
+          <div class="cov-select-heading">Path targets <span class="controls-hint">(optional — folder or file)</span></div>
+          <div id="cov-path-targets" class="cov-path-targets"></div>
+          <div class="cov-path-picker" id="cov-path-picker">
+            <div class="cov-path-picker-toolbar">
+              <div id="cov-path-picker-bc" class="cov-path-picker-bc"></div>
+              <div class="cov-path-picker-btns">
+                <button type="button" class="btn btn-ghost btn-sm" id="cov-picker-up">Up</button>
+                <button type="button" class="btn btn-sm" id="cov-picker-add-cwd" title="Use the folder you are browsing as a path target">Add this folder</button>
+              </div>
+            </div>
+            <div id="cov-path-picker-list" class="cov-path-picker-list"></div>
+          </div>
+
+          <div class="cov-select-cols" style="margin-top:0.85rem">
+            <div>
+              <div class="cov-select-heading">Architecture areas</div>
+              <div class="cov-check-grid">${areaChecks}</div>
+              <label class="field-label" style="margin-top:0.5rem"><span class="label-text">Extra areas or paths (comma-separated)</span></label>
+              <input type="text" id="cov-extra-areas" class="cov-text-input" placeholder="e.g. api, worker, src/auth.py, packages/api/" />
+              <p class="controls-hint init-hint" style="margin-top:0.25rem">File or folder paths become path targets with path hints. Empty area selection = all known areas.</p>
+              <div class="cov-select-quick">
+                <button type="button" class="btn btn-ghost btn-sm" id="cov-areas-all">Select all areas</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="cov-areas-none">Clear areas</button>
+              </div>
+            </div>
+            <div>
+              <div class="cov-select-heading">Hunt skills</div>
+              ${skillGroupsFinal || `<span class="controls-hint">No catalog</span>`}
+              <label class="field-label" style="margin-top:0.5rem"><span class="label-text">Extra skill ids (comma-separated)</span></label>
+              <input type="text" id="cov-extra-skills" class="cov-text-input" placeholder="e.g. my-generated-skill" />
+              <div class="cov-select-quick">
+                <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-core">Active only</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-custom" title="Select all custom and generated skills">Custom &amp; generated</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-all">All skills</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-none">Clear</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="cov-gen-opts" style="margin-top:0.75rem">
+            <label class="cov-check" title="Ignore run.max_tasks for this batch (full area × skill product)">
+              <input type="checkbox" id="cov-uncapped" ${uncappedDefault ? "checked" : ""} />
+              Uncapped full product
+            </label>
+          </div>
+
+          <div class="cov-select-actions">
+            <button type="button" class="btn btn-primary" id="cov-select-enqueue">Queue hunts</button>
+            <button type="button" class="btn btn-ghost" id="cov-plan-close-bottom">Close</button>
+            <span class="controls-hint" id="cov-select-estimate"></span>
+          </div>
+
+          <details class="cov-generate-block" id="cov-generate-block" style="margin-top:1rem">
+            <summary class="cov-select-heading" style="cursor:pointer">Generate new skill</summary>
+            <p class="controls-hint" style="margin:0.45rem 0">
+              Queues a Ralph <span class="mono">generate_skill</span> task (async LLM). Uses path targets / areas above as hunt focus when queue is on.
+            </p>
+            <div class="field">
+              <label class="field-label" for="cov-gen-brief"><span class="label-text">Brief (required)</span></label>
+              <textarea id="cov-gen-brief" class="cov-text-input op-notes" rows="3" placeholder="e.g. Hunt for IDOR in packages/api auth handlers; focus on tenant isolation."></textarea>
+            </div>
+            <div class="field">
+              <label class="field-label" for="cov-gen-id"><span class="label-text">Suggested skill id (optional)</span></label>
+              <input type="text" id="cov-gen-id" class="cov-text-input" placeholder="e.g. api-tenant-idor" />
+            </div>
+            <div class="cov-gen-opts">
+              <label class="cov-check"><input type="checkbox" id="cov-gen-queue" checked /> Queue hunt(s) after generate</label>
+              <label class="cov-check"><input type="checkbox" id="cov-gen-activate" /> Activate skill in Dev</label>
+            </div>
+            <div class="cov-select-actions" style="margin-top:0.5rem">
+              <button type="button" class="btn btn-primary" id="cov-gen-submit">Generate &amp; queue</button>
+              <span class="controls-hint">Requires Ralph running</span>
+            </div>
+          </details>
         </div>
-
-        ${
-          selectFormOpen
-            ? `<div class="cov-select-form" id="cov-select-form">
-                <div class="cov-select-form-title">Custom hunt queue</div>
-                <p class="controls-hint" style="margin:0 0 0.65rem">
-                  Combine architecture areas and <strong>path targets</strong> (folder or file) with hunt <strong>skills</strong>
-                  (seed, custom, or dynamically generated). Paths may also be typed under areas.
-                  Cap is ${maxTasksCap()} hunts per batch (run.max_tasks).
-                </p>
-
-                <div class="cov-select-heading">Path targets (from target tree)</div>
-                <div id="cov-path-targets" class="cov-path-targets"></div>
-                <div class="cov-path-picker" id="cov-path-picker">
-                  <div class="cov-path-picker-toolbar">
-                    <div id="cov-path-picker-bc" class="cov-path-picker-bc"></div>
-                    <div class="cov-path-picker-btns">
-                      <button type="button" class="btn btn-ghost btn-sm" id="cov-picker-up">Up</button>
-                      <button type="button" class="btn btn-sm" id="cov-picker-add-cwd" title="Use the folder you are browsing as an area">Add this folder</button>
-                    </div>
-                  </div>
-                  <div id="cov-path-picker-list" class="cov-path-picker-list"></div>
-                </div>
-
-                <div class="cov-select-cols" style="margin-top:0.85rem">
-                  <div>
-                    <div class="cov-select-heading">Architecture areas</div>
-                    <div class="cov-check-grid">${areaChecks}</div>
-                    <label class="field-label" style="margin-top:0.5rem"><span class="label-text">Extra areas or paths (comma-separated)</span></label>
-                    <input type="text" id="cov-extra-areas" class="cov-text-input" placeholder="e.g. api, worker, src/auth.py, packages/api/" />
-                    <p class="controls-hint init-hint" style="margin-top:0.25rem">File or folder paths become path targets with path hints.</p>
-                    <div class="cov-select-quick">
-                      <button type="button" class="btn btn-ghost btn-sm" id="cov-areas-all">Select all areas</button>
-                      <button type="button" class="btn btn-ghost btn-sm" id="cov-areas-none">Clear areas</button>
-                    </div>
-                  </div>
-                  <div>
-                    <div class="cov-select-heading">Hunt skills</div>
-                    ${skillGroupsFinal || `<span class="controls-hint">No catalog</span>`}
-                    <label class="field-label" style="margin-top:0.5rem"><span class="label-text">Extra skill ids (comma-separated)</span></label>
-                    <input type="text" id="cov-extra-skills" class="cov-text-input" placeholder="e.g. my-generated-skill" />
-                    <div class="cov-select-quick">
-                      <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-core">Active only</button>
-                      <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-custom" title="Select all custom and generated skills">Custom &amp; generated</button>
-                      <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-all">All skills</button>
-                      <button type="button" class="btn btn-ghost btn-sm" id="cov-classes-none">Clear</button>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="cov-generate-block" id="cov-generate-block">
-                  <div class="cov-select-heading">Generate new skill</div>
-                  <p class="controls-hint" style="margin:0 0 0.45rem">
-                    Queues a Ralph <span class="mono">generate_skill</span> task (async LLM). Uses path targets / areas above as hunt focus when queue is on.
-                  </p>
-                  <div class="field">
-                    <label class="field-label" for="cov-gen-brief"><span class="label-text">Brief (required)</span></label>
-                    <textarea id="cov-gen-brief" class="cov-text-input op-notes" rows="3" placeholder="e.g. Hunt for IDOR in packages/api auth handlers; focus on tenant isolation."></textarea>
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="cov-gen-id"><span class="label-text">Suggested skill id (optional)</span></label>
-                    <input type="text" id="cov-gen-id" class="cov-text-input" placeholder="e.g. api-tenant-idor" />
-                  </div>
-                  <div class="cov-gen-opts">
-                    <label class="cov-check"><input type="checkbox" id="cov-gen-queue" checked /> Queue hunt(s) after generate</label>
-                    <label class="cov-check"><input type="checkbox" id="cov-gen-activate" /> Activate skill in Dev</label>
-                  </div>
-                  <div class="cov-select-actions" style="margin-top:0.5rem">
-                    <button type="button" class="btn btn-primary" id="cov-gen-submit">Generate &amp; queue</button>
-                    <span class="controls-hint">Requires Ralph running</span>
-                  </div>
-                </div>
-
-                <div class="cov-select-actions">
-                  <button type="button" class="btn btn-primary" id="cov-select-enqueue">Queue selected hunts</button>
-                  <button type="button" class="btn" id="cov-select-cancel">Close</button>
-                  <span class="controls-hint" id="cov-select-estimate"></span>
-                </div>
-              </div>`
-            : ""
-        }
       </div>`;
+
+    const closePlan = () => {
+      planFormOpen = false;
+      renderModeBar(p);
+    };
+    $("#cov-plan-close")?.addEventListener("click", closePlan);
+    $("#cov-plan-close-bottom")?.addEventListener("click", closePlan);
 
     const setChecks = (selector, on) => {
       el.querySelectorAll(selector).forEach((inp) => {
@@ -967,67 +1055,6 @@
       });
       updateSelectEstimate();
     };
-
-    el.querySelectorAll("[data-cov-mode]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const m = btn.getAttribute("data-cov-mode");
-        if (m === "select") {
-          selectFormOpen = true;
-          renderModeBar(p);
-          return;
-        }
-        if (m === "all") {
-          const e = estimateAllAreasJobs();
-          if (
-            !window.confirm(
-              `Queue about ${e.raw} hunt(s)?\n\n` +
-                `${e.nCore} active skills × ${e.nAreas} areas (no max_tasks cap).\n\n` +
-                `This can be a large queue. Ralph must be running to work it.`
-            )
-          ) {
-            return;
-          }
-        }
-        if (m === "auto" && mode !== "auto") {
-          if (
-            !window.confirm(
-              "Switch back to following the recon plan only?\n\nThis does not cancel hunts already in the queue."
-            )
-          ) {
-            return;
-          }
-        }
-        selectFormOpen = false;
-        applyCoverageMode(m);
-      });
-    });
-
-    $("#cov-select-cancel")?.addEventListener("click", () => {
-      selectFormOpen = false;
-      renderModeBar(p);
-    });
-    $("#cov-areas-all")?.addEventListener("click", () => setChecks("[data-cov-area]", true));
-    $("#cov-areas-none")?.addEventListener("click", () => setChecks("[data-cov-area]", false));
-    $("#cov-classes-core")?.addEventListener("click", () => {
-      el.querySelectorAll("[data-cov-class]").forEach((inp) => {
-        inp.checked = activeClasses.includes(inp.value);
-      });
-      updateSelectEstimate();
-    });
-    $("#cov-classes-custom")?.addEventListener("click", () => {
-      const customSet = new Set(groups.allCustomGenerated);
-      el.querySelectorAll("[data-cov-class]").forEach((inp) => {
-        inp.checked = customSet.has(inp.value);
-      });
-      updateSelectEstimate();
-    });
-    $("#cov-classes-all")?.addEventListener("click", () => setChecks("[data-cov-class]", true));
-    $("#cov-classes-none")?.addEventListener("click", () => setChecks("[data-cov-class]", false));
-    el.querySelectorAll("[data-cov-area], [data-cov-class]").forEach((inp) => {
-      inp.addEventListener("change", updateSelectEstimate);
-    });
-    $("#cov-extra-areas")?.addEventListener("input", updateSelectEstimate);
-    $("#cov-extra-skills")?.addEventListener("input", updateSelectEstimate);
 
     function collectCustomSelection() {
       const pickedAreas = [...el.querySelectorAll("[data-cov-area]:checked")].map(
@@ -1068,23 +1095,116 @@
       };
     }
 
-    if (selectFormOpen) {
-      renderPathTargetChips();
-      loadPathPicker();
-      $("#cov-picker-up")?.addEventListener("click", () => {
-        pathPickerBrowse = parentPath(pathPickerBrowse);
-        loadPathPicker();
-      });
-      $("#cov-picker-add-cwd")?.addEventListener("click", () => {
-        addPathTarget(pathPickerBrowse || ".", true);
-        renderPathTargetChips();
-        updateSelectEstimate();
-        toast(
-          `Added folder ${pathPickerBrowse === "." ? "target root" : pathPickerBrowse}`
-        );
+    function collectSkillSet() {
+      const pickedClasses = [...el.querySelectorAll("[data-cov-class]:checked")].map(
+        (i) => i.value
+      );
+      const extraSkills = ($("#cov-extra-skills")?.value || "")
+        .split(",")
+        .map((s) => s.trim().toLowerCase().replace(/_/g, "-"))
+        .filter(Boolean);
+      return [...new Set([...pickedClasses, ...extraSkills])];
+    }
+
+    /**
+     * Prefer mode=all (uncapped active×all areas) when the form matches that product.
+     * Otherwise mode=select (optionally with uncapped via empty areas + all-active still select if paths/custom skills).
+     */
+    function resolveQueueMode(sel, skillSet, uncapped) {
+      const activeSet = new Set(activeClassesList().map(String));
+      const onlyActive =
+        skillSet.length > 0 && skillSet.every((s) => activeSet.has(s));
+      const skillsMatchActive =
+        onlyActive &&
+        skillSet.length === activeSet.size &&
+        skillSet.every((s) => activeSet.has(s));
+      // All areas: every selectable area checked, or none checked (fallback to all)
+      const checkedAreas = new Set(sel.areas);
+      const allAreasSelected =
+        selectableAreas.length > 0 &&
+        (checkedAreas.size === 0 ||
+          selectableAreas.every((a) => checkedAreas.has(a)));
+      const noPaths = !(sel.pathTargets || []).length;
+      const noExtraSkills = !($("#cov-extra-skills")?.value || "").trim();
+      if (
+        uncapped &&
+        noPaths &&
+        noExtraSkills &&
+        onlyActive &&
+        allAreasSelected &&
+        (skillsMatchActive || onlyActive)
+      ) {
+        // Uncapped + all areas + only active skills → cover-all API path
+        return "all";
+      }
+      return "select";
+    }
+
+    $("#cov-areas-all")?.addEventListener("click", () => setChecks("[data-cov-area]", true));
+    $("#cov-areas-none")?.addEventListener("click", () => setChecks("[data-cov-area]", false));
+    $("#cov-classes-core")?.addEventListener("click", () => {
+      el.querySelectorAll("[data-cov-class]").forEach((inp) => {
+        inp.checked = activeClasses.includes(inp.value);
       });
       updateSelectEstimate();
-    }
+    });
+    $("#cov-classes-custom")?.addEventListener("click", () => {
+      const customSet = new Set(groups.allCustomGenerated);
+      el.querySelectorAll("[data-cov-class]").forEach((inp) => {
+        inp.checked = customSet.has(inp.value);
+      });
+      updateSelectEstimate();
+    });
+    $("#cov-classes-all")?.addEventListener("click", () => setChecks("[data-cov-class]", true));
+    $("#cov-classes-none")?.addEventListener("click", () => setChecks("[data-cov-class]", false));
+    el.querySelectorAll("[data-cov-area], [data-cov-class]").forEach((inp) => {
+      inp.addEventListener("change", updateSelectEstimate);
+    });
+    $("#cov-extra-areas")?.addEventListener("input", updateSelectEstimate);
+    $("#cov-extra-skills")?.addEventListener("input", updateSelectEstimate);
+    $("#cov-uncapped")?.addEventListener("change", () => {
+      preferUncapped = !!$("#cov-uncapped")?.checked;
+      updateSelectEstimate();
+    });
+
+    $("#cov-preset-all")?.addEventListener("click", () => {
+      setChecks("[data-cov-area]", true);
+      el.querySelectorAll("[data-cov-class]").forEach((inp) => {
+        inp.checked = activeClasses.includes(inp.value);
+      });
+      if ($("#cov-uncapped")) $("#cov-uncapped").checked = true;
+      preferUncapped = true;
+      customPathTargets = [];
+      renderPathTargetChips();
+      updateSelectEstimate();
+      toast("Preset: all areas × active skills, uncapped");
+    });
+    $("#cov-preset-active")?.addEventListener("click", () => {
+      setChecks("[data-cov-area]", true);
+      el.querySelectorAll("[data-cov-class]").forEach((inp) => {
+        inp.checked = activeClasses.includes(inp.value);
+      });
+      if ($("#cov-uncapped")) $("#cov-uncapped").checked = false;
+      preferUncapped = false;
+      updateSelectEstimate();
+      toast("Preset: all areas × active skills, capped");
+    });
+
+    renderPathTargetChips();
+    loadPathPicker();
+    $("#cov-picker-up")?.addEventListener("click", () => {
+      pathPickerBrowse = parentPath(pathPickerBrowse);
+      loadPathPicker();
+    });
+    $("#cov-picker-add-cwd")?.addEventListener("click", () => {
+      addPathTarget(pathPickerBrowse || ".", true);
+      renderPathTargetChips();
+      updateSelectEstimate();
+      toast(
+        `Added folder ${pathPickerBrowse === "." ? "target root" : pathPickerBrowse}`
+      );
+    });
+    updateSelectEstimate();
 
     $("#cov-gen-submit")?.addEventListener("click", async () => {
       const brief = ($("#cov-gen-brief")?.value || "").trim();
@@ -1127,51 +1247,56 @@
 
     $("#cov-select-enqueue")?.addEventListener("click", () => {
       const sel = collectCustomSelection();
-      const pickedClasses = [...el.querySelectorAll("[data-cov-class]:checked")].map(
-        (i) => i.value
-      );
-      const extraSkills = ($("#cov-extra-skills")?.value || "")
-        .split(",")
-        .map((s) => s.trim().toLowerCase().replace(/_/g, "-"))
-        .filter(Boolean);
-      const skillSet = [...new Set([...pickedClasses, ...extraSkills])];
+      const skillSet = collectSkillSet();
       if (!skillSet.length) {
         toast("Pick at least one hunt skill", true);
         return;
       }
+      const uncapped = !!$("#cov-uncapped")?.checked;
+      preferUncapped = uncapped;
+      const qMode = resolveQueueMode(sel, skillSet, uncapped);
       const nA =
         sel.areas.length + sel.pathTargets.length || knownAreas().length || 1;
       const raw = nA * skillSet.length;
-      const cap = maxTasksCap();
-      const capped = Math.min(raw, cap);
+      const capped = uncapped || qMode === "all" ? raw : Math.min(raw, cap);
       const pathNote = sel.pathTargets.length
         ? `\nPath targets: ${sel.pathTargets.map((t) => t.path).join(", ")}`
         : "";
+      const capNote =
+        qMode === "all" || uncapped
+          ? "\n(Uncapped — no max_tasks ceiling.)"
+          : raw > cap
+            ? `\n(Capped at ${cap} by run.max_tasks.)`
+            : "";
       if (
         !window.confirm(
-          `Queue about ${capped} hunt(s) for your selection?` +
-            (raw > cap ? ` (capped at ${cap})` : "") +
-            pathNote
+          `Queue about ${capped} hunt(s)?` + capNote + pathNote + "\n\nRalph must be running to work the queue."
         )
       ) {
+        return;
+      }
+      if (qMode === "all") {
+        applyCoverageMode("all");
         return;
       }
       applyCoverageMode(
         "select",
         [...new Set([...sel.areas, ...sel.typedPaths])],
         skillSet,
-        sel.pathTargets
+        sel.pathTargets,
+        { uncapped }
       );
     });
   }
 
-  async function applyCoverageMode(mode, areas, classes, pathTargets) {
+  async function applyCoverageMode(mode, areas, classes, pathTargets, opts = {}) {
     try {
       const body = { mode, enqueue: mode !== "auto" };
       if (mode === "select") {
         body.areas = areas || [];
         body.classes = classes || [];
         body.path_targets = pathTargets || customPathTargets || [];
+        if (opts.uncapped) body.uncapped = true;
       }
       const r = await api(`${runApiBase()}/coverage/mode`, {
         method: "POST",
@@ -1179,18 +1304,19 @@
       });
       toast(
         mode === "auto"
-          ? "Now following recon plan only"
+          ? "Cleared bulk plan label (queue unchanged)"
           : `Queued ${r.enqueued_count || 0} hunt(s)`
       );
       window.__VF_cov_policy = r.policy;
-      selectFormOpen = false;
-      // keep path targets for next custom open if policy stored them
-      if (mode === "select" && (r.path_targets || []).length) {
-        customPathTargets = r.path_targets.map((t) => ({
+      if (mode === "select" && (r.path_targets || r.policy?.path_targets || []).length) {
+        const pts = r.path_targets || r.policy?.path_targets || [];
+        customPathTargets = pts.map((t) => ({
           path: String(t.path),
           is_dir: !!t.is_dir,
         }));
       }
+      // Collapse planner after a successful queue so the matrix stays dominant
+      if (mode !== "auto") planFormOpen = false;
       renderModeBar(r.policy);
       if (typeof window.loadRunFull === "function") await window.loadRunFull();
     } catch (e) {
@@ -1206,13 +1332,20 @@
     cov = enrichCoverageAxes(cov, snap);
 
     if (!cov || (!(cov.cells || []).length && !(cov.areas || []).length)) {
-      return `<div class="empty" style="padding:1rem">No coverage facts yet — appear after recon enqueues hunts.</div>`;
+      return `<div class="empty" style="padding:1rem">No architecture areas yet — run recon to map the app, then plan hunts above.</div>`;
     }
     const areas = cov.areas || [];
     const classes = cov.classes || [];
     const map = cellMap(cov);
+    if (areas.length && !classes.length) {
+      return `<div class="empty" style="padding:1rem">
+        <strong>${areas.length}</strong> architecture area${areas.length === 1 ? "" : "s"} mapped
+        (<span class="mono">${esc(areas.slice(0, 8).join(", "))}${areas.length > 8 ? "…" : ""}</span>).
+        No hunt skills in the matrix yet — pick skills in Plan hunts above and queue, or wait for recon to enqueue hunts.
+      </div>`;
+    }
     if (!areas.length || !classes.length) {
-      return `<div class="empty" style="padding:1rem">Coverage axes empty — wait for recon plan.</div>`;
+      return `<div class="empty" style="padding:1rem">Hunt matrix axes empty — wait for recon or plan hunts above.</div>`;
     }
 
     const classLink = (c) =>
@@ -1699,7 +1832,7 @@
   }
 
   /**
-   * Full Coverage mode paint from snapshot.
+   * Full Hunts mode paint from snapshot.
    */
   function renderCoverage(snap) {
     if (!$("#coverage-panel") && !$("#coverage-summary")) return;

@@ -14,9 +14,9 @@
 
 | Surface | Action |
 |---------|--------|
-| Mission | Operator re-run card: agents, brief, focus paths, prior arch, enqueue hunts |
-| Architecture panel | Re-run recon (arch-only or + hunts) |
+| Architecture (Mission → Architecture) | Refine / run recon with brief (arch-only or + hunts) |
 | History | View/restore prior architecture revisions |
+| Init | Strategy + recon agents + brief when creating a run |
 
 ## Priority
 

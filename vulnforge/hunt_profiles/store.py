@@ -22,7 +22,8 @@ MAX_BODY_BYTES = 256 * 1024
 PROFILE_META_VERSION = 2
 
 # Migration-only initial active set (former DEFAULT_CLASSES). Not a runtime
-# "default profiles" concept after seed.
+# "default profiles" concept after seed. Keep useful actives in sync with the
+# committed config/hunt_profiles/collection.json seed actives.
 SEED_ACTIVE_IDS = frozenset(
     {
         "injection",
@@ -30,6 +31,8 @@ SEED_ACTIVE_IDS = frozenset(
         "business-logic",
         "cryptography",
         "wildcard",
+        "feature-abuse",
+        "memory-safety",
     }
 )
 
@@ -360,7 +363,7 @@ CLASS_ALIASES: dict[str, str] = {
     "authorization": "access-control",
     "authz": "access-control",
     "sqli": "injection",
-    "xss": "injection",
+    "xss": "client-side",
     "crypto": "cryptography",
     "business": "business-logic",
     "logic": "business-logic",
@@ -583,16 +586,23 @@ def _seed_profiles_from_package() -> list[dict[str, Any]]:
     if not items:
         raise HuntProfileError("seed library has no valid hunt class markdown files")
 
-    # Stable order: seed-active first (known order), then rest alpha
+    # Stable order: seed-active first (known order), then rest alpha.
+    # active_order must cover every SEED_ACTIVE_IDS entry or those actives are dropped.
     active_order = [
         "injection",
         "access-control",
         "business-logic",
         "cryptography",
         "wildcard",
+        "feature-abuse",
+        "memory-safety",
     ]
     by_id = {pid: body for pid, body in items}
     ordered: list[str] = [p for p in active_order if p in by_id]
+    # Any other SEED_ACTIVE_IDS not listed above (future-proof)
+    ordered.extend(
+        sorted(p for p in by_id if p in SEED_ACTIVE_IDS and p not in ordered)
+    )
     ordered.extend(sorted(p for p in by_id if p not in SEED_ACTIVE_IDS))
 
     profiles: list[dict[str, Any]] = []

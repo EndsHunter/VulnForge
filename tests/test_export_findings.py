@@ -10,7 +10,9 @@ import pytest
 from vulnforge.db import Database
 from vulnforge.export_findings import (
     DISCLAIMER,
+    ExportOptions,
     ROW_COLUMNS,
+    export_bundle,
     export_csv,
     export_html,
     export_json,
@@ -178,16 +180,17 @@ def test_export_json_contains_disclaimer_and_findings(db_with_finding):
 def test_export_markdown(db_with_finding):
     db, run_dir = db_with_finding
     md = export_markdown(run_dir, db)
-    assert md.startswith("# VulnForge findings export")
+    assert md.startswith("# VulnForge audit report")
     assert "mechanical gates" in md
     assert "human accepted" in md
     assert "SQL Injection" in md
     assert "Needs human:" in md
     assert "Confirmed (human):" in md
-    assert "## Needs human review (mech-passed)" in md
-    assert "## Confirmed findings (human-accepted)" in md
-    assert "## Rejected" in md
-    assert "## Candidates" in md
+    assert "## Findings" in md
+    assert "Needs human review (mech-passed)" in md
+    assert "Confirmed findings (human-accepted)" in md
+    assert "Rejected" in md
+    assert "Candidates" in md
     assert "injection" in md
     assert "app.py" in md
     assert "Mech-passed XSS" in md
@@ -350,3 +353,97 @@ def test_empty_findings(tmp_path: Path):
         assert data["counts"]["needs_human"] == 0
     finally:
         db.close()
+
+
+def test_export_includes_architecture_and_hunts(db_with_finding):
+    db, run_dir = db_with_finding
+    db.set_architecture(
+        {
+            "summary": "Toy web app with search API",
+            "components": [
+                {
+                    "name": "api",
+                    "role": "http",
+                    "path_hints": ["app.py"],
+                }
+            ],
+            "trust_boundaries": ["public/private"],
+            "hunt_focus": [{"area": "api", "why": "user input to SQL"}],
+        },
+        source="test",
+    )
+    db.enqueue_task(
+        "hunt",
+        {"area": "api", "class": "injection", "path_hints": ["app.py"]},
+        priority=50,
+    )
+    opts = ExportOptions(
+        include_findings=True,
+        include_architecture=True,
+        include_hunts=True,
+        include_summary=True,
+        include_poc=False,
+        include_codemap=False,
+    )
+    md = export_markdown(run_dir, db, options=opts)
+    assert "## Architecture" in md
+    assert "Toy web app" in md
+    assert "**api**" in md
+    assert "public/private" in md
+    assert "## Hunts & coverage" in md
+    assert "Hunt tasks" in md
+    assert "injection" in md
+    assert "## Campaign summary" in md
+
+    data = json.loads(export_json(run_dir, db, options=opts))
+    assert data["architecture"]["summary"] == "Toy web app with search API"
+    assert data["architecture"]["components"][0]["name"] == "api"
+    assert isinstance(data["hunt_tasks"], list)
+    assert any(h.get("class") == "injection" for h in data["hunt_tasks"])
+    assert data["sections"]["include_architecture"] is True
+
+    html_doc = export_html(run_dir, db, options=opts)
+    assert "Architecture" in html_doc
+    assert "Toy web app" in html_doc
+    assert "Hunts" in html_doc or "coverage" in html_doc.lower()
+
+
+def test_export_bundle_multi_format_zip(db_with_finding):
+    db, run_dir = db_with_finding
+    payload, ext, media = export_bundle(
+        "md,json",
+        run_dir,
+        db,
+        options=ExportOptions(include_findings=True),
+    )
+    assert ext == "zip"
+    assert "zip" in media
+    assert payload[:2] == b"PK"
+    import zipfile
+    import io
+
+    with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+        names = zf.namelist()
+        assert any(n.endswith(".md") for n in names)
+        assert any(n.endswith(".json") for n in names)
+
+
+def test_export_without_findings_still_has_architecture(db_with_finding):
+    db, run_dir = db_with_finding
+    db.set_architecture(
+        {"summary": "Map only", "components": [{"name": "core"}]},
+        source="test",
+    )
+    opts = ExportOptions(
+        include_findings=False,
+        include_architecture=True,
+        include_hunts=False,
+        include_summary=False,
+    )
+    md = export_markdown(run_dir, db, options=opts)
+    assert "## Architecture" in md
+    assert "Map only" in md
+    assert "## Findings" not in md
+    data = json.loads(export_json(run_dir, db, options=opts))
+    assert data["findings"] == []
+    assert data["architecture"]["summary"] == "Map only"

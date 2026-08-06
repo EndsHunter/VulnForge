@@ -884,12 +884,14 @@ def cmd_run_once(args, cfg: dict) -> int:
                     )
                     # fall through to normal success / failed_task path below
                 except Exception as hold_err:
-                    db.fail_task(task.id, "failed_task", f"{err}; hold_failed: {hold_err}")
+                    updated = db.fail_task(
+                        task.id, "failed_task", f"{err}; hold_failed: {hold_err}"
+                    )
                     append_event(
                         run_dir,
                         {
                             "source": "vf",
-                            "event": "not_implemented",
+                            "event": "not_implemented" if updated else "task_fail_race",
                             "task_id": task.id,
                             "kind": kind,
                             "attempt": task.attempt,
@@ -899,12 +901,12 @@ def cmd_run_once(args, cfg: dict) -> int:
                     return EXIT_PROGRESS
             else:
                 # Unknown task kind — hard control-plane error
-                db.fail_task(task.id, "failed_task", err)
+                updated = db.fail_task(task.id, "failed_task", err)
                 append_event(
                     run_dir,
                     {
                         "source": "vf",
-                        "event": "unknown_task_kind",
+                        "event": "unknown_task_kind" if updated else "task_fail_race",
                         "task_id": task.id,
                         "kind": kind,
                         "attempt": task.attempt,
@@ -920,7 +922,22 @@ def cmd_run_once(args, cfg: dict) -> int:
                     db, run_dir, task, cfg, str(e), kind=task.kind
                 )
             msg = str(e)
-            db.fail_task(task.id, "failed_task", msg)
+            updated = db.fail_task(task.id, "failed_task", msg)
+            if not updated:
+                cur = db.get_task(task.id)
+                append_event(
+                    run_dir,
+                    {
+                        "source": "vf",
+                        "event": "task_fail_race",
+                        "task_id": task.id,
+                        "kind": task.kind,
+                        "attempt": task.attempt,
+                        "error": msg,
+                        "task_state": cur.state if cur else None,
+                    },
+                )
+                return EXIT_PROGRESS
             append_event(
                 run_dir,
                 {
@@ -949,7 +966,22 @@ def cmd_run_once(args, cfg: dict) -> int:
             )
         if status in ("failed_task", "blocked"):
             err = result.get("error", status)
-            db.fail_task(task.id, status, err, result_extra=result)
+            updated = db.fail_task(task.id, status, err, result_extra=result)
+            if not updated:
+                cur = db.get_task(task.id)
+                append_event(
+                    run_dir,
+                    {
+                        "source": "vf",
+                        "event": "task_fail_race",
+                        "task_id": task.id,
+                        "kind": task.kind,
+                        "attempt": task.attempt,
+                        "error": err,
+                        "task_state": cur.state if cur else None,
+                    },
+                )
+                return EXIT_PROGRESS
             append_event(
                 run_dir,
                 {
@@ -966,7 +998,21 @@ def cmd_run_once(args, cfg: dict) -> int:
             )
             return EXIT_PROGRESS
 
-        db.complete_task(task.id, result, state="succeeded")
+        updated = db.complete_task(task.id, result, state="succeeded")
+        if not updated:
+            cur = db.get_task(task.id)
+            append_event(
+                run_dir,
+                {
+                    "source": "vf",
+                    "event": "task_complete_race",
+                    "task_id": task.id,
+                    "kind": task.kind,
+                    "task_state": cur.state if cur else None,
+                    "result_keys": list(result.keys()),
+                },
+            )
+            return EXIT_PROGRESS
         append_event(
             run_dir,
             {
@@ -1042,7 +1088,47 @@ def handle_failed_infra(
     max_att = max_task_attempts(cfg)
     kind = kind or getattr(task, "kind", None)
     if attempt >= max_att:
-        db.deadletter_task(task.id, err)
+        updated = db.deadletter_task(task.id, err)
+        if not updated:
+            cur = db.get_task(task.id)
+            append_event(
+                run_dir,
+                {
+                    "source": "vf",
+                    "event": "deadletter_race",
+                    "task_id": task.id,
+                    "kind": kind,
+                    "attempt": attempt,
+                    "max_task_attempts": max_att,
+                    "error": err,
+                    "task_state": cur.state if cur else None,
+                },
+            )
+            return EXIT_PROGRESS
+        # Clear stuck pending_llm so Report UI is honest after validate_llm deadletter.
+        if kind == "validate_llm":
+            try:
+                raw_fid = (getattr(task, "payload", None) or {}).get("finding_id")
+                if raw_fid is not None:
+                    fid = int(raw_fid)
+                    finding = db.get_finding(fid)
+                    if finding is not None:
+                        body = dict(finding.body or {})
+                        mech = body.get("validation_mech")
+                        if isinstance(mech, dict) and mech.get("pending_llm"):
+                            mech = dict(mech)
+                            mech["pending_llm"] = False
+                            mech["deadlettered"] = True
+                            body["validation_mech"] = mech
+                            from vulnforge.util import utc_now_iso
+
+                            db.conn.execute(
+                                "UPDATE findings SET body_json=?, updated_at=? WHERE id=?",
+                                (json.dumps(body), utc_now_iso(), fid),
+                            )
+                            db.conn.commit()
+            except Exception:
+                pass
         append_event(
             run_dir,
             {

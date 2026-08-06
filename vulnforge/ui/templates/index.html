@@ -32,7 +32,7 @@
     <div class="page-hero">
       <div>
         <h1>Audit runs</h1>
-        <p>Durable recon - hunt - validate loops. Open a run for the research cockpit: Mission, Coverage, Explorer, Report, Evidence, and Tasks. Develop POC is a workshop modal from Report.</p>
+        <p>Durable recon - hunt - validate loops. Open a run for the research cockpit: Mission, Hunts, Explorer, Report, Evidence, and Tasks. Develop POC is a workshop modal from Report.</p>
       </div>
     </div>
 
@@ -238,9 +238,9 @@
                   <input type="checkbox" id="init-enqueue-hunts" checked />
                   <span>Queue hunts after recon</span>
                 </label>
-                <button type="button" class="init-help" data-tip="When on (default), recon plans and enqueues hunt tasks automatically. Turn off for architecture-only: map the app, then enqueue hunts yourself from Coverage, Explorer, or residual cells." aria-label="Help: Queue hunts after recon">?</button>
+                <button type="button" class="init-help" data-tip="When on (default), recon plans and enqueues hunt tasks automatically. Turn off for architecture-only: map the app, then enqueue hunts yourself from Hunts, Explorer, or residual cells." aria-label="Help: Queue hunts after recon">?</button>
               </div>
-              <p class="controls-hint init-hint">Off = manual hunts (Coverage / Explorer)</p>
+              <p class="controls-hint init-hint">Off = manual hunts (Hunts / Explorer)</p>
             </div>
           </section>
         </div>
@@ -308,7 +308,7 @@
             <div class="field">
               <div class="field-label-row">
                 <label class="field-label-text" for="init-max-tasks">Max tasks</label>
-                <button type="button" class="init-help" data-tip="Cap on planned/enqueued hunt tasks for this run. Coverage estimates use this too." aria-label="Help: Max tasks">?</button>
+                <button type="button" class="init-help" data-tip="Cap on planned/enqueued hunt tasks for this run. Hunts planner estimates use this too (unless Uncapped)." aria-label="Help: Max tasks">?</button>
               </div>
               <input id="init-max-tasks" type="number" value="50" min="1" step="1" />
             </div>

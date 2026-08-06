@@ -104,7 +104,7 @@
         "Status summary for this run",
         "List hunts",
         "What findings need human review?",
-        "Coverage residuals",
+        "Hunts residuals",
         "Queue an injection hunt",
       ];
     }

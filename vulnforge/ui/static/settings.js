@@ -100,7 +100,8 @@
       $("#set-validate-poc-referee").checked = s.validate_poc_referee !== false;
     }
     if ($("#set-validate-llm")) {
-      $("#set-validate-llm").checked = !!s.validate_llm;
+      // Product default is ON; only uncheck when explicitly false.
+      $("#set-validate-llm").checked = s.validate_llm !== false;
     }
     if ($("#set-workers")) $("#set-workers").value = s.max_concurrent_agents || 1;
     if ($("#set-ctx")) $("#set-ctx").value = s.context_tokens || 32768;

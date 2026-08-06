@@ -210,6 +210,120 @@ def write_codemap_md(path: Path, db) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _architecture_report_lines(db) -> list[str]:
+    """Markdown architecture section for projected REPORT.md."""
+    lines = ["## Architecture", ""]
+    try:
+        arch = db.get_architecture()
+    except Exception:
+        arch = None
+    if not isinstance(arch, dict) or not arch:
+        lines.extend(
+            [
+                "_No architecture map stored yet (run recon / submit_architecture)._",
+                "",
+            ]
+        )
+        return lines
+    summary = str(arch.get("summary") or "").strip()
+    if summary:
+        lines.extend([summary, ""])
+    source = arch.get("source") or arch.get("_source") or ""
+    if source:
+        lines.append(f"_Source: `{source}`_")
+        lines.append("")
+    comps = [c for c in (arch.get("components") or []) if c]
+    lines.extend([f"### Components ({len(comps)})", ""])
+    if not comps:
+        lines.append("_None recorded._")
+        lines.append("")
+    else:
+        for c in comps[:80]:
+            if isinstance(c, str):
+                lines.append(f"- **{c}**")
+                continue
+            if not isinstance(c, dict):
+                continue
+            name = c.get("name") or c.get("id") or "?"
+            role = c.get("role") or c.get("kind") or ""
+            head = f"- **{name}**"
+            if role:
+                head += f" — {role}"
+            lines.append(head)
+            hints = c.get("path_hints") or c.get("paths") or []
+            if isinstance(hints, list) and hints:
+                lines.append(
+                    "  - paths: " + ", ".join(f"`{h}`" for h in hints[:12] if h)
+                )
+        lines.append("")
+    bounds = arch.get("trust_boundaries") or []
+    if bounds:
+        lines.extend(["### Trust boundaries", ""])
+        for b in bounds[:40]:
+            if isinstance(b, dict):
+                label = b.get("name") or b.get("label") or b.get("boundary") or str(b)
+                lines.append(f"- {label}")
+            else:
+                lines.append(f"- {b}")
+        lines.append("")
+    focus = arch.get("hunt_focus") or arch.get("priority_areas") or []
+    if focus:
+        lines.extend(["### Hunt focus", ""])
+        for item in focus[:30]:
+            if isinstance(item, dict):
+                label = item.get("area") or item.get("name") or item.get("class") or "?"
+                why = item.get("why") or item.get("reason") or item.get("notes") or ""
+                lines.append(f"- **{label}**" + (f" — {why}" if why else ""))
+            else:
+                lines.append(f"- {item}")
+        lines.append("")
+    return lines
+
+
+def _hunt_tasks_report_lines(db) -> list[str]:
+    """List hunt tasks for projected REPORT.md."""
+    lines = ["### Hunt tasks", ""]
+    try:
+        tasks = db.list_tasks(limit=400)
+    except Exception:
+        tasks = []
+    hunts = []
+    for t in tasks:
+        if getattr(t, "kind", None) != "hunt":
+            continue
+        payload = t.payload if isinstance(getattr(t, "payload", None), dict) else {}
+        hunts.append(
+            {
+                "id": t.id,
+                "state": t.state,
+                "area": str(payload.get("area") or "").strip() or "?",
+                "class": str(
+                    payload.get("class") or payload.get("attack_class") or ""
+                ).strip()
+                or "?",
+            }
+        )
+    if not hunts:
+        lines.append("_No hunt tasks recorded._")
+        lines.append("")
+        return lines
+    by_state: dict[str, int] = {}
+    for h in hunts:
+        by_state[h["state"]] = by_state.get(h["state"], 0) + 1
+    lines.append(
+        "Status: " + ", ".join(f"`{k}`={v}" for k, v in sorted(by_state.items()))
+    )
+    lines.append("")
+    for h in hunts[:200]:
+        lines.append(
+            f"- **#{h['id']}** `{h['area']}` × `{h['class']}` — {h['state']}"
+        )
+    if len(hunts) > 200:
+        lines.append(f"- _…{len(hunts) - 200} more tasks omitted._")
+    lines.append("")
+    return lines
+
+
 def write_report_md(path: Path, db) -> None:
     confirmed = db.list_findings(states=["confirmed"])
     needs_human = db.list_findings(states=["needs_human"])
@@ -218,10 +332,25 @@ def write_report_md(path: Path, db) -> None:
     )
     candidates = db.list_findings(states=["candidate"])
     superseded = db.list_findings(states=["superseded"])
+    run = None
+    try:
+        run = db.get_run()
+    except Exception:
+        run = None
+    target = ""
+    profile = ""
+    if run is not None:
+        try:
+            target = run["target_path"] or ""
+            profile = run["profile"] or ""
+        except (KeyError, TypeError, IndexError):
+            pass
     lines = [
         "# Security audit report",
         "",
         f"Generated: {utc_now_iso()}",
+        f"Target: `{target or '-'}`",
+        f"Profile: `{profile or '-'}`",
         "",
         "> **Disclaimer:** `needs_human` means mechanical gates passed (shape, citations, "
         "evidence pack). `confirmed` means a **human accepted** the finding. Neither is "
@@ -231,9 +360,14 @@ def write_report_md(path: Path, db) -> None:
         f"Rejected: {len(rejected)} | Candidates: {len(candidates)} | "
         f"Superseded near-dups: {len(superseded)}",
         "",
-        "## Needs human review (mech-passed)",
-        "",
     ]
+    lines.extend(_architecture_report_lines(db))
+    lines.extend(
+        [
+            "## Needs human review (mech-passed)",
+            "",
+        ]
+    )
     if not needs_human:
         lines.append("_None._")
         lines.append("")
@@ -303,18 +437,20 @@ def write_report_md(path: Path, db) -> None:
             lines.append(f"- evidence: `{f.evidence_id or b.get('evidence_id')}`")
         lines.append("")
 
-    # Coverage matrix when data exists
+    # Coverage matrix + hunt tasks when data exists
     try:
         matrix = db.coverage_matrix()
     except Exception:
         matrix = None
-    if matrix and matrix.get("cells"):
-        lines.extend(["## Coverage matrix (area x class)", ""])
+    lines.extend(["## Hunts & coverage", ""])
+    if matrix and (matrix.get("cells") or matrix.get("areas")):
         lines.append(
             "_Depth: empty=planned, shallow=no substantial tools "
             "(read_file/grep), none=honest miss, "
             "candidate=filed. Shallow/aborted != safe._"
         )
+        lines.append("")
+        lines.append("### Coverage matrix (area × class)")
         lines.append("")
         classes = matrix.get("classes") or []
         areas = matrix.get("areas") or []
@@ -338,6 +474,13 @@ def write_report_md(path: Path, db) -> None:
                         row.append(f"{d}x{v}")
                 lines.append("| " + " | ".join(row) + " |")
             lines.append("")
+        else:
+            lines.append("_No matrix cells yet._")
+            lines.append("")
+    else:
+        lines.append("_No coverage matrix yet (enqueue and run hunts)._")
+        lines.append("")
+    lines.extend(_hunt_tasks_report_lines(db))
 
     lines.extend(["## Rejected (summary)", ""])
     if not rejected:

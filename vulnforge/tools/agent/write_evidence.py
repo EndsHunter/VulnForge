@@ -66,7 +66,7 @@ SPEC = ToolSpec(
     ),
     parameters=_HUNT_PROPS,
     required=("relpath", "content"),
-    critical_for=("develop_poc",),
+    critical_for=("hunt", "develop_poc"),
     stage_descriptions={
         "hunt": (
             "Write a text file into this task's evidence pack under evidence/ "

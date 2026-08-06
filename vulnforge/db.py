@@ -809,18 +809,40 @@ class Database:
         return int(cur.rowcount or 0)
 
     def complete_task(
-        self, task_id: int, result: dict, state: str = "succeeded"
-    ) -> None:
+        self,
+        task_id: int,
+        result: dict,
+        state: str = "succeeded",
+        *,
+        lease_owner: Optional[str] = None,
+    ) -> bool:
+        """Mark a leased task terminal. Only updates if still ``state='leased'``.
+
+        Prevents halt/pause/reclaim races from overwriting terminal or parked
+        states. Optional ``lease_owner`` further scopes the update to the holder.
+        Returns True if a row was updated.
+        """
         now = utc_now_iso()
-        self.conn.execute(
-            """
-            UPDATE tasks
-            SET state=?, result_json=?, lease_owner=NULL, lease_until=NULL, updated_at=?
-            WHERE id=?
-            """,
-            (state, json.dumps(result), now, task_id),
-        )
+        if lease_owner is not None:
+            cur = self.conn.execute(
+                """
+                UPDATE tasks
+                SET state=?, result_json=?, lease_owner=NULL, lease_until=NULL, updated_at=?
+                WHERE id=? AND state='leased' AND lease_owner=?
+                """,
+                (state, json.dumps(result), now, task_id, lease_owner),
+            )
+        else:
+            cur = self.conn.execute(
+                """
+                UPDATE tasks
+                SET state=?, result_json=?, lease_owner=NULL, lease_until=NULL, updated_at=?
+                WHERE id=? AND state='leased'
+                """,
+                (state, json.dumps(result), now, task_id),
+            )
         self.conn.commit()
+        return int(cur.rowcount or 0) > 0
 
     def fail_task(
         self,
@@ -829,7 +851,12 @@ class Database:
         error: str,
         *,
         result_extra: Optional[dict] = None,
-    ) -> None:
+        lease_owner: Optional[str] = None,
+    ) -> bool:
+        """Fail a leased task. Only updates if still ``state='leased'``.
+
+        Same race guard as ``complete_task``. Returns True if a row was updated.
+        """
         now = utc_now_iso()
         body: dict = {"error": error}
         if isinstance(result_extra, dict):
@@ -841,15 +868,26 @@ class Database:
                     continue
                 body[k] = v
             body["error"] = error
-        self.conn.execute(
-            """
-            UPDATE tasks
-            SET state=?, result_json=?, lease_owner=NULL, lease_until=NULL, updated_at=?
-            WHERE id=?
-            """,
-            (state, json.dumps(body), now, task_id),
-        )
+        if lease_owner is not None:
+            cur = self.conn.execute(
+                """
+                UPDATE tasks
+                SET state=?, result_json=?, lease_owner=NULL, lease_until=NULL, updated_at=?
+                WHERE id=? AND state='leased' AND lease_owner=?
+                """,
+                (state, json.dumps(body), now, task_id, lease_owner),
+            )
+        else:
+            cur = self.conn.execute(
+                """
+                UPDATE tasks
+                SET state=?, result_json=?, lease_owner=NULL, lease_until=NULL, updated_at=?
+                WHERE id=? AND state='leased'
+                """,
+                (state, json.dumps(body), now, task_id),
+            )
         self.conn.commit()
+        return int(cur.rowcount or 0) > 0
 
     def update_task_payload(self, task_id: int, payload: dict) -> bool:
         """Replace payload_json for a task (e.g. multi-agent recon fan-out split)."""
@@ -1075,9 +1113,40 @@ class Database:
             )
         self.conn.commit()
 
-    def deadletter_task(self, task_id: int, error: str) -> None:
-        """Terminal poison-task state after max infra attempts (no requeue)."""
-        self.fail_task(task_id, "deadletter", error)
+    def deadletter_task(self, task_id: int, error: str) -> bool:
+        """Terminal poison-task state after max infra attempts (no requeue).
+
+        Unlike ``fail_task`` (leased-only), deadletter is intentional poison and
+        must apply after reclaim races when the task is back in ``queued`` (or
+        still ``leased`` / ``paused``). Does not overwrite already-terminal rows.
+        Returns True if a row was updated.
+        """
+        now = utc_now_iso()
+        body = json.dumps({"error": error})
+        cur = self.conn.execute(
+            """
+            UPDATE tasks
+            SET state='deadletter', result_json=?, lease_owner=NULL, lease_until=NULL,
+                updated_at=?
+            WHERE id=? AND state IN ('leased', 'queued', 'paused')
+            """,
+            (body, now, task_id),
+        )
+        self.conn.commit()
+        return int(cur.rowcount or 0) > 0
+
+    # Human/terminal finding states must not be demoted by stable_key upsert.
+    # Intentional transitions use update_finding_state / human review / review API.
+    _FINDING_UPSERT_PROTECTED_STATES = frozenset(
+        {
+            "confirmed",
+            "needs_human",
+            "rejected_human",
+            "rejected_mech",
+            "rejected_llm",
+            "superseded",
+        }
+    )
 
     def insert_finding(
         self,
@@ -1090,18 +1159,37 @@ class Database:
         key = stable_key or compute_stable_key(profile, body)
         now = utc_now_iso()
         existing = self.conn.execute(
-            "SELECT id, state FROM findings WHERE stable_key=?", (key,)
+            "SELECT id, state, body_json, evidence_id FROM findings WHERE stable_key=?",
+            (key,),
         ).fetchone()
         if existing:
+            prev_state = str(existing["state"] or "")
+            write_state = state
+            write_body = body
+            write_evidence = evidence_id or body.get("evidence_id")
+            # Policy: never demote human/terminal findings via stable_key collision.
+            # Same-state upserts (annotate merge) may refresh body; demotion
+            # attempts (e.g. candidate overwrite of confirmed) keep prior state
+            # and prior body so material fields are not clobbered.
+            if (
+                prev_state in self._FINDING_UPSERT_PROTECTED_STATES
+                and state != prev_state
+            ):
+                write_state = prev_state
+                try:
+                    write_body = json.loads(existing["body_json"] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    write_body = dict(body)
+                write_evidence = existing["evidence_id"] or write_evidence
             self.conn.execute(
                 """
                 UPDATE findings SET state=?, body_json=?, evidence_id=?, updated_at=?
                 WHERE id=?
                 """,
                 (
-                    state,
-                    json.dumps(body),
-                    evidence_id or body.get("evidence_id"),
+                    write_state,
+                    json.dumps(write_body),
+                    write_evidence,
                     now,
                     existing["id"],
                 ),
@@ -1455,6 +1543,10 @@ class Database:
         Axes include every class/area that appears in coverage_facts **or** hunt
         task payloads so domain packs (and operator-selected classes) always show
         up — not only the short DEFAULT core set when facts are incomplete.
+
+        Architecture component names (and inventory dir partitions) are also
+        projected into ``areas`` so residual rows appear after recon even when
+        no hunts have been enqueued yet. Empty cells are residual (not planned).
         """
         facts = self.list_coverage_facts()
         cells: dict[str, dict[str, Any]] = {}
@@ -1522,6 +1614,27 @@ class Database:
                         "visit_count": 0,
                         "last_depth": "planned",
                     }
+
+        # Project architecture areas so the residual matrix is visible after recon
+        # (or manual map edit) without requiring hunts to have started.
+        try:
+            arch = self.get_architecture() or {}
+        except Exception:
+            arch = {}
+        if isinstance(arch, dict):
+            for c in arch.get("components") or []:
+                if isinstance(c, dict) and c.get("name"):
+                    name = str(c["name"]).strip()
+                    if name:
+                        areas.add(name)
+                elif isinstance(c, str) and c.strip():
+                    areas.add(c.strip())
+            inv = arch.get("inventory") if isinstance(arch.get("inventory"), dict) else {}
+            for p in inv.get("dir_partitions") or []:
+                if isinstance(p, dict) and p.get("dir"):
+                    d = str(p["dir"]).strip()
+                    if d:
+                        areas.add(d)
 
         return {
             "areas": sorted(areas),

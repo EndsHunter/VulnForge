@@ -1135,6 +1135,7 @@ def apply_coverage_mode(
     classes: Optional[list[str]] = None,
     path_targets: Optional[list[dict[str, Any]]] = None,
     enqueue: bool = True,
+    uncapped: bool = False,
 ) -> dict[str, Any]:
     """
     Set coverage policy and optionally enqueue hunts.
@@ -1143,8 +1144,8 @@ def apply_coverage_mode(
     - all: enqueue active hunt profiles × all discovered areas (uncapped;
       full product; not limited by run.max_tasks)
     - select: enqueue user-selected areas / path targets x classes
-      (still capped by run.max_tasks)
-    - path_targets: optional [{path, is_dir}] from Coverage explorer picker
+      (capped by run.max_tasks unless ``uncapped=True``)
+    - path_targets: optional [{path, is_dir}] from Hunts path picker
     """
     mode_n = str(mode or "auto").lower()
     if mode_n not in ("auto", "all", "select"):
@@ -1289,12 +1290,11 @@ def apply_coverage_mode(
                 else:
                     use_areas = [u[0] for u in units]
 
-            # Cover-all: no run.max_tasks ceiling (full active skills × all areas).
-            # Custom select: still capped by run.max_tasks so one click cannot
-            # flood unbounded skill×path products by accident.
+            # Cover-all / explicit uncapped: no run.max_tasks ceiling.
+            # Default select: still capped so one click cannot flood by accident.
             from vulnforge.stages.recon import balanced_product_tasks
 
-            if mode_n == "all":
+            if mode_n == "all" or uncapped:
                 max_new = None  # uncapped product
             else:
                 try:
@@ -2366,7 +2366,7 @@ def build_poc_scaffold(
         "entry: poc.py",
         "success_regex: ASSERT_OK",
         "timeout_s: 60",
-        "network: allow",
+        "network: none",
         "---",
         "",
         f"# PoC development: {title}",
@@ -2718,6 +2718,98 @@ def save_finding_poc(
                 "evidence_id": eid,
                 "body": body,
             },
+        }
+    finally:
+        db.close()
+
+
+def enqueue_validate_llm(
+    run_dir: Path,
+    finding_id: int,
+    *,
+    rearm: bool = True,
+    operator: str = "operator",
+    priority: int = 25,
+) -> dict[str, Any]:
+    """Enqueue dual disprove for a needs_human finding (explicit operator path).
+
+    When ``rearm`` is True (default), re-sets ``validation_mech.pending_llm`` so
+    a prior completed disprove / deadletter / flag-off clear can be retried.
+    Refuses confirmed / rejected_* terminals. Never auto-confirms.
+    """
+    from vulnforge.stages.validate_llm import rearm_pending_llm
+    from vulnforge.util import utc_now_iso
+
+    db = _open_db(run_dir)
+    try:
+        finding = db.get_finding(int(finding_id))
+        if not finding:
+            return {"ok": False, "error": "finding_not_found"}
+        if finding.state != "needs_human":
+            return {
+                "ok": False,
+                "error": f"finding state {finding.state!r} is not needs_human",
+                "finding_state": finding.state,
+            }
+        rearmed = False
+        if rearm:
+            arm = rearm_pending_llm(db, finding.id)
+            if not arm.get("ok"):
+                return {
+                    "ok": False,
+                    "error": arm.get("error") or "rearm_failed",
+                    "finding_state": finding.state,
+                }
+            rearmed = bool(arm.get("rearmed") or arm.get("already_pending"))
+        else:
+            body = dict(finding.body or {})
+            mech = body.get("validation_mech")
+            if not (
+                isinstance(mech, dict)
+                and mech.get("status") == "passed"
+                and mech.get("pending_llm")
+            ):
+                return {
+                    "ok": False,
+                    "error": "not_pending_llm",
+                    "hint": "pass rearm=True to re-arm dual disprove",
+                    "finding_state": finding.state,
+                }
+        payload: dict[str, Any] = {
+            "finding_id": finding.id,
+            "operator": operator or "operator",
+        }
+        if rearm:
+            payload["rearm"] = True
+        task_id = db.enqueue_task(
+            "validate_llm", payload, priority=int(priority)
+        )
+        now = utc_now_iso()
+        body = dict(db.get_finding(finding.id).body or {})  # type: ignore[union-attr]
+        hist = body.get("disprove_operator")
+        if not isinstance(hist, list):
+            hist = []
+        hist.append(
+            {
+                "at": now,
+                "action": "enqueue_validate_llm",
+                "operator": operator or "operator",
+                "task_id": task_id,
+                "rearm": bool(rearm),
+            }
+        )
+        body["disprove_operator"] = hist[-20:]
+        db.conn.execute(
+            "UPDATE findings SET body_json=?, updated_at=? WHERE id=?",
+            (json.dumps(body), now, finding.id),
+        )
+        db.conn.commit()
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "finding_id": finding.id,
+            "rearmed": rearmed,
+            "finding_state": "needs_human",
         }
     finally:
         db.close()

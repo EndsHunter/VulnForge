@@ -1416,6 +1416,9 @@ const LIVE_REFRESH_EVENTS = new Set([
   "recon_auto_retry",
   "validate_llm_done",
   "coverage_mode",
+  // Architecture map updates (recon merge / manual edit / restore)
+  "architecture_merge",
+  "architecture_updated",
 ]);
 
 function liveTaskCounts(cardOrSnap) {
@@ -2167,20 +2170,20 @@ function renderOverview(snap) {
     ${renderArchitectureBriefCard(archText, archSum, snap)}
     ${renderCodemapBriefCard(snap)}
     ${renderLlmUsageCard(snap)}
-    ${renderOperatorRerunCard(snap)}
     <div class="card" style="margin-top:1rem">
       <div class="toolbar" style="margin-bottom:0.5rem">
-        <h2 style="margin:0;flex:1">Coverage (area × class)</h2>
-        <button type="button" class="btn" id="overview-go-coverage">Open Coverage</button>
+        <h2 style="margin:0;flex:1">Hunts (area × skill)</h2>
+        <button type="button" class="btn" id="overview-go-coverage">Open Hunts</button>
       </div>
-      <p class="controls-hint" style="margin-top:0">Preview only. Open Coverage to re-queue residual cells.</p>
+      <p class="controls-hint" style="margin-top:0">Preview only. Open Hunts to plan batches or re-queue residual cells.</p>
       <div id="coverage-inline">${renderCoverageHtml(snap.coverage, { interactive: false })}</div>
     </div>
   `;
-  bindOperatorRerunHandlers();
   bindLlmUsageCard(el);
   $("#overview-go-coverage")?.addEventListener("click", () => {
-    window.VulnForgeModes?.goCoverage?.() || window.VulnForgeModes?.setMode?.("coverage");
+    window.VulnForgeModes?.goHunts?.() ||
+      window.VulnForgeModes?.goCoverage?.() ||
+      window.VulnForgeModes?.setMode?.("hunts");
   });
   $("#overview-go-report")?.addEventListener("click", () => {
     window.VulnForgeModes?.goReport?.("all") || window.VulnForgeModes?.setMode?.("report");
@@ -2227,7 +2230,7 @@ function renderArchitectureBriefCard(archText, archSum, snap) {
     return `
     <div class="card" style="margin-top:1rem">
       <h2>${esc(title)}</h2>
-      <p class="controls-hint" style="margin:0">No architecture yet — run recon (or use Operator re-run below). Map lives under Mission → Architecture after recon succeeds. Architecture is stored in the run DB only (not under project/).</p>
+      <p class="controls-hint" style="margin:0">No architecture yet — run recon from Mission → Architecture (Refine recon). Map lives under that tab after recon succeeds. Architecture is stored in the run DB only (not under project/).</p>
       ${reconFailureHint(snap)}
     </div>`;
   }
@@ -2308,187 +2311,6 @@ function renderCodemapBriefCard(snap) {
     </div>`;
 }
 
-function renderOperatorRerunCard(snap) {
-  const hasArch = !!(snap.architecture || snap.architecture_summary?.has_architecture);
-  const rawMode =
-    (snap.config && snap.config.run && snap.config.run.hunt_skill_mode) ||
-    (snap.run_config && snap.run_config.hunt_skill_mode) ||
-    "all_active";
-  const runMode = ["all_active", "seed_active", "custom_only", "explicit"].includes(
-    String(rawMode)
-  )
-    ? String(rawMode)
-    : "all_active";
-  return `
-    <div class="card operator-rerun-card" style="margin-top:1rem">
-      <h2>Operator re-run</h2>
-      <p class="controls-hint" style="margin-top:-0.25rem">
-        Re-run <strong>recon</strong> with extra guidance to strengthen the foundation, or re-queue hunts from Coverage with notes.
-        Ralph must be <strong>Start</strong>/<strong>Resume</strong> to execute queued tasks.
-      </p>
-      <div class="field">
-        <label>Recon agents</label>
-        <p class="controls-hint" style="margin:0.15rem 0 0.4rem">
-          Select one or more profiles — each gets its own Ralph loop; architecture accumulates into one map. Leave all unchecked for the active collection set.
-        </p>
-        <div id="op-recon-agents" class="recon-agent-picker" role="group" aria-label="Recon agents">
-          <div class="controls-hint">Loading agents…</div>
-        </div>
-      </div>
-      <div class="field">
-        <label for="op-recon-notes">Recon brief (what to map, fix, or deepen)</label>
-        <textarea id="op-recon-notes" class="op-notes" rows="4" placeholder="e.g. Focus on auth middleware and SQL entrypoints under vh/ and packages/api; prior hunt_focus missed deep paths."></textarea>
-      </div>
-      <div class="field">
-        <label for="op-recon-paths">Focus paths (optional, comma-separated)</label>
-        <input id="op-recon-paths" type="text" placeholder="vh/stages/hunt.py, vh/db.py" />
-      </div>
-      <div class="field" id="op-hunt-skill-mode-field">
-        <label>Hunt skills for re-run</label>
-        <p class="controls-hint" style="margin:0.15rem 0 0.4rem">
-          Run-scoped policy for hunts enqueued after this recon (does not change Dev active toggles).
-        </p>
-        <div class="strategy-list hunt-skill-mode-list" role="radiogroup" aria-label="Hunt skill mode for re-run">
-          <label class="strategy-option">
-            <input type="radio" name="op-hunt-skill-mode" value="all_active" ${runMode === "all_active" ? "checked" : ""} />
-            <span class="strategy-option-main">
-              <span class="strategy-option-title">Default active</span>
-              <span class="strategy-option-desc">Active hunt skills from Dev.</span>
-            </span>
-          </label>
-          <label class="strategy-option">
-            <input type="radio" name="op-hunt-skill-mode" value="seed_active" ${runMode === "seed_active" ? "checked" : ""} />
-            <span class="strategy-option-main">
-              <span class="strategy-option-title">Seed only</span>
-              <span class="strategy-option-desc">Active seed skills only.</span>
-            </span>
-          </label>
-          <label class="strategy-option">
-            <input type="radio" name="op-hunt-skill-mode" value="custom_only" ${runMode === "custom_only" ? "checked" : ""} />
-            <span class="strategy-option-main">
-              <span class="strategy-option-title">Custom only</span>
-              <span class="strategy-option-desc">Active custom/generated/import — no seeds.</span>
-            </span>
-          </label>
-          <label class="strategy-option">
-            <input type="radio" name="op-hunt-skill-mode" value="explicit" ${runMode === "explicit" ? "checked" : ""} />
-            <span class="strategy-option-main">
-              <span class="strategy-option-title">Pick skills</span>
-              <span class="strategy-option-desc">Choose exact skill ids.</span>
-            </span>
-          </label>
-        </div>
-        <div id="op-hunt-skill-picker" class="hunt-skill-picker" hidden>
-          <p class="controls-hint" style="margin:0.4rem 0">Select one or more hunt skills:</p>
-          <div id="op-hunt-skills" class="recon-agent-picker" role="group" aria-label="Hunt skills for re-run">
-            <div class="controls-hint">Loading skills…</div>
-          </div>
-        </div>
-      </div>
-      <div class="op-rerun-options">
-        <label class="controls-hint"><input type="checkbox" id="op-recon-prior" checked /> Include prior architecture (refine)</label>
-        <label class="controls-hint"><input type="checkbox" id="op-recon-hunts" checked /> Enqueue new hunts after recon</label>
-      </div>
-      <div class="toolbar" style="margin-top:0.65rem;gap:0.5rem">
-        <button type="button" class="btn btn-primary" id="op-recon-rerun">${hasArch ? "Re-run recon + refine" : "Run recon with brief"}</button>
-        <button type="button" class="btn" id="op-recon-arch-only">Update architecture only</button>
-      </div>
-      <p class="controls-hint" style="margin:0.5rem 0 0">
-        <strong>Architecture only</strong> refreshes the map without flooding the hunt queue.
-        After re-run, use Coverage to re-queue shallow/aborted cells with more notes.
-      </p>
-    </div>`;
-}
-
-function bindOperatorRerunHandlers() {
-  const agentsBox = $("#op-recon-agents");
-  if (agentsBox) {
-    fetchReconAgents()
-      .then((agents) => {
-        // Preserve any user selection if the card remounted mid-edit is rare;
-        // re-check active agents as a sensible default for re-runs.
-        renderReconAgentPicker(agentsBox, {
-          namePrefix: "op-recon-agent",
-          agents,
-          precheckActive: true,
-        });
-      })
-      .catch((e) => {
-        agentsBox.innerHTML = `<div class="controls-hint" style="color:var(--bad)">Failed to load recon agents: ${esc(e.message)}</div>`;
-      });
-  }
-  const skillsBox = $("#op-hunt-skills");
-  if (skillsBox) {
-    fetchHuntProfiles()
-      .then((profiles) => {
-        renderHuntSkillPicker(skillsBox, {
-          namePrefix: "op-hunt-skill",
-          profiles,
-          precheckActive: false,
-        });
-      })
-      .catch((e) => {
-        skillsBox.innerHTML = `<div class="controls-hint" style="color:var(--bad)">Failed to load hunt skills: ${esc(e.message)}</div>`;
-      });
-  }
-  wireHuntSkillModeRadios("op-hunt-skill-mode", "op-hunt-skill-picker");
-  syncHuntSkillPickerVisibility("op-hunt-skill-mode", "op-hunt-skill-picker");
-
-  const submit = async (enqueueHunts) => {
-    const notes = ($("#op-recon-notes")?.value || "").trim();
-    const pathsRaw = ($("#op-recon-paths")?.value || "").trim();
-    const focus_paths = pathsRaw
-      ? pathsRaw.split(",").map((s) => s.trim()).filter(Boolean)
-      : null;
-    const include_prior = !!$("#op-recon-prior")?.checked;
-    const agent_ids = selectedReconAgentIds($("#op-recon-agents"));
-    const skillPolicy = collectHuntSkillPolicy("op-hunt-skill-mode", $("#op-hunt-skills"));
-    if (
-      skillPolicy.hunt_skill_mode === "explicit" &&
-      !(skillPolicy.hunt_skill_ids || []).length
-    ) {
-      toast("Pick at least one hunt skill, or choose another skill mode", true);
-      return;
-    }
-    const body = {
-      operator_notes: notes,
-      focus_paths,
-      include_prior_architecture: include_prior,
-      enqueue_hunts: enqueueHunts,
-      reason: enqueueHunts ? "operator_recon_rerun" : "operator_recon_arch_only",
-      hunt_skill_mode: skillPolicy.hunt_skill_mode,
-    };
-    if (skillPolicy.hunt_skill_mode === "explicit") {
-      body.hunt_skill_ids = skillPolicy.hunt_skill_ids || [];
-    }
-    if (agent_ids.length) body.agent_ids = agent_ids;
-    try {
-      const r = await api(`${runApiBase()}/recon/rerun`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-      const ids = Array.isArray(r.task_ids) && r.task_ids.length
-        ? r.task_ids
-        : r.task_id != null
-          ? [r.task_id]
-          : [];
-      const idLabel = ids.length ? ids.map((n) => `#${n}`).join(", ") : "recon";
-      const agentN = Array.isArray(r.agent_ids) ? r.agent_ids.length : ids.length;
-      const multi = agentN > 1 ? ` (${agentN} agent loops)` : "";
-      toast(
-        enqueueHunts
-          ? `Queued recon ${idLabel}${multi} (hunts after batch)`
-          : `Queued recon ${idLabel}${multi} (architecture only)`
-      );
-      await loadRunFull();
-    } catch (e) {
-      toast(e.message, true);
-    }
-  };
-  $("#op-recon-rerun")?.addEventListener("click", () => submit(true));
-  $("#op-recon-arch-only")?.addEventListener("click", () => submit(false));
-}
-
 function renderTargetInventoryCard(inv, snap) {
   const i = inv || {};
   const fc = i.file_count;
@@ -2552,7 +2374,7 @@ function renderTargetInventoryCard(inv, snap) {
           ? `<p class="controls-hint" style="margin:0.65rem 0 0">
               Seed is stratified across top-level folders (not “first N alphabetical”).
               Hunters still <code>list_dir</code> / <code>grep</code> / <code>read_file</code> the whole tree.
-              Use Operator re-run or Explorer enqueues to deepen coverage — Ralph keeps looping while work remains.
+              Use Architecture → Refine recon or Explorer enqueues to deepen coverage — Ralph keeps looping while work remains.
             </p>`
           : ""
       }
@@ -2580,8 +2402,11 @@ function renderCoverageHtml(cov, opts = {}) {
   if (window.VulnForgeCoverage?.renderPreviewHtml && opts.interactive === false) {
     return window.VulnForgeCoverage.renderPreviewHtml(cov);
   }
-  if (!cov || !(cov.cells || []).length) {
-    return `<div class="empty" style="padding:1rem">No coverage facts yet — appear after recon enqueues hunts.</div>`;
+  if (!cov || (!(cov.cells || []).length && !(cov.areas || []).length)) {
+    return `<div class="empty" style="padding:1rem">No architecture areas yet — run recon to map the app, then plan hunts.</div>`;
+  }
+  if ((cov.areas || []).length && !(cov.classes || []).length) {
+    return `<div class="empty" style="padding:1rem">${esc(String((cov.areas || []).length))} architecture area(s) mapped — no hunts planned yet. Open Hunts to queue skills.</div>`;
   }
   // Minimal non-interactive fallback (mission preview before coverage.js paints)
   const areas = cov.areas || [];
@@ -3794,12 +3619,21 @@ function archFormatAgentItem(a) {
   </li>`;
 }
 
-function archSectionCard(title, count, bodyHtml, extraClass) {
+/**
+ * @param {string} title
+ * @param {number|null|undefined} count
+ * @param {string} bodyHtml
+ * @param {string} [extraClass]
+ * @param {string} [tone]  arch-tone-* key: components | surfaces | boundaries | focus | agents | sinks
+ */
+function archSectionCard(title, count, bodyHtml, extraClass, tone) {
   const countHtml =
     count != null
       ? `<span class="arch-section-count">${esc(String(count))}</span>`
       : "";
-  return `<section class="card arch-section ${extraClass || ""}">
+  const toneClass = tone ? `arch-tone-${tone}` : "";
+  const idAttr = tone ? ` id="arch-section-${tone}"` : "";
+  return `<section class="card arch-section ${toneClass} ${extraClass || ""}"${idAttr}>
     <header class="arch-section-head">
       <h3>${esc(title)}</h3>
       ${countHtml}
@@ -3825,25 +3659,40 @@ function renderArchitecture(arch, summary, snap) {
       <div class="card">
         <div class="empty empty-cta">
           <p><strong>No architecture yet</strong></p>
-          <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored after submit_architecture (or free-text salvage). Map the target first, then hunt from Explorer or Coverage.</p>
+          <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored after submit_architecture (or free-text salvage). Use Refine recon below, then hunt from Explorer or Hunts.</p>
           ${reconFailureHint(snap)}
           <div class="empty-cta-actions">
-            <button type="button" class="btn btn-primary" id="arch-go-mission">Run recon with brief</button>
+            <button type="button" class="btn btn-primary" id="arch-focus-refine">Run recon with brief</button>
             <button type="button" class="btn" id="arch-go-explorer">Open Explorer</button>
           </div>
         </div>
       </div>
+      <section class="card arch-refine" id="arch-refine-section">
+        <header class="arch-section-head">
+          <h3>Run recon</h3>
+        </header>
+        <p class="controls-hint">Queue recon with optional operator guidance. Ralph must be Start/Resume to execute.</p>
+        <div class="field">
+          <label for="arch-recon-notes">Operator brief</label>
+          <textarea id="arch-recon-notes" class="op-notes" rows="3" placeholder="What should recon map first? Auth, SQL entrypoints, trust boundaries…"></textarea>
+        </div>
+        <div class="toolbar arch-toolbar-actions">
+          <button type="button" class="btn btn-primary" id="arch-recon-rerun">Run recon + hunts</button>
+          <button type="button" class="btn" id="arch-recon-only">Architecture only</button>
+        </div>
+      </section>
       ${renderCodemapCardHtml(snap)}
     </div>`;
-    $("#arch-go-mission")?.addEventListener("click", () => {
-      if (window.VulnForgeModes?.setMode) {
-        window.VulnForgeModes.setMode("mission", "overview");
-      }
-      setTimeout(() => $("#op-recon-notes")?.focus(), 50);
+    $("#arch-focus-refine")?.addEventListener("click", () => {
+      const box = $("#arch-refine-section");
+      box?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+      setTimeout(() => $("#arch-recon-notes")?.focus(), 50);
     });
     $("#arch-go-explorer")?.addEventListener("click", () => {
       window.VulnForgeModes?.setMode?.("explorer");
     });
+    $("#arch-recon-rerun")?.addEventListener("click", () => submitArchRecon(true));
+    $("#arch-recon-only")?.addEventListener("click", () => submitArchRecon(false));
     bindCodemapHandlers();
     return;
   }
@@ -3864,16 +3713,17 @@ function renderArchitecture(arch, summary, snap) {
 
   const summaryHtml = renderMarkdown(s.summary || "(no summary)");
 
+  // Shared tones: top stats and section cards use the same arch-tone-* colors
   const stats = [
-    { label: "Components", value: components.length, tone: "info" },
-    { label: "Surfaces", value: surfaces.length, tone: "" },
-    { label: "Boundaries", value: bounds.length, tone: "" },
-    { label: "Hunt focus", value: huntFocus.length, tone: huntFocus.length ? "warn" : "" },
-    { label: "Agents", value: agentsRun.length, tone: agentsRun.length ? "good" : "" },
+    { label: "Components", value: components.length, tone: "components" },
+    { label: "Surfaces", value: surfaces.length, tone: "surfaces" },
+    { label: "Boundaries", value: bounds.length, tone: "boundaries" },
+    { label: "Hunt focus", value: huntFocus.length, tone: "focus" },
+    { label: "Agents", value: agentsRun.length, tone: "agents" },
   ]
     .map(
       (st) =>
-        `<div class="stat ${st.tone}">
+        `<div class="stat arch-tone-${st.tone}" data-arch-jump="${st.tone}" title="Jump to ${esc(st.label)}">
           <div class="label">${esc(st.label)}</div>
           <div class="value">${esc(String(st.value))}</div>
         </div>`
@@ -3884,17 +3734,23 @@ function renderArchitecture(arch, summary, snap) {
     archSectionCard(
       "Input surfaces",
       surfaces.length,
-      `<ul class="arch-list arch-list-plain">${archListOrEmpty(surfacesHtml)}</ul>`
+      `<ul class="arch-list arch-list-plain">${archListOrEmpty(surfacesHtml)}</ul>`,
+      "arch-section-surfaces",
+      "surfaces"
     ),
     archSectionCard(
       "Trust boundaries",
       bounds.length,
-      `<ul class="arch-list arch-list-plain">${archListOrEmpty(boundsHtml)}</ul>`
+      `<ul class="arch-list arch-list-plain">${archListOrEmpty(boundsHtml)}</ul>`,
+      "arch-section-boundaries",
+      "boundaries"
     ),
     archSectionCard(
       "Hunt focus",
       huntFocus.length,
-      `<ul class="arch-list arch-list-plain">${archListOrEmpty(focusHtml, "No hunt_focus yet")}</ul>`
+      `<ul class="arch-list arch-list-plain">${archListOrEmpty(focusHtml, "No hunt_focus yet")}</ul>`,
+      "arch-section-focus",
+      "focus"
     ),
   ];
   if (seedSinks.length) {
@@ -3902,27 +3758,32 @@ function renderArchitecture(arch, summary, snap) {
       archSectionCard(
         "Seed sinks",
         seedSinks.length,
-        `<ul class="arch-list arch-list-plain">${sinksHtml}</ul>`
+        `<ul class="arch-list arch-list-plain">${sinksHtml}</ul>`,
+        "arch-section-sinks",
+        "sinks"
       )
     );
   }
-  if (agentsRun.length) {
-    sideSections.push(
-      archSectionCard(
-        "Recon agents",
-        agentsRun.length,
-        `<ul class="arch-list arch-list-plain">${agentsHtml}</ul>`,
-        "arch-section-agents"
-      )
-    );
-  }
+  // Always show Agents so the stat color maps to a box (empty state when none)
+  sideSections.push(
+    archSectionCard(
+      "Recon agents",
+      agentsRun.length,
+      `<ul class="arch-list arch-list-plain">${archListOrEmpty(
+        agentsHtml,
+        "No recon agents recorded on this map"
+      )}</ul>`,
+      "arch-section-agents",
+      "agents"
+    )
+  );
 
   el.innerHTML = `
     <div class="arch-page">
       <header class="arch-page-header">
         <div>
           <h2 class="arch-page-title">${esc(pageTitle)}</h2>
-          <p class="controls-hint arch-page-sub">LLM recon map — stored in the run DB only. Not exploit proof; use Coverage and Explorer to drive hunts.</p>
+          <p class="controls-hint arch-page-sub">LLM recon map — stored in the run DB only. Not exploit proof; use Hunts and Explorer to drive hunts.</p>
         </div>
         <div class="arch-page-actions">
           <button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit</button>
@@ -3941,7 +3802,7 @@ function renderArchitecture(arch, summary, snap) {
             <div class="arch-summary-text md-prose">${summaryHtml}</div>
           </section>
 
-          <section class="card arch-section arch-components-section">
+          <section class="card arch-section arch-components-section arch-tone-components" id="arch-section-components">
             <header class="arch-section-head">
               <h3>Components</h3>
               <span class="arch-section-count">${esc(String(components.length))}</span>
@@ -4013,6 +3874,27 @@ function renderArchitecture(arch, summary, snap) {
 
       ${renderCodemapCardHtml(snap)}
     </div>`;
+  // Click a colored stat to scroll to the matching section
+  el.querySelectorAll(".arch-stats .stat[data-arch-jump]").forEach((statEl) => {
+    statEl.classList.add("stat-link");
+    statEl.setAttribute("role", "button");
+    statEl.tabIndex = 0;
+    const jump = () => {
+      const key = statEl.getAttribute("data-arch-jump");
+      const target = key ? el.querySelector(`#arch-section-${key}`) : null;
+      if (!target) return;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      target.classList.add("arch-section-flash");
+      setTimeout(() => target.classList.remove("arch-section-flash"), 1200);
+    };
+    statEl.addEventListener("click", jump);
+    statEl.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        jump();
+      }
+    });
+  });
   $("#arch-recon-rerun")?.addEventListener("click", () =>
     submitArchRecon(true)
   );
@@ -4971,6 +4853,8 @@ async function loadRunFull() {
   window.currentKey = currentKey;
   window.api = api;
   window.loadRunFull = loadRunFull;
+  // Chat mutators / operator UI refresh alias
+  window.refreshSnapshot = loadRunFull;
   window.__VF_max_task_attempts = Number(snap.max_task_attempts) || 3;
   renderStats(snap);
   renderRunner(snap.runner || {}, snap);
@@ -5346,9 +5230,12 @@ document.addEventListener("DOMContentLoaded", () => {
   if (settingsBtn && settingsBtn.tagName === "BUTTON") {
     settingsBtn.addEventListener("click", openSettings);
   }
-  $("#settings-cancel")?.addEventListener("click", closeSettings);
-  $("#settings-optimize")?.addEventListener("click", () => optimizeSettings());
-  $("#settings-form")?.addEventListener("submit", saveSettings);
+  // Dedicated /settings page owns form via settings.js — avoid double-submit.
+  if (page !== "settings") {
+    $("#settings-cancel")?.addEventListener("click", closeSettings);
+    $("#settings-optimize")?.addEventListener("click", () => optimizeSettings());
+    $("#settings-form")?.addEventListener("submit", saveSettings);
+  }
   // Settings / New-run modals stay open until Cancel or Save/Create -
   // do not dismiss on backdrop click (unstable form entry).
   $("#transcript-close")?.addEventListener("click", closeTranscript);

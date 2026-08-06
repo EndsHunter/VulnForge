@@ -503,6 +503,90 @@ def test_merge_confirmed_does_not_revalidate(tmp_path: Path):
     db.close()
 
 
+def test_merge_needs_human_does_not_revalidate(tmp_path: Path):
+    """needs_human keeper is annotate-only — no demotion to candidate / revalidate."""
+    db = Database.create(tmp_path / "h.db")
+    db.insert_run("r1", str(tmp_path), "code_static", "pin", {})
+    body1 = {
+        "title": "SQLi via tool",
+        "summary": "LLM tool builds SQL",
+        "weakness_class": "injection",
+        "threat_model": {
+            "attacker": "user",
+            "boundary": "api",
+            "impact": "data",
+        },
+        "citations": [{"path": "agent.py", "symbol": "run_sql"}],
+        "sink_path": "agent.py",
+        "sink_symbol": "run_sql",
+        "evidence_id": "ev-nh",
+    }
+    fid = db.insert_finding(body1, state="needs_human", profile="code_static")
+    body2 = {
+        "title": "AI tool SQLi",
+        "summary": "same sink",
+        "weakness_class": "ai-llm",
+        "threat_model": {
+            "attacker": "user",
+            "boundary": "api",
+            "impact": "data",
+        },
+        "citations": [{"path": "agent.py", "symbol": "run_sql"}],
+        "sink_path": "agent.py",
+        "sink_symbol": "run_sql",
+        "evidence_id": "ev-foreign",
+    }
+    info = merge_near_duplicate(db, body2, profile="code_static")
+    assert info is not None
+    assert info.get("revalidate") is False
+    assert info.get("needs_human_preserved") is True
+    f = db.get_finding(info["finding_id"])
+    assert f is not None
+    assert f.state == "needs_human"
+    assert f.body.get("evidence_id") == "ev-nh"
+    assert "ai-llm" in (f.body.get("merged_classes") or [])
+    assert f.id == fid or info["finding_id"] == fid
+    db.close()
+
+
+def test_merge_skips_rejected_human(tmp_path: Path):
+    """rejected_human is terminal — near-dup must not reopen it."""
+    db = Database.create(tmp_path / "h.db")
+    db.insert_run("r1", str(tmp_path), "code_static", "pin", {})
+    body1 = {
+        "title": "Rejected",
+        "summary": "human said no",
+        "weakness_class": "injection",
+        "threat_model": {
+            "attacker": "user",
+            "boundary": "api",
+            "impact": "data",
+        },
+        "citations": [{"path": "agent.py", "symbol": "run_sql"}],
+        "sink_path": "agent.py",
+        "sink_symbol": "run_sql",
+        "evidence_id": "ev-rj",
+    }
+    db.insert_finding(body1, state="rejected_human", profile="code_static")
+    body2 = {
+        "title": "New claim same sink",
+        "summary": "retry",
+        "weakness_class": "injection",
+        "threat_model": {
+            "attacker": "user",
+            "boundary": "api",
+            "impact": "data",
+        },
+        "citations": [{"path": "agent.py", "symbol": "run_sql"}],
+        "sink_path": "agent.py",
+        "sink_symbol": "run_sql",
+    }
+    assert merge_near_duplicate(db, body2, profile="code_static") is None
+    f = db.list_findings()[0]
+    assert f.state == "rejected_human"
+    db.close()
+
+
 def test_prepare_candidate_prefers_symbol_citation():
     body = {
         "title": "t",

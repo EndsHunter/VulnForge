@@ -56,13 +56,12 @@
     <!-- Primary modes (research cockpit) -->
     <div class="mode-nav" role="tablist" aria-label="Workspace mode">
       <button class="mode-tab active" data-mode="mission" type="button" role="tab" aria-selected="true">Mission</button>
-      <button class="mode-tab" data-mode="coverage" type="button" role="tab">Coverage</button>
+      <button class="mode-tab" data-mode="hunts" type="button" role="tab">Hunts</button>
       <button class="mode-tab" data-mode="explorer" type="button" role="tab">Explorer</button>
       <button class="mode-tab" data-mode="report" type="button" role="tab" aria-selected="false">Report</button>
       <button class="mode-tab" data-mode="evidence" type="button" role="tab" aria-selected="false">Evidence</button>
       <button class="mode-tab" data-mode="audit" type="button" role="tab" aria-selected="false">Tasks</button>
       <button class="mode-tab" data-mode="ai" type="button" role="tab" aria-selected="false">AI</button>
-      <button class="mode-tab" data-mode="harness" type="button" role="tab" aria-selected="false">Harness</button>
     </div>
 
     <!-- Mission -->
@@ -84,22 +83,23 @@
       <div id="explorer-panel"></div>
     </div>
 
-    <!-- Coverage -->
-    <div class="mode-panel" data-mode-panel="coverage">
+    <!-- Hunts: plan queue + residual-risk matrix (mode id was "coverage") -->
+    <div class="mode-panel" data-mode-panel="hunts">
       <div class="coverage-shell">
         <div class="coverage-header">
           <div>
-            <h2 class="coverage-title">Coverage</h2>
+            <h2 class="coverage-title">Hunts</h2>
             <p class="controls-hint coverage-honesty">
-              Residual-risk map — <strong>shallow / none / aborted / empty</strong> are not safe.
+              Plan hunts against architecture areas, then track residual risk —
+              <strong>shallow / none / aborted / empty</strong> are not safe.
               Green means a finding was filed, not that the area is exhaustively proven.
             </p>
             <p id="coverage-honesty-dynamic" class="controls-hint coverage-honesty-dynamic" aria-live="polite"></p>
           </div>
         </div>
-        <div id="coverage-summary" class="coverage-summary" role="group" aria-label="Filter coverage cells"></div>
-        <div id="coverage-legend" class="coverage-legend"></div>
         <div id="coverage-mode-bar" class="coverage-mode-bar"></div>
+        <div id="coverage-summary" class="coverage-summary" role="group" aria-label="Filter hunt cells"></div>
+        <div id="coverage-legend" class="coverage-legend"></div>
         <div id="coverage-actions" class="coverage-actions"></div>
         <div class="coverage-body">
           <div class="card coverage-matrix-card">
@@ -143,16 +143,14 @@
               <span id="report-search-count" class="controls-hint report-search-count" hidden></span>
             </div>
             <div class="report-export-bar">
-              <label class="controls-hint report-export-poc-opt" title="Embed evidence pack files (PoC hub + scripts) into the download">
-                <input type="checkbox" id="report-export-include-poc" />
-                Include PoC / evidence
-              </label>
-              <button type="button" class="btn btn-primary" id="report-export-json" title="Download findings as JSON">Export JSON</button>
-              <button type="button" class="btn" id="report-export-md" title="Download findings as Markdown">Export MD</button>
-              <button type="button" class="btn" id="report-export-csv" title="Download findings as CSV">Export CSV</button>
-              <button type="button" class="btn" id="report-export-html" title="Download server HTML report">Export HTML</button>
-              <button type="button" class="btn" id="report-export-xlsx" title="Download Excel workbook (server)">Export XLSX</button>
-              <button type="button" class="btn" id="report-export-docx" title="Download Word document (server)">Export DOCX</button>
+              <button
+                type="button"
+                class="btn btn-primary"
+                id="report-export-open"
+                title="Choose sections and formats, then download the audit report"
+              >
+                Export report
+              </button>
             </div>
           </div>
           <div id="report-summary" role="group" aria-label="Filter findings by state"></div>
@@ -311,44 +309,6 @@
       </div>
     </div>
 
-    <!-- Harness: live agent graph (loop profiles are dev/API only) -->
-    <div class="mode-panel" data-mode-panel="harness">
-      <div class="harness-shell">
-        <div class="harness-header">
-          <div>
-            <h2 class="harness-title">Harness</h2>
-            <p class="controls-hint">
-              Live map of the campaign (tasks as nodes). Click a node for step I/O.
-              Run artifacts only — target tree stays read-only for agents.
-            </p>
-          </div>
-          <div class="harness-header-actions">
-            <button type="button" class="btn" id="harness-refresh">Refresh graph</button>
-          </div>
-        </div>
-        <div class="harness-layout">
-          <div class="harness-main card">
-            <div class="toolbar">
-              <h3 style="margin:0;flex:1">Agent graph</h3>
-              <label class="controls-hint">
-                <input type="checkbox" id="harness-type-view" /> Type view
-              </label>
-            </div>
-            <div id="harness-graph" class="harness-graph" role="img" aria-label="Agent task graph" tabindex="0"></div>
-          </div>
-          <aside class="harness-side">
-            <div class="card">
-              <h3 style="margin-top:0">Runner</h3>
-              <div id="harness-runner" class="harness-runner"></div>
-            </div>
-            <div class="card">
-              <h3 style="margin-top:0">Kind summary</h3>
-              <div id="harness-kind-summary"></div>
-            </div>
-          </aside>
-        </div>
-      </div>
-    </div>
   </main>
 
   <div class="modal-backdrop" id="transcript-modal">
@@ -462,6 +422,95 @@
   </div>
 
   <!-- Develop POC workshop — opens only from Report → Develop POC (not a mode tab) -->
+  <div
+    class="modal-backdrop"
+    id="report-export-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="report-export-title"
+    hidden
+  >
+    <div class="modal modal-export">
+      <div class="toolbar" style="margin-bottom:0.75rem">
+        <h2 style="margin:0;flex:1" id="report-export-title">Export audit report</h2>
+        <button type="button" class="btn" id="report-export-close" title="Close">Close</button>
+      </div>
+      <p class="controls-hint" style="margin:0 0 0.85rem">
+        Choose what to include and one or more download formats. Multiple formats are zipped together.
+        CSV is findings-only (architecture/hunts use MD, HTML, JSON, DOCX, or XLSX).
+      </p>
+      <div class="export-modal-grid">
+        <fieldset class="export-fieldset">
+          <legend>Sections</legend>
+          <label class="export-check">
+            <input type="checkbox" id="export-sec-findings" checked />
+            <span>Findings</span>
+          </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-sec-architecture" checked />
+            <span>Architecture map</span>
+          </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-sec-hunts" checked />
+            <span>Hunts &amp; coverage</span>
+          </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-sec-summary" checked />
+            <span>Campaign summary</span>
+          </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-sec-codemap" />
+            <span>Mechanical codemap</span>
+          </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-sec-poc" />
+            <span>PoC / evidence packs</span>
+          </label>
+          <div class="export-select-row">
+            <button type="button" class="btn btn-sm btn-ghost" id="export-sec-all">Select all sections</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="export-sec-none">Clear sections</button>
+          </div>
+        </fieldset>
+        <fieldset class="export-fieldset">
+          <legend>Formats</legend>
+          <label class="export-check">
+            <input type="checkbox" id="export-fmt-md" checked data-fmt="md" />
+            <span>Markdown (.md)</span>
+          </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-fmt-html" checked data-fmt="html" />
+            <span>HTML (.html)</span>
+          </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-fmt-json" data-fmt="json" />
+            <span>JSON (.json)</span>
+          </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-fmt-csv" data-fmt="csv" />
+            <span>CSV (.csv)</span>
+          </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-fmt-xlsx" data-fmt="xlsx" />
+            <span>Excel (.xlsx)</span>
+          </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-fmt-docx" data-fmt="docx" />
+            <span>Word (.docx)</span>
+          </label>
+          <div class="export-select-row">
+            <button type="button" class="btn btn-sm btn-ghost" id="export-fmt-all">Select all formats</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="export-fmt-none">Clear formats</button>
+          </div>
+        </fieldset>
+      </div>
+      <p class="controls-hint" id="report-export-hint" style="margin:0.75rem 0 0"></p>
+      <div class="modal-actions" style="margin-top:1rem">
+        <button type="button" class="btn" id="report-export-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="report-export-download">Download</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="poc-modal" role="dialog" aria-modal="true" aria-labelledby="poc-title" hidden>
     <div class="modal modal-tall poc-modal-dialog">
       <div class="poc-shell">
@@ -553,7 +602,6 @@
   <script src="/static/explorer.js"></script>
   <script src="/static/report.js"></script>
   <script src="/static/coverage.js"></script>
-  <script src="/static/harness.js"></script>
   <script src="/static/chat.js"></script>
   <script src="/static/modes.js"></script>
 </body>

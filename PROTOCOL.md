@@ -137,4 +137,4 @@ Schemas live in `vulnforge/packet.py` → `tool_schemas_for` (OpenAI function to
 
 ## Operator guidance
 
-Dashboard Explorer and Coverage modes (plus Mission operator brief) can enqueue focused hunts and requeue coverage cells without editing the DB by hand. Selection hunts use `POST .../hunts/from-selection`. Report **Develop POC** opens a workshop modal (not a mode tab) and may enqueue `develop_poc`.
+Dashboard Explorer and Hunts modes (plus Mission operator brief) can enqueue focused hunts and requeue coverage cells without editing the DB by hand. Selection hunts use `POST .../hunts/from-selection`. Report **Develop POC** opens a workshop modal (not a mode tab) and may enqueue `develop_poc`.

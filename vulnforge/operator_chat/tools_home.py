@@ -425,13 +425,15 @@ def _init_run(args: dict, *, runs_root: Path, project_root: Path) -> dict[str, A
     if code != 0:
         return {"ok": False, "error": f"init exit {code}"}
 
-    # discover newest run for this target stem
+    # Discover run that matches this target path (never pick an unrelated newest run).
     from vulnforge.ui.store import discover_runs
 
-    refs = [r for r in discover_runs(runs_root) if target.name.lower() in r.target_id.lower() or True]
-    # prefer most recent under runs_root that matches target path
     chosen: Optional[RunRef] = None
-    for r in discover_runs(runs_root)[:15]:
+    try:
+        target_resolved = target.resolve()
+    except OSError:
+        target_resolved = target
+    for r in discover_runs(runs_root)[:30]:
         try:
             from vulnforge.operator_chat.tools_common import _open_db
 
@@ -441,13 +443,17 @@ def _init_run(args: dict, *, runs_root: Path, project_root: Path) -> dict[str, A
                 tp = str(row["target_path"] if row else "")
             finally:
                 db.close()
-            if Path(tp).resolve() == target.resolve():
+            if not tp:
+                continue
+            try:
+                tp_path = Path(tp).resolve()
+            except OSError:
+                tp_path = Path(tp)
+            if tp_path == target_resolved:
                 chosen = r
                 break
         except Exception:
             continue
-    if chosen is None and refs:
-        chosen = discover_runs(runs_root)[0]
 
     out: dict[str, Any] = {"ok": True, "init_exit": code}
     if chosen:
@@ -456,4 +462,8 @@ def _init_run(args: dict, *, runs_root: Path, project_root: Path) -> dict[str, A
         out["url"] = f"/runs/{chosen.target_id}/{chosen.run_id}"
         if args.get("start"):
             out["start"] = runner_action(chosen, "start_run", args)
+    else:
+        # Init succeeded but we could not locate the new run by target path —
+        # refuse wrong-run fallback (do not return newest unrelated run).
+        out["warning"] = "init_ok_but_run_not_located_by_target_path"
     return out

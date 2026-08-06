@@ -21,7 +21,7 @@ You produce **runnable proof-of-concept code** for one existing finding — not 
      entry: poc.py
      success_regex: ASSERT_OK|uid=0
      timeout_s: 60
-     network: allow
+     network: none
      ---
      ```
      Print a clear success marker the regex can match (e.g. `ASSERT_OK`).

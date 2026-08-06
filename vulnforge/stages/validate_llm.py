@@ -38,7 +38,8 @@ IMPLEMENTATION_COMPLETE = True
 
 # States that must not be reopened or "upgraded" by this stage.
 # needs_human is open for re-disprove only if still pending_llm; once human
-# confirmed/rejected, LLM must not override.
+# confirmed/rejected, LLM must not override. Completed disprove clears
+# pending_llm and must not re-enter dual disprove (no auto-demote to rejected_llm).
 _TERMINAL_FINDING_STATES = frozenset(
     ("confirmed", "rejected_mech", "rejected_llm", "rejected_human", "superseded")
 )
@@ -58,6 +59,63 @@ def _parse_finding_id(raw: Any) -> tuple[int | None, str | None]:
         return int(raw), None
     except (TypeError, ValueError):
         return None, "invalid_finding_id"
+
+
+def rearm_pending_llm(db, finding_id: int) -> dict[str, Any]:
+    """Explicit operator re-arm of dual disprove (sets ``pending_llm``).
+
+    Allowed only when:
+      - finding state is ``needs_human`` (not human-confirmed/rejected)
+      - ``validation_mech.status == "passed"``
+
+    Clears ``deadlettered`` on the mech stamp. Does not enqueue a task — caller
+    does. Never touches ``confirmed`` / ``rejected_*``.
+
+    Returns ``{"ok": True, "finding_id", "rearmed"}`` or ``{"ok": False, "error"}``.
+    """
+    finding = db.get_finding(int(finding_id))
+    if finding is None:
+        return {"ok": False, "error": "finding_not_found"}
+    if finding.state in _TERMINAL_FINDING_STATES:
+        return {
+            "ok": False,
+            "error": "already_terminal",
+            "finding_state": finding.state,
+        }
+    if finding.state != "needs_human":
+        return {
+            "ok": False,
+            "error": "not_needs_human",
+            "finding_state": finding.state,
+        }
+    body = dict(finding.body or {})
+    mech = body.get("validation_mech")
+    if not isinstance(mech, dict) or mech.get("status") != "passed":
+        return {"ok": False, "error": "mech_not_passed", "finding_state": finding.state}
+    if bool(mech.get("pending_llm")):
+        return {
+            "ok": True,
+            "finding_id": finding.id,
+            "rearmed": False,
+            "already_pending": True,
+            "finding_state": finding.state,
+        }
+    mech = dict(mech)
+    mech["pending_llm"] = True
+    mech.pop("deadlettered", None)
+    mech["rearmed_at"] = utc_now_iso()
+    body["validation_mech"] = mech
+    db.conn.execute(
+        "UPDATE findings SET body_json=?, updated_at=? WHERE id=?",
+        (json.dumps(body), utc_now_iso(), finding.id),
+    )
+    db.conn.commit()
+    return {
+        "ok": True,
+        "finding_id": finding.id,
+        "rearmed": True,
+        "finding_state": "needs_human",
+    }
 
 
 def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
@@ -193,6 +251,96 @@ def _run_disprove(
             "finding_id": fid,
             "finding_state": finding.state,
         }
+
+    # Require mech-pass + still pending_llm. Never free-ride on pending_llm alone
+    # (partial bodies) and never re-enter dual disprove after a completed pass
+    # (pending_llm cleared) so settled needs_human cannot be auto-demoted.
+    # Explicit operator re-arm: payload rearm=true re-sets pending_llm when
+    # eligible (needs_human + mech passed) — not every stale task.
+    body_chk = finding.body or {}
+    mech_chk = body_chk.get("validation_mech")
+    mech_passed = isinstance(mech_chk, dict) and mech_chk.get("status") == "passed"
+    pending_llm = isinstance(mech_chk, dict) and bool(mech_chk.get("pending_llm"))
+    rearm = bool((task.payload or {}).get("rearm"))
+    if not mech_passed:
+        _emit_event(
+            run_dir,
+            {
+                "source": "vf",
+                "event": "validate_llm_skipped",
+                "task_id": getattr(task, "id", None),
+                "finding_id": fid,
+                "reason": "mech_not_passed",
+                "finding_state": finding.state,
+                "verdict": "skipped",
+            },
+        )
+        return {
+            "status": "failed_task",
+            "error": "mech_not_passed",
+            "skipped": True,
+            "reason": "mech_not_passed",
+            "finding_id": fid,
+            "finding_state": finding.state,
+        }
+    if not pending_llm:
+        if rearm:
+            arm = rearm_pending_llm(db, fid)
+            if arm.get("ok") and (
+                arm.get("rearmed") or arm.get("already_pending")
+            ):
+                finding = db.get_finding(fid)
+                if finding is None:
+                    return _failed_invalid_payload(
+                        task, db, run_dir, fid, reason="finding_not_found"
+                    )
+                body_chk = finding.body or {}
+                mech_chk = body_chk.get("validation_mech")
+                pending_llm = (
+                    isinstance(mech_chk, dict) and bool(mech_chk.get("pending_llm"))
+                )
+            else:
+                _emit_event(
+                    run_dir,
+                    {
+                        "source": "vf",
+                        "event": "validate_llm_skipped",
+                        "task_id": getattr(task, "id", None),
+                        "finding_id": fid,
+                        "reason": "rearm_failed",
+                        "detail": arm.get("error"),
+                        "finding_state": finding.state,
+                        "verdict": "skipped",
+                    },
+                )
+                return {
+                    "status": "failed_task",
+                    "error": arm.get("error") or "rearm_failed",
+                    "skipped": True,
+                    "reason": "rearm_failed",
+                    "finding_id": fid,
+                    "finding_state": finding.state,
+                }
+        if not pending_llm:
+            _emit_event(
+                run_dir,
+                {
+                    "source": "vf",
+                    "event": "validate_llm_skipped",
+                    "task_id": getattr(task, "id", None),
+                    "finding_id": fid,
+                    "reason": "not_pending_llm",
+                    "finding_state": finding.state,
+                    "verdict": "skipped",
+                },
+            )
+            return {
+                "status": "succeeded",
+                "skipped": True,
+                "reason": "not_pending_llm",
+                "finding_id": fid,
+                "finding_state": finding.state,
+            }
 
     run_row = db.get_run()
     if not run_row:

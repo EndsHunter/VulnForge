@@ -103,9 +103,10 @@ def merge_near_duplicate(
 
     revalidate:
       - True when material body fields changed (and state is candidate-like)
-      - False when only annotations / confirmed keeper preserved
-    Never demotes a confirmed finding by overwriting its body then re-running
-    mech gates; confirmed keepers only receive annotation merges.
+      - False when only annotations / protected keeper preserved
+    Never demotes confirmed / needs_human / rejected_human (or other terminal
+    rejects) by overwriting body then re-running mech gates; those keepers only
+    receive annotation merges (rejected_human is skipped entirely).
     """
     key = merge_key(body)
     if not key:
@@ -113,21 +114,28 @@ def merge_near_duplicate(
     new_cls = str(body.get("weakness_class") or "")
     new_rank = class_rank(new_cls)
 
+    # Annotate-only keepers: do not force candidate or revalidate.
+    _ANNOTATE_ONLY_STATES = frozenset({"confirmed", "needs_human"})
+    # Terminal rejects: skip like other closed rejects (no reopen).
+    _SKIP_STATES = frozenset(
+        ("rejected_mech", "rejected_llm", "rejected_human", "superseded")
+    )
+
     for f in db.list_findings():
-        if f.state in ("rejected_mech", "rejected_llm", "superseded"):
+        if f.state in _SKIP_STATES:
             continue
         b = f.body or {}
         ek = merge_key(b)
         if ek is None or ek != key:
             continue
-        # Same path+sink â€” decide keeper
+        # Same path+sink — decide keeper
         old_cls = str(b.get("weakness_class") or "")
         old_rank = class_rank(old_cls)
-        confirmed = f.state == "confirmed"
+        annotate_only = f.state in _ANNOTATE_ONLY_STATES
 
         if new_rank > old_rank or (new_rank == old_rank and new_cls == old_cls):
-            if confirmed:
-                # Do not overwrite confirmed material fields or re-open gates.
+            if annotate_only:
+                # Do not overwrite material fields or re-open gates.
                 merged = _annotate_only(dict(b), body, old_cls, new_cls)
                 if new_rank > old_rank:
                     # Record that a more-specific class was seen without demotion
@@ -140,16 +148,20 @@ def merge_near_duplicate(
                     stable_key=f.stable_key,
                     profile=profile,
                 )
-                return {
+                out = {
                     "superseded_existing": True,
                     "finding_id": fid,
                     "merge_key": key,
                     "kept_class": old_cls,
                     "prior_class": old_cls,
                     "revalidate": False,
-                    "confirmed_preserved": True,
                 }
-            # Candidate (or other non-confirmed): material update â†’ revalidate
+                if f.state == "confirmed":
+                    out["confirmed_preserved"] = True
+                if f.state == "needs_human":
+                    out["needs_human_preserved"] = True
+                return out
+            # Candidate (or other open state): material update → revalidate
             merged = dict(b)
             merged.update({k: v for k, v in body.items() if v is not None})
             merged["weakness_class"] = (
@@ -175,7 +187,7 @@ def merge_near_duplicate(
                 "prior_class": old_cls,
                 "revalidate": True,
             }
-        # Existing more specific â†’ annotate only; never revalidate
+        # Existing more specific → annotate only; never revalidate
         merged = _annotate_only(dict(b), body, old_cls, new_cls)
         fid = db.insert_finding(
             merged,

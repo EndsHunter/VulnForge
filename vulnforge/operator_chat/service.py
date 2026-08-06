@@ -204,9 +204,10 @@ def confirm_pending(
         "content": out,
         "confirmed": True,
     }
+    wrap_ok = isinstance(out, dict) and bool(out.get("ok"))
     wrap = (
         f"Confirmed action `{name}`: "
-        f"{'ok' if out.get('ok') else 'failed'}. "
+        f"{'ok' if wrap_ok else 'failed'}. "
         f"{mutation_summary(name, args)}"
     )
     if isinstance(out, dict):
@@ -261,14 +262,26 @@ def confirm_pending(
     if isinstance(out, dict) and (out.get("navigate") or out.get("url")):
         ui_hints["navigate"] = out.get("navigate") or out.get("url")
 
-    return {
-        "ok": True,
+    # Surface mutation failure to API/UI — do not always claim ok: True.
+    # Mutators must return {"ok": bool, ...}; unexpected shapes are failures.
+    if isinstance(out, dict) and "ok" in out:
+        mut_ok = bool(out.get("ok"))
+    else:
+        mut_ok = False
+    resp: dict[str, Any] = {
+        "ok": mut_ok,
         "session_id": session_id,
         "messages": [tool_ui, asst_ui],
         "result": out,
         "pending_confirm": None,
         "ui_hints": ui_hints,
     }
+    if not mut_ok:
+        if isinstance(out, dict) and out.get("error"):
+            resp["error"] = out.get("error")
+        elif not isinstance(out, dict) or "ok" not in out:
+            resp["error"] = "mutation_result_missing_ok"
+    return resp
 
 
 def _persistable(m: dict[str, Any]) -> dict[str, Any]:

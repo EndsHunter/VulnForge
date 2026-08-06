@@ -723,6 +723,96 @@ def test_force_submit_on_round_limit(tmp_path: Path):
     assert "max_tool_rounds" in str(stored["none"].get("reason") or "")
 
 
+def test_force_submit_skips_architecture_when_content_salvageable():
+    """Salvageable architecture JSON → no incomplete stub (recon salvage wins)."""
+    import json
+
+    from vulnforge.agent_runtime.round_limit import (
+        architecture_from_content,
+        try_force_terminal_submit,
+    )
+
+    arch = {
+        "summary": "Salvaged map of app",
+        "components": [{"name": "app"}],
+        "trust_boundaries": [],
+        "input_surfaces": [],
+        "hunt_focus": [],
+    }
+    content = json.dumps(arch)
+    assert architecture_from_content(content) is not None
+    called: list[str] = []
+
+    def handler(name, args):
+        called.append(name)
+        return {"ok": True}
+
+    schema = [
+        {
+            "type": "function",
+            "function": {"name": "submit_architecture", "parameters": {}},
+        }
+    ]
+    name, out = try_force_terminal_submit(
+        handler, schema, max_rounds=4, content=content
+    )
+    assert name is None and out is None
+    assert called == []
+
+
+def test_force_submit_architecture_stub_when_content_not_salvageable():
+    """No parseable summary → force incomplete architecture stub."""
+    from vulnforge.agent_runtime.round_limit import try_force_terminal_submit
+
+    stored: dict = {}
+
+    def handler(name, args):
+        stored["name"] = name
+        stored["args"] = args
+        return {"ok": True}
+
+    schema = [
+        {
+            "type": "function",
+            "function": {"name": "submit_architecture", "parameters": {}},
+        }
+    ]
+    name, out = try_force_terminal_submit(
+        handler, schema, max_rounds=4, content="just thrashing tools, no JSON"
+    )
+    assert name == "submit_architecture"
+    assert out and out.get("forced") is True
+    assert "Incomplete recon" in (stored.get("args") or {}).get("summary", "")
+
+
+def test_force_submit_prefers_submit_none_for_hunt():
+    """Hunt schema with submit_none still forces none (not architecture)."""
+    from vulnforge.agent_runtime.round_limit import try_force_terminal_submit
+
+    stored: dict = {}
+
+    def handler(name, args):
+        stored["name"] = name
+        stored["args"] = args
+        return {"ok": True}
+
+    schema = [
+        {"type": "function", "function": {"name": "submit_none", "parameters": {}}},
+        {
+            "type": "function",
+            "function": {"name": "submit_architecture", "parameters": {}},
+        },
+    ]
+    # Even with salvageable content, submit_none wins for hunt
+    content = '{"summary": "should not matter for hunt"}'
+    name, out = try_force_terminal_submit(
+        handler, schema, max_rounds=3, content=content
+    )
+    assert name == "submit_none"
+    assert out and out.get("forced") is True
+    assert stored.get("name") == "submit_none"
+
+
 def test_get_architecture_brief(tmp_path: Path):
     class _FakeDb:
         def get_architecture(self):

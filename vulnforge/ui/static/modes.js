@@ -1,4 +1,4 @@
-/* VulnForge mode navigation — Mission / Coverage / Explorer / Report / Evidence / Tasks / AI / Harness.
+/* VulnForge mode navigation — Mission / Hunts / Explorer / Report / Evidence / Tasks / AI.
  * Develop POC is an on-demand modal (Report → Develop POC), not a top-level mode tab.
  */
 
@@ -8,22 +8,31 @@
 
   const MODE_DEFAULT_TAB = {
     mission: "overview",
-    coverage: "coverage",
+    hunts: "hunts",
     explorer: "explorer",
     report: "report",
     evidence: "evidence",
     audit: "tasks", // UI label: Tasks
     ai: "ai",
-    harness: "harness",
   };
 
   /**
    * Parse hash segment. `#poc/<id>` is the current PoC workshop deep link
    * (opens Report + modal), not a workspace mode.
+   * Legacy aliases: #coverage → hunts, #harness → mission, #tasks → audit/tasks.
    */
   function resolveModeHash(mode, tab) {
     if (mode === "poc") {
       return { mode: "report", tab: "report", pocFindingId: tab || null };
+    }
+    if (mode === "coverage") {
+      return { mode: "hunts", tab: tab === "coverage" || !tab ? "hunts" : tab };
+    }
+    if (mode === "harness") {
+      return { mode: "mission", tab: "overview" };
+    }
+    if (mode === "tasks") {
+      return { mode: "audit", tab: tab || "tasks" };
     }
     return { mode, tab };
   }
@@ -74,12 +83,9 @@
     if (mode === "ai" && window.VulnForgeChat?.ensureMounted) {
       window.VulnForgeChat.ensureMounted();
     }
-    if (mode === "coverage" && window.VulnForgeCoverage?.render) {
+    if (mode === "hunts" && window.VulnForgeCoverage?.render) {
       const snap = window.__VF_last_snap;
       if (snap) window.VulnForgeCoverage.render(snap);
-    }
-    if (mode === "harness" && window.VulnForgeHarness?.activate) {
-      window.VulnForgeHarness.activate();
     }
     try {
       // Preserve #poc/<id> hash while POC modal is open on report
@@ -180,7 +186,10 @@
       goExplorer,
       goEvidence,
       goCoverage() {
-        setMode("coverage");
+        setMode("hunts");
+      },
+      goHunts() {
+        setMode("hunts");
       },
       goReport(fileOrFilter) {
         setMode("report", "report");
