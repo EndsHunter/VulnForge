@@ -15,7 +15,13 @@ from vulnforge.agent_runtime.transcript import (
 logger = logging.getLogger(__name__)
 
 TERMINAL_TOOLS = frozenset(
-    {"submit_candidate", "submit_none", "submit_architecture"}
+    {
+        "submit_candidate",
+        "submit_none",
+        "submit_architecture",
+        "continue_hunt",
+        "continue_recon",
+    }
 )
 
 
@@ -114,6 +120,68 @@ def _attach_submit_stop_hook(agent: Any, session: dict[str, Any]) -> None:
             logger.warning("strands cancel after submit failed: %s", e)
 
     agent.hooks.add_callback(AfterToolCallEvent, after_tool)
+
+
+def _attach_context_watch_hook(
+    agent: Any,
+    session: dict[str, Any],
+    packet: Any,
+    cfg: Optional[dict[str, Any]],
+) -> None:
+    """Nudge the model to call continue_* before the context window dies."""
+    from vulnforge.agent_runtime.context_watch import (
+        continue_enabled,
+        continue_tool_from_schema,
+        continue_warn_fraction,
+        context_window_tokens,
+        estimate_messages_tokens,
+        next_nudge_level,
+        nudge_text,
+        pressure_level,
+    )
+
+    tool_name = continue_tool_from_schema(getattr(packet, "tools_schema", None))
+    if not tool_name or not continue_enabled(cfg):
+        return
+    try:
+        from strands.hooks import BeforeModelCallEvent
+    except ImportError:
+        return
+
+    window = context_window_tokens(cfg)
+    warn_frac = continue_warn_fraction(cfg)
+
+    def before_model(event: Any) -> None:
+        if session.get("terminal_ok"):
+            return
+        used = getattr(event, "projected_input_tokens", None)
+        try:
+            used_i = int(used) if used is not None else 0
+        except (TypeError, ValueError):
+            used_i = 0
+        if used_i <= 0:
+            try:
+                used_i = estimate_messages_tokens(list(agent.messages))
+            except Exception:
+                used_i = 0
+        level = pressure_level(used_i, window, warn_frac)
+        nxt = next_nudge_level(session.get("context_nudge_level"), level)
+        if not nxt:
+            return
+        session["context_nudge_level"] = nxt
+        session["context_used_tokens"] = used_i
+        text = nudge_text(
+            tool_name, used_tokens=used_i, window_tokens=window, level=nxt
+        )
+        try:
+            agent.messages.append({"role": "user", "content": [{"text": text}]})
+        except Exception as e:
+            logger.warning("context-watch nudge failed: %s", e)
+
+    try:
+        agent.hooks.add_callback(BeforeModelCallEvent, before_model)
+    except Exception:
+        pass
 
 
 def _attach_reasoning_strip_hook(agent: Any) -> None:
@@ -268,6 +336,18 @@ def run_strands_tool_loop(
             "(submit_candidate / submit_none / submit_architecture). "
             "Do not thrash on failed tools — fix args or submit_none.\n"
         )
+    from vulnforge.agent_runtime.context_watch import continue_tool_from_schema
+
+    cont_tool = continue_tool_from_schema(tools_schema)
+    if cont_tool and "continue_" not in user.lower():
+        user = (
+            user
+            + "\n\n## Context window\n"
+            f"If the harness reports context is high or critical, call `{cont_tool}` "
+            "with a detailed handoff of remaining work. That queues a child task "
+            "with a fresh window and finishes this one. Do not keep reading files "
+            "until the window overflows.\n"
+        )
 
     agent = Agent(
         model=model,
@@ -277,6 +357,7 @@ def run_strands_tool_loop(
     )
     _attach_submit_stop_hook(agent, session)
     _attach_reasoning_strip_hook(agent)
+    _attach_context_watch_hook(agent, session, packet, cfg)
 
     # Also strip before invoke in case of prior state (fresh agent, no-op)
     strip_reasoning_from_strands_messages(list(agent.messages))
@@ -291,7 +372,7 @@ def run_strands_tool_loop(
         low = err.lower()
         # Map transport-ish failures to infra-style classification
         classification = ResponseClass.TRANSPORT
-        if "context" in low or "token" in low:
+        if "context" in low and ("length" in low or "window" in low or "token" in low):
             classification = ResponseClass.CONTEXT_LENGTH
         return LLMResult(
             ok=False,

@@ -87,6 +87,7 @@ def test_critical_tools_kept_when_omitted(defaults_path: Path):
     assert "submit_none" in resolved
     assert "list_hunt_profiles" in resolved
     assert "request_hunt" in resolved
+    assert "continue_hunt" in resolved
 
 
 def test_recon_and_develop_poc_defaults(defaults_path: Path):
@@ -101,6 +102,7 @@ def test_recon_and_develop_poc_defaults(defaults_path: Path):
     assert "read_file" in recon
     assert "grep" in recon
     assert "submit_architecture" in recon
+    assert "continue_recon" in recon
     assert "list_dir" not in recon
 
     poc = resolve_stage_tools("develop_poc", _names("develop_poc", apply_defaults=False))

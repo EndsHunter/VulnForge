@@ -9,6 +9,7 @@
 | Change hunting angle library | `seeds/system/hunting_angles.md` (+ profile `angle_ids`) |
 | Change hunt packet packing | `vulnforge/packet.py` → hunt pack helpers |
 | Change hunt stage loop / split / abort | `vulnforge/stages/hunt.py` |
+| Context-window continuation | `continue_hunt` tool + `vulnforge/tools/continue_task.py` + `agent_runtime/context_watch.py` |
 | Add or extend agent tools | `vulnforge/tools/agent/<name>.py` (see `toolgen.md`, [LAYOUT](../../LAYOUT.md)) |
 | Change tool allowlists | profile tools + `config/default_tools.json` / Dev Tools defaults |
 | Change requeue / selection enqueue | `vulnforge/control/ops.py` (`requeue_hunt`, `hunt_from_selection`, coverage bulk) |

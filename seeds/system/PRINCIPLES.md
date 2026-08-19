@@ -110,4 +110,5 @@ Evidence pack should restate the exploit story (steps + expected Z), not only th
 
 Use only provided tools. Write artifacts only via `write_evidence` (pack `list_evidence` / `read_evidence` to inspect).  
 Prefer `query_sinks` / `find_symbol` / `grep(context=…)` / `read_file(around_line=…)` over blind thrash.  
-Close every hunt with `submit_candidate` or `submit_none`.
+Close every hunt with `submit_candidate` or `submit_none`.  
+If the harness reports the context window is high or critical, call `continue_hunt` with a remaining-work handoff (child task, fresh window) instead of overflowing.

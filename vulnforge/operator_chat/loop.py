@@ -129,8 +129,14 @@ def run_operator_loop(
                     }
                 )
             messages.append(asst_msg)
-            if asst_content.strip():
-                new_ui.append({"role": "assistant", "content": asst_content})
+            # Persist tool_calls even when content is empty so follow-up
+            # Strands turns can pair toolResult with the original toolUse id.
+            ui_asst: dict[str, Any] = {
+                "role": "assistant",
+                "content": asst_content,
+                "tool_calls": asst_msg["tool_calls"],
+            }
+            new_ui.append(ui_asst)
 
             stop_for_confirm = False
             for i, tc in enumerate(last.tool_calls):
@@ -174,6 +180,7 @@ def run_operator_loop(
                         {
                             "role": "tool",
                             "name": name,
+                            "tool_call_id": tc_id,
                             "content": tool_payload,
                             "pending_confirm": pending.to_public(),
                         }
@@ -195,6 +202,7 @@ def run_operator_loop(
                     {
                         "role": "tool",
                         "name": name,
+                        "tool_call_id": tc_id,
                         "content": out,
                     }
                 )

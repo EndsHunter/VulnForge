@@ -15,6 +15,7 @@ from vulnforge.operator_chat.tools_common import (
     get_project_excerpt_impl,
     get_status_impl,
     get_tool_gaps_summary_impl,
+    list_evidence_impl,
     list_findings_all_impl,
     list_hunt_profiles_impl,
     list_hunts_all_impl,
@@ -67,7 +68,19 @@ def schemas() -> list[dict]:
         ),
         openai_tool(
             "list_findings_all",
-            "Query findings across all runs (or filter by target/run/state/class/text).",
+            "Query findings across all runs (or filter by target/run/state/class/text). Alias: list_findings.",
+            {
+                **_RUN_ID_PROPS,
+                "state": {"type": "string", "description": "e.g. needs_human, confirmed, candidate"},
+                "class": {"type": "string"},
+                "q": {"type": "string", "description": "Text match on title/summary"},
+                "limit": {"type": "integer"},
+                "max_runs": {"type": "integer"},
+            },
+        ),
+        openai_tool(
+            "list_findings",
+            "Same as list_findings_all. Use when the user asks about findings.",
             {
                 **_RUN_ID_PROPS,
                 "state": {"type": "string", "description": "e.g. needs_human, confirmed, candidate"},
@@ -84,12 +97,24 @@ def schemas() -> list[dict]:
             ["target_id", "run_id", "finding_id"],
         ),
         openai_tool(
-            "read_evidence",
-            "Read an evidence pack file for a run (capped).",
+            "list_evidence",
+            "List evidence packs and files for a run. Omit pack_id to list all packs.",
             {
                 **_RUN_ID_PROPS,
-                "pack_id": {"type": "string"},
-                "relpath": {"type": "string", "description": "Default evidence.md"},
+                "pack_id": {"type": "string", "description": "Evidence pack id (finding.evidence_id)"},
+            },
+            ["target_id", "run_id"],
+        ),
+        openai_tool(
+            "read_evidence",
+            "Read an evidence pack file for a run (capped). Omit relpath to read the pack's preferred .md.",
+            {
+                **_RUN_ID_PROPS,
+                "pack_id": {"type": "string", "description": "Evidence pack id (finding.evidence_id)"},
+                "relpath": {
+                    "type": "string",
+                    "description": "File in the pack (from list_evidence / finding.evidence_files). Optional.",
+                },
             },
             ["target_id", "run_id", "pack_id"],
         ),
@@ -301,7 +326,7 @@ def dispatch(
 
     if name == "list_runs":
         return list_runs_impl(runs_root, args)
-    if name == "list_findings_all":
+    if name in ("list_findings_all", "list_findings"):
         return list_findings_all_impl(runs_root, args)
     if name == "search_results":
         return search_results_impl(runs_root, args)
@@ -349,6 +374,8 @@ def dispatch(
         return {"ok": True, "runner": runctl.runner_status(run.path), **_ids(run)}
     if name == "get_finding":
         return get_finding_impl(run, args)
+    if name == "list_evidence":
+        return list_evidence_impl(run, args)
     if name == "read_evidence":
         return read_evidence_impl(run, args)
     if name == "get_coverage_summary":

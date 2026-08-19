@@ -20,6 +20,7 @@ from vulnforge.operator_chat.tools_common import (
     get_project_excerpt_impl,
     get_status_impl,
     list_events_impl,
+    list_evidence_impl,
     list_findings_impl,
     list_hunt_profiles_impl,
     list_hunts_impl,
@@ -107,7 +108,7 @@ def schemas() -> list[dict]:
         ),
         openai_tool(
             "list_findings",
-            "List findings for this run.",
+            "List findings for this run (includes evidence_id, poc_relpath, evidence_files).",
             {
                 "state": {"type": "string"},
                 "class": {"type": "string"},
@@ -117,14 +118,33 @@ def schemas() -> list[dict]:
         ),
         openai_tool(
             "get_finding",
-            "Get one finding.",
+            "Get one finding body plus evidence file names. finding_id may be 1, '1', or '#1'.",
             {"finding_id": {"type": "integer"}},
             ["finding_id"],
         ),
         openai_tool(
+            "list_evidence",
+            "List evidence packs/files. Omit pack_id to list all packs for this run.",
+            {
+                "pack_id": {
+                    "type": "string",
+                    "description": "Evidence pack id (finding.evidence_id). Optional.",
+                }
+            },
+        ),
+        openai_tool(
             "read_evidence",
-            "Read evidence pack file.",
-            {"pack_id": {"type": "string"}, "relpath": {"type": "string"}},
+            "Read an evidence pack file. Omit relpath to read the pack's preferred .md (not evidence.md).",
+            {
+                "pack_id": {
+                    "type": "string",
+                    "description": "Evidence pack id (finding.evidence_id)",
+                },
+                "relpath": {
+                    "type": "string",
+                    "description": "File in the pack from list_evidence / finding.evidence_files. Optional.",
+                },
+            },
             ["pack_id"],
         ),
         openai_tool("get_architecture", "Architecture map summary for this run.", {}),
@@ -242,6 +262,8 @@ def dispatch(
         return list_findings_impl(run, args)
     if name == "get_finding":
         return get_finding_impl(run, args)
+    if name == "list_evidence":
+        return list_evidence_impl(run, args)
     if name == "read_evidence":
         return read_evidence_impl(run, args)
     if name == "get_architecture":

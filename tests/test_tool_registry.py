@@ -38,6 +38,8 @@ def test_agent_tool_names_includes_builtins():
         "preflight_candidate",
         "list_hunt_profiles",
         "request_hunt",
+        "continue_hunt",
+        "continue_recon",
         "submit_architecture",
         "submit_candidate",
         "submit_none",
@@ -68,7 +70,9 @@ def test_critical_tools_for_stages():
     assert "submit_none" in hunt
     assert "list_hunt_profiles" in hunt
     assert "request_hunt" in hunt
+    assert "continue_hunt" in hunt
     assert "preflight_candidate" in hunt
+    assert "continue_recon" in critical_tools_for("recon")
     poc = critical_tools_for("develop_poc")
     assert "write_evidence" in poc
     assert "list_evidence" in poc
@@ -81,6 +85,7 @@ def test_stage_schema_membership():
         for t in openai_schemas_for_stage("recon")
     }
     assert "submit_architecture" in recon_names
+    assert "continue_recon" in recon_names
     assert "submit_candidate" not in recon_names
     assert "list_dir" in recon_names
 
@@ -90,6 +95,7 @@ def test_stage_schema_membership():
     }
     assert "submit_candidate" in hunt_names
     assert "request_hunt" in hunt_names
+    assert "continue_hunt" in hunt_names
     assert "preflight_candidate" in hunt_names
     assert "query_sinks" in hunt_names
     assert "get_architecture" in hunt_names

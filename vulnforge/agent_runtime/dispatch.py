@@ -29,7 +29,11 @@ def run_tool_loop(
 
     if isinstance(client, FakeLLMClient):
         result = client.run_tool_loop(
-            packet, tool_handler, max_rounds=max_rounds, temperature=temperature
+            packet,
+            tool_handler,
+            max_rounds=max_rounds,
+            temperature=temperature,
+            cfg=cfg,
         )
         return apply_round_limit_fallback(
             result,

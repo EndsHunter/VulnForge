@@ -3207,6 +3207,10 @@ function formatOptimizeReport(data) {
   const lines = [];
   if (data.summary) lines.push(data.summary);
   if (data.error) lines.push("Error: " + data.error);
+  if (data.measured_context_tokens != null) {
+    const src = data.context_source ? ` (${data.context_source})` : "";
+    lines.push(`Measured context: ${data.measured_context_tokens} tokens${src}`);
+  }
   const warns = data.warnings || [];
   for (const w of warns) lines.push("⚠ " + w);
   const changes = data.changes || {};
@@ -3242,7 +3246,7 @@ async function optimizeSettings() {
   }
   if (report) {
     report.hidden = false;
-    report.textContent = "Probing endpoint (models, completion, tool-call, latency)…";
+    report.textContent = "Probing endpoint (models, completion, tool-call, context window, latency)…";
   }
   try {
     const data = await api("/api/settings/optimize", {

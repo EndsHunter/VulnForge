@@ -20,6 +20,10 @@
 | **Safer experiment** | Edit package seed carefully, or patch loader to use `load_prompt_slice` if you need overrides. |
 | **Do not break** | Expect JSON fields the parser understands (`summary`, `components`, `trust_boundaries`, `input_surfaces`, `hunt_focus`). |
 
+`continue_recon` is a recon-stage tool (not a prompt file): when context is high the
+harness instructs the model to hand off remaining mapping to a child recon that
+refines the prior architecture.
+
 ## Runtime agents (not system seeds)
 
 | Library | Path |

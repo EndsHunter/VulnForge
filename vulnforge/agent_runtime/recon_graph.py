@@ -65,7 +65,7 @@ def run_recon_strands_graph(
     def wrapping_handler(name: str, args: dict) -> dict:
         out = tool_handler(name, args or {})
         if (
-            name == "submit_architecture"
+            name in ("submit_architecture", "continue_recon")
             and isinstance(out, dict)
             and out.get("ok") is True
         ):

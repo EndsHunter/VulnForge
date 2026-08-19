@@ -44,13 +44,14 @@ BLOCKED_TOOLS = frozenset(
 
 
 _CRITICAL_FALLBACK: dict[str, frozenset[str]] = {
-    "recon": frozenset({"submit_architecture"}),
+    "recon": frozenset({"submit_architecture", "continue_recon"}),
     "hunt": frozenset(
         {
             "submit_candidate",
             "submit_none",
             "list_hunt_profiles",
             "request_hunt",
+            "continue_hunt",
         }
     ),
     "develop_poc": frozenset({"write_evidence"}),

@@ -207,6 +207,7 @@ class SettingsOptimizeBody(BaseModel):
     model: Optional[str] = None
     api_key: Optional[str] = None
     apply: bool = False
+    test_context: bool = True
 
 
 class HuntProfileBody(BaseModel):
@@ -2138,7 +2139,8 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         """Probe the configured LLM and recommend (optionally apply) settings.
 
         Runs connectivity, model-id resolution, API surface checks, a tool-call
-        compliance micro-probe, and latency heuristics. Does not touch targets.
+        compliance micro-probe, an empirical context-window test (unless
+        ``test_context`` is false), and latency heuristics. Does not touch targets.
         """
         from vulnforge.settings_probe import optimize_ui_settings
 
@@ -2149,6 +2151,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 model=body.model,
                 api_key=body.api_key,
                 apply=bool(body.apply),
+                test_context=True if body.test_context is None else bool(body.test_context),
             )
         except Exception as e:
             raise HTTPException(500, f"optimize failed: {e}") from e

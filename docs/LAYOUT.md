@@ -8,6 +8,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Want… | Look in… |
 |-------|----------|
 | **Agent tool X** (model-facing `code_static`) | `vulnforge/tools/agent/<x>.py` — `SPEC` + `run()` |
+| Context-window continuation (`continue_hunt` / `continue_recon`) | `vulnforge/tools/continue_task.py` + `agent_runtime/context_watch.py` |
 | Tool registry / dispatch / schemas | `vulnforge/tools/base.py`, `registry.py`, `dispatch.py` |
 | Shared FS/grep backends (not one-tool-one-file) | `vulnforge/tools/fs_read.py`, `grep_index.py`, `evidence_write.py`, … |
 | Extra tools (toolgen integrate) | `vulnforge/tools/extra_registry.py` + optional `tools/extra/` |

@@ -463,10 +463,29 @@ class FakeLLMClient:
         self._i += 1
         return r
 
-    def run_tool_loop(self, packet, tool_handler, max_rounds, temperature) -> LLMResult:
+    def run_tool_loop(
+        self, packet, tool_handler, max_rounds, temperature, cfg=None
+    ) -> LLMResult:
         messages = messages_from_packet(packet)
         last: Optional[LLMResult] = None
         usage_acc = TokenUsage(source="none", llm_calls=0)
+        nudge_level: Optional[str] = None
+        from vulnforge.agent_runtime.context_watch import (
+            continue_enabled,
+            continue_tool_from_schema,
+            continue_warn_fraction,
+            context_window_tokens,
+            estimate_messages_tokens,
+            next_nudge_level,
+            nudge_text,
+            pressure_level,
+            usage_prompt_tokens,
+        )
+
+        cont_tool = continue_tool_from_schema(getattr(packet, "tools_schema", None))
+        watch_on = bool(cont_tool) and continue_enabled(cfg)
+        window = context_window_tokens(cfg)
+        warn_frac = continue_warn_fraction(cfg)
 
         def _accumulate(res: LLMResult) -> None:
             nonlocal usage_acc
@@ -494,11 +513,30 @@ class FakeLLMClient:
                         "role": "user",
                         "content": (
                             "LAST tool round. You MUST call submit_candidate, "
-                            "submit_none, or submit_architecture now — do not "
-                            "call more exploration tools."
+                            "submit_none, submit_architecture, continue_hunt, "
+                            "or continue_recon now — do not call more exploration tools."
                         ),
                     }
                 )
+            if watch_on:
+                used = estimate_messages_tokens(messages)
+                if last is not None:
+                    used = max(used, usage_prompt_tokens(last.usage))
+                level = pressure_level(used, window, warn_frac)
+                nxt = next_nudge_level(nudge_level, level)
+                if nxt:
+                    nudge_level = nxt
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": nudge_text(
+                                cont_tool or "continue_hunt",
+                                used_tokens=used,
+                                window_tokens=window,
+                                level=nxt,
+                            ),
+                        }
+                    )
             last = self.chat(messages, tools=packet.tools_schema, temperature=temperature)
             _accumulate(last)
             if not last.ok:
@@ -523,7 +561,13 @@ class FakeLLMClient:
                             "content": json.dumps(out),
                         }
                     )
-                    if name in ("submit_candidate", "submit_none", "submit_architecture"):
+                    if name in (
+                        "submit_candidate",
+                        "submit_none",
+                        "submit_architecture",
+                        "continue_hunt",
+                        "continue_recon",
+                    ):
                         if isinstance(out, dict) and out.get("ok") is True:
                             last.transcript = list(messages)
                             return _with_acc(last)

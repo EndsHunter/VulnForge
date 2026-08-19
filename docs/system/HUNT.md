@@ -13,6 +13,8 @@
 ## Also used on hunt packets
 
 - `preamble.md`, `PRINCIPLES.md` — [SHARED.md](SHARED.md)
+- `continue_hunt` is a hunt-stage tool (not a prompt file): when context is high the
+  harness instructs the model to hand off remaining work to a child hunt.
 
 ## See also
 

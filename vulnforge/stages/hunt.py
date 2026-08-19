@@ -260,9 +260,69 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         area = payload.get("area", "app")
         cls = payload.get("class", "wildcard")
 
+        if session.get("continued"):
+            area = payload.get("area", "app")
+            cls = payload.get("class", "wildcard")
+            db.upsert_coverage_fact(area, cls, visit_delta=1, last_depth="continued")
+            _mark_sink_coverage(
+                db,
+                payload,
+                arch,
+                cfg,
+                area=area,
+                attack_class=cls,
+                visit_delta=1,
+                last_depth="continued",
+            )
+            flush_notes_to_db(ctx, db)
+            return {
+                "status": "succeeded",
+                "continued": True,
+                "auto_continued": bool(session.get("continue_auto")),
+                "child_task_id": session.get("continue_child_task_id"),
+                "spawned_hunts": list(session.get("spawned_hunts") or []),
+                "model_id": model_id,
+                "transcript": f"task-{task.id}",
+                **usage_fields,
+            }
+
         if not result.ok:
             status = classify_llm_failure(result)
             err = result.error or result.classification.value
+            from vulnforge.agent_runtime.context_watch import is_context_overflow_error
+            from vulnforge.tools.continue_task import maybe_auto_continue
+
+            if is_context_overflow_error(err, result.classification):
+                cont = maybe_auto_continue(
+                    ctx,
+                    kind="hunt",
+                    error=err,
+                    transcript=list(result.transcript or []),
+                )
+                if cont:
+                    area = payload.get("area", "app")
+                    cls = payload.get("class", "wildcard")
+                    db.upsert_coverage_fact(
+                        area, cls, visit_delta=1, last_depth="continued"
+                    )
+                    _mark_sink_coverage(
+                        db,
+                        payload,
+                        arch,
+                        cfg,
+                        area=area,
+                        attack_class=cls,
+                        visit_delta=1,
+                        last_depth="continued",
+                    )
+                    return {
+                        "status": "succeeded",
+                        "error": err,
+                        "model_id": model_id,
+                        "transcript": f"task-{task.id}",
+                        **cont,
+                        **usage_fields,
+                    }
             out: dict[str, Any] = {
                 "status": status,
                 "error": err,

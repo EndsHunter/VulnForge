@@ -243,10 +243,12 @@ def _ui_from_strands_turn(
         role = m.get("role")
         if role == "assistant":
             content = m.get("content") or ""
-            # Prefer not to dump empty assistants that only had tool_calls
-            if content.strip():
-                new_ui.append({"role": "assistant", "content": content})
-            # Represent tool calls as tool rows after (from following tool msgs)
+            entry: dict[str, Any] = {"role": "assistant", "content": content}
+            if m.get("tool_calls"):
+                entry["tool_calls"] = m["tool_calls"]
+            # Keep tool-call-only assistants in history; UI skips empty bubbles.
+            if content.strip() or m.get("tool_calls"):
+                new_ui.append(entry)
         elif role == "tool":
             raw = m.get("content")
             payload: Any = raw
@@ -255,9 +257,10 @@ def _ui_from_strands_turn(
                     payload = json.loads(raw)
                 except json.JSONDecodeError:
                     payload = {"text": raw}
-            entry: dict[str, Any] = {
+            entry = {
                 "role": "tool",
                 "name": m.get("name"),
+                "tool_call_id": m.get("tool_call_id") or "call",
                 "content": payload if isinstance(payload, dict) else {"text": str(payload)},
             }
             if isinstance(payload, dict) and payload.get("pending_confirm") and pending:

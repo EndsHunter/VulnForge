@@ -7,8 +7,11 @@
 1. Task payload: `area`, `class`, `path_hints`, optional `operator_notes`, `force_depth`, etc.
 2. Packet: PRINCIPLES + class skill body + hunting angles slice + architecture slice + tools schema.
 3. LLM tool loop (`code_static` tools) → `submit_candidate` or `submit_none`.
+   If the conversation nears `llm.continue_context_fraction` of `context_tokens`,
+   the harness instructs the model to call `continue_hunt` (child hunt, fresh
+   window). Context overflow also auto-enqueues a continuation.
 4. On candidate: insert/upsert finding; may enqueue `validate_mech`; near-dup helpers may annotate merge metadata.
-5. Coverage facts update visit/depth for residual matrix.
+5. Coverage facts update visit/depth for residual matrix (`continued` when handed off).
 
 ## Operator surfaces
 

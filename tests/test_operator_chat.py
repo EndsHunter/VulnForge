@@ -11,9 +11,12 @@ from vulnforge.llm import FakeLLMClient, LLMResult, ResponseClass
 from vulnforge.operator_chat import handle_turn, confirm_pending
 from vulnforge.operator_chat.tools_common import (
     enqueue_hunt_impl,
+    get_finding_impl,
     list_findings_all_impl,
+    list_findings_impl,
     list_hunts_impl,
     list_runs_impl,
+    read_evidence_impl,
     rollup_results_impl,
 )
 from vulnforge.operator_chat import tools_home, tools_run
@@ -408,3 +411,186 @@ def test_api_chat_routes_smoke(tmp_path: Path, toy_sqli: Path, monkeypatch):
     body = res.json()
     assert body.get("session_id")
     assert body.get("messages")
+
+
+def _seed_finding_with_evidence(run: RunRef) -> int:
+    pack = run.path / "evidence" / "2"
+    pack.mkdir(parents=True)
+    (pack / "xml_buffer_overflow.md").write_text("# overflow notes\n", encoding="utf-8")
+    (pack / "poc.c").write_text("int main(){}\n", encoding="utf-8")
+    db = Database.open(run.path / "harness.db")
+    fid = db.insert_finding(
+        stable_key="k-eap",
+        state="needs_human",
+        body={
+            "title": "Stack buffer overflow in EAP XML parsing",
+            "summary": "unbounded CopyMemory",
+            "weakness_class": "memory-safety",
+            "evidence_id": "2",
+            "poc_relpath": "xml_buffer_overflow.md",
+        },
+        evidence_id="2",
+    )
+    db.close()
+    return fid
+
+
+def test_read_evidence_without_relpath_reads_pack_not_evidence_md(tmp_path: Path, toy_sqli: Path):
+    runs_root = tmp_path / "runs"
+    run = _make_run(runs_root, "app-a", "run-001", target_path=toy_sqli)
+    _seed_finding_with_evidence(run)
+
+    out = read_evidence_impl(run, {"pack_id": "2"})
+    assert out.get("ok") is True, out
+    assert out.get("error") != "file not found"
+    assert "evidence.md" not in str(out.get("path") or "")
+    files = out.get("files") or []
+    assert "xml_buffer_overflow.md" in files
+    assert "poc.c" in files
+    assert "overflow notes" in (out.get("content") or "")
+
+
+def test_list_evidence_lists_pack_files(tmp_path: Path, toy_sqli: Path):
+    from vulnforge.operator_chat.tools_common import list_evidence_impl
+
+    runs_root = tmp_path / "runs"
+    run = _make_run(runs_root, "app-a", "run-001", target_path=toy_sqli)
+    _seed_finding_with_evidence(run)
+
+    listed = list_evidence_impl(run, {"pack_id": "2"})
+    assert listed.get("ok") is True, listed
+    names = listed.get("files") or []
+    assert "xml_buffer_overflow.md" in names
+    assert "poc.c" in names
+
+    all_packs = list_evidence_impl(run, {})
+    assert all_packs.get("ok") is True
+    pack_ids = [p.get("pack_id") for p in (all_packs.get("packs") or [])]
+    assert "2" in pack_ids
+
+
+def test_run_chat_has_list_evidence_tool():
+    names = [s["function"]["name"] for s in tools_run.schemas()]
+    assert "list_evidence" in names
+    assert "list_findings" in names
+    assert "read_evidence" in names
+
+
+def test_list_findings_includes_poc_and_evidence_files(tmp_path: Path, toy_sqli: Path):
+    runs_root = tmp_path / "runs"
+    run = _make_run(runs_root, "app-a", "run-001", target_path=toy_sqli)
+    _seed_finding_with_evidence(run)
+
+    out = list_findings_impl(run, {})
+    assert out["count"] == 1
+    row = out["findings"][0]
+    assert row["evidence_id"] == "2"
+    assert row.get("poc_relpath") == "xml_buffer_overflow.md"
+    assert "xml_buffer_overflow.md" in (row.get("evidence_files") or [])
+
+
+def test_get_finding_accepts_hash_prefixed_id(tmp_path: Path, toy_sqli: Path):
+    runs_root = tmp_path / "runs"
+    run = _make_run(runs_root, "app-a", "run-001", target_path=toy_sqli)
+    fid = _seed_finding_with_evidence(run)
+
+    hashed = get_finding_impl(run, {"finding_id": f"#{fid}"})
+    assert hashed.get("ok") is True, hashed
+    assert hashed["finding_id"] == fid
+    assert "xml_buffer_overflow.md" in (hashed.get("evidence_files") or [])
+
+    labeled = get_finding_impl(run, {"finding_id": f"finding-{fid}"})
+    assert labeled.get("ok") is True, labeled
+
+
+def test_home_list_findings_alias_does_not_require_run_ids(tmp_path: Path, toy_sqli: Path):
+    runs_root = tmp_path / "runs"
+    run = _make_run(runs_root, "app-a", "run-001", target_path=toy_sqli)
+    _seed_finding_with_evidence(run)
+
+    missing = tools_home.dispatch(
+        "list_findings",
+        {},
+        runs_root=runs_root,
+        project_root=tmp_path,
+    )
+    assert missing.get("ok") is True, missing
+    assert missing.get("count") >= 1
+    assert missing["findings"][0]["title"]
+
+    scoped = tools_home.dispatch(
+        "list_findings",
+        {"target_id": "app-a", "run_id": "run-001"},
+        runs_root=runs_root,
+        project_root=tmp_path,
+    )
+    assert scoped.get("ok") is True, scoped
+    assert scoped["count"] == 1
+
+
+def test_persisted_chat_history_keeps_tool_call_ids(tmp_path: Path, toy_sqli: Path):
+    from vulnforge.agent_runtime.transcript import openaiish_to_strands_messages
+    from vulnforge.operator_chat.loop import run_operator_loop
+
+    runs_root = tmp_path / "runs"
+    run = _make_run(runs_root, "app-a", "run-001", target_path=toy_sqli)
+    _seed_finding_with_evidence(run)
+
+    fake = FakeLLMClient(
+        responses=[
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="",
+                tool_calls=[
+                    {
+                        "id": "c1",
+                        "name": "list_findings",
+                        "arguments": {"state": "needs_human"},
+                    }
+                ],
+                raw=None,
+                model_id="fake",
+            ),
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="One finding needs review.",
+                tool_calls=[],
+                raw=None,
+                model_id="fake",
+            ),
+        ]
+    )
+    result = run_operator_loop(
+        client=fake,
+        system="sys",
+        history=[],
+        user_message="What findings need human review?",
+        tools=tools_run.schemas(),
+        dispatch=lambda n, a: tools_run.dispatch(n, a, run=run),
+        session_id="s1",
+        scope="run",
+    )
+    stored = list(result["messages"] or [])
+    tool_msgs = [m for m in stored if m.get("role") == "tool"]
+    assert tool_msgs, stored
+    assert tool_msgs[0].get("tool_call_id") == "c1"
+    asst_with_calls = [
+        m
+        for m in stored
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    assert asst_with_calls, stored
+
+    strands = openaiish_to_strands_messages(stored)
+    uses = []
+    results = []
+    for m in strands:
+        for b in m.get("content") or []:
+            if isinstance(b, dict) and "toolUse" in b:
+                uses.append(b["toolUse"].get("toolUseId"))
+            if isinstance(b, dict) and "toolResult" in b:
+                results.append(b["toolResult"].get("toolUseId"))
+    assert uses == ["c1"]
+    assert results == ["c1"]

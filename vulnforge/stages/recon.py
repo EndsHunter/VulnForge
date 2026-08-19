@@ -721,6 +721,28 @@ def maybe_auto_retry_recon(
     }
 
 
+def _continued_recon_result(
+    session: dict,
+    *,
+    model_id: str | None,
+    usage_fields: dict[str, Any],
+    agents_run: list | None = None,
+    task_id: Any = None,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "status": "succeeded",
+        "continued": True,
+        "auto_continued": bool(session.get("continue_auto")),
+        "child_task_id": session.get("continue_child_task_id"),
+        "model_id": model_id,
+        "transcript": f"task-{task_id}" if task_id is not None else None,
+        **usage_fields,
+    }
+    if agents_run is not None:
+        out["recon_agents_run"] = agents_run
+    return out
+
+
 def _failed_task_result(
     task,
     db,
@@ -731,6 +753,29 @@ def _failed_task_result(
 ) -> dict[str, Any]:
     """Build failed_task result and optionally enqueue Ralph follow-up recon."""
     out: dict[str, Any] = {"status": "failed_task", "error": error, **extra}
+    from vulnforge.agent_runtime.context_watch import is_context_overflow_error
+    from vulnforge.tools.continue_task import maybe_auto_continue
+
+    payload = task.payload if isinstance(getattr(task, "payload", None), dict) else {}
+    if is_context_overflow_error(error):
+        ctx = {
+            "db": db,
+            "cfg": cfg,
+            "run_dir": run_dir,
+            "task_id": getattr(task, "id", None),
+            "task_payload": payload,
+            "session": {},
+        }
+        cont = maybe_auto_continue(
+            ctx,
+            kind="recon",
+            error=error,
+            transcript=extra.get("transcript_messages"),
+        )
+        if cont:
+            out["recon_requeued"] = True
+            out.update(cont)
+            return out
     retry = maybe_auto_retry_recon(task, db, cfg, run_dir, error)
     if retry:
         out.update(retry)
@@ -855,6 +900,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         "submit_architecture": submit_architecture,
         "run_dir": run_dir,
         "db": db,
+        "task_payload": task.payload if isinstance(getattr(task, "payload", None), dict) else {},
     }
     # Ensure packets see the correct run profile for tool schemas
     if not isinstance(cfg.get("run"), dict):
@@ -1011,6 +1057,15 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     indent=2,
                 )
 
+    ctx["task_payload"] = payload
+    if payload.get("continue_handoff") and "Continuation of recon" not in operator_brief:
+        operator_brief = (
+            (operator_brief.rstrip() + "\n\n" if operator_brief else "")
+            + "## Continuation handoff from parent recon\n"
+            + str(payload.get("continue_handoff"))[:4000]
+            + "\nDo not redo already-explored paths first.\n"
+        )
+
     from vulnforge.llm_models import make_client_for_stage
 
     client = make_client_for_stage(cfg, "recon")
@@ -1161,6 +1216,14 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     pass
 
                 salvaged_from_content = False
+                if session.get("continued"):
+                    return _continued_recon_result(
+                        session,
+                        model_id=model_id,
+                        usage_fields=usage_fields,
+                        agents_run=agents_run,
+                        task_id=task.id,
+                    )
                 if not result.ok:
                     status = classify_llm_failure(result)
                     err = result.error or result.classification.value
@@ -1366,6 +1429,14 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 pass
 
             salvaged_from_content = False
+            if session.get("continued"):
+                return _continued_recon_result(
+                    session,
+                    model_id=model_id,
+                    usage_fields=usage_fields,
+                    agents_run=agents_run,
+                    task_id=task.id,
+                )
             if not result.ok:
                 status = classify_llm_failure(result)
                 err = result.error or result.classification.value

@@ -35,6 +35,8 @@ class CodeStaticProfile:
                 "note",
                 "list_hunt_profiles",
                 "request_hunt",
+                "continue_hunt",
+                "continue_recon",
             ]
 
     def validate_target_hint(self, inventory: dict) -> str | None:

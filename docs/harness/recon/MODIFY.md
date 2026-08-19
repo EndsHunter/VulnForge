@@ -14,6 +14,7 @@
 | Change recon priority bands | `vulnforge/task_priority.py` |
 | Change merge / batch / hunt planning logic | `vulnforge/stages/recon.py` |
 | Change recon packet packing | `vulnforge/packet.py` → `pack_recon` / `pack_recon_agent` |
+| Context-window continuation | `continue_recon` tool + `vulnforge/tools/continue_task.py` + `agent_runtime/context_watch.py` |
 | Change Architecture re-run UI | `vulnforge/ui/static/app.js` (`submitArchRecon` / Refine recon section) + API in `ui/app.py` |
 | Change mechanical codemap | `vulnforge/tools/codemap.py` (not architecture); symbols: `vulnforge/tools/symbols/` |
 | Function-level extract / backends | `vulnforge/tools/symbols/` + `codemap.symbol_backend` in config |

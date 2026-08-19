@@ -6,6 +6,8 @@
 
 1. **Init** (`vf init`) or **Mission re-run** enqueues one or more `recon` tasks (one Ralph lease per recon agent).
 2. Each agent uses tools (`file_inventory`, `grep`, reads, etc.) and finishes with architecture submission.
+   If context is nearly full, the agent should call `continue_recon` (child recon,
+   fresh window, refines the prior map). Context overflow also auto-enqueues a continuation.
 3. When a **batch** of agents completes, results **merge** into `runs.architecture_json` (LLM merge with mechanical fallback). Prior maps are refined, not blank-overwritten when `include_prior_architecture` / merge flags say so.
 4. Mechanical **codemap** (`runs.codemap_json`) is structure-only (modules/entrypoints) — separate from the LLM architecture map.
 5. Optionally **plan hunt tasks** from the map (`enqueue_hunts`) using the run’s hunt skill mode.

@@ -8,7 +8,13 @@ from typing import Any, Callable, Optional
 from vulnforge.llm import LLMResult, ResponseClass
 
 TERMINAL_TOOLS = frozenset(
-    {"submit_candidate", "submit_none", "submit_architecture"}
+    {
+        "submit_candidate",
+        "submit_none",
+        "submit_architecture",
+        "continue_hunt",
+        "continue_recon",
+    }
 )
 
 
@@ -82,6 +88,36 @@ def architecture_from_content(content: str | None) -> dict[str, Any] | None:
         "input_surfaces": _list_field("input_surfaces"),
         "hunt_focus": _list_field("hunt_focus"),
     }
+
+
+def try_force_continue(
+    tool_handler: Callable[[str, dict], dict],
+    tools_schema: list | None,
+    *,
+    handoff: str,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Queue a continuation child when the window is exhausted."""
+    names = tool_names_from_schema(tools_schema)
+    body = {
+        "handoff": (handoff or "").strip()
+        or (
+            "Parent task exhausted context or tool rounds before a terminal submit. "
+            "Continue the same investigation; do not restart from scratch."
+        )
+    }
+    for name in ("continue_hunt", "continue_recon"):
+        if name not in names:
+            continue
+        try:
+            out = tool_handler(name, body)
+        except Exception as e:
+            out = {"ok": False, "error": str(e)}
+        if isinstance(out, dict) and out.get("ok") is True:
+            out = dict(out)
+            out["forced"] = True
+            out["forced_reason"] = "context_window"
+            return name, out
+    return None, None
 
 
 def try_force_terminal_submit(
@@ -165,16 +201,74 @@ def apply_round_limit_fallback(
     Recon: if content already parses as architecture JSON with a summary, leave
     result failed so stage salvage can store the real map (not an incomplete stub).
     """
-    if not force_submit_enabled(cfg):
-        return result
     if result.ok:
         return result
     err = str(result.error or "").lower()
+    schema = getattr(packet, "tools_schema", None) or []
+
+    from vulnforge.agent_runtime.context_watch import (
+        continue_enabled,
+        continue_warn_fraction,
+        context_window_tokens,
+        is_context_overflow_error,
+        pressure_level,
+        usage_prompt_tokens,
+    )
+
+    used = usage_prompt_tokens(result.usage)
+    ctx_pressure = pressure_level(
+        used, context_window_tokens(cfg), continue_warn_fraction(cfg)
+    )
+    overflow = is_context_overflow_error(result.error, result.classification)
+    salvageable = architecture_from_content(result.content) is not None
+    if (
+        continue_enabled(cfg)
+        and (overflow or ctx_pressure in ("warn", "must"))
+        and not salvageable
+    ):
+        name, out = try_force_continue(
+            tool_handler,
+            schema,
+            handoff=(
+                result.content
+                or f"auto: {result.error or 'context'} — continue remaining work"
+            ),
+        )
+        if name and out:
+            tr = list(transcript if transcript is not None else (result.transcript or []))
+            tr.append({"role": "tool", "name": name, "content": json.dumps(out)})
+            tr.append(
+                {
+                    "role": "assistant",
+                    "content": (
+                        f"[harness] Forced {name} after {result.error or 'context pressure'} "
+                        f"(context continuation)."
+                    ),
+                }
+            )
+            return LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content=result.content,
+                tool_calls=list(result.tool_calls or [])
+                + [{"name": name, "arguments": {"reason": out.get("forced_reason")}}],
+                raw={
+                    **(result.raw if isinstance(result.raw, dict) else {"prior": result.raw}),
+                    "forced_terminal": name,
+                    "forced_reason": "context_window",
+                },
+                model_id=result.model_id,
+                error=None,
+                transcript=tr,
+                usage=result.usage,
+            )
+
+    if not force_submit_enabled(cfg):
+        return result
     # Only auto-submit on round thrash / missing submit — not infra
     if err not in ("max_tool_rounds", "no_submit") and "max_tool_rounds" not in err:
         return result
 
-    schema = getattr(packet, "tools_schema", None) or []
     name, out = try_force_terminal_submit(
         tool_handler,
         schema,

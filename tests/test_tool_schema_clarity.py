@@ -65,6 +65,9 @@ def test_query_and_preflight_schemas_present():
     assert "get_architecture" in hunt
     assert "list_evidence" in hunt
     assert "read_evidence" in hunt
+    assert "continue_hunt" in hunt
+    recon = _by_name("recon")
+    assert "continue_recon" in recon
 
 
 def test_submit_architecture_finish_contract():

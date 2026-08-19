@@ -22,6 +22,10 @@ llm:
   # When the agent hits max_tool_rounds / no_submit, auto-call submit_none
   # (hunt) or a minimal submit_architecture (recon) so the task finishes.
   force_submit_on_round_limit: true
+  # When the conversation nears this fraction of context_tokens, instruct the
+  # agent to call continue_hunt / continue_recon (child task, fresh window).
+  continue_context_fraction: 0.70
+  continue_on_context: true
   # Multi-agent recon when multiple recon agents are active:
   #   ralph     — fan out one Ralph task per agent (default, durable)
   #   inprocess — all agents sequential in one task (Strands loop)
@@ -68,6 +72,7 @@ run:
   auto_tool_gaps: false       # on idle run-once after render, write tool gap reports
   tool_gaps_mode: mechanical  # mechanical | llm | hybrid (Home "Analyze with AI" uses hybrid)
   max_recon_auto_retries: 2   # child recon generations after recoverable failed_task
+  max_continue_depth: 3       # continue_hunt / continue_recon generation cap
   # After recon, merge new map with prior via LLM (mechanical fallback on failure)
   architecture_llm_merge: true
   # Keep post-agent merge bounded so recon handoff cannot hang on local LLMs

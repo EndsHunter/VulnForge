@@ -211,6 +211,9 @@
         </details>
       </div>`;
     }
+    if (!(m.content || "").trim() && m.tool_calls) {
+      return "";
+    }
     return `<div class="oc-msg oc-assistant"><div class="oc-bubble">${simpleMarkdown(m.content)}</div></div>`;
   }
 

@@ -33,7 +33,8 @@ Related (not covered here as full folders): `develop_poc`, `generate_skill`, `to
 |------|------------------|--------|
 | Operator recon (Mission re-run) | `min(queued)−1` | Front of queue vs bulk hunts |
 | Init recon | `5` (`RECON_INIT_PRIORITY`) | Ahead of hunts |
-| Recon child / fan-out | `8` | Still ahead of hunts |
+| Recon child / fan-out / continue_recon | `8` | Still ahead of hunts |
+| Hunt continuation (`continue_hunt`) | `42` | Ahead of default planned hunts |
 | `validate_mech` / generate | ~20–25 | |
 | Operator / residual hunts | 35–50 | |
 | Default recon-planned hunts | 50 | |

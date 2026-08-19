@@ -1,20 +1,24 @@
 """Probe a live LLM endpoint and recommend UI settings.
 
-Used by dashboard **Optimize AI settings**. Tests are cheap, sequential, and
+Used by dashboard **Settings → Optimize AI settings**. Tests are sequential and
 read-only against the model server (no target tree access).
 
-Heuristics are conservative for local / LM Studio style servers.
+Context is taken from the model card when present, then empirically verified
+with tiny-completion prompt-capacity probes (step + binary search). Runtime
+recommendations use more of a large discovered window than a conservative
+local-server default.
 """
 
 from __future__ import annotations
 
-import json
 import re
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
+from urllib.parse import quote
 
 import httpx
 
+from vulnforge.packet import estimate_tokens
 from vulnforge.settings import (
     DEFAULT_UI_SETTINGS,
     build_llm_base_url,
@@ -38,6 +42,67 @@ _PROBE_TOOL = {
         },
     },
 }
+
+_CONTEXT_KEYS_RUNTIME = (
+    "n_ctx",
+    "max_model_len",
+    "context_length",
+    "max_context_length",
+    "context_window",
+    "max_input_tokens",
+    "context_size",
+)
+_CONTEXT_KEYS_ARCH = (
+    "max_position_embeddings",
+    "max_seq_len",
+    "max_sequence_length",
+    "n_ctx_train",
+)
+_CONTEXT_KEYS = _CONTEXT_KEYS_RUNTIME + _CONTEXT_KEYS_ARCH
+_NESTED_CONTEXT_KEYS = (
+    "settings",
+    "meta",
+    "metadata",
+    "parameters",
+    "llama.cpp",
+    "llama_cpp",
+    "details",
+    "config",
+    "model_info",
+    "info",
+    "architecture",
+)
+
+_OVER_CTX_RE = re.compile(
+    r"(context|n_ctx|too many|too long|"
+    r"max(?:imum)?[_\s-]*(?:context|tokens?|length|seq(?:uence)?(?:[_\s-]*len(?:gth)?)?)|"
+    r"token[s]?[_\s-]*(?:limit|length|budget|window|exceed)|"
+    r"(?:prompt|input)[_\s-]*(?:too long|too large|exceed)|"
+    r"length[_\s-]*(?:limit|exceed)|"
+    r"out of memory|\boom\b)",
+    re.I,
+)
+
+CONTEXT_PROBE_BUDGET_S = 45.0
+CONTEXT_PROBE_MAX_TOKENS = 262144
+CONTEXT_PROBE_MIN_TOKENS = 1024
+CONTEXT_PROBE_COMPLETION_TOKENS = 4
+CONTEXT_PROBE_PER_REQUEST_S = 25.0
+CONTEXT_PROBE_STEPS = (
+    1024,
+    2048,
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    98304,
+    131072,
+    196608,
+    262144,
+)
+
+PostJsonFn = Callable[..., tuple[int, dict[str, Any] | str, float]]
 
 
 def _base_url(host: str, port: int) -> str:
@@ -105,37 +170,89 @@ def resolve_listed_model(requested: str, listed: list[str]) -> Optional[str]:
     return listed[0]
 
 
-def _extract_context_tokens(model_obj: dict[str, Any]) -> Optional[int]:
-    """Best-effort context window from /v1/models payload variants."""
-    if not isinstance(model_obj, dict):
+def _coerce_context_int(v: Any) -> Optional[int]:
+    """Parse a context-window number; accepts ints and strings like ``32k``."""
+    if v is None or isinstance(v, bool):
         return None
-    for key in (
-        "context_length",
-        "max_context_length",
-        "context_window",
-        "max_model_len",
-        "n_ctx",
-    ):
-        v = model_obj.get(key)
-        if v is not None:
-            try:
-                n = int(v)
-                if n >= 1024:
-                    return n
-            except (TypeError, ValueError):
-                pass
-    meta = model_obj.get("meta") or model_obj.get("metadata") or {}
-    if isinstance(meta, dict):
-        for key in ("context_length", "max_context_length", "n_ctx"):
-            v = meta.get(key)
-            if v is not None:
-                try:
-                    n = int(v)
-                    if n >= 1024:
-                        return n
-                except (TypeError, ValueError):
-                    pass
+    if isinstance(v, (int, float)):
+        n = int(v)
+        return n if n >= 1024 else None
+    if isinstance(v, str):
+        s = v.strip().lower().replace(",", "").replace("_", "")
+        m = re.match(r"^(\d+(?:\.\d+)?)\s*([km])?$", s)
+        if not m:
+            return None
+        n = float(m.group(1))
+        suf = m.group(2)
+        if suf == "k":
+            n *= 1024
+        elif suf == "m":
+            n *= 1024 * 1024
+        n = int(n)
+        return n if n >= 1024 else None
     return None
+
+
+def _extract_context_tokens(model_obj: dict[str, Any], *, _depth: int = 0) -> Optional[int]:
+    """Best-effort context window from /v1/models payload variants.
+
+    Prefers runtime keys (``n_ctx``, ``max_model_len``, ``context_length``, …)
+    over architecture / train-time keys. Walks ``architecture``, ``parameters``,
+    ``settings``, ``meta`` / ``metadata``, and llama.cpp-style nested objects.
+    """
+    if not isinstance(model_obj, dict) or _depth > 4:
+        return None
+    for key in _CONTEXT_KEYS:
+        n = _coerce_context_int(model_obj.get(key))
+        if n is not None:
+            return n
+    for key in _NESTED_CONTEXT_KEYS:
+        nested = model_obj.get(key)
+        if isinstance(nested, dict):
+            n = _extract_context_tokens(nested, _depth=_depth + 1)
+            if n is not None:
+                return n
+    if _depth < 3:
+        skip = set(_NESTED_CONTEXT_KEYS) | set(_CONTEXT_KEYS)
+        for key, val in model_obj.items():
+            if key in skip or not isinstance(val, dict):
+                continue
+            n = _extract_context_tokens(val, _depth=_depth + 1)
+            if n is not None:
+                return n
+    return None
+
+
+def _unwrap_model_payload(payload: Any) -> Optional[dict[str, Any]]:
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    return item
+        return payload
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                return item
+    return None
+
+
+def _context_from_model_name(name: str, fallback: int) -> int:
+    low = (name or "").lower()
+    if "128k" in low:
+        return 131072
+    if "64k" in low:
+        return 65536
+    if "32k" in low:
+        return 32768
+    if "16k" in low:
+        return 16384
+    if "8k" in low:
+        return 8192
+    return max(1024, int(fallback or 32768))
 
 
 def _chat_payload(
@@ -161,11 +278,17 @@ def _chat_payload(
 
 
 def _post_json(
-    client: httpx.Client, url: str, body: dict[str, Any]
+    client: httpx.Client,
+    url: str,
+    body: dict[str, Any],
+    timeout: float | None = None,
 ) -> tuple[int, dict[str, Any] | str, float]:
     t0 = time.perf_counter()
     try:
-        r = client.post(url, json=body)
+        kwargs: dict[str, Any] = {"json": body}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        r = client.post(url, **kwargs)
         elapsed = time.perf_counter() - t0
         try:
             data = r.json()
@@ -209,6 +332,308 @@ def _message_content_nonempty(data: dict[str, Any]) -> bool:
     return False
 
 
+def _error_text(data: dict[str, Any] | str) -> str:
+    if isinstance(data, str):
+        return data
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            return str(err.get("message") or err)
+        if err:
+            return str(err)
+        return str(data.get("message") or "")[:500]
+    return str(data)[:500]
+
+
+def _is_over_context(status: int, data: dict[str, Any] | str) -> bool:
+    # 413 is almost always payload-too-large. 400 is too common for other
+    # client errors — require context-like text unless the body is empty.
+    if status == 413:
+        return True
+    text = _error_text(data)
+    if status == 400 and not text.strip():
+        return True
+    return bool(text and _OVER_CTX_RE.search(text))
+
+
+def _is_chat_ok(status: int, data: dict[str, Any] | str) -> bool:
+    return status == 200 and isinstance(data, dict) and "choices" in data
+
+
+def _incompressible_pad(n_chars: int) -> str:
+    if n_chars <= 0:
+        return ""
+    out: list[str] = []
+    i = 0
+    size = 0
+    while size < n_chars:
+        chunk = f"{i:08x}abcdef0123456789"
+        out.append(chunk)
+        size += len(chunk)
+        i += 1
+    return "".join(out)[:n_chars]
+
+
+def messages_for_prompt_tokens(target_tokens: int) -> list[dict[str, str]]:
+    """Build a user message whose ``estimate_tokens`` is about ``target_tokens``."""
+    prefix = "Ignore the padding below. Reply with the single word ok.\n"
+    n = max(CONTEXT_PROBE_MIN_TOKENS, int(target_tokens))
+    target_chars = n * 4
+    pad_len = max(0, target_chars - len(prefix))
+    content = prefix + _incompressible_pad(pad_len)
+    # estimate_tokens is len//4; snap to the requested size.
+    want = n * 4
+    if len(content) > want:
+        content = content[:want]
+    elif len(content) < want:
+        content = content + ("x" * (want - len(content)))
+    return [{"role": "user", "content": content}]
+
+
+def prompt_tokens_of(messages: list[dict]) -> int:
+    text = "".join(str(m.get("content") or "") for m in messages if isinstance(m, dict))
+    return estimate_tokens(text)
+
+
+def _fetch_model_card(
+    client: httpx.Client, base: str, model_id: str
+) -> Optional[dict[str, Any]]:
+    mid = (model_id or "").strip()
+    if not mid:
+        return None
+    paths = []
+    for raw in (quote(mid, safe=""), quote(mid, safe="/"), mid):
+        url = f"{base}/models/{raw}"
+        if url not in paths:
+            paths.append(url)
+    for url in paths:
+        try:
+            r = client.get(url)
+        except Exception:
+            continue
+        if r.status_code != 200:
+            continue
+        try:
+            payload = r.json()
+        except Exception:
+            continue
+        obj = _unwrap_model_payload(payload)
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
+def recommend_runtime_settings(
+    *,
+    ctx: int,
+    reasoning_heavy: bool,
+    tool_ok: bool,
+    avg_latency_s: float,
+    p95_latency_s: float,
+) -> dict[str, Any]:
+    """Map a known context window to ferocious (but bounded) runtime settings."""
+    ctx = max(1024, int(ctx))
+    if reasoning_heavy:
+        max_tok = min(16384, max(8192, ctx // 4))
+    else:
+        max_tok = min(8192, max(4096, ctx // 6))
+    if ctx >= 32768:
+        max_tok = max(max_tok, min(8192, max(4096, ctx // 6)))
+        if max_tok <= 4096:
+            max_tok = min(8192, max(5461, ctx // 6))
+
+    if ctx >= 131072:
+        rounds = 24
+    elif ctx >= 32768:
+        rounds = 20
+    else:
+        rounds = 12
+    if not tool_ok:
+        rounds += 4
+    rounds = max(12, int(rounds))
+
+    if ctx >= 131072:
+        frac = 0.35
+    elif ctx >= 32768:
+        frac = 0.30
+    elif (not tool_ok) and ctx < 16384:
+        frac = 0.20
+    else:
+        frac = 0.25
+
+    p95 = max(0.0, float(p95_latency_s))
+    if reasoning_heavy:
+        timeout_rec = int(max(600, min(1800, p95 * 200 + 300)))
+    else:
+        timeout_rec = int(max(180, min(1800, p95 * 80 + 120)))
+    if ctx >= 131072 or reasoning_heavy:
+        timeout_rec = max(timeout_rec, 900)
+
+    workers = 1
+    if tool_ok and float(avg_latency_s) < 3.0 and not reasoning_heavy:
+        workers = 2
+
+    return {
+        "max_tokens": int(max_tok),
+        "max_tool_rounds": int(rounds),
+        "max_context_fraction": float(frac),
+        "timeout_seconds": int(timeout_rec),
+        "max_concurrent_agents": int(workers),
+    }
+
+
+def probe_context_window(
+    client: Any,
+    chat_url: str,
+    model: str,
+    *,
+    claimed: Optional[int] = None,
+    budget_s: float = CONTEXT_PROBE_BUDGET_S,
+    max_size: int = CONTEXT_PROBE_MAX_TOKENS,
+    post_json: Optional[PostJsonFn] = None,
+) -> dict[str, Any]:
+    """Empirically find the largest prompt (chars/4 tokens) the endpoint accepts.
+
+    Completions use ``max_tokens`` of 1–8 so only **prompt** capacity is tested.
+    When ``claimed`` is set (model card), that size is tried first, then slightly
+    above; a fail binary-searches down. Otherwise sizes step up, then binary
+    search between last-ok and first-fail.
+    """
+    post = post_json or _post_json
+    t0 = time.perf_counter()
+    last_ok: Optional[int] = None
+    first_fail: Optional[int] = None
+    attempts: list[dict[str, Any]] = []
+    cap = max(CONTEXT_PROBE_MIN_TOKENS, min(int(max_size), CONTEXT_PROBE_MAX_TOKENS))
+    budget = max(3.0, float(budget_s))
+
+    def remaining() -> float:
+        return budget - (time.perf_counter() - t0)
+
+    def try_size(n: int) -> str:
+        nonlocal last_ok, first_fail
+        n = max(CONTEXT_PROBE_MIN_TOKENS, min(int(n), cap))
+        if remaining() < 2.0:
+            return "timeout"
+        per_req = min(CONTEXT_PROBE_PER_REQUEST_S, max(4.0, remaining() - 0.5))
+        messages = messages_for_prompt_tokens(n)
+        actual = prompt_tokens_of(messages)
+        status, data, elapsed = post(
+            client,
+            chat_url,
+            _chat_payload(
+                model,
+                messages=messages,
+                max_tokens=CONTEXT_PROBE_COMPLETION_TOKENS,
+            ),
+            timeout=per_req,
+        )
+        outcome = "error"
+        if _is_chat_ok(status, data):
+            outcome = "ok"
+            last_ok = actual if last_ok is None else max(last_ok, actual)
+        elif _is_over_context(status, data):
+            outcome = "over"
+            first_fail = actual if first_fail is None else min(first_fail, actual)
+        attempts.append(
+            {
+                "tokens": actual,
+                "outcome": outcome,
+                "status": status,
+                "seconds": round(elapsed, 3),
+            }
+        )
+        return outcome
+
+    def binary_between(lo: int, hi: int) -> None:
+        lo = max(CONTEXT_PROBE_MIN_TOKENS, int(lo))
+        hi = max(lo + 1, int(hi))
+        while hi - lo > 2048 and remaining() > 3.0:
+            mid = (lo + hi) // 2
+            result = try_size(mid)
+            if result == "ok":
+                lo = mid
+            elif result == "over":
+                hi = mid
+            else:
+                break
+
+    claimed_n: Optional[int] = None
+    if claimed is not None:
+        try:
+            claimed_n = int(claimed)
+        except (TypeError, ValueError):
+            claimed_n = None
+        if claimed_n is not None and claimed_n < CONTEXT_PROBE_MIN_TOKENS:
+            claimed_n = None
+
+    if claimed_n:
+        target = min(cap, max(CONTEXT_PROBE_MIN_TOKENS, claimed_n))
+        result = try_size(target)
+        if result == "ok":
+            above = min(cap, max(int(target * 1.1), target + 4096))
+            if above > target and remaining() > 3.0:
+                up = try_size(above)
+                if up == "over" and last_ok is not None and first_fail is not None:
+                    binary_between(last_ok, first_fail)
+        elif result == "over":
+            lo = CONTEXT_PROBE_MIN_TOKENS
+            if remaining() > 3.0:
+                low_try = try_size(lo)
+                if low_try == "ok" and first_fail is not None:
+                    binary_between(last_ok or lo, first_fail)
+        # error / timeout: do not treat as a measured window
+    else:
+        for step in CONTEXT_PROBE_STEPS:
+            if step > cap:
+                break
+            if remaining() < 3.0:
+                break
+            result = try_size(step)
+            if result == "over":
+                break
+            if result != "ok":
+                break
+        if last_ok is not None and first_fail is not None and first_fail > last_ok:
+            binary_between(last_ok, first_fail)
+
+    elapsed = time.perf_counter() - t0
+    measured = last_ok
+    ok = last_ok is not None
+    if ok:
+        detail = f"last_ok={last_ok} first_fail={first_fail} attempts={len(attempts)}"
+    else:
+        detail = f"no successful prompt-capacity probe ({len(attempts)} attempt(s))"
+    return {
+        "ok": ok,
+        "last_ok": last_ok,
+        "first_fail": first_fail,
+        "measured_tokens": measured,
+        "seconds": round(elapsed, 3),
+        "attempts": attempts,
+        "detail": detail,
+        "claimed": claimed_n,
+    }
+
+
+def _recommend_context_tokens(
+    *,
+    last_ok: Optional[int],
+    claimed: Optional[int],
+    heuristic: int,
+) -> tuple[int, Optional[int], str]:
+    """Return (recommended, measured, source)."""
+    if last_ok is not None:
+        measured = int(last_ok)
+        rec = max(CONTEXT_PROBE_MIN_TOKENS, int(measured * 0.9))
+        return rec, measured, "empirical"
+    if claimed is not None:
+        n = max(CONTEXT_PROBE_MIN_TOKENS, int(claimed))
+        return n, n, "model_card"
+    n = max(CONTEXT_PROBE_MIN_TOKENS, int(heuristic))
+    return n, n, "heuristic"
+
+
 def optimize_ui_settings(
     *,
     host: Optional[str] = None,
@@ -217,6 +642,7 @@ def optimize_ui_settings(
     api_key: Optional[str] = None,
     apply: bool = False,
     timeout_seconds: float = 90.0,
+    test_context: bool = True,
 ) -> dict[str, Any]:
     """Probe endpoint and return recommendations.
 
@@ -227,6 +653,9 @@ def optimize_ui_settings(
         api_key blank/none is fine (no Authorization header).
     apply
         If True, save recommended settings (still returns full report).
+    test_context
+        If True (default), empirically probe prompt capacity. Set False to
+        use only the model card / name heuristic.
     """
     current = load_ui_settings()
     host = (host if host is not None else current.get("host") or "127.0.0.1").strip()
@@ -259,6 +688,9 @@ def optimize_ui_settings(
     tool_ok = False
     latencies: list[float] = []
     reasoning_heavy = False
+    measured_context_tokens: Optional[int] = None
+    context_source = "heuristic"
+    optimize_t0 = time.perf_counter()
 
     probe_headers: dict[str, str] = {}
     if key:
@@ -287,6 +719,8 @@ def optimize_ui_settings(
                     "recommended": recommended,
                     "current": current,
                     "applied": False,
+                    "measured_context_tokens": None,
+                    "context_source": None,
                 }
             body = r.json()
             data = body.get("data") if isinstance(body, dict) else None
@@ -322,6 +756,8 @@ def optimize_ui_settings(
                 "recommended": recommended,
                 "current": current,
                 "applied": False,
+                "measured_context_tokens": None,
+                "context_source": None,
             }
 
         candidates = _model_candidates(model_req, listed)
@@ -406,6 +842,8 @@ def optimize_ui_settings(
                 "current": current,
                 "applied": False,
                 "warnings": warnings,
+                "measured_context_tokens": None,
+                "context_source": None,
             }
 
         resolved_model = picked
@@ -415,6 +853,23 @@ def optimize_ui_settings(
             if str(m.get("id") or "") == resolved_model:
                 context_from_card = _extract_context_tokens(m)
                 break
+
+        if context_from_card is None:
+            card = _fetch_model_card(client, base, resolved_model)
+            if card:
+                context_from_card = _extract_context_tokens(card)
+                tests.append(
+                    {
+                        "id": "model_card",
+                        "ok": context_from_card is not None,
+                        "detail": (
+                            f"GET /models/{{id}} context={context_from_card}"
+                            if context_from_card
+                            else "GET /models/{id} had no context field"
+                        ),
+                        "seconds": 0.0,
+                    }
+                )
 
         # ---- 3. API mode probe (chat first already works; try others lightly) ----
         mode_scores: dict[str, bool] = {"chat_completions": True}
@@ -540,62 +995,98 @@ def optimize_ui_settings(
                 "raise max_tool_rounds and rely on free-text salvage."
             )
 
-        # ---- 5. Latency → timeout + tool rounds heuristics ----
+        # ---- 5. Context window (card + optional empirical probe) ----
+        heuristic_ctx = _context_from_model_name(
+            resolved_model, int(current.get("context_tokens") or 32768)
+        )
+        last_ok_ctx: Optional[int] = None
+        if test_context:
+            used = time.perf_counter() - optimize_t0
+            remaining = max(5.0, float(timeout_seconds) - used)
+            budget = min(CONTEXT_PROBE_BUDGET_S, remaining)
+            probe = probe_context_window(
+                client,
+                chat_url,
+                resolved_model,
+                claimed=context_from_card,
+                budget_s=budget,
+                max_size=CONTEXT_PROBE_MAX_TOKENS,
+            )
+            last_ok_ctx = probe.get("last_ok")
+            tests.append(
+                {
+                    "id": "context_window",
+                    "ok": bool(probe.get("ok")),
+                    "detail": probe.get("detail") or "",
+                    "seconds": probe.get("seconds") or 0.0,
+                    "measured_tokens": probe.get("measured_tokens"),
+                    "source": "empirical" if probe.get("ok") else (
+                        "model_card" if context_from_card else "heuristic"
+                    ),
+                    "last_ok": last_ok_ctx,
+                    "first_fail": probe.get("first_fail"),
+                    "claimed": context_from_card,
+                }
+            )
+            if not probe.get("ok"):
+                warnings.append(
+                    "Context window was not empirically verified; using "
+                    "model card / name heuristic. Large prompt probes may have "
+                    "timed out or the server rejected the capacity test."
+                )
+        else:
+            tests.append(
+                {
+                    "id": "context_window",
+                    "ok": context_from_card is not None,
+                    "detail": (
+                        f"skipped empirical test; card={context_from_card}"
+                        if context_from_card
+                        else "skipped empirical test; no model-card window"
+                    ),
+                    "seconds": 0.0,
+                    "measured_tokens": context_from_card,
+                    "source": "model_card" if context_from_card else "heuristic",
+                }
+            )
+
+        rec_ctx, measured_context_tokens, context_source = _recommend_context_tokens(
+            last_ok=last_ok_ctx,
+            claimed=context_from_card,
+            heuristic=heuristic_ctx,
+        )
+        known_ctx = last_ok_ctx or context_from_card or heuristic_ctx
+
+        # ---- 6. Latency + ferocious runtime heuristics ----
         p95 = sorted(latencies)[max(0, int(len(latencies) * 0.95) - 1)] if latencies else 5.0
         avg = sum(latencies) / len(latencies) if latencies else 5.0
-        # HTTP timeout: probe latency is optimistic (tiny prompts). Reasoning /
-        # tool loops need large headroom over p95 of micro-probes.
+        runtime = recommend_runtime_settings(
+            ctx=int(known_ctx),
+            reasoning_heavy=reasoning_heavy,
+            tool_ok=tool_ok,
+            avg_latency_s=avg,
+            p95_latency_s=p95,
+        )
         if reasoning_heavy:
-            timeout_rec = int(max(600, min(1800, p95 * 200 + 300)))
-        else:
-            timeout_rec = int(max(180, min(1800, p95 * 80 + 120)))
-        # max_tokens: reasoning models need more completion budget
-        if reasoning_heavy:
-            max_tok = 8192
             warnings.append(
                 "Model often returns reasoning_content with empty content; "
                 "raised max_tokens for headroom."
             )
-        else:
-            max_tok = 4096
-        # tool rounds: weaker tool compliance → more rounds
-        if tool_ok and avg < 8:
-            rounds = 12
-        elif tool_ok:
-            rounds = 16
-        else:
-            rounds = 20
-        # context
-        if context_from_card:
-            ctx = context_from_card
-        else:
-            # Name heuristics
-            low = resolved_model.lower()
-            if "128k" in low:
-                ctx = 131072
-            elif "32k" in low:
-                ctx = 32768
-            elif "8k" in low:
-                ctx = 8192
-            else:
-                ctx = int(current.get("context_tokens") or 32768)
-        # fraction: smaller models / weak tools keep more room for tools
-        if ctx >= 65536:
-            frac = 0.3
-        elif tool_ok:
-            frac = 0.25
-        else:
-            frac = 0.2
+        if runtime["max_concurrent_agents"] >= 2:
+            warnings.append(
+                "Recommending max_concurrent_agents=2. Two concurrent prefills "
+                "can OOM a local GPU — drop to 1 if VRAM is tight."
+            )
 
         recommended.update(
             {
                 "api_mode": normalize_api_mode(best_api_mode),
-                "context_tokens": int(ctx),
-                "max_context_fraction": float(frac),
-                "max_tokens": int(max_tok),
-                "max_tool_rounds": int(rounds),
-                "timeout_seconds": int(timeout_rec),
-                "max_concurrent_agents": 1,
+                "context_tokens": int(rec_ctx),
+                "max_context_fraction": float(runtime["max_context_fraction"]),
+                "max_tokens": int(runtime["max_tokens"]),
+                "max_tool_rounds": int(runtime["max_tool_rounds"]),
+                "timeout_seconds": int(runtime["timeout_seconds"]),
+                "max_concurrent_agents": int(runtime["max_concurrent_agents"]),
             }
         )
 
@@ -603,7 +1094,10 @@ def optimize_ui_settings(
             {
                 "id": "latency",
                 "ok": True,
-                "detail": f"avg={avg:.2f}s p95≈{p95:.2f}s → timeout={timeout_rec}s",
+                "detail": (
+                    f"avg={avg:.2f}s p95≈{p95:.2f}s → "
+                    f"timeout={runtime['timeout_seconds']}s"
+                ),
                 "seconds": round(avg, 3),
             }
         )
@@ -635,9 +1129,12 @@ def optimize_ui_settings(
         f"api={recommended['api_mode']}",
         f"tools={'yes' if tool_ok else 'NO'}",
         f"ctx={recommended['context_tokens']}",
+        f"ctx_src={context_source}",
         f"rounds={recommended['max_tool_rounds']}",
         f"timeout={recommended['timeout_seconds']}s",
     ]
+    if measured_context_tokens is not None:
+        summary_bits.append(f"measured={measured_context_tokens}")
 
     return {
         "ok": True,
@@ -653,4 +1150,6 @@ def optimize_ui_settings(
         "tool_calls_ok": tool_ok,
         "applied": applied,
         "base_url": base,
+        "measured_context_tokens": measured_context_tokens,
+        "context_source": context_source,
     }

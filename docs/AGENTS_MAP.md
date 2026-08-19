@@ -677,6 +677,8 @@ flowchart LR
 | `write_evidence` | — | ✅ | ✅ |
 | `list_evidence` / `read_evidence` | — | ✅ | ✅ |
 | `list_hunt_profiles` / `request_hunt` | — | ✅ | — |
+| `continue_hunt` | — | ✅ | — |
+| `continue_recon` | ✅ | — | — |
 
 - Paths relative to **target root** (or evidence pack for writes).
 - **No unrestricted shell** on default `code_static` (`allow_exec = False`).

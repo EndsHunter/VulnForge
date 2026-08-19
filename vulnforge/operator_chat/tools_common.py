@@ -36,6 +36,67 @@ MUTATE_TOOLS = frozenset(
 )
 
 
+def coerce_finding_id(val: Any) -> tuple[Optional[int], Optional[str]]:
+    """Accept 1, '1', '#1', 'finding-1' — models copy Report/Ask-AI prefixes."""
+    if val is None or val == "":
+        return None, "finding_id required"
+    if isinstance(val, bool):
+        return None, "finding_id required"
+    if isinstance(val, int):
+        return val, None
+    if isinstance(val, float) and val.is_integer():
+        return int(val), None
+    s = str(val).strip()
+    if s.startswith("#"):
+        s = s[1:].strip()
+    low = s.lower()
+    if low.startswith("finding-"):
+        s = s.split("-", 1)[-1].strip()
+    elif low.startswith("finding "):
+        s = s.split(None, 1)[-1].strip().lstrip("#")
+    try:
+        return int(s), None
+    except ValueError:
+        return None, "finding_id required"
+
+
+def _safe_evidence_dir(run: RunRef, pack_id: str) -> Optional[Path]:
+    pack = str(pack_id or "").strip()
+    if not pack or ".." in pack.replace("\\", "/").split("/"):
+        return None
+    root = (run.path / "evidence").resolve()
+    base = (root / pack).resolve()
+    try:
+        base.relative_to(root)
+    except ValueError:
+        return None
+    return base
+
+
+def evidence_files_for_pack(run: RunRef, pack_id: Optional[str]) -> list[str]:
+    if not pack_id:
+        return []
+    base = _safe_evidence_dir(run, str(pack_id))
+    if base is None or not base.is_dir():
+        return []
+    files: list[str] = []
+    for f in sorted(base.rglob("*")):
+        if f.is_file():
+            files.append(str(f.relative_to(base)).replace("\\", "/"))
+    return files[:40]
+
+
+def _preferred_evidence_file(files: list[str], poc_relpath: Optional[str] = None) -> Optional[str]:
+    if poc_relpath:
+        poc = str(poc_relpath).replace("\\", "/").lstrip("/")
+        if poc in files:
+            return poc
+    mds = [f for f in files if f.lower().endswith(".md")]
+    if mds:
+        return mds[0]
+    return files[0] if files else None
+
+
 def openai_tool(name: str, description: str, properties: dict, required: Optional[list] = None) -> dict:
     return {
         "type": "function",
@@ -369,6 +430,7 @@ def list_findings_impl(run: RunRef, args: dict) -> dict[str, Any]:
             summary = str(body.get("summary") or "")
             if q and q not in (title + " " + summary + " " + f.stable_key).lower():
                 continue
+            eid = f.evidence_id or body.get("evidence_id")
             rows.append(
                 {
                     "finding_id": f.id,
@@ -377,7 +439,9 @@ def list_findings_impl(run: RunRef, args: dict) -> dict[str, Any]:
                     "summary": clip_summary(summary, 280),
                     "class": wc,
                     "stable_key": f.stable_key,
-                    "evidence_id": f.evidence_id or body.get("evidence_id"),
+                    "evidence_id": eid,
+                    "poc_relpath": body.get("poc_relpath"),
+                    "evidence_files": evidence_files_for_pack(run, eid),
                     "severity": body.get("severity_claim"),
                     "url": f"/runs/{run.target_id}/{run.run_id}#report",
                 }
@@ -396,10 +460,9 @@ def list_findings_impl(run: RunRef, args: dict) -> dict[str, Any]:
 
 
 def get_finding_impl(run: RunRef, args: dict) -> dict[str, Any]:
-    try:
-        fid = int(args.get("finding_id"))
-    except (TypeError, ValueError):
-        return {"ok": False, "error": "finding_id required"}
+    fid, err = coerce_finding_id(args.get("finding_id"))
+    if err or fid is None:
+        return {"ok": False, "error": err or "finding_id required"}
     db = _open_db(run.path)
     try:
         f = db.get_finding(fid)
@@ -410,6 +473,8 @@ def get_finding_impl(run: RunRef, args: dict) -> dict[str, Any]:
         for k in list(body.keys()):
             if isinstance(body[k], str) and len(body[k]) > 2000:
                 body[k] = clip_text(body[k], 2000)
+        eid = f.evidence_id or body.get("evidence_id")
+        files = evidence_files_for_pack(run, eid)
         return {
             "ok": True,
             "target_id": run.target_id,
@@ -417,7 +482,9 @@ def get_finding_impl(run: RunRef, args: dict) -> dict[str, Any]:
             "finding_id": f.id,
             "state": f.state,
             "stable_key": f.stable_key,
-            "evidence_id": f.evidence_id,
+            "evidence_id": eid,
+            "poc_relpath": body.get("poc_relpath"),
+            "evidence_files": files,
             "body": body,
             "url": f"/runs/{run.target_id}/{run.run_id}#report",
         }
@@ -425,56 +492,84 @@ def get_finding_impl(run: RunRef, args: dict) -> dict[str, Any]:
         db.close()
 
 
+def list_evidence_impl(run: RunRef, args: dict) -> dict[str, Any]:
+    pack = str(args.get("pack_id") or args.get("evidence_id") or "").strip()
+    ev = run.path / "evidence"
+    if not pack:
+        packs: list[dict[str, Any]] = []
+        if ev.is_dir():
+            for d in sorted(ev.iterdir()):
+                if not d.is_dir():
+                    continue
+                files = evidence_files_for_pack(run, d.name)
+                packs.append(
+                    {
+                        "pack_id": d.name,
+                        "files": files,
+                        "file_count": len(files),
+                    }
+                )
+        return {
+            "ok": True,
+            "target_id": run.target_id,
+            "run_id": run.run_id,
+            "packs": packs,
+            "count": len(packs),
+        }
+    base = _safe_evidence_dir(run, pack)
+    if base is None or not base.is_dir():
+        return {"ok": False, "error": "evidence not found", "pack_id": pack}
+    files = evidence_files_for_pack(run, pack)
+    return {
+        "ok": True,
+        "target_id": run.target_id,
+        "run_id": run.run_id,
+        "pack_id": pack,
+        "files": files,
+        "count": len(files),
+    }
+
+
 def read_evidence_impl(run: RunRef, args: dict) -> dict[str, Any]:
     pack = str(args.get("pack_id") or args.get("evidence_id") or "").strip()
-    rel = str(args.get("relpath") or args.get("path") or "evidence.md").strip()
+    rel = str(args.get("relpath") or args.get("path") or "").strip()
     if not pack:
         return {"ok": False, "error": "pack_id / evidence_id required"}
-    base = (run.path / "evidence" / pack).resolve()
-    try:
-        base.relative_to((run.path / "evidence").resolve())
-    except ValueError:
+    base = _safe_evidence_dir(run, pack)
+    if base is None:
         return {"ok": False, "error": "invalid pack path"}
-    if not base.is_dir():
-        # pack might be file-less naming
-        pass
-    # soft path join
+    files = evidence_files_for_pack(run, pack)
     rel_n = rel.replace("\\", "/").lstrip("/")
-    if ".." in rel_n.split("/"):
+    if rel_n and ".." in rel_n.split("/"):
         return {"ok": False, "error": "invalid relpath"}
-    fp = (base / rel_n).resolve() if base.is_dir() else (run.path / "evidence" / pack).resolve()
-    if base.is_dir():
-        try:
-            fp.relative_to(base)
-        except ValueError:
-            return {"ok": False, "error": "path escape"}
+    if not rel_n:
+        rel_n = _preferred_evidence_file(files) or ""
+    if not base.is_dir():
+        return {"ok": False, "error": "evidence not found", "available": files}
+    if not rel_n:
+        return {"ok": False, "error": "empty evidence pack", "available": files}
+    fp = (base / rel_n).resolve()
+    try:
+        fp.relative_to(base)
+    except ValueError:
+        return {"ok": False, "error": "path escape"}
     if not fp.is_file():
-        # try any file in pack
-        if base.is_dir():
-            files = sorted(base.rglob("*"))
-            files = [f for f in files if f.is_file()][:20]
-            if files and not rel_n:
-                fp = files[0]
-            elif files:
-                return {
-                    "ok": False,
-                    "error": "file not found",
-                    "available": [str(f.relative_to(base)).replace("\\", "/") for f in files],
-                }
-            else:
-                return {"ok": False, "error": "empty evidence pack"}
-        else:
-            return {"ok": False, "error": "evidence not found"}
+        return {
+            "ok": False,
+            "error": "file not found",
+            "available": files,
+        }
     try:
         text = fp.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "available": files}
     return {
         "ok": True,
         "target_id": run.target_id,
         "run_id": run.run_id,
         "pack_id": pack,
         "path": str(fp.relative_to(run.path)).replace("\\", "/") if fp.is_relative_to(run.path) else fp.name,
+        "files": files,
         "content": clip_text(text, 8000),
     }
 
@@ -785,12 +880,12 @@ def mutation_summary(name: str, args: dict[str, Any]) -> str:
 def enqueue_develop_poc_impl(run: RunRef, args: dict) -> dict[str, Any]:
     from vulnforge.control import ops as dashops
 
-    fid = args.get("finding_id")
-    if fid is None:
-        return {"ok": False, "error": "finding_id required"}
+    fid, err = coerce_finding_id(args.get("finding_id"))
+    if err or fid is None:
+        return {"ok": False, "error": err or "finding_id required"}
     r = dashops.save_finding_poc(
         run.path,
-        int(fid),
+        fid,
         content=None,
         enqueue_agent=True,
         operator_notes=str(args.get("notes") or args.get("operator_notes") or ""),
@@ -802,12 +897,12 @@ def enqueue_develop_poc_impl(run: RunRef, args: dict) -> dict[str, Any]:
 def enqueue_validate_poc_impl(run: RunRef, args: dict) -> dict[str, Any]:
     from vulnforge.control import ops as dashops
 
-    fid = args.get("finding_id")
-    if fid is None:
-        return {"ok": False, "error": "finding_id required"}
+    fid, err = coerce_finding_id(args.get("finding_id"))
+    if err or fid is None:
+        return {"ok": False, "error": err or "finding_id required"}
     r = dashops.enqueue_validate_poc(
         run.path,
-        int(fid),
+        fid,
         operator=str(args.get("operator") or "operator_chat"),
         operator_notes=str(args.get("notes") or args.get("operator_notes") or ""),
         target_url=str(args.get("target_url") or ""),
@@ -974,9 +1069,9 @@ def open_run_impl(args: dict) -> dict[str, Any]:
 def open_finding_impl(args: dict) -> dict[str, Any]:
     tid = str(args.get("target_id") or "").strip()
     rid = str(args.get("run_id") or "").strip()
-    fid = args.get("finding_id")
+    fid, err = coerce_finding_id(args.get("finding_id"))
     if not tid or not rid or fid is None:
-        return {"ok": False, "error": "target_id, run_id, finding_id required"}
+        return {"ok": False, "error": err or "target_id, run_id, finding_id required"}
     url = f"/runs/{tid}/{rid}#report"
     return {"ok": True, "url": url, "navigate": url, "finding_id": fid}
 

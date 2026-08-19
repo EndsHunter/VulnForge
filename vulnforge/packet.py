@@ -309,10 +309,11 @@ def _always_keep_for_stage(stage: str) -> frozenset[str]:
                 "submit_none",
                 "list_hunt_profiles",
                 "request_hunt",
+                "continue_hunt",
             }
         )
     if stage == "recon":
-        return frozenset({"submit_architecture"})
+        return frozenset({"submit_architecture", "continue_recon"})
     if stage == "develop_poc":
         return frozenset({"write_evidence"})
     return frozenset()
@@ -383,7 +384,9 @@ def pack_recon_agent(
         "Tools: prefer file_inventory over many list_dir; query_codemap for modules; "
         "query_sinks for mechanical sink seeds; find_symbol / grep for names; "
         "read_file with around_line or 1-based ranges; paths relative to target root. "
-        "Call submit_architecture once when done.\n"
+        "Call submit_architecture once when done. "
+        "If the harness reports context is high/critical, call continue_recon with a "
+        "handoff of remaining mapping work instead of overflowing the window.\n"
     )
     system = (
         preamble
@@ -448,6 +451,8 @@ def pack_recon_agent(
         + "\n```\n"
         + cm_block
         + "Use tools to inspect paths. Finish with submit_architecture.\n"
+        + "If context is nearly full, call continue_recon (child recon, fresh window) "
+        + "instead of more huge reads.\n"
     )
     if architecture_so_far:
         user += (
@@ -709,7 +714,26 @@ def pack_hunt(
         "If another hunt skill is needed, list_hunt_profiles then request_hunt "
         "(one profile per call). If the tool says that profile is already under way "
         "or circular, do not retry the same profile — finish this task instead.\n"
+        "If the harness reports context is high/critical, call continue_hunt with a "
+        "handoff of remaining work (queues a child hunt with a fresh window and "
+        "finishes this task). Do not keep reading files until the window overflows.\n"
     )
+    cont_h = str(task_payload.get("continue_handoff") or "").strip()
+    if cont_h:
+        explored = task_payload.get("explored_paths") or []
+        user += (
+            "\n## Continuation handoff from parent hunt\n"
+            "This hunt continues a prior task that ran out of context. "
+            "Do not redo already-explored paths first; pick up remaining work.\n"
+            + truncate(cont_h, 4000, "continue_handoff")
+            + "\n"
+        )
+        if isinstance(explored, list) and explored:
+            user += (
+                "Already explored:\n"
+                + "\n".join(f"- `{p}`" for p in explored[:30])
+                + "\n"
+            )
     run_profile = str((cfg.get("run") or {}).get("profile") or "code_static")
     tools = tool_schemas_for(run_profile, "hunt")
     # Optional per-hunt-profile tools allowlist (null = full hunt set).
