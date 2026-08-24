@@ -1,6 +1,8 @@
 <?php
 $p = "/tmp/notes.txt";
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
-    file_put_contents($p, ($_POST["b"] ?? "") . "\n", FILE_APPEND);
+    $b = strip_tags($_POST["b"] ?? "", "<img><svg>");
+    file_put_contents($p, $b . "\n", FILE_APPEND);
 }
-echo file_get_contents($p);
+$raw = file_get_contents($p);
+echo "<script>var n = " . json_encode($raw) . "; document.write(n);</script>";

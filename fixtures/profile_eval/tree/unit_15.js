@@ -2,8 +2,12 @@ const express = require("express");
 const router = express.Router();
 
 router.get("/g", function (req, res) {
-    const u = encodeURI(req.query.u);
-    res.redirect(u);
+    let u = String(req.query.u || "/");
+    if (u.indexOf("http://evil") !== -1) {
+        u = "/";
+    }
+    const enc = encodeURI(u);
+    res.redirect(enc);
 });
 
 module.exports = router;

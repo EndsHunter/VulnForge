@@ -1,3 +1,7 @@
 <?php
-$q = $_GET["q"] ?? "";
-system($q);
+$d = $_GET["d"] ?? "";
+$d = str_replace(array(";", "&", "|"), "", $d);
+if (strpos($d, " ") === 0) {
+    $d = ltrim($d);
+}
+system("/usr/bin/host " . $d);

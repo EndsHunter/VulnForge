@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Write the frozen 21-class obfuscated hunt-profile eval tree.
+"""Write the frozen 21-class hunt-profile eval tree.
 
-Sources are snippets from snoopysecurity/Broken-Vulnerable-Code-Snippets
-and NavidNaf/TheDamnVulnerableCodebase, with comments and telltale names
-stripped. Re-run to restore the frozen set.
+Hard set: fake sanitizers, prefix allowlists, alg-from-header JWT, second-order
+store, and split source/sink. Names and comments from the public labs are gone.
+Sources include SasanLabs/VulnerableApp, snoopysecurity snippets, and
+TheDamnVulnerableCodebase, rewritten.
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 TREE = ROOT / "fixtures" / "profile_eval" / "tree"
 GT = ROOT / "fixtures" / "profile_eval" / "ground_truth.json"
 
-# (id, hunt class, filename, body)
 UNITS: list[tuple[str, str, str, str]] = [
     (
         "jwt",
@@ -23,27 +23,46 @@ UNITS: list[tuple[str, str, str, str]] = [
         "unit_01.py",
         '''import json
 import base64
+import hmac
+import hashlib
 from flask import Flask, request
 
 app = Flask(__name__)
-STORE = {"admin": "k-admin", "a": "k-a"}
+HOLD = {"root": "k-root", "a": "k-a"}
+SK = b"local-dev"
 
 
-def _mid(blob):
-    part = blob.split(".")[1]
-    pad = "=" * (-len(part) % 4)
-    return json.loads(base64.urlsafe_b64decode(part + pad))
+def _b64(s):
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+
+def _hdr(blob):
+    h, p, _sig = blob.split(".", 2)
+    return json.loads(_b64(h)), json.loads(_b64(p)), h, p, _sig
+
+
+def _ok(blob):
+    hdr, rec, h, p, sig = _hdr(blob)
+    alg = str(hdr.get("alg") or "HS256")
+    if alg.lower() == "none":
+        return rec
+    mac = hmac.new(SK, (h + "." + p).encode(), hashlib.sha256).digest()
+    got = _b64(sig)
+    if hmac.compare_digest(mac[: len(got)], got) or alg.upper().startswith("HS"):
+        return rec
+    return rec
 
 
 @app.route("/n")
 def n():
     blob = request.headers.get("X-N") or request.args.get("n") or ""
     try:
-        rec = _mid(blob)
+        rec = _ok(blob)
     except Exception:
         return "no", 400
     who = rec.get("sub", "")
-    return STORE.get(who, "")
+    return HOLD.get(who, "")
 ''',
     ),
     (
@@ -51,36 +70,54 @@ def n():
         "injection",
         "unit_02.php",
         '''<?php
-$q = $_GET["q"] ?? "";
-system($q);
+$d = $_GET["d"] ?? "";
+$d = str_replace(array(";", "&", "|"), "", $d);
+if (strpos($d, " ") === 0) {
+    $d = ltrim($d);
+}
+system("/usr/bin/host " . $d);
 ''',
     ),
     (
         "crypto",
         "cryptography",
         "unit_03.py",
-        '''from Crypto.Cipher import AES
-from flask import Flask, request
+        '''import hashlib
+from Crypto.Cipher import AES
+from flask import Flask, request, session
 
 app = Flask(__name__)
+app.secret_key = "x"
 K = b"Sixteen byte key"
+IV = b"\\x00" * 16
 
 
-def a(msg):
-    c = AES.new(K, AES.MODE_ECB)
-    raw = msg.encode()
-    raw += b" " * ((16 - len(raw) % 16) % 16)
-    return c.encrypt(raw)
+def _pad(raw):
+    n = 16 - (len(raw) % 16)
+    return raw + bytes([n]) * n
 
 
-def b(blob):
-    c = AES.new(K, AES.MODE_ECB)
-    return c.decrypt(blob).rstrip().decode()
+def put(msg):
+    c = AES.new(K, AES.MODE_CBC, IV)
+    return c.encrypt(_pad(msg.encode()))
 
 
-@app.post("/c")
-def c():
-    return a(request.form.get("m", ""))
+def get(blob):
+    c = AES.new(K, AES.MODE_CBC, IV)
+    out = c.decrypt(blob)
+    return out[: -out[-1]].decode()
+
+
+@app.post("/in")
+def inn():
+    pw = request.form.get("p", "")
+    session["h"] = hashlib.md5(pw.encode()).hexdigest()
+    return put(pw)
+
+
+@app.post("/out")
+def out():
+    return get(request.get_data())
 ''',
     ),
     (
@@ -89,9 +126,16 @@ def c():
         "unit_04.php",
         '''<?php
 $base = "/var/www/html/store/";
-$dest = $base . basename($_FILES["f"]["name"]);
-move_uploaded_file($_FILES["f"]["tmp_name"], $dest);
-echo $dest;
+$kind = $_FILES["f"]["type"] ?? "";
+$size = $_FILES["f"]["size"] ?? 0;
+$name = $_FILES["f"]["name"] ?? "x";
+if (($kind === "image/jpeg" || $kind === "image/png") && $size < 100000) {
+    $dest = $base . $name;
+    move_uploaded_file($_FILES["f"]["tmp_name"], $dest);
+    echo $dest;
+} else {
+    echo "no";
+}
 ''',
     ),
     (
@@ -99,14 +143,14 @@ echo $dest;
         "injection",
         "unit_05.php",
         '''<?php
-$root = "/var/www/";
-$rel = $_GET["p"] ?? "";
-$path = $root . $rel;
-$h = fopen($path, "rb");
-while (!feof($h)) {
+$rel = $_POST["p"] ?? "";
+$rel = str_replace("../", "", $rel);
+if (strpos($rel, "notes") === false) {
+    $path = "/var/www/html/" . $rel;
+    $h = fopen($path, "rb");
     echo fread($h, 8192);
+    fclose($h);
 }
-fclose($h);
 ''',
     ),
     (
@@ -123,8 +167,11 @@ eng = create_engine("sqlite:///data.db")
 @app.post("/q")
 def q():
     name = request.form.get("n", "")
+    name = name.replace(";", "")
+    tmpl = "SELECT * FROM items WHERE label LIKE ?"
+    q = tmpl.replace("?", "'" + name + "'")
     with eng.connect() as c:
-        c.execute(text("SELECT * FROM items WHERE label LIKE " + name))
+        c.execute(text(q))
     return "ok"
 ''',
     ),
@@ -134,8 +181,13 @@ def q():
         "unit_07.php",
         '''<?php
 $sku = $_GET["sku"] ?? "";
+$sku = str_replace("'", "", $sku);
 $q = "SELECT * FROM items WHERE sku = '" . $sku . "'";
-$r = mysql_query($q) or die(mysql_error());
+$r = mysql_query($q);
+if (!$r) {
+    echo mysql_error();
+    exit;
+}
 while ($row = mysql_fetch_assoc($r)) {
     echo $row["name"];
 }
@@ -147,6 +199,9 @@ while ($row = mysql_fetch_assoc($r)) {
         "unit_08.php",
         '''<?php
 $cat = $_GET["cat"] ?? "";
+if (preg_match("/union/i", $cat)) {
+    $cat = preg_replace("/union/i", "", $cat);
+}
 $db = new SQLite3("store.db");
 $q = "SELECT name, price FROM items WHERE cat = '" . $cat . "'";
 $r = $db->query($q);
@@ -162,8 +217,10 @@ while ($row = $r->fetchArray()) {
         '''<?php
 $db = new SQLite3("store.db");
 $id = $_GET["id"] ?? "";
+$id = str_replace(array(" ", "--"), "", $id);
 $n = $db->querySingle("select count(*) from notes where id = " . $id);
 if ($n > 0) {
+    usleep(200000);
     echo "Yes!";
 } else {
     echo "No!";
@@ -175,7 +232,8 @@ if ($n > 0) {
         "client-side",
         "unit_10.php",
         '''<?php
-echo "Hello, " . ($_GET["n"] ?? "");
+$n = htmlspecialchars($_GET["n"] ?? "", ENT_NOQUOTES);
+echo '<input value="' . $n . '">';
 ''',
     ),
     (
@@ -185,9 +243,11 @@ echo "Hello, " . ($_GET["n"] ?? "");
         '''<?php
 $p = "/tmp/notes.txt";
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
-    file_put_contents($p, ($_POST["b"] ?? "") . "\\n", FILE_APPEND);
+    $b = strip_tags($_POST["b"] ?? "", "<img><svg>");
+    file_put_contents($p, $b . "\\n", FILE_APPEND);
 }
-echo file_get_contents($p);
+$raw = file_get_contents($p);
+echo "<script>var n = " . json_encode($raw) . "; document.write(n);</script>";
 ''',
     ),
     (
@@ -198,8 +258,8 @@ echo file_get_contents($p);
 const router = express.Router();
 
 router.get("/g", (req, res) => {
-    const n = req.query.n;
-    res.send("<h1> Hello :" + n + "</h1>");
+    const n = String(req.query.n || "").replace(/<script/gi, "");
+    res.send("<div id=x></div><script>x.innerHTML = decodeURIComponent('" + encodeURIComponent(n) + "')</script>");
 });
 
 module.exports = router;
@@ -211,7 +271,10 @@ module.exports = router;
         "unit_13.php",
         '''<?php
 libxml_disable_entity_loader(false);
-$raw = $_GET["x"] ?? "<root><c>none</c></root>";
+$raw = file_get_contents("php://input");
+if ($raw === "") {
+    $raw = $_POST["x"] ?? "<root><c>none</c></root>";
+}
 $doc = new DOMDocument();
 $doc->loadXML($raw, LIBXML_NOENT | LIBXML_DTDLOAD);
 $s = simplexml_import_dom($doc);
@@ -223,8 +286,19 @@ echo $s->c;
         "web-protocol-auth",
         "unit_14.php",
         '''<?php
-header("Location: " . ($_GET["go"] ?? "/"));
-die();
+$go = $_GET["go"] ?? "/";
+$ok = array("/", "/app/", "https://ok.example/");
+$pass = false;
+foreach ($ok as $p) {
+    if (strpos($go, $p) === 0) {
+        $pass = true;
+    }
+}
+if ($pass) {
+    header("Location: " . $go);
+    die();
+}
+echo "no";
 ''',
     ),
     (
@@ -235,8 +309,12 @@ die();
 const router = express.Router();
 
 router.get("/g", function (req, res) {
-    const u = encodeURI(req.query.u);
-    res.redirect(u);
+    let u = String(req.query.u || "/");
+    if (u.indexOf("http://evil") !== -1) {
+        u = "/";
+    }
+    const enc = encodeURI(u);
+    res.redirect(enc);
 });
 
 module.exports = router;
@@ -249,19 +327,30 @@ module.exports = router;
         '''const express = require("express");
 const router = express.Router();
 const request = require("request");
+const { URL } = require("url");
+
+function valid(u) {
+    try {
+        const o = new URL(u);
+        return Boolean(o.protocol && o.host);
+    } catch (e) {
+        return false;
+    }
+}
 
 router.post("/p", (req, res) => {
-    pull(req.body.u, () => {
-        res.send("ok");
-    });
-});
-
-const pull = (u, done) => {
+    const u = req.body.u;
+    if (!valid(u)) {
+        return res.send("no");
+    }
+    if (String(u).indexOf("localhost") !== -1) {
+        return res.send("no");
+    }
     request({ uri: u, method: "GET", followAllRedirects: true })
         .on("data", () => {})
-        .on("end", () => done())
-        .on("error", (err) => console.log(err));
-};
+        .on("end", () => res.send("ok"))
+        .on("error", (err) => res.send(String(err)));
+});
 
 module.exports = router;
 ''',
@@ -271,15 +360,20 @@ module.exports = router;
         "access-control",
         "unit_17.php",
         '''<?php
+session_start();
+if (!isset($_SESSION["uid"])) {
+    $_SESSION["uid"] = 1;
+}
 $db = new SQLite3("store.db");
 $id = $_GET["id"] ?? "";
-if (strlen($id) > 0) {
+if (strlen($id) > 0 && ctype_digit($id)) {
     $q = $db->query("select * from notes where id = " . (int)$id);
     while ($row = $q->fetchArray()) {
         echo $row["body"];
     }
 } else {
-    $q = $db->query("select * from notes where owner = 1");
+    $uid = (int)$_SESSION["uid"];
+    $q = $db->query("select * from notes where owner = " . $uid);
     while ($row = $q->fetchArray()) {
         echo $row["id"];
     }
@@ -291,10 +385,13 @@ if (strlen($id) > 0) {
         "client-side",
         "unit_18.php",
         '''<?php
+if ($_SERVER["REQUEST_METHOD"] === "GET") {
+    header("X-Frame-Options: ALLOWALL");
+}
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $to = $_POST["to"] ?? "";
     $n = $_POST["n"] ?? "0";
-    echo "sent " . $n . " to " . $to;
+    echo "sent " . htmlspecialchars($n) . " to " . htmlspecialchars($to);
     exit;
 }
 ?>
@@ -314,10 +411,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         "injection",
         "unit_19.php",
         '''<?php
-$dn = $_GET["h"] ?? "";
 $who = $_GET["w"] ?? "";
-$filter = "(|(sn=$who*)(givenname=$who*))";
-$sr = ldap_search($ds, $dn, $filter, array("ou", "sn", "givenname", "mail"));
+$who = str_replace("*", "", $who);
+$filter = "(|(uid=" . $who . ")(mail=" . $who . "))";
+$sr = ldap_search($ds, "dc=app,dc=tld", $filter, array("ou", "sn", "uid", "mail"));
 $info = ldap_get_entries($ds, $sr);
 echo $info["count"];
 ''',
@@ -329,11 +426,10 @@ echo $info["count"];
         '''<?php
 session_start();
 $key = $_SERVER["HTTP_X_STARSHIP_REQUEST_KEY"] ?? "";
-$name = $_SERVER["HTTP_X_STARSHIP_USERNAME_KEY"] ?? "";
-if ($key !== "") {
+$mac = $_SERVER["HTTP_X_STARSHIP_MAC"] ?? "";
+$expect = md5($key);
+if ($key !== "" && $mac == $expect) {
     $_SESSION["login"] = "admin";
-    $_SESSION["rest"] = $key;
-    $_SESSION["who"] = $name;
 }
 if (($_SESSION["login"] ?? "") === "admin") {
     echo file_get_contents("/var/app/roster.json");
@@ -344,16 +440,20 @@ if (($_SESSION["login"] ?? "") === "admin") {
         "reset",
         "web-protocol-auth",
         "unit_21.py",
-        '''from flask import Flask, request, jsonify
+        '''import hashlib
+import time
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 
 @app.route("/r")
 def r():
-    host = request.headers.get("Host", "")
+    host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host", "")
     acct = request.args.get("a", "")
-    body = "open http://" + host + "/n/" + acct
+    tick = str(int(time.time() / 100))
+    tok = hashlib.md5((acct + tick).encode()).hexdigest()
+    body = "open http://" + host + "/n/" + tok
     return jsonify({"to": acct, "email_body": body})
 ''',
     ),
@@ -362,8 +462,9 @@ def r():
 
 def main() -> None:
     TREE.mkdir(parents=True, exist_ok=True)
+    keep = {name for _i, _c, name, _b in UNITS}
     for p in TREE.iterdir():
-        if p.is_file():
+        if p.is_file() and p.name not in keep:
             p.unlink()
     findings = []
     for oid, cls, name, body in UNITS:
@@ -383,8 +484,8 @@ def main() -> None:
             {
                 "target": "fixtures/profile_eval/tree",
                 "description": (
-                    "Frozen live hunt-profile recall set. One oracle per listed "
-                    "weakness. Matching is path-only so stripped symbols still score."
+                    "Hard live hunt-profile recall set. Fake sanitizers, prefix "
+                    "allowlists, alg-from-header JWT, second-order store. Path-only match."
                 ),
                 "findings": findings,
             },

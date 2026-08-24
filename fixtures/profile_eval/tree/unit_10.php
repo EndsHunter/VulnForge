@@ -1,2 +1,3 @@
 <?php
-echo "Hello, " . ($_GET["n"] ?? "");
+$n = htmlspecialchars($_GET["n"] ?? "", ENT_NOQUOTES);
+echo '<input value="' . $n . '">';

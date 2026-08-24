@@ -1,6 +1,6 @@
 {
   "target": "fixtures/profile_eval/tree",
-  "description": "Frozen live hunt-profile recall set. One oracle per listed weakness. Matching is path-only so stripped symbols still score.",
+  "description": "Hard live hunt-profile recall set. Fake sanitizers, prefix allowlists, alg-from-header JWT, second-order store. Path-only match.",
   "findings": [
     {
       "id": "jwt",

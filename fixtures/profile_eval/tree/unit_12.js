@@ -2,8 +2,8 @@ const express = require("express");
 const router = express.Router();
 
 router.get("/g", (req, res) => {
-    const n = req.query.n;
-    res.send("<h1> Hello :" + n + "</h1>");
+    const n = String(req.query.n || "").replace(/<script/gi, "");
+    res.send("<div id=x></div><script>x.innerHTML = decodeURIComponent('" + encodeURIComponent(n) + "')</script>");
 });
 
 module.exports = router;
