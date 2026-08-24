@@ -8,7 +8,9 @@
   python scripts/eval_vulngym.py --dashboard
 
 Metric is line-tolerant recall vs fixtures/vulngym/slice.json.
-Endpoint is pinned to 10.0.0.232:8000 ornith-ai-ornith-1.5-35b-a3b-mtplx.
+Scoring is frozen. Live endpoint defaults to Ollama ornith-1.5:35b at
+192.168.80.4:11434 and is overridable via --host/--port/--model or
+VF_EVAL_HOST / VF_EVAL_PORT / VF_EVAL_MODEL.
 """
 
 from __future__ import annotations
@@ -41,11 +43,30 @@ RESULTS_DIR = AUDIT / "results"
 DASHBOARD = AUDIT / "index.html"
 EVAL_RUNS = AUDIT / "eval_runs"
 DECISIONS = AUDIT / "decisions.tsv"
-VF = PROJECT_ROOT / ".venv" / "bin" / "python"
 RALPH = PROJECT_ROOT / "scripts" / "ralph.py"
-MODEL_HOST = "10.0.0.232"
-MODEL_PORT = "8000"
-MODEL_ID = "ornith-ai-ornith-1.5-35b-a3b-mtplx"
+MODEL_HOST = os.environ.get("VF_EVAL_HOST") or "192.168.80.4"
+MODEL_PORT = os.environ.get("VF_EVAL_PORT") or "11434"
+MODEL_ID = os.environ.get("VF_EVAL_MODEL") or "ornith-1.5:35b"
+
+
+def set_endpoint(host: str | None = None, port: str | None = None, model: str | None = None) -> None:
+    global MODEL_HOST, MODEL_PORT, MODEL_ID
+    if host:
+        MODEL_HOST = str(host)
+    if port:
+        MODEL_PORT = str(port)
+    if model:
+        MODEL_ID = str(model)
+
+
+def _python() -> str:
+    win = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+    nix = PROJECT_ROOT / ".venv" / "bin" / "python"
+    if win.is_file():
+        return str(win)
+    if nix.is_file():
+        return str(nix)
+    return sys.executable
 
 
 def utc_now() -> str:
@@ -153,8 +174,7 @@ def _write_overlay_yaml(path: Path) -> None:
 
 def _vf(*args: str) -> subprocess.CompletedProcess:
     env = _eval_env()
-    exe = str(VF if VF.is_file() else sys.executable)
-    cmd = [exe, "-m", "vulnforge.cli", *args]
+    cmd = [_python(), "-m", "vulnforge.cli", *args]
     return subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env, capture_output=True, text=True)
 
 
@@ -211,10 +231,9 @@ def _hunt_one(
     if not r.get("ok"):
         raise RuntimeError(f"enqueue {oracle.get('id')}: {r}")
     env = _eval_env()
-    exe = str(VF if VF.is_file() else sys.executable)
     ralph = subprocess.run(
         [
-            exe,
+            _python(),
             str(RALPH),
             "--run-dir",
             str(run_dir),
@@ -314,6 +333,13 @@ def run_live(
     out.write_text(json.dumps(result, indent=2), encoding="utf-8")
     result["result_path"] = str(out)
     write_dashboard()
+    log_decision(
+        "live",
+        f"ran {label} on {len(oracles)} oracles",
+        f"frozen slice recall at {MODEL_ID} {MODEL_HOST}:{MODEL_PORT}",
+        str(out),
+        f"recall={scored['recall']} hits={scored['hit_count']}/{scored['oracle_count']} misses={','.join(scored['misses']) or 'none'}",
+    )
     return result
 
 
@@ -406,7 +432,7 @@ def _dashboard_html(history: list[dict[str, Any]], latest: dict[str, Any]) -> st
 </head>
 <body>
 <h1>VulnGym hunt recall</h1>
-<p>Frozen 6-entry verified slice. One hunt per critical_operation file. Recall is path plus line plus or minus 5. GHSA text is not in the packet. Model is ornith-ai-ornith-1.5-35b-a3b-mtplx at 10.0.0.232:8000.</p>
+<p>Frozen 6-entry verified slice. One hunt per critical_operation file. Recall is path plus line plus or minus 5. GHSA text is not in the packet. Model is {MODEL_ID} at {MODEL_HOST}:{MODEL_PORT}.</p>
 <div class="row">
   <div class="card"><div>Latest recall</div><div class="num" id="latest">{recall_pct}</div></div>
   <div class="card"><div>Baseline</div><div class="num" id="base">{base_pct}</div></div>
@@ -511,7 +537,11 @@ def main() -> int:
     ap.add_argument("--task-timeout", type=int, default=600)
     ap.add_argument("--max-tasks", type=int, default=3)
     ap.add_argument("--only", action="append", default=[])
+    ap.add_argument("--host", default=None, help="LLM host (default VF_EVAL_HOST or 192.168.80.4)")
+    ap.add_argument("--port", default=None, help="LLM port (default VF_EVAL_PORT or 11434)")
+    ap.add_argument("--model", default=None, help="LLM model id (default VF_EVAL_MODEL or ornith-1.5:35b)")
     args = ap.parse_args()
+    set_endpoint(args.host, args.port, args.model)
     if args.freeze:
         data = freeze_slice()
         print(json.dumps({"ok": True, "n": len(data["findings"]), "path": str(SLICE_PATH)}, indent=2))

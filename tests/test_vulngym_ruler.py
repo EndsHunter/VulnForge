@@ -3,6 +3,7 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from vulnforge.eval.recall import load_ground_truth, parse_line_number, score_findings
 from vulnforge.eval.vulngym import SLICE_IDS, SLICE_PATH, map_hunt_class
@@ -125,3 +126,25 @@ def test_sensitivity_cli():
     assert data["ok"] is True
     assert data["empty_recall"] == 0.0
     assert data["perfect_recall"] == 1.0
+
+
+def test_eval_script_endpoint_flags_and_python():
+    import scripts.eval_vulngym as ev
+
+    help_r = subprocess.run(
+        [sys.executable, str(EVAL_SCRIPT), "--help"],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert help_r.returncode == 0, help_r.stderr or help_r.stdout
+    assert "--host" in help_r.stdout
+    assert "--model" in help_r.stdout
+    ev.set_endpoint("192.168.80.4", "11434", "ornith-1.5:35b")
+    assert ev.MODEL_HOST == "192.168.80.4"
+    assert ev.MODEL_PORT == "11434"
+    assert ev.MODEL_ID == "ornith-1.5:35b"
+    py = ev._python()
+    assert py
+    assert Path(py).name.lower().startswith("python")
