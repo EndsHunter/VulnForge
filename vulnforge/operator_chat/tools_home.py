@@ -131,7 +131,7 @@ def schemas() -> list[dict]:
         ),
         openai_tool(
             "get_coverage_summary",
-            "Coverage residual cells for one run (or set all_runs=true for fleet skim).",
+            "Hunts residual cells for one run (or set all_runs=true for fleet skim).",
             {
                 **_RUN_ID_PROPS,
                 "all_runs": {"type": "boolean"},
