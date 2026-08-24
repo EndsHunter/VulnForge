@@ -56,6 +56,7 @@ description: >-
 | Job path | Async workers may skip request middleware |
 | Allowlist | Webhook URLs fixed to vendor schemes/hosts |
 | Impact | Exfil, SSRF, integrity overwrite, enumeration |
+| Cite the sink | `citations[].symbol` is the function/const that performs the fetch or export |
 
 ## Focus
 
@@ -87,6 +88,8 @@ search|filter|order_by|sort=
 ## Required evidence
 
 - Feature entrypoint, missing scope, abuse sequence, impact
+- `citations[].path`, `start_line`, and `symbol` (the sink function or const name, e.g. `downloadURL`)
+- `sink_path` and `sink_symbol` on the candidate matching that citation
 
 ## False positives
 
@@ -108,6 +111,8 @@ search|filter|order_by|sort=
 
 - `write_evidence` first: feature entrypoint, missing scope, sequence, impact
 - `weakness_class: feature-abuse`
-- **Good:** *“Member `POST /export` omits `tenant_id` (`export.py:55`); CSV includes peer PII.”*
-- **Bad:** *“Export exists.”*
+- Citations **must** include `symbol` for the sink (`downloadURL`, `request`, export helper)
+- **Good:** *“Member `POST /export` omits `tenant_id` (`export.py:55`, symbol `export_csv`); CSV includes peer PII.”*
+- **Good:** *“`req.body.url` → `downloadURL` in `ssrf_download.js:11` with host+scheme control; server fetches attacker URL.”*
+- **Bad:** *“Export exists.” / citations with path but no `symbol`.*
 - Or honest `submit_none`
