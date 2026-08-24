@@ -17,11 +17,13 @@ description: >-
 - **Provide evidence.** Exact bytes/claims and victim effect (ATO, smuggled prefix, poisoned cache).
 - **Correctness over completeness.** One Host-poisoned reset beats protocol style nits.
 - Honest `submit_none` when alg/claims pin and Host is not trusted.
+- **Known findings are per-path.** Skip re-file only when Known findings already lists **this** `path_hints` file. Another file with the same class (second open redirect, second Host builder) is a new candidate. Do not `submit_none` as a duplicate of a different path.
 
 ## When to use
 
 - Proxies/gateways, custom HTTP parsers, sessions/JWT/OAuth/OIDC/SAML
 - Password reset; Host/`X-Forwarded-*` use for links and redirects
+- Unallowlisted server 3xx (`header("Location:")`, `res.redirect`) of request data
 - Cache poisoning / cache deception; CRLF in forwarded headers
 - OAuth redirect_uri, state/PKCE, id_token checks, mix-up; SAML wrapping/XXE
 
@@ -52,6 +54,7 @@ description: >-
 | Pin alg/claims | Allowlisted algorithms + aud/iss/exp as required |
 | Host trust | Raw Host in reset/verify links enables ATO |
 | OAuth redirect | Exact allowlist, not prefix; state/PKCE for CSRF |
+| Per-path | `encodeURI` / `urlencode` is not an allowlist; each file’s Location/res.redirect is its own finding |
 | Cache keys | Unkeyed attacker input in cached responses |
 | Session fixation | Regenerate id on privilege change |
 | Reset tokens | Entropy, single-use, binding to user/intent |
@@ -86,6 +89,7 @@ oauth|OIDC|openid|redirect_uri|response_type|PKCE|code_verifier|id_token
 SAML|Assertion|NotOnOrAfter|Audience|InResponseTo
 session|Set-Cookie|SessionID|regenerate|fixation
 password.?reset|reset_token|recover|forgot
+Location:|header\(\s*[\"']Location|res\.redirect|HttpResponseRedirect
 ```
 
 ## Required evidence
@@ -104,6 +108,7 @@ password.?reset|reset_token|recover|forgot
 | Anti-pattern | Why it matters |
 |--------------|----------------|
 | “JWTs are dangerous” | No verify gap or forge path |
+| “Duplicate of other file’s redirect” | Different path = different finding; Known findings skip same-path only |
 | Confirmed out-of-tree | Components not in audit scope |
 | Cookie flag nits alone | Need sensitive cookie or CSRF path |
 | Smuggling theory | No dual-parser evidence |
@@ -114,5 +119,7 @@ password.?reset|reset_token|recover|forgot
 - `write_evidence` first with exact bytes/claims and victim effect
 - `weakness_class: web-protocol-auth`
 - **Good:** *“Password reset builds link from raw Host (`reset.py:33`); attacker poisons Host → token to attacker; ATO.”*
-- **Bad:** *“JWTs are dangerous.”*
+- **Good:** *“`header('Location: '.$_GET['go'])` has no allowlist; victim 3xx to attacker origin.”*
+- **Good:** *“`res.redirect(encodeURI(req.query.u))` — encodeURI is not an allowlist; file this path even if another file already has an open redirect.”*
+- **Bad:** *“JWTs are dangerous.” / “Same class as a known finding on another file, none.”*
 - Or honest `submit_none`
