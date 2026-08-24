@@ -44,6 +44,14 @@ def load_config(path: Optional[Path] = None) -> dict[str, Any]:
         cfg.setdefault("llm", {})["recon_orchestrator"] = os.environ[
             "VF_RECON_ORCHESTRATOR"
         ]
+    vllm = os.environ.get("VF_VALIDATE_LLM")
+    if vllm is not None and str(vllm).strip() != "":
+        cfg.setdefault("stages", {})["validate_llm"] = str(vllm).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
     # Drop removed dual-runtime keys if present in older configs.
     llm = cfg.setdefault("llm", {})
     llm.pop("agent_runtime", None)

@@ -679,6 +679,16 @@ def test_unknown_task_kind_exit_config(tmp_path: Path, toy_sqli: Path):
     db.close()
 
 
-def test_load_config_default_validate_llm_true():
+def test_load_config_default_validate_llm_true(monkeypatch):
+    monkeypatch.delenv("VF_VALIDATE_LLM", raising=False)
+    cfg = load_config()
+    assert (cfg.get("stages") or {}).get("validate_llm") is True
+
+
+def test_load_config_vf_validate_llm_env_wins(monkeypatch):
+    monkeypatch.setenv("VF_VALIDATE_LLM", "0")
+    cfg = load_config()
+    assert (cfg.get("stages") or {}).get("validate_llm") is False
+    monkeypatch.setenv("VF_VALIDATE_LLM", "1")
     cfg = load_config()
     assert (cfg.get("stages") or {}).get("validate_llm") is True
