@@ -1,8 +1,11 @@
 <?php
+if ($_SERVER["REQUEST_METHOD"] === "GET") {
+    header("X-Frame-Options: ALLOWALL");
+}
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $to = $_POST["to"] ?? "";
     $n = $_POST["n"] ?? "0";
-    echo "sent " . $n . " to " . $to;
+    echo "sent " . htmlspecialchars($n) . " to " . htmlspecialchars($to);
     exit;
 }
 ?>

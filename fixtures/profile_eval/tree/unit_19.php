@@ -1,7 +1,7 @@
 <?php
-$dn = $_GET["h"] ?? "";
 $who = $_GET["w"] ?? "";
-$filter = "(|(sn=$who*)(givenname=$who*))";
-$sr = ldap_search($ds, $dn, $filter, array("ou", "sn", "givenname", "mail"));
+$who = str_replace("*", "", $who);
+$filter = "(|(uid=" . $who . ")(mail=" . $who . "))";
+$sr = ldap_search($ds, "dc=app,dc=tld", $filter, array("ou", "sn", "uid", "mail"));
 $info = ldap_get_entries($ds, $sr);
 echo $info["count"];

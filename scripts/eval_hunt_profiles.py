@@ -6,7 +6,7 @@ Frozen ruler:
   python scripts/eval_hunt_profiles.py --live --label baseline
   python scripts/eval_hunt_profiles.py --dashboard
 
-Metric is recall vs fixtures/profile_eval/ground_truth.json (21 classes).
+Metric is recall vs fixtures/profile_eval/ground_truth.json (21 hard classes).
 Any finding body that matches an oracle counts as a hit, regardless of state.
 Extras are recorded and do not fail the run.
 Endpoint is pinned to 10.0.0.232:8000 ornith-ai-ornith-1.5-35b-a3b-mtplx.
@@ -32,7 +32,7 @@ from vulnforge.paths import PROJECT_ROOT
 
 GT_PATH = PROJECT_ROOT / "fixtures" / "profile_eval" / "ground_truth.json"
 TREE = PROJECT_ROOT / "fixtures" / "profile_eval" / "tree"
-AUDIT = PROJECT_ROOT / ".audit" / "hunt-profile-21"
+AUDIT = PROJECT_ROOT / ".audit" / "hunt-profile-hard"
 RESULTS_DIR = AUDIT / "results"
 DASHBOARD = AUDIT / "index.html"
 EVAL_RUNS = AUDIT / "eval_runs"
@@ -71,9 +71,24 @@ def sensitivity() -> dict[str, Any]:
     oracles = list(gt.get("findings") or [])
     empty = score_findings([], oracles)
     perfect = score_findings(synthetic_perfect(oracles), oracles)
-    present = sorted(p.name for p in TREE.iterdir() if p.is_file()) if TREE.is_dir() else []
-    want = sorted({str(o.get("sink_path")) for o in oracles})
-    files_ok = want == present or set(want).issubset(set(present))
+    present = (
+        sorted(str(p.relative_to(TREE)) for p in TREE.rglob("*") if p.is_file())
+        if TREE.is_dir()
+        else []
+    )
+    want = sorted(
+        {
+            str(o.get("sink_path") or "")
+            for o in oracles
+            if o.get("sink_path")
+        }
+        | {
+            str(o.get("entry") or "")
+            for o in oracles
+            if o.get("entry")
+        }
+    )
+    files_ok = set(want).issubset(set(present))
     return {
         "empty_recall": empty["recall"],
         "perfect_recall": perfect["recall"],
@@ -198,9 +213,10 @@ def run_live(
 
     enqueued = []
     for o in oracles:
+        hunt_path = str(o.get("entry") or o.get("sink_path") or "")
         r = hunt_from_selection(
             run_dir,
-            path=str(o.get("sink_path") or ""),
+            path=hunt_path,
             attack_class=str(o.get("class") or "wildcard"),
             area="eval",
         )
@@ -231,6 +247,37 @@ def run_live(
         text=True,
     )
 
+    return score_run_dir(
+        run_dir,
+        label=label,
+        oracles=oracles,
+        enqueued=enqueued,
+        ralph=ralph,
+        task_timeout=task_timeout,
+        max_tasks=budget,
+        only=only or [],
+    )
+
+
+def score_run_dir(
+    run_dir: Path,
+    *,
+    label: str,
+    oracles: list[dict[str, Any]] | None = None,
+    enqueued: list | None = None,
+    ralph: subprocess.CompletedProcess | None = None,
+    task_timeout: int | None = None,
+    max_tasks: int | None = None,
+    only: list[str] | None = None,
+) -> dict[str, Any]:
+    from vulnforge.db import Database
+
+    if oracles is None:
+        oracles = list(load_catalog().get("findings") or [])
+        if only:
+            want = {x.strip() for x in only if x.strip()}
+            oracles = [o for o in oracles if str(o.get("id")) in want]
+    run_dir = Path(run_dir)
     db = Database(run_dir / "harness.db")
     try:
         findings = db.list_findings()
@@ -278,19 +325,21 @@ def run_live(
         "extras": scored["extras"],
         "finding_states": [{"id": f.id, "state": f.state, "sink_path": f.body.get("sink_path")} for f in findings],
         "by_class": by_class,
-        "enqueued": enqueued,
-        "ralph_returncode": ralph.returncode,
-        "ralph_tail": (ralph.stdout or "")[-4000:],
-        "ralph_err_tail": (ralph.stderr or "")[-2000:],
+        "enqueued": enqueued or [],
+        "ralph_returncode": getattr(ralph, "returncode", None),
+        "ralph_tail": (getattr(ralph, "stdout", None) or "")[-4000:],
+        "ralph_err_tail": (getattr(ralph, "stderr", None) or "")[-2000:],
         "tasks": [
             {"id": t["id"], "kind": t["kind"], "state": t["state"]} for t in tasks
         ],
         "task_timeout": task_timeout,
-        "max_tasks": budget,
+        "max_tasks": max_tasks,
         "model": MODEL_ID,
         "endpoint": f"http://{MODEL_HOST}:{MODEL_PORT}/v1",
         "only": only or [],
     }
+    AUDIT.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out = RESULTS_DIR / f"{utc_now().replace(':', '')}_{label}.json"
     out.write_text(json.dumps(result, indent=2), encoding="utf-8")
     result["result_path"] = str(out)
@@ -366,7 +415,7 @@ def _dashboard_html(
 </head>
 <body>
 <h1>Hunt profile recall</h1>
-<p>Live hunts on the frozen 21-class obfuscated snippet set. One hunt per listed weakness. Recall is oracle hits over oracles. Extras do not fail the metric. Matching is path-only.</p>
+<p>Live hunts on the hard 21-class set (fake sanitizers, prefix allowlists, alg-from-header JWT). One hunt per listed weakness. Recall is oracle hits over oracles. Extras do not fail the metric. Matching is path-only.</p>
 <div class="row">
   <div class="card"><div>Latest recall</div><div class="num" id="latest">{recall_pct}</div></div>
   <div class="card"><div>Baseline</div><div class="num" id="base">{base_pct}</div></div>
@@ -470,6 +519,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Hunt profile live recall eval")
     ap.add_argument("--sensitivity", action="store_true")
     ap.add_argument("--live", action="store_true")
+    ap.add_argument("--score-run-dir", default=None)
     ap.add_argument("--dashboard", action="store_true")
     ap.add_argument("--label", default="run")
     ap.add_argument("--task-timeout", type=int, default=900)
@@ -488,6 +538,17 @@ def main() -> int:
     if args.dashboard:
         p = write_dashboard()
         print(p)
+        return 0
+    if args.score_run_dir:
+        r = score_run_dir(Path(args.score_run_dir), label=args.label, only=args.only)
+        print(
+            f"{r['label']}: recall={r['recall']:.0%} "
+            f"hits={r['hit_count']}/{r['oracle_count']} extras={r['extras']}"
+        )
+        if r.get("misses"):
+            print("  misses:", ", ".join(r["misses"]))
+        print("  dashboard:", DASHBOARD)
+        print("  result:", r.get("result_path"))
         return 0
     if args.live:
         r = run_live(args.label, args.task_timeout, args.max_tasks, only=args.only)

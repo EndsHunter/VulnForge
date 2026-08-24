@@ -28,7 +28,7 @@ description: >-
 
 ## When not to use / Scope
 
-- Missing CSP/XFO alone without sensitive framable action or XSS sink
+- Missing CSP/XFO alone without a framable control. `X-Frame-Options: ALLOWALL` or `*` is not protection. A GET that renders a POST form (transfer, delete, grant) with ALLOWALL/missing XFO **is** a clickjacking candidate even when the POST body is HTML-escaped.
 - Client-side “missing authz” (server is authority)
 - Framework auto-escape with no opt-out on the path; attacker-only self-XSS without victim delivery
 - Do **not** `submit_none` just because the HTML is built on the server. A victim browser still executes reflected markup.
@@ -57,7 +57,7 @@ description: >-
 | CORS+creds | Reflected origin or null + credentials is impact |
 | CSWSH | Cookie auth on WS without origin checks |
 | Pollution | Recursive write **and** reachable gadget |
-| Clickjack | State-changing framable action, not “no XFO” alone |
+| Clickjack | Framable GET of a state-changing form. `ALLOWALL`/`*` counts as no XFO |
 | Redirect | Client open redirect with token/session impact |
 | CSP alone | Missing CSP is hardening, not a finding |
 
@@ -89,6 +89,7 @@ location\.hash|location\.search|document\.URL|window\.name
 WebSocket|wss://
 Access-Control-Allow-Origin|Allow-Credentials|cors\(
 __proto__|prototype|merge\(|defaultsDeep
+X-Frame-Options|ALLOWALL|frame-ancestors|Content-Security-Policy
 ```
 
 ## Required evidence
@@ -119,5 +120,6 @@ __proto__|prototype|merge\(|defaultsDeep
 - `weakness_class: client-side`
 - **Good:** *“`req.query.name` concatenated into `res.send` HTML; victim browser executes markup.”*
 - **Good:** *“`#` fragment → `innerHTML` in `app.js:210`; non-HttpOnly session cookie steals via victim link.”*
-- **Bad:** *“No CSP header.” / “This is server-side so I submit_none.”*
+- **Good:** *“GET form POSTs `to`/`n` and sets `X-Frame-Options: ALLOWALL`; victim can be framed into transferring funds.”*
+- **Bad:** *“No CSP header.” / “This is server-side so I submit_none.”* / *“XFO is set so no clickjack”* (ALLOWALL/`*` is not a deny).
 - Or honest `submit_none`
