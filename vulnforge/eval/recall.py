@@ -66,6 +66,25 @@ def _path_matches(path: str, oracle: dict[str, Any]) -> bool:
     )
 
 
+def parse_line_number(value: Any) -> int | None:
+    """First positive line from int, '348', or '493-494'."""
+    if value is None or value is False or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        n = int(value)
+        return n if n > 0 else None
+    text = str(value).strip().replace("–", "-").replace("—", "-")
+    head = text.split("-")[0].split(",")[0].strip()
+    if head.isdigit():
+        n = int(head)
+        return n if n > 0 else None
+    return None
+
+
 def _symbol_matches(body: dict, oracle: dict[str, Any]) -> bool:
     match = oracle.get("match") if isinstance(oracle.get("match"), dict) else {}
     want = str(
@@ -80,6 +99,40 @@ def _symbol_matches(body: dict, oracle: dict[str, Any]) -> bool:
         if isinstance(c, dict):
             candidates.append(str(c.get("symbol") or ""))
     return any(want == str(x).strip().lower() for x in candidates if x)
+
+
+def _finding_lines(body: dict) -> list[int]:
+    lines: list[int] = []
+    for key in ("start_line", "end_line", "sink_line", "line"):
+        n = parse_line_number(body.get(key))
+        if n:
+            lines.append(n)
+    for c in body.get("citations") or []:
+        if not isinstance(c, dict):
+            continue
+        for key in ("start_line", "end_line", "line"):
+            n = parse_line_number(c.get(key))
+            if n:
+                lines.append(n)
+    return lines
+
+
+def _line_matches(body: dict, oracle: dict[str, Any]) -> bool:
+    match = oracle.get("match") if isinstance(oracle.get("match"), dict) else {}
+    want = parse_line_number(
+        match.get("start_line")
+        if match.get("start_line") not in (None, "")
+        else match.get("line")
+        if match.get("line") not in (None, "")
+        else oracle.get("sink_line")
+    )
+    if not want:
+        return True
+    slop = parse_line_number(match.get("line_slop")) or 5
+    found = _finding_lines(body)
+    if not found:
+        return False
+    return any(abs(n - want) <= slop for n in found)
 
 
 def finding_matches_oracle(finding_body: dict, oracle: dict[str, Any]) -> bool:
@@ -97,7 +150,9 @@ def finding_matches_oracle(finding_body: dict, oracle: dict[str, Any]) -> bool:
         return False
     if not any(_path_matches(p, oracle) for p in paths):
         return False
-    return _symbol_matches(finding_body, oracle)
+    if not _symbol_matches(finding_body, oracle):
+        return False
+    return _line_matches(finding_body, oracle)
 
 
 def score_findings(

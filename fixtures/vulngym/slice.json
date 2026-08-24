@@ -1,0 +1,145 @@
+{
+  "target": "fixtures/vulngym/slice.json",
+  "description": "Frozen VulnGym verified slice. Hunt the critical_operation file. Score path plus line \u00b15. Do not put the GHSA body in the hunt packet.",
+  "upstream": "https://github.com/Tencent/VulnGym",
+  "findings": [
+    {
+      "id": "entry-00319",
+      "class": "access-control",
+      "report_id": "GHSA-JM6W-M3J8-898G",
+      "project": "nltk",
+      "repo_url": "https://github.com/nltk/nltk",
+      "commit": "40d0bc1d484a3458d6a63ecb5ba4957ab16ba14e",
+      "verify": 1,
+      "l1": "\u4e1a\u52a1\u903b\u8f91",
+      "l2": "BL-AUTHZ-MISSING(\u6388\u6743\u7f3a\u5931)",
+      "title": "NLTK WordNet Browser HTTP Server \u672a\u6388\u6743 Shutdown \u7aef\u70b9\u5bfc\u81f4\u62d2\u7edd\u670d\u52a1",
+      "trace_len": 6,
+      "sink_path": "nltk/app/wordnet_app.py",
+      "sink_line": 93,
+      "entry_path": "nltk/app/wordnet_app.py",
+      "entry_line": 84,
+      "co_code": "                os._exit(0)",
+      "match": {
+        "path_suffix": "nltk/app/wordnet_app.py",
+        "start_line": 93,
+        "line_slop": 5
+      }
+    },
+    {
+      "id": "entry-00080",
+      "class": "injection",
+      "report_id": "GHSA-78H3-63C4-5FQC",
+      "project": "Tencent/WeKnora",
+      "repo_url": "https://github.com/Tencent/WeKnora",
+      "commit": "a20541cd9d0a54dbff0b9112f1299c64347370ff",
+      "verify": 1,
+      "l1": "\u547d\u4ee4\u6ce8\u5165",
+      "l2": "OS \u547d\u4ee4\u6ce8\u5165",
+      "title": "WeKnora MCP stdio \u914d\u7f6e\u547d\u4ee4\u6ce8\u5165 (CVE-2026-22688) - client.go",
+      "trace_len": 4,
+      "sink_path": "internal/mcp/client.go",
+      "sink_line": 133,
+      "entry_path": "internal/handler/mcp_service.go",
+      "entry_line": 41,
+      "co_code": "\t\tmcpClient, err = client.NewStdioMCPClientWithOptions(",
+      "match": {
+        "path_suffix": "internal/mcp/client.go",
+        "start_line": 133,
+        "line_slop": 5
+      }
+    },
+    {
+      "id": "entry-00310",
+      "class": "web-protocol-auth",
+      "report_id": "GHSA-5H2M-4Q8J-PQPJ",
+      "project": "fastmcp",
+      "repo_url": "https://github.com/jlowin/fastmcp",
+      "commit": "6bade1cbd973cbbbca26a84ed7c4cc58ecfda5b3",
+      "verify": 1,
+      "l1": "\u4e1a\u52a1\u903b\u8f91",
+      "l2": "BL-ORIGIN-INTEGRITY(\u6765\u6e90/\u7b7e\u540d/\u5b8c\u6574\u6027\u6821\u9a8c\u7f3a\u5931)",
+      "title": "fastmcp OAuthProxy Incorrect Authorization \u2014 JWT audience \u9759\u6001\u7ed1\u5b9a\u5bfc\u81f4 Token \u8de8\u670d\u52a1\u5668\u590d\u7528\uff08CVE-2025-69196\uff09 - oauth_proxy.py",
+      "trace_len": 3,
+      "sink_path": "src/fastmcp/server/auth/oauth_proxy.py",
+      "sink_line": 810,
+      "entry_path": "src/fastmcp/server/auth/oauth_proxy.py",
+      "entry_line": 992,
+      "co_code": "            audience=f\"{str(self.base_url).rstrip('/')}/mcp\",",
+      "match": {
+        "path_suffix": "src/fastmcp/server/auth/oauth_proxy.py",
+        "start_line": 810,
+        "line_slop": 5
+      }
+    },
+    {
+      "id": "entry-00462",
+      "class": "injection",
+      "report_id": "GHSA-Q56X-G2FJ-4RJ6",
+      "project": "onnx",
+      "repo_url": "https://github.com/onnx/onnx",
+      "commit": "bca0315ff3e56bb5847509ca32fadb8d87f680e1",
+      "verify": 1,
+      "l1": "\u6587\u4ef6\u64cd\u4f5c\u5b89\u5168",
+      "l2": "TOCTOU / \u7b26\u53f7\u94fe\u63a5\u8ddf\u968f / \u8def\u5f84\u7a7f\u8d8a",
+      "title": "ONNX save_external_data TOCTOU/SymlinkFollowing/PathTraversal \u4efb\u610f\u6587\u4ef6\u8986\u76d6 - external_data_helper.py",
+      "trace_len": 3,
+      "sink_path": "onnx/external_data_helper.py",
+      "sink_line": 202,
+      "entry_path": "onnx/external_data_helper.py",
+      "entry_line": 186,
+      "co_code": "        with open(external_data_file_path, \"ab\"):",
+      "match": {
+        "path_suffix": "onnx/external_data_helper.py",
+        "start_line": 202,
+        "line_slop": 5
+      }
+    },
+    {
+      "id": "entry-00114",
+      "class": "business-logic",
+      "report_id": "GHSA-345P-7CG4-V4C7",
+      "project": "typescript-sdk",
+      "repo_url": "https://github.com/modelcontextprotocol/typescript-sdk",
+      "commit": "50d9fa3cd12e807e7963bcb9e1548786d3d5d941",
+      "verify": 1,
+      "l1": "\u4e1a\u52a1\u903b\u8f91",
+      "l2": "BL-RACE-LOGIC(\u4e1a\u52a1\u5c42\u7ade\u4e89\u6761\u4ef6)",
+      "title": "@modelcontextprotocol/sdk \u8de8\u5ba2\u6237\u7aef\u6570\u636e\u6cc4\u9732\uff08\u5171\u4eab Server/Transport \u5b9e\u4f8b\u590d\u7528\uff09\uff08CVE-2026-25536\uff09 - webStandardStreamableHttp.ts",
+      "trace_len": 5,
+      "sink_path": "src/server/webStandardStreamableHttp.ts",
+      "sink_line": 938,
+      "entry_path": "src/server/webStandardStreamableHttp.ts",
+      "entry_line": 321,
+      "co_code": "        const streamId = this._requestToStreamMapping.get(requestId);",
+      "match": {
+        "path_suffix": "src/server/webStandardStreamableHttp.ts",
+        "start_line": 938,
+        "line_slop": 5
+      }
+    },
+    {
+      "id": "entry-00447",
+      "class": "access-control",
+      "report_id": "GHSA-47WQ-CJ9Q-WPMP",
+      "project": "paperclip",
+      "repo_url": "https://github.com/paperclipai/paperclip",
+      "commit": "549ef11c14b2b05f89220e80cecc41e78be95439",
+      "verify": 1,
+      "l1": "\u4e1a\u52a1\u903b\u8f91",
+      "l2": "BL-MULTI-TENANT(\u591a\u79df\u6237/\u9694\u79bb\u5931\u6548)",
+      "title": "paperclip agent API key endpoints \u8de8\u79df\u6237 IDOR (GHSA-47wq-cj9q-wpmp) - agents.ts",
+      "trace_len": 4,
+      "sink_path": "server/src/routes/agents.ts",
+      "sink_line": 2225,
+      "entry_path": "server/src/routes/agents.ts",
+      "entry_line": 2218,
+      "co_code": "    const key = await svc.createApiKey(id, req.body.name);",
+      "match": {
+        "path_suffix": "server/src/routes/agents.ts",
+        "start_line": 2225,
+        "line_slop": 5
+      }
+    }
+  ]
+}
