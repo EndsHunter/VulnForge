@@ -88,7 +88,7 @@ search|filter|order_by|sort=
 ## Required evidence
 
 - Feature entrypoint, missing scope, abuse sequence, impact
-- `citations[].path`, `start_line`, and `symbol` (the sink function or const name, e.g. `downloadURL`)
+- `citations[].path`, `start_line`, and `symbol` (the sink function or const name)
 - `sink_path` and `sink_symbol` on the candidate matching that citation
 
 ## False positives
@@ -111,8 +111,8 @@ search|filter|order_by|sort=
 
 - `write_evidence` first: feature entrypoint, missing scope, sequence, impact
 - `weakness_class: feature-abuse`
-- Citations **must** include `symbol` for the sink (`downloadURL`, `request`, export helper)
+- Citations **must** include `symbol` for the sink (function or const that fetches, exports, or follows the URL)
 - **Good:** *“Member `POST /export` omits `tenant_id` (`export.py:55`, symbol `export_csv`); CSV includes peer PII.”*
-- **Good:** *“`req.body.url` → `downloadURL` in `ssrf_download.js:11` with host+scheme control; server fetches attacker URL.”*
+- **Good:** *“`callback_url` → `fetch_webhook` (`webhooks.js:40`); host and scheme are attacker-controlled.”*
 - **Bad:** *“Export exists.” / citations with path but no `symbol`.*
 - Or honest `submit_none`
