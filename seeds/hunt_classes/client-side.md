@@ -117,7 +117,7 @@ __proto__|prototype|merge\(|defaultsDeep
 
 - `write_evidence` first with source→sink and victim context
 - `weakness_class: client-side`
-- **Good:** *“`req.query.name` concatenated into `res.send` HTML in `xss_greeting.js:5`; victim browser executes markup.”*
+- **Good:** *“`req.query.name` concatenated into `res.send` HTML; victim browser executes markup.”*
 - **Good:** *“`#` fragment → `innerHTML` in `app.js:210`; non-HttpOnly session cookie steals via victim link.”*
 - **Bad:** *“No CSP header.” / “This is server-side so I submit_none.”*
 - Or honest `submit_none`
