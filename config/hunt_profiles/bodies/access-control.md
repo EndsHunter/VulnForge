@@ -25,12 +25,15 @@ description: >-
 - Parallel paths: REST vs GraphQL vs job vs webhook vs CLI — **weakest gate wins**
 - Horizontal (peer) and vertical (user→admin) privilege; multi-tenant filter missing
 - Unauth/cross-user write that mutates others’ data, tenants, or global/admin state
+- Unauthenticated HTTP mutators that shut down, `_exit`, kill, or otherwise stop the process. Demo WordNet/doc browsers count. Durable DoS is impact.
+- Confirm listen/bind before calling a server local-only. `HTTPServer(("", port))` and `0.0.0.0` are all interfaces.
 
 ## When not to use / Scope
 
 - GraphQL-specific resolver/batching story is clearer as `graphql` (do not dual-file same resolver)
 - Client-only hide of buttons when **server** enforces the same rule
 - Public read of intentionally public resources; create-own with no cross-user access
+- Do not skip an unauth mutator because the app is a “demo” or “single-user browser” if it binds a TCP port
 - Related skills: `graphql` for resolver/batching BOLA; `business-logic` for invariant breaks with correct authz; `web-protocol-auth` for token/session machinery
 
 ## Decision tree
@@ -69,11 +72,11 @@ description: >-
 
 ## Hunt workflow
 
-1. **Inventory** — enumerate mutators and id-based loaders; map middleware/policies
-2. **Trace** — find check site (or absence); note after-use checks and alternate paths
-3. **Prove** — IDOR extras: create-then-access, swap tenant header, secondary resources, verb swap
-4. **Evidence** — exact lower-priv request (method, path, params) and state change; `write_evidence`
-5. **Submit or none** — `weakness_class: access-control`, or honest `submit_none`
+1. **Inventory** — if `path_hints` names a file, read it first. Enumerate mutators and id-based loaders; map middleware/policies; read bind/listen.
+2. **Trace** — find check site (or absence); note after-use checks and alternate paths. `getById(id)` plus a later write using that id is not authorize until you read the helper body.
+3. **Prove** — IDOR extras: create-then-access, swap tenant header, secondary resources, verb swap. Unauth `SHUTDOWN` / `_exit` / process kill is proven when any client can GET/POST it.
+4. **Evidence** — exact lower-priv request (method, path, params) and state change; `write_evidence`. Citations need `start_line`.
+5. **Submit or none** — `weakness_class: access-control` this hunt if the hinted file has a mutator. Do not `continue_hunt` to wander off a proven `_exit` or missing company check. Honest `submit_none` only after that file is done.
 
 ## Stack cues
 
@@ -89,8 +92,8 @@ skip_before_action|AUTH_NONE|authentication_classes\s*=\s*\[\]
 ## Required evidence
 
 - Attacker role, victim resource, request shape, missing check site
-- Impact: cross-user read/write/delete/grant or privilege escalation
-- Citations on load and (missing) authorize
+- Impact: cross-user read/write/delete/grant, privilege escalation, or unauth process death / shutdown
+- Citations on load and (missing) authorize, with `start_line` on the mutator itself (`os._exit`, `createApiKey`, not only the surrounding `if`)
 
 ## False positives
 
@@ -98,6 +101,7 @@ skip_before_action|AUTH_NONE|authentication_classes\s*=\s*\[\]
 - Admin-only route correctly gated (including router-group middleware)
 - “IDs in URLs” without a cross-user proof
 - Client-side-only authz when server is responsible and enforces
+- Inferring localhost without reading the bind/host argument
 
 ## Anti-patterns
 
