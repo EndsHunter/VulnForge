@@ -19,13 +19,14 @@
 
 ## Quick start
 
-```powershell
+```bash
 cd VulnForge
-.\.venv\Scripts\Activate.ps1
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 
-vf init --target C:\path\to\codebase
-python scripts/ralph.py --run-dir runs\<target_id>\run-001 --task-timeout 900 --max-tasks 50
+vf init --target /path/to/codebase
+python scripts/ralph.py --run-dir runs/<target_id>/run-001 --task-timeout 900 --max-tasks 50
 # or: vf dashboard → http://127.0.0.1:8787
 ```
 
@@ -61,9 +62,9 @@ The dashboard is the main operator surface:
 
 CLI handoff / harness:
 
-```powershell
-vf export-validation-job --run-dir runs\<target_id>\run-001 --finding-id 3
-vf validate-poc --run-dir runs\<target_id>\run-001 --finding-id 3 --execute
+```bash
+vf export-validation-job --run-dir runs/<target_id>/run-001 --finding-id 3
+vf validate-poc --run-dir runs/<target_id>/run-001 --finding-id 3 --execute
 ```
 
 Keyboard: `e` focuses Explorer.
@@ -73,12 +74,13 @@ Keyboard: `e` focuses Explorer.
 ```
 vulnforge/
   operator_chat/ # Home + run AI co-pilot (tools, confirm, sessions)
-  control/       # exit codes, ops (coverage/selection hunt)
+  agent_runtime/ # Strands tool-loop (hunt, recon, develop_poc, operator chat)
+  control/       # exit codes, ops (Hunts requeue / selection hunt)
   findings/      # stable_key + near-dup merge (not a stage)
   hunt_profiles/ # operator hunt skills collection (seed + CRUD + import/export)
   stages/        # recon, hunt, validate_mech, render, …
   tools/         # FS jail, file_inventory, grep, codemap, evidence
-  llm/           # (or llm.py) client + FakeLLM
+  llm.py         # HTTP clients + FakeLLM (production tool loop is agent_runtime/)
   ui/            # FastAPI + research cockpit
   cli.py         # thin argparse → control plane
   db.py          # SQLite + RunLock (architecture_json + codemap_json)
@@ -101,7 +103,7 @@ Hunt skills live in the **operator collection** (`config/hunt_profiles/`), not h
 
 1. Dashboard: **Home → Open Dev** (`/dev`)
 2. **+ New profile** (id slug + markdown body), or **Import** a collection JSON
-3. Toggle **Active** for bulk enqueue (recon `active_fallback`, Coverage “all”, `file_by_file`)
+3. Toggle **Active** for bulk enqueue (recon `active_fallback`, Hunts “all”, `file_by_file`)
 4. **Export** to share a collection; **Reseed from package** restores seed library from `seeds/hunt_classes/`
 
 Package markdown under `seeds/hunt_classes/` is a **seed library** only (first open / reseed). Runtime authority is the collection. See [`seeds/README.md`](seeds/README.md).
@@ -128,9 +130,9 @@ Integrate **apply** mutates package source — dry-run first. Prefer writing a S
 
 **Verify**
 
-```powershell
+```bash
 python -m pytest tests/test_tools.py tests/test_tool_gaps.py tests/test_phase1_scope.py tests/test_toolgen_validate.py tests/test_toolgen_generate.py -q
-# Live Ornith (optional): $env:VF_LIVE=1; pytest tests/test_live_toolgen.py -v -s
+# Live Ornith (optional): VF_LIVE=1 pytest tests/test_live_toolgen.py -v -s
 ```
 
 
@@ -138,8 +140,8 @@ python -m pytest tests/test_tools.py tests/test_tool_gaps.py tests/test_phase1_s
 
 After (or during) a campaign, mine transcripts for tools the model wanted but does not have:
 
-```powershell
-vf tool-gaps --run-dir runs\<target_id>\run-001
+```bash
+vf tool-gaps --run-dir runs/<target_id>/run-001
 # all runs:
 vf tool-gaps --runs-root runs --all
 ```

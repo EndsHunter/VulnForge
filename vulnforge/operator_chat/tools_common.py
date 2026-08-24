@@ -1080,9 +1080,9 @@ def explain_product_impl(_args: dict) -> dict[str, Any]:
     return {
         "ok": True,
         "text": (
-            "VulnForge loop: init → recon → hunt → validate_mech → human review → project projection. "
-            "Modes: Mission (overview/arch), Coverage (residual matrix), Explorer (enqueue hunts), "
-            "Report (findings), Evidence, Tasks. "
+            "VulnForge loop: init → recon → hunt → validate_mech → validate_llm (default on) → human review → project projection. "
+            "Modes: Mission (overview/arch), Hunts (plan + residual matrix), Explorer (enqueue hunts), "
+            "Report (findings), Evidence, Tasks, AI. "
             "needs_human = mech gates passed; confirmed = human accepted; neither is exploit proof. "
             "Start Ralph from Mission bar or AI chat to drain the task queue."
         ),

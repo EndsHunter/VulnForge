@@ -72,7 +72,7 @@ flowchart TB
 | **`vf init`** | Create run dir, manifest, DB, enqueue first tasks |
 | **`vf run-once`** | Lease one task → stage → complete/fail; exit code |
 | **Ralph** | Loop `run-once` until idle / STOP / budget / config |
-| **Dashboard** | Operator cockpit: Mission, Coverage, Explorer, Report, Tasks, Dev |
+| **Dashboard** | Operator cockpit: Mission, Hunts, Explorer, Report, Evidence, Tasks, AI. Dev is Home `/dev` |
 | **inbox** | External candidate apply (`vf apply-candidate`) |
 
 ---
@@ -470,7 +470,7 @@ flowchart TD
 1. LLM `hunt_focus` from architecture (class × area/path hints).
 2. **Active hunt profiles** fallback (`active_fallback`).
 3. Balanced product over areas × classes, **sink-aware class routing**.
-4. Operator Coverage / Explorer / `request_hunt` mid-campaign.
+4. Operator Hunts / Explorer / `request_hunt` mid-campaign.
 
 ---
 
@@ -669,6 +669,7 @@ flowchart LR
 | `find_symbol` | ✅ | ✅ | ✅ |
 | `query_sinks` | ✅ | ✅ | — |
 | `query_codemap` | ✅ | ✅ | — |
+| `query_flows` | ✅ | ✅ | — |
 | `get_architecture` | — | ✅ | — |
 | `note` | ✅ | ✅ | ✅ |
 | `submit_architecture` | ✅ | — | — |
@@ -685,7 +686,7 @@ flowchart LR
 - `config/default_tools.json` may narrow stage tools; hunt always keeps submit tools.
 - Hunt profiles may set optional **Approved tools** allowlist.
 
-**Toolgen path** (Dev dashboard / offline): gap → draft → generate → `validate_tool` → integrate into `tools/`, `packet.py`, profile allowlist — see [`toolgen.md`](../toolgen.md).
+**Toolgen path** (Dev dashboard / offline): gap → draft → generate → `validate_tool` → integrate into `vulnforge/tools/agent/<name>.py` (SPEC auto-discovery). See [`toolgen.md`](../toolgen.md).
 
 ---
 
@@ -698,17 +699,18 @@ flowchart TD
   F["finding candidate"]
   C1["check_schema\ncandidate shape"]
   C2["check_citations_resolve\npaths under target + line bounds"]
-  C3["check_evidence_pack\npack exists / min bytes / no_poc hatch"]
-  C4["check_target_unmodified\nhash vs target_manifest"]
-  C5["check_non_vacuous\nthreat_model quality"]
-  C6["check_severity_claim\nenum if present"]
+  C3["check_citation_content\ncited span matches claim"]
+  C4["check_evidence_pack\npack exists / min bytes / no_poc hatch"]
+  C5["check_target_unmodified\nhash vs target_manifest"]
+  C6["check_non_vacuous\nthreat_model quality"]
+  C7["check_severity_claim\nenum if present"]
   Pass["state = needs_human\nvalidation_mech.passed"]
   Fail["state = rejected_mech\nvalidation_reasons[]"]
   Opt{"stages.validate_llm?"}
 
-  F --> C1 --> C2 --> C3 --> C4 --> C5 --> C6
-  C1 & C2 & C3 & C4 & C5 & C6 -->|any fail| Fail
-  C6 -->|all pass| Pass
+  F --> C1 --> C2 --> C3 --> C4 --> C5 --> C6 --> C7
+  C1 & C2 & C3 & C4 & C5 & C6 & C7 -->|any fail| Fail
+  C7 -->|all pass| Pass
   Pass --> Opt
   Opt -->|yes| Enq["enqueue validate_llm"]
   Opt -->|no| Stop["await human"]
@@ -795,7 +797,7 @@ flowchart TB
     RalphCtl["Start/Stop Ralph"]
   end
 
-  subgraph coverage["Coverage"]
+  subgraph coverage["Hunts"]
     Matrix["area × class matrix"]
     ReQ["Re-queue residual cells\nshallow/aborted/none"]
   end
@@ -834,7 +836,7 @@ flowchart TB
 | Mode | Purpose |
 |------|---------|
 | **Mission** | Campaign overview, architecture, Ralph control |
-| **Coverage** | Residual-risk matrix; re-queue cells with notes |
+| **Hunts** | Residual-risk matrix; re-queue cells with notes |
 | **Explorer** | Code browse; selection hunts (`POST …/hunts/from-selection`) |
 | **Report** | Findings + human gates + PoC workshop |
 | **Evidence** | On-disk packs |
@@ -848,11 +850,13 @@ flowchart TB
 
 ```text
 vulnforge/
-  cli.py                 # vf entry: init, run-once, project, tool-gaps, dashboard
+  cli.py                 # vf entry: init, run-once, project, tool-gaps, dashboard, PoC handoff
   db.py                  # SQLite + RunLock + lease/coverage/architecture API
-  llm.py                 # HTTP clients + FakeLLM + run_tool_loop
-  packet.py              # Packet builder + tool_schemas_for per stage
-  control/ops.py         # Coverage requeue, cell detail, selection hunt, browse
+  llm.py                 # HTTP clients + FakeLLM (FakeLLM tool loop only)
+  agent_runtime/         # Strands production tool loop
+  operator_chat/         # Home + run AI co-pilot (Confirm for mutators)
+  packet.py              # Packet builder; schemas projected from tool SPECs
+  control/ops.py         # Hunts requeue, cell detail, selection hunt, browse
   stages/
     recon.py             # Multi recon-agent map + hunt planner + merge
     hunt.py              # Area×class tool-loop + shallow/split + candidate prep

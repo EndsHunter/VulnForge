@@ -50,7 +50,7 @@ Primary surface for VulnForge: **LM Studio** (or compatible) OpenAI chat API on 
 
 **Toolgen vs recon/hunt:** generate stages are **text JSON only** (no `tool_calls`). A green toolgen smoke does **not** prove recon/hunt tool-use works — use Settings Optimize’s tool probe for that.
 
-**Alternate mlx server** (`./start_ornith_server.sh`, often `:8080`): tuned for Grok CLI. If you point VulnForge at it, raise server `ORNITH_MAX_TOKENS` well above 512 and set Settings host/port/model to match. Default 512-token server caps will truncate toolgen JSON even when the client requests 8192.
+**Alternate mlx servers** (often `:8080`, used by Grok CLI) are not shipped in this repo. If you point VulnForge at one, raise the server token cap well above 512 and set Settings host/port/model to match. A 512-token server cap truncates toolgen JSON even when the client requests 8192.
 
 **AI fix** is **single-shot per click** in the Dev wizard — re-run validate / AI fix until hard checks pass. Do not weaken safety to pass.
 

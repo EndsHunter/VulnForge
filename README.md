@@ -2,7 +2,7 @@
 
 Local, model-agnostic vulnerability discovery harness for LM Studio (or any OpenAI-compatible endpoint) and coding agents.
 
-It runs a durable audit loop: **recon → hunt → mechanical validation → human review**, with a research-cockpit dashboard for steering live campaigns. LLM tool-use stages use the **[Strands Agents](https://strandsagents.com/)** runtime by default.
+It runs a durable audit loop: **recon → hunt → mechanical validation → LLM disprove (on by default) → human review**, with a research-cockpit dashboard for steering live campaigns. LLM tool-use stages use the **[Strands Agents](https://strandsagents.com/)** runtime.
 
 | Label | Meaning |
 |-------|---------|
@@ -74,7 +74,7 @@ vf --help
 3. Dashboard **Settings → Optimize AI settings → Save** writes `config/ui_settings.json` (host/model/max_tokens) and overrides YAML. Optimize reads the model card and empirically tests prompt capacity.
 4. Env overrides: `VF_BASE_URL`, `VF_MODEL`, `VF_HOST`+`VF_PORT`, `VF_RECON_ORCHESTRATOR`.
 
-**Ornith notes:** Toolgen (Dev → Generate tool) is JSON text generation. Recon/hunt need reliable **tool_calls** — Optimize’s tool probe warns if the model ignores tools. The optional `./start_ornith_server.sh` mlx stack defaults to another host/port and a low server token cap; prefer LM Studio for VulnForge unless you reconfigure both sides (see `toolgen.md` → Local Ornith).
+**Ornith notes:** Toolgen (Dev → Generate tool) is JSON text generation. Recon/hunt need reliable **tool_calls**. Optimize’s tool probe warns if the model ignores tools. Prefer LM Studio on `:1234` for VulnForge. Alternate mlx servers often cap tokens too low for toolgen JSON. See `toolgen.md`.
 
 ### Smoke test (no long campaign)
 
@@ -125,7 +125,7 @@ vf dashboard
 | Drive queue | Dashboard **Start**, or `python scripts/ralph.py --run-dir DIR` |
 | One task only | `vf run-once --run-dir DIR` |
 | Status | `vf status --run-dir DIR` or Mission overview |
-| Steer | Explorer (enqueue hunts), Coverage (residual cells), Report (accept/reject) |
+| Steer | Explorer (enqueue hunts), Hunts (residual cells), Report (accept/reject) |
 | Dev tools | Home → **Dev** — hunt skills + recon agents; generate custom skills |
 | Tool gaps | `vf tool-gaps --run-dir DIR` or Home **Tool gaps** |
 | Regenerate docs | `vf project --run-dir DIR` |
@@ -141,6 +141,8 @@ vf dashboard
 | `vf apply-candidate --file …` | Apply inbox candidate JSON |
 | `vf tool-gaps --run-dir DIR` | Mine transcripts for tool gaps |
 | `vf dashboard` | Research cockpit (`--host` / `--port` optional) |
+| `vf export-validation-job --finding-id N` | Zip a finding + evidence for handoff |
+| `vf validate-poc --finding-id N [--execute]` | Enqueue or run the PoC harness |
 | `vf delete-run --run-dir DIR` | Permanently delete a run |
 | `python scripts/ralph.py --run-dir DIR` | Outer loop until idle / STOP / budget |
 
@@ -158,10 +160,13 @@ vf dashboard --host 127.0.0.1 --port 8787
 |---------|---------|
 | **Home** | All runs, progress, LLM token rollups |
 | **Mission** | Overview, architecture, operator recon re-run, usage by stage |
-| **Coverage** | Residual matrix; re-queue cells |
+| **Hunts** | Plan area×skill batches and the residual-risk matrix; re-queue cells |
 | **Explorer** | Browse target; enqueue class×path hunts |
 | **Report** | Findings review (accept / reject / develop PoC) |
-| **Dev** | Hunt skills, recon agents, generate custom hunt skills |
+| **Evidence** | On-disk evidence packs |
+| **Tasks** | Queue, transcripts, event timeline |
+| **AI** | Run-bound co-pilot (mutating tools need Confirm) |
+| **Dev** | Hunt skills, recon agents, generate custom hunt skills (Home → `/dev`) |
 
 Token usage (when the model returns `usage`, or estimated) appears on Home and Mission overview.
 
@@ -172,7 +177,7 @@ Token usage (when the model returns `usage`, or estimated) appears on Home and M
 | Problem | Fix |
 |---------|-----|
 | `vf: command not found` | Activate `.venv` and `pip install -e .` from repo root |
-| Dashboard import errors | `pip install -e ".[dev]"` (needs fastapi, uvicorn, jinja2) |
+| Dashboard import errors | Reinstall from repo root: `pip install -e .` (FastAPI is a core dependency). `.[dev]` adds pytest only. |
 | Recon/hunt fail with transport | Start LM Studio; check `config/default.yaml` `base_url` / `model` |
 | Empty / truncated answers | Raise `llm.max_tokens` (reasoning models need headroom) |
 | Wrong prompts path | Run from repo root; ensure `seeds/system/` exists beside `vulnforge/` |
@@ -182,6 +187,7 @@ Token usage (when the model returns `usage`, or estimated) appears on Home and M
 
 ## Docs
 
+- [`docs/README.md`](docs/README.md) — which file to open  
 - [`PROTOCOL.md`](PROTOCOL.md) — authority model, labels, apply-candidate contract  
 - [`AGENTS.md`](AGENTS.md) — extending tools, profiles, and the cockpit  
 - [`docs/LAYOUT.md`](docs/LAYOUT.md) — where is X? (seeds, tools, config)  

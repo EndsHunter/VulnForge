@@ -5,7 +5,7 @@
 | | |
 |--|--|
 | **What** | Short shared prefix: authorized defensive review, read-only target, use only provided tools, prefer real paths/symbols. |
-| **Loaded by** | `packet.py` when packing recon agents, hunt (via pack helpers), disprove, develop_poc. |
+| **Loaded by** | `packet.py` when packing recon agents, disprove, develop_poc, and PoC referee. Hunt packets do not include this file. They use `PRINCIPLES.md` as the system prompt. |
 | **Impact of changing package seed** | Affects **all** LLM stages that include the preamble: stricter/looser ground rules, tool discipline language. Changes prompt pin on new inits. |
 | **Override** | `config/prompts/overrides/preamble.md` |
 | **Do not break** | Read-only target; no inventing paths; no unrestricted shell language that contradicts jail. |

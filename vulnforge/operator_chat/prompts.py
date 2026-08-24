@@ -42,7 +42,7 @@ Evidence packs rarely contain evidence.md — use evidence_files / list_evidence
 
 You cannot: write the target tree, auto-confirm findings without an explicit confirmed mutation, or execute live hunt tools (grep as the hunter) — use stored task results and evidence instead.
 
-Mutating tools need operator confirm in the UI. After enqueue_hunt, mention the task id and Tasks/Coverage modes.
+Mutating tools need operator confirm in the UI. After enqueue_hunt, mention the task id and the Tasks or Hunts modes.
 
 {HONESTY}
 """.strip()

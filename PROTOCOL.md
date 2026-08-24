@@ -31,6 +31,8 @@ vf project [--run-dir PATH]
 vf apply-candidate --file inbox/x.json [--run-dir PATH]
 vf tool-gaps [--run-dir PATH | --runs-root PATH --all]
 vf dashboard [--host HOST] [--port PORT]
+vf export-validation-job --finding-id N [--run-dir PATH]
+vf validate-poc --finding-id N [--run-dir PATH] [--execute]
 vf delete-run --run-dir PATH --yes
 ```
 
@@ -112,11 +114,12 @@ init → recon → hunt × N → validate_mech → validate_llm (default on; set
 **Operator-only task kinds** (not the default auto loop):
 
 - **`develop_poc`** — human-queued from Report → Develop POC; writes runnable PoC scripts under `evidence/<pack>/` plus hub `poc_develop.md`. Never sets `confirmed`.
+- **`validate_poc`** — controlled harness run of a pack (`vf validate-poc --execute` or Report **Run in harness**). Writes `poc_run.json`. Never sets `confirmed`.
 - **`tool_gaps`** — mine transcripts for missing tool signals; also via `vf tool-gaps`.
 
 ## Tools (`code_static`)
 
-Schemas live in `vulnforge/packet.py` → `tool_schemas_for` (OpenAI function tools; Dev dashboard **Tools** tab mirrors them).
+Schemas live on tool `SPEC` objects under `vulnforge/tools/agent/`. `packet.tool_schemas_for` projects them for a stage. Dev dashboard **Tools** tab mirrors the same registry.
 
 | Tool | Stages | Role |
 |------|--------|------|
@@ -124,11 +127,20 @@ Schemas live in `vulnforge/packet.py` → `tool_schemas_for` (OpenAI function to
 | `file_inventory` | recon, hunt, develop_poc | Recursive tree/list; prefer over many `list_dir` |
 | `read_file` | recon, hunt, develop_poc | File or 1-based line range; target is read-only |
 | `grep` | recon, hunt, develop_poc | Content regex; `extension`/`glob`/`files_only`/`match_path` |
+| `find_symbol` | recon, hunt, develop_poc | Name lookup in the mechanical codemap / heuristic extract |
+| `query_sinks` | recon, hunt | Preindexed sink hits (not taint) |
+| `query_codemap` | recon, hunt | Area slice of `runs.codemap_json` |
+| `query_flows` | recon, hunt | Coarse import/call reachability (not taint) |
+| `get_architecture` | hunt | Current architecture map (not the mechanical codemap) |
 | `note` | recon, hunt, develop_poc | wishlist / sibling_seed / codemap (does not finish task). Mechanical codemap is built at recon (`runs.codemap_json`); `note(kind=codemap)` only annotates high-value paths |
 | `submit_architecture` | recon only | Finish recon architecture map (not findings; separate from mechanical codemap) |
 | `submit_candidate` / `submit_none` | hunt only | Finish hunt (candidate is not confirmed) |
+| `preflight_candidate` | hunt | Dry-run mech-shaped checks before submit |
 | `write_evidence` | hunt, develop_poc | Write under `evidence/` only |
+| `list_evidence` / `read_evidence` | hunt, develop_poc | Inspect the current evidence pack |
 | `list_hunt_profiles` / `request_hunt` | hunt | Spawn another profile hunt (does not finish this task) |
+| `continue_hunt` | hunt | Hand off remaining work to a child hunt (fresh context) |
+| `continue_recon` | recon | Hand off remaining recon work to a child recon |
 
 - **Paths** are always relative to the audit target root (or evidence pack for `write_evidence`). No shell, no target writes on `code_static`.
 - **grep** — empty pattern + `extension`/`glob` lists files by path; prefer `file_inventory` for trees. On 0 hits, follow the response hint — do not repeat the same empty query.

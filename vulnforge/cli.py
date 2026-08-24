@@ -162,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help=(
             "Do not auto-queue hunt tasks after recon (architecture-only). "
-            "Enqueue later from Coverage / Explorer. "
+            "Enqueue later from Hunts / Explorer. "
             "For file_by_file, create the run with zero hunt tasks."
         ),
     )

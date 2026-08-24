@@ -11,7 +11,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Context-window continuation (`continue_hunt` / `continue_recon`) | `vulnforge/tools/continue_task.py` + `agent_runtime/context_watch.py` |
 | Tool registry / dispatch / schemas | `vulnforge/tools/base.py`, `registry.py`, `dispatch.py` |
 | Shared FS/grep backends (not one-tool-one-file) | `vulnforge/tools/fs_read.py`, `grep_index.py`, `evidence_write.py`, … |
-| Extra tools (toolgen integrate) | `vulnforge/tools/extra_registry.py` + optional `tools/extra/` |
+| Extra tools (legacy integrate) | `vulnforge/tools/extra_registry.py` (`EXTRA_TOOL_SPECS`; prefer `tools/agent/` SPECs) |
 | Stage / task kind | `vulnforge/stages/<kind>.py` — behavior + modify guides: [`docs/harness/`](harness/) |
 | PoC handoff / harness | `vulnforge/poc_handoff.py`, `poc_runner.py`, stage `validate_poc` |
 | System prompt catalog (impact of edits) | [`docs/system/`](system/) |
@@ -31,7 +31,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Dashboard routes / static | `vulnforge/ui/` |
 | Hunt profile store / reseed | `vulnforge/hunt_profiles/` |
 | Mechanical codemap (not architecture) | `vulnforge/tools/codemap.py` → `runs.codemap_json` (v2: modules + files + symbols; hunts get area slice) |
-| Sink residual coverage (per path:line:kind) | `db.sink_coverage_facts` + `tools/sink_preindex.record_sink_coverage`; Coverage cell detail |
+| Sink residual coverage (per path:line:kind) | `db.sink_coverage_facts` + `tools/sink_preindex.record_sink_coverage`; Hunts cell detail |
 | Coarse reachability (`query_flows`) | `tools/flows.py` + `tools/agent/query_flows.py` — import BFS + call heuristic (**not** taint) |
 | Fixture recall oracles (L0 CI) | `fixtures/ground_truth/*.json` + `vulnforge/eval/recall.py` + `tests/test_fixture_recall_mechanical.py` |
 | Function-level symbol extract | `vulnforge/tools/symbols/` (heuristic always; tree-sitter via optional `vulnforge[codemap]`) |
@@ -108,7 +108,7 @@ seeds/
   recon_agents/*.md   # reseed → config/recon_agents
 ```
 
-Legacy `prompts/` holds only a redirect README. Runtime seeds load exclusively from `seeds/`.
+Runtime seeds load exclusively from `seeds/`. There is no `prompts/` tree.
 
 ## Dead / out-of-scope paths
 

@@ -6,7 +6,7 @@ Used by the Dev **Tools** draft pipeline (`vulnforge/toolgen/`), not by the camp
 |-----------|------|
 | `toolgen_spec.md` | Specify a new/extended agent tool |
 | `toolgen_impl.md` | Implementation authoring guidance |
-| `toolgen_test.md` | Test generation guidance |
+| `toolgen_fix.md` | Repair a draft after validation failures |
 | `toolgen_validation.md` | Validation rules / safety checks (with `toolgen.md`) |
 
 | | |

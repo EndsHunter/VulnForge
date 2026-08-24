@@ -18,7 +18,7 @@
 | Surface | Action |
 |---------|--------|
 | Explorer | Select file/lines, pick class, enqueue hunt |
-| Coverage | Re-queue residual cells (shallow/aborted/none); cell detail lists **sink residual** (preindex path:line:kind) with re-queue focus |
+| Hunts | Re-queue residual cells (shallow/aborted/none); cell detail lists **sink residual** (preindex path:line:kind) with re-queue focus |
 | Report | Review findings; Develop POC workshop |
 | AI chat | Enqueue/requeue hunts (Confirm for mutators) |
 | Tasks | Queue / transcripts |
@@ -31,7 +31,7 @@
 
 - **Runtime authority:** `config/hunt_profiles/` (Dev collection).
 - **Package seeds:** `seeds/hunt_classes/` (Reseed only).
-- Active ids drive recon `active_fallback`, Coverage “all”, file-by-file planning.
+- Active ids drive recon `active_fallback`, Hunts “all”, and file-by-file planning.
 
 ## Priority
 
@@ -39,7 +39,7 @@ Typical operator/residual hunts: **35–50**. Recon at 1–8 always leases first
 
 ## Prompts
 
-- `PRINCIPLES.md`, `preamble.md`, `hunting_angles.md` — [docs/system/](../../system/)
+- `PRINCIPLES.md`, `hunting_angles.md` — [docs/system/](../../system/)
 - Per-class body — hunt profile markdown (not under `seeds/system/`)
 
 ## Honesty

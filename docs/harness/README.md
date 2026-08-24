@@ -15,7 +15,7 @@ Ralph (`scripts/ralph.py` / `vf run-once`) leases one task, runs the stage handl
 | **Validate (mech)** | `validate_mech` | No | [validate/](validate/) |
 | **Validate (LLM)** | `validate_llm` | Yes (default; opt out via config) | [validate/](validate/) |
 
-Related (not covered here as full folders): `develop_poc`, `generate_skill`, `tool_gaps`, `render`. Near-dup merge is `stages/dedup.py` (not a leased kind).
+Related (not covered here as full folders): `develop_poc`, `validate_poc`, `generate_skill`, `tool_gaps`, `render`. Near-dup merge is `stages/dedup.py` (not a leased kind).
 
 **Quality upgrades (additive):** sink residual coverage, citation content mech gate, safer PoC defaults (`docker` + `network: none`), `query_flows` reachability tool, L0 fixture recall (`fixtures/ground_truth/`, `scripts/eval_recall.py`).
 

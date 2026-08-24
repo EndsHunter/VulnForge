@@ -33,22 +33,20 @@ Runs after mech pass when **`stages.validate_llm`** is true (**default on** in `
 
 Verifier list can be customized via `llm.disprove_verifiers` (id + prompt basename). Missing perspective files degrade to shared contract only.
 
+Defaults live in `config/default.yaml`. The current shipped values:
+
 ```yaml
 stages:
-  validate_llm: true    # default; set false to skip dual disprove (speed/debug)
-  validate_poc_referee: false  # optional LLM judge after validate_poc run
-llm:
-  temperature_disprove: 0.1
-  disprove_verifiers:
-    - id: threat_model
-      prompt: disprove_threat.md
-    - id: code_mitigation
-      prompt: disprove_code.md
+  validate_llm: true
+  validate_poc_referee: true
 poc_harness:
   enabled: true
-  runner: local_subprocess  # or docker
+  runner: docker          # or local_subprocess if Docker is unavailable
   timeout_s: 60
+  network: none
 ```
+
+`llm.disprove_verifiers` can list `{id, prompt}` pairs. Missing perspective files fall back to the shared `disprove.md` contract only.
 
 **When to disable validate_llm:** campaign speed, debugging hunt output without LLM filter, or same-model disprove is pure noise. Still never auto-confirms when on.
 

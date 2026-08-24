@@ -34,7 +34,7 @@ Loader: `vulnforge.packet.load_prompt_slice` prefers override for top-level base
 | `tool_gaps.md` | [TOOL_GAPS.md](TOOL_GAPS.md) | tool_gaps hybrid LLM | tool gap analysis |
 | `toolgen_spec.md` | [TOOLGEN.md](TOOLGEN.md) | toolgen pipeline | Dev Tools |
 | `toolgen_impl.md` | [TOOLGEN.md](TOOLGEN.md) | toolgen pipeline | Dev Tools |
-| `toolgen_test.md` | [TOOLGEN.md](TOOLGEN.md) | toolgen pipeline | Dev Tools |
+| `toolgen_fix.md` | [TOOLGEN.md](TOOLGEN.md) | toolgen pipeline | Dev Tools |
 | `toolgen_validation.md` | [TOOLGEN.md](TOOLGEN.md) | toolgen pipeline | Dev Tools |
 
 ## Related harness docs

@@ -1,3 +1,6 @@
+# Local decision trails
+.audit/
+
 # Python
 .venv/
 venv/
