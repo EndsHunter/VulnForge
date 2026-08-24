@@ -6,9 +6,10 @@ Frozen ruler:
   python scripts/eval_hunt_profiles.py --live --label baseline
   python scripts/eval_hunt_profiles.py --dashboard
 
-Metric is recall vs fixtures/profile_eval/ground_truth.json.
+Metric is recall vs fixtures/profile_eval/ground_truth.json (21 classes).
 Any finding body that matches an oracle counts as a hit, regardless of state.
 Extras are recorded and do not fail the run.
+Endpoint is pinned to 10.0.0.232:8000 ornith-ai-ornith-1.5-35b-a3b-mtplx.
 """
 
 from __future__ import annotations
@@ -31,12 +32,15 @@ from vulnforge.paths import PROJECT_ROOT
 
 GT_PATH = PROJECT_ROOT / "fixtures" / "profile_eval" / "ground_truth.json"
 TREE = PROJECT_ROOT / "fixtures" / "profile_eval" / "tree"
-AUDIT = PROJECT_ROOT / ".audit" / "hunt-profile-hillclimb"
+AUDIT = PROJECT_ROOT / ".audit" / "hunt-profile-21"
 RESULTS_DIR = AUDIT / "results"
 DASHBOARD = AUDIT / "index.html"
 EVAL_RUNS = AUDIT / "eval_runs"
 VF = PROJECT_ROOT / ".venv" / "bin" / "python"
 RALPH = PROJECT_ROOT / "scripts" / "ralph.py"
+MODEL_HOST = "10.0.0.232"
+MODEL_PORT = "8000"
+MODEL_ID = "ornith-ai-ornith-1.5-35b-a3b-mtplx"
 
 
 def utc_now() -> str:
@@ -80,35 +84,58 @@ def sensitivity() -> dict[str, Any]:
     }
 
 
+def _eval_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(PROJECT_ROOT)
+    env["VF_VALIDATE_LLM"] = "0"
+    env["VF_HOST"] = MODEL_HOST
+    env["VF_PORT"] = MODEL_PORT
+    env["VF_MODEL"] = MODEL_ID
+    if extra:
+        env.update(extra)
+    return env
+
+
 def _write_overlay_yaml(path: Path) -> None:
     src = PROJECT_ROOT / "config" / "default.yaml"
     text = src.read_text(encoding="utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Keep default.yaml intact; append eval-only overrides that YAML merge
-    # cannot do, so we rewrite stages.validate_llm in a sidecar full copy.
     lines = []
     in_stages = False
+    in_llm = False
     for line in text.splitlines(True):
         if line.startswith("stages:"):
             in_stages = True
+            in_llm = False
+            lines.append(line)
+            continue
+        if line.startswith("llm:"):
+            in_llm = True
+            in_stages = False
             lines.append(line)
             continue
         if in_stages and line.startswith("  validate_llm:"):
             lines.append("  validate_llm: false\n")
             in_stages = False
             continue
-        if in_stages and line and not line.startswith(" ") and not line.startswith("\t"):
+        if in_llm and line.startswith("  base_url:"):
+            lines.append(f'  base_url: "http://{MODEL_HOST}:{MODEL_PORT}/v1"\n')
+            continue
+        if in_llm and line.startswith("  model:"):
+            lines.append(f'  model: "{MODEL_ID}"\n')
+            continue
+        if in_llm and line.startswith("  timeout_seconds:"):
+            lines.append("  timeout_seconds: 600\n")
+            continue
+        if (in_stages or in_llm) and line and not line.startswith(" ") and not line.startswith("\t"):
             in_stages = False
+            in_llm = False
         lines.append(line)
     path.write_text("".join(lines), encoding="utf-8")
 
 
 def _vf(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(PROJECT_ROOT)
-    env.setdefault("VF_VALIDATE_LLM", "0")
-    if extra_env:
-        env.update(extra_env)
+    env = _eval_env(extra_env)
     exe = str(VF if VF.is_file() else sys.executable)
     cmd = [exe, "-m", "vulnforge.cli", *args]
     return subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env, capture_output=True, text=True)
@@ -125,12 +152,22 @@ def _find_run_dir(runs_root: Path, after_ts: float) -> Path:
     raise FileNotFoundError(f"no run under {runs_root}")
 
 
-def run_live(label: str, task_timeout: int, max_tasks: int | None) -> dict[str, Any]:
+def run_live(
+    label: str,
+    task_timeout: int,
+    max_tasks: int | None,
+    only: list[str] | None = None,
+) -> dict[str, Any]:
     from vulnforge.control.ops import hunt_from_selection
     from vulnforge.db import Database
 
     gt = load_catalog()
     oracles = list(gt.get("findings") or [])
+    if only:
+        want = {x.strip() for x in only if x.strip()}
+        oracles = [o for o in oracles if str(o.get("id")) in want]
+        if not oracles:
+            raise ValueError(f"no oracles matched --only {sorted(want)}")
     if not TREE.is_dir():
         raise FileNotFoundError(TREE)
 
@@ -173,9 +210,7 @@ def run_live(label: str, task_timeout: int, max_tasks: int | None) -> dict[str, 
 
     n = len(oracles)
     budget = max_tasks if max_tasks is not None else n * 3
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(PROJECT_ROOT)
-    env.setdefault("VF_VALIDATE_LLM", "0")
+    env = _eval_env()
     exe = str(VF if VF.is_file() else sys.executable)
     ralph = subprocess.run(
         [
@@ -252,6 +287,9 @@ def run_live(label: str, task_timeout: int, max_tasks: int | None) -> dict[str, 
         ],
         "task_timeout": task_timeout,
         "max_tasks": budget,
+        "model": MODEL_ID,
+        "endpoint": f"http://{MODEL_HOST}:{MODEL_PORT}/v1",
+        "only": only or [],
     }
     out = RESULTS_DIR / f"{utc_now().replace(':', '')}_{label}.json"
     out.write_text(json.dumps(result, indent=2), encoding="utf-8")
@@ -289,14 +327,19 @@ def write_dashboard() -> Path:
         if isinstance(r.get("recall"), (int, float))
     ]
     latest = history[-1] if history else {}
-    html = _dashboard_html(points, latest)
+    html = _dashboard_html(points, latest, history)
     DASHBOARD.write_text(html, encoding="utf-8")
     return DASHBOARD
 
 
-def _dashboard_html(points: list[dict[str, Any]], latest: dict[str, Any]) -> str:
+def _dashboard_html(
+    points: list[dict[str, Any]],
+    latest: dict[str, Any],
+    history: list[dict[str, Any]] | None = None,
+) -> str:
     data = json.dumps(points)
     latest_json = json.dumps(latest, indent=2)
+    by_class = json.dumps(latest.get("by_class") or {})
     recall_pct = f"{100 * float(latest.get('recall') or 0):.0f}%" if latest else "—"
     baseline = next((p for p in points if p.get("label") == "baseline"), points[0] if points else None)
     base_pct = f"{100 * float(baseline['recall']):.0f}%" if baseline else "—"
@@ -313,6 +356,7 @@ def _dashboard_html(points: list[dict[str, Any]], latest: dict[str, Any]) -> str
   .card {{ background: #1b1b1b; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; min-width: 160px; }}
   .num {{ font-size: 32px; font-weight: 650; }}
   canvas {{ width: 100%; max-width: 920px; height: 280px; background: #181818; border-radius: 8px; }}
+  #bars {{ height: 360px; max-width: 920px; }}
   table {{ border-collapse: collapse; width: 100%; margin-top: 16px; }}
   th, td {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #333; }}
   .miss {{ color: var(--miss); }}
@@ -322,15 +366,17 @@ def _dashboard_html(points: list[dict[str, Any]], latest: dict[str, Any]) -> str
 </head>
 <body>
 <h1>Hunt profile recall</h1>
-<p>Live hunts on the frozen 8-file snippet set. Recall is oracle hits over oracles. Extras do not fail the metric.</p>
+<p>Live hunts on the frozen 21-class obfuscated snippet set. One hunt per listed weakness. Recall is oracle hits over oracles. Extras do not fail the metric. Matching is path-only.</p>
 <div class="row">
   <div class="card"><div>Latest recall</div><div class="num" id="latest">{recall_pct}</div></div>
   <div class="card"><div>Baseline</div><div class="num" id="base">{base_pct}</div></div>
   <div class="card"><div>Hits / oracles</div><div class="num" id="frac">{latest.get("hit_count", "—")}/{latest.get("oracle_count", "—")}</div></div>
   <div class="card"><div>Extras</div><div class="num">{latest.get("extras", "—")}</div></div>
 </div>
-<p>Target is 85% or better, and strictly above baseline. Model is ornith-ai-ornith-1.5-35b-a3b-mtplx at 10.0.0.232:8000.</p>
+<p>Stop when recall is strictly above baseline and at least 85 percent. Model is ornith-ai-ornith-1.5-35b-a3b-mtplx at 10.0.0.232:8000.</p>
 <canvas id="chart" width="920" height="280"></canvas>
+<h2>Per-class (latest run)</h2>
+<canvas id="bars" width="920" height="360"></canvas>
 <h2>Runs</h2>
 <table>
 <thead><tr><th>When</th><th>Label</th><th>Recall</th><th>Hits</th><th>Misses</th></tr></thead>
@@ -388,6 +434,30 @@ function draw() {{
   }}).join('');
   document.getElementById('misses').textContent = (latest.misses||[]).join('\\n') || 'none';
   document.getElementById('raw').textContent = JSON.stringify(latest, null, 2);
+  const byClass = {by_class};
+  const bc = document.getElementById('bars');
+  const bctx = bc.getContext('2d');
+  bctx.clearRect(0,0,bc.width,bc.height);
+  const keys = Object.keys(byClass);
+  if (keys.length) {{
+    const bw = (bc.width-80)/keys.length;
+    keys.forEach((k,i) => {{
+      const rec = byClass[k].recall || 0;
+      const hits = byClass[k].hits || 0;
+      const n = byClass[k].oracles || 0;
+      const h = rec*(bc.height-50);
+      const x = 50 + i*bw;
+      bctx.fillStyle = rec >= 1 ? '#6c6' : rec > 0 ? '#6cf' : '#f86';
+      bctx.fillRect(x+8, bc.height-30-h, Math.max(bw-16, 8), h);
+      bctx.fillStyle = '#9aa';
+      bctx.save();
+      bctx.translate(x+bw/2, bc.height-8);
+      bctx.rotate(-0.4);
+      bctx.fillText(k, -20, 0);
+      bctx.restore();
+      bctx.fillText(hits+'/'+n, x+8, bc.height-32-h);
+    }});
+  }}
 }}
 draw();
 </script>
@@ -404,6 +474,12 @@ def main() -> int:
     ap.add_argument("--label", default="run")
     ap.add_argument("--task-timeout", type=int, default=900)
     ap.add_argument("--max-tasks", type=int, default=None)
+    ap.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        help="Restrict live hunts to these oracle ids (diagnosis only; official metric uses all 21)",
+    )
     args = ap.parse_args()
     if args.sensitivity:
         s = sensitivity()
@@ -414,7 +490,7 @@ def main() -> int:
         print(p)
         return 0
     if args.live:
-        r = run_live(args.label, args.task_timeout, args.max_tasks)
+        r = run_live(args.label, args.task_timeout, args.max_tasks, only=args.only)
         print(
             f"{r['label']}: recall={r['recall']:.0%} "
             f"hits={r['hit_count']}/{r['oracle_count']} extras={r['extras']}"

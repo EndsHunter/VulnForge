@@ -1,70 +1,216 @@
 {
   "target": "fixtures/profile_eval/tree",
-  "description": "Frozen live hunt-profile recall set. One oracle per file. Matching is path plus optional symbol.",
+  "description": "Frozen live hunt-profile recall set. One oracle per listed weakness. Matching is path-only so stripped symbols still score.",
   "findings": [
     {
-      "id": "sql-search-users",
-      "class": "injection",
-      "sink_path": "sql_search.py",
-      "sink_symbol": "search_users",
-      "kinds": ["sql"],
-      "match": {"path_suffix": "sql_search.py", "symbol": "search_users"}
-    },
-    {
-      "id": "cmd-tainted-os-system",
-      "class": "injection",
-      "sink_path": "cmd_tainted.py",
-      "sink_symbol": "test_sources_7",
-      "kinds": ["exec"],
-      "match": {"path_suffix": "cmd_tainted.py", "symbol": "test_sources_7"}
-    },
-    {
-      "id": "ssti-jinja-home",
-      "class": "injection",
-      "sink_path": "ssti_jinja.py",
-      "sink_symbol": "home",
-      "kinds": ["template"],
-      "match": {"path_suffix": "ssti_jinja.py", "symbol": "home"}
-    },
-    {
-      "id": "sqli-blind-php",
-      "class": "injection",
-      "sink_path": "sqli_blind.php",
-      "sink_symbol": "",
-      "kinds": ["sql"],
-      "match": {"path_suffix": "sqli_blind.php"}
-    },
-    {
-      "id": "eval-rce-php",
-      "class": "injection",
-      "sink_path": "eval_rce.php",
-      "sink_symbol": "",
-      "kinds": ["exec"],
-      "match": {"path_suffix": "eval_rce.php"}
-    },
-    {
-      "id": "idor-secret-php",
-      "class": "access-control",
-      "sink_path": "idor_secret.php",
+      "id": "jwt",
+      "class": "web-protocol-auth",
+      "sink_path": "unit_01.py",
       "sink_symbol": "",
       "kinds": [],
-      "match": {"path_suffix": "idor_secret.php"}
+      "match": {
+        "path_suffix": "unit_01.py"
+      }
     },
     {
-      "id": "ssrf-download-url",
-      "class": "feature-abuse",
-      "sink_path": "ssrf_download.js",
-      "sink_symbol": "downloadURL",
-      "kinds": ["ssrf"],
-      "match": {"path_suffix": "ssrf_download.js", "symbol": "downloadURL"}
-    },
-    {
-      "id": "xss-greeting-js",
-      "class": "client-side",
-      "sink_path": "xss_greeting.js",
+      "id": "cmd",
+      "class": "injection",
+      "sink_path": "unit_02.php",
       "sink_symbol": "",
-      "kinds": ["template"],
-      "match": {"path_suffix": "xss_greeting.js"}
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_02.php"
+      }
+    },
+    {
+      "id": "crypto",
+      "class": "cryptography",
+      "sink_path": "unit_03.py",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_03.py"
+      }
+    },
+    {
+      "id": "upload",
+      "class": "feature-abuse",
+      "sink_path": "unit_04.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_04.php"
+      }
+    },
+    {
+      "id": "path",
+      "class": "injection",
+      "sink_path": "unit_05.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_05.php"
+      }
+    },
+    {
+      "id": "sql",
+      "class": "injection",
+      "sink_path": "unit_06.py",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_06.py"
+      }
+    },
+    {
+      "id": "sql-err",
+      "class": "injection",
+      "sink_path": "unit_07.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_07.php"
+      }
+    },
+    {
+      "id": "sql-union",
+      "class": "injection",
+      "sink_path": "unit_08.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_08.php"
+      }
+    },
+    {
+      "id": "sql-blind",
+      "class": "injection",
+      "sink_path": "unit_09.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_09.php"
+      }
+    },
+    {
+      "id": "xss",
+      "class": "client-side",
+      "sink_path": "unit_10.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_10.php"
+      }
+    },
+    {
+      "id": "xss-store",
+      "class": "client-side",
+      "sink_path": "unit_11.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_11.php"
+      }
+    },
+    {
+      "id": "xss-ref",
+      "class": "client-side",
+      "sink_path": "unit_12.js",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_12.js"
+      }
+    },
+    {
+      "id": "xxe",
+      "class": "injection",
+      "sink_path": "unit_13.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_13.php"
+      }
+    },
+    {
+      "id": "redir",
+      "class": "web-protocol-auth",
+      "sink_path": "unit_14.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_14.php"
+      }
+    },
+    {
+      "id": "redir-3xx",
+      "class": "web-protocol-auth",
+      "sink_path": "unit_15.js",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_15.js"
+      }
+    },
+    {
+      "id": "ssrf",
+      "class": "feature-abuse",
+      "sink_path": "unit_16.js",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_16.js"
+      }
+    },
+    {
+      "id": "idor",
+      "class": "access-control",
+      "sink_path": "unit_17.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_17.php"
+      }
+    },
+    {
+      "id": "frame",
+      "class": "client-side",
+      "sink_path": "unit_18.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_18.php"
+      }
+    },
+    {
+      "id": "ldap",
+      "class": "injection",
+      "sink_path": "unit_19.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_19.php"
+      }
+    },
+    {
+      "id": "auth",
+      "class": "access-control",
+      "sink_path": "unit_20.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_20.php"
+      }
+    },
+    {
+      "id": "reset",
+      "class": "web-protocol-auth",
+      "sink_path": "unit_21.py",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_21.py"
+      }
     }
   ]
 }
