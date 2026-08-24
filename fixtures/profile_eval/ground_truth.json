@@ -1,0 +1,70 @@
+{
+  "target": "fixtures/profile_eval/tree",
+  "description": "Frozen live hunt-profile recall set. One oracle per file. Matching is path plus optional symbol.",
+  "findings": [
+    {
+      "id": "sql-search-users",
+      "class": "injection",
+      "sink_path": "sql_search.py",
+      "sink_symbol": "search_users",
+      "kinds": ["sql"],
+      "match": {"path_suffix": "sql_search.py", "symbol": "search_users"}
+    },
+    {
+      "id": "cmd-tainted-os-system",
+      "class": "injection",
+      "sink_path": "cmd_tainted.py",
+      "sink_symbol": "test_sources_7",
+      "kinds": ["exec"],
+      "match": {"path_suffix": "cmd_tainted.py", "symbol": "test_sources_7"}
+    },
+    {
+      "id": "ssti-jinja-home",
+      "class": "injection",
+      "sink_path": "ssti_jinja.py",
+      "sink_symbol": "home",
+      "kinds": ["template"],
+      "match": {"path_suffix": "ssti_jinja.py", "symbol": "home"}
+    },
+    {
+      "id": "sqli-blind-php",
+      "class": "injection",
+      "sink_path": "sqli_blind.php",
+      "sink_symbol": "",
+      "kinds": ["sql"],
+      "match": {"path_suffix": "sqli_blind.php"}
+    },
+    {
+      "id": "eval-rce-php",
+      "class": "injection",
+      "sink_path": "eval_rce.php",
+      "sink_symbol": "",
+      "kinds": ["exec"],
+      "match": {"path_suffix": "eval_rce.php"}
+    },
+    {
+      "id": "idor-secret-php",
+      "class": "access-control",
+      "sink_path": "idor_secret.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {"path_suffix": "idor_secret.php"}
+    },
+    {
+      "id": "ssrf-download-url",
+      "class": "feature-abuse",
+      "sink_path": "ssrf_download.js",
+      "sink_symbol": "downloadURL",
+      "kinds": ["ssrf"],
+      "match": {"path_suffix": "ssrf_download.js", "symbol": "downloadURL"}
+    },
+    {
+      "id": "xss-greeting-js",
+      "class": "client-side",
+      "sink_path": "xss_greeting.js",
+      "sink_symbol": "",
+      "kinds": ["template"],
+      "match": {"path_suffix": "xss_greeting.js"}
+    }
+  ]
+}
