@@ -78,8 +78,8 @@ description: >-
 1. **Inventory** — grep sinks (SQL/exec/template/path/deserialize); list files:lines
 2. **Trace** — for each sink, walk callers to an untrusted boundary; note transforms
 3. **Prove** — confirm missing parameterized API / wrong encoding context on that path
-4. **Evidence** — one concrete attacker action + expected interpreter effect; `write_evidence`
-5. **Submit or none** — `submit_candidate` with `weakness_class: injection`, or honest `submit_none`
+4. **Evidence** — cite the interpreter/FS effect line (`open(`, `exec`, `Popen`, `NewStdio*`, `fwrite`), not only `join` / `Command =` builders. `write_evidence`
+5. **Submit or none** — `submit_candidate` with `weakness_class: injection`, or honest `submit_none`. Do not `continue_hunt` off a proven sink on `path_hints`.
 
 ## Stack cues
 
@@ -96,8 +96,8 @@ pickle\.loads|yaml\.load\(|unserialize|ObjectInputStream|readObject
 
 ## Required evidence
 
-- Source **and** sink citations (path:line or path+symbol)
-- Missing control named (no bind, shell=True, raw concat, wrong context)
+- Source **and** sink citations with `start_line` on the effect (`open`/`exec`/`system`/`Popen`/`NewStdio*`), not only path `join` or a command-string assignment
+- Missing control named (no bind, shell=True, raw concat, wrong context, no canonicalize-before-open)
 - Payload narrative: input → interpreter effect → impact
 - `write_evidence` before `submit_candidate`
 
@@ -124,5 +124,6 @@ pickle\.loads|yaml\.load\(|unserialize|ObjectInputStream|readObject
 - `write_evidence` first: source → sink, missing control, sample payload narrative, impact
 - `weakness_class: injection`
 - **Good:** *“Unauth POST /search builds SQL via f-string at `db.py:88` from `q`; returns other users’ rows.”*
-- **Bad:** *“Uses SQL somewhere; could be injectable.”*
+- **Good:** *“`join(base, loc)` then `open(path, 'ab')` at `helper.py:202`; cite the open, not only the join.”*
+- **Bad:** *“Uses SQL somewhere; could be injectable.”* / *“Cited join, skipped the open two lines later.”*
 - Or honest `submit_none` after real sink inventory
