@@ -573,6 +573,27 @@ def _select_angles(angles_md: str, cls: str, max_angles: int = 4) -> str:
     return (intro + "\n\n" + body).strip() + "\n"
 
 
+def _known_finding_on_hints(row: str, hints: list[str]) -> bool:
+    """True if a `path|class|state|title` line is about one of path_hints."""
+    if not hints:
+        return True
+    path = (str(row).split("|", 1)[0] if row else "").replace("\\", "/").strip().lstrip("./")
+    if not path:
+        return False
+    names: set[str] = set()
+    for h in hints:
+        raw = str(h).replace("\\", "/").strip().lstrip("./")
+        if not raw:
+            continue
+        names.add(raw)
+        names.add(Path(raw).name)
+    return (
+        path in names
+        or Path(path).name in names
+        or any(path.endswith(n) or n.endswith(path) for n in names)
+    )
+
+
 def pack_hunt(
     cfg: dict,
     prompts_root: Path,
@@ -609,7 +630,10 @@ def pack_hunt(
     keys = known_keys[: int(pkt.get("max_known_keys", 20))]
     notes = codemap_notes[: int(pkt.get("max_codemap_entries", 12))]
     sinks = (seed_sinks or [])[: int(pkt.get("max_seed_sinks", 12))]
+    hints = [str(h) for h in (task_payload.get("path_hints") or []) if str(h).strip()]
     known_human = (known_findings or [])[: int(pkt.get("max_known_findings", 20))]
+    if hints:
+        known_human = [x for x in known_human if _known_finding_on_hints(x, hints)]
     force = bool(task_payload.get("force_depth"))
     angles_block = f"\n## Hunt angles (selected)\n{angles}\n" if angles else "\n"
     sinks_block = ""

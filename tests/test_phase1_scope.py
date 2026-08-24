@@ -628,6 +628,30 @@ def test_pack_hunt_slim_has_sinks_and_known(tmp_path: Path):
     )
     assert "Seed sinks" in pkt.user
     assert "Known findings" in pkt.user
+
+
+def test_pack_hunt_known_findings_filtered_to_path_hints(tmp_path: Path):
+    from vulnforge.paths import system_prompts_root
+
+    prompts = system_prompts_root()
+    cfg = {
+        "llm": {"context_tokens": 32768, "max_context_fraction": 0.25},
+        "packet": {"max_architecture_chars": 1800, "max_hunt_angles": 4},
+    }
+    pkt = pack_hunt(
+        cfg,
+        prompts,
+        {"area": "eval", "class": "web-protocol-auth", "path_hints": ["unit_15.js"]},
+        "{}",
+        [],
+        [],
+        known_findings=[
+            "unit_14.php|web-protocol-auth|needs_human|Open redirect go",
+            "unit_15.js|web-protocol-auth|needs_human|Open redirect u",
+        ],
+    )
+    assert "unit_15.js" in pkt.user
+    assert "unit_14.php" not in pkt.user
     assert "path_hints" in pkt.user
     # Should not dump a huge architecture section name only
     assert "Architecture (area slice)" in pkt.user
