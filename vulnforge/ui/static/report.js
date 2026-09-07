@@ -7,6 +7,8 @@
   let cache = [];
   let filter = "all";
   let openId = null;
+  /** Bumps on each context-pane render to ignore stale async fetches. */
+  let contextToken = 0;
   /** Finding id open in the Develop POC workshop modal (not a mode tab). */
   let pocFindingId = null;
   let pocChromeBound = false;
@@ -358,15 +360,14 @@
         (f) => Number(f.id) === Number(openId)
       );
       if (!stillVisible) {
-        openId = null;
-        const d = $("#report-detail");
-        if (d) {
-          d.hidden = true;
-          d.innerHTML = "";
-        }
+        clearFindingPanes();
       }
     }
     renderTable();
+    if (openId != null) {
+      const f = cache.find((x) => Number(x.id) === Number(openId));
+      if (f) showFindingDetail(f);
+    }
     updateSearchCount();
     updateSortHeaders();
   }
@@ -431,7 +432,221 @@
     });
   }
 
-  function preferredEvidenceRel(f) {
+
+  function emptyDetailHtml() {
+    return `<div class="report-pane-empty">Select a finding to review.</div>`;
+  }
+
+  function emptyContextHtml() {
+    return `<div class="report-pane-empty">Citation snippets and evidence pack preview appear here.</div>`;
+  }
+
+  function clearFindingPanes() {
+    openId = null;
+    contextToken += 1;
+    const d = $("#report-detail");
+    if (d) {
+      d.hidden = false;
+      d.innerHTML = emptyDetailHtml();
+    }
+    const c = $("#report-context");
+    if (c) c.innerHTML = emptyContextHtml();
+    const panes = $("#report-review-panes");
+    if (panes) panes.classList.remove("has-selection");
+  }
+
+  function showFindingDetail(f) {
+    const d = $("#report-detail");
+    if (!d || !f) return;
+    d.hidden = false;
+    d.innerHTML = detailHtml(f);
+    bindDetailActions(d);
+    const panes = $("#report-review-panes");
+    if (panes) panes.classList.add("has-selection");
+    renderContext(f);
+  }
+
+  function contextShellHtml(f) {
+    const b = bodyOf(f);
+    const eid = f.evidence_id || b.evidence_id;
+    const cites = (b.citations || []).filter((c) => c && c.path);
+    const citeChips = cites
+      .map((c) => {
+        const line = c.start_line != null ? c.start_line : "";
+        return `<button type="button" class="path-chip report-cite" data-path="${esc(c.path)}" data-line="${esc(line)}">${esc(pathLabel(c))}${c.symbol ? " · " + esc(c.symbol) : ""}</button>`;
+      })
+      .join(" ");
+    const packs = window.__VF_last_snap?.evidence || [];
+    const pack = eid ? packs.find((p) => String(p.id) === String(eid)) : null;
+    const files = ((pack && pack.files) || []).map((x) => x.relpath || x);
+    const fileChips = files
+      .slice(0, 12)
+      .map(
+        (rel) =>
+          `<button type="button" class="path-chip report-ctx-ev" data-pack="${esc(String(eid))}" data-rel="${esc(rel)}">${esc(rel)}</button>`
+      )
+      .join(" ");
+    const primary = cites[0] || null;
+    return `
+      <div class="report-context-inner" data-fid="${f.id}">
+        <div class="report-context-block">
+          <h4>Citations</h4>
+          <div class="finding-paths">${citeChips || '<span class="controls-hint">None</span>'}</div>
+        </div>
+        <div class="report-context-block">
+          <h4>Code context</h4>
+          <div id="report-ctx-code" class="report-ctx-code"><div class="controls-hint">${
+            primary ? "Loading " + esc(pathLabel(primary)) + "…" : "No citation path to preview."
+          }</div></div>
+        </div>
+        <div class="report-context-block">
+          <h4>Evidence pack</h4>
+          <p class="controls-hint mono">${eid ? esc(String(eid)) : b.no_poc ? "no_poc" : "None linked"}</p>
+          <div class="finding-paths">${fileChips || '<span class="controls-hint">No files</span>'}</div>
+          <div id="report-ctx-evidence" class="report-ctx-evidence"></div>
+          ${
+            eid
+              ? `<button type="button" class="btn btn-sm report-open-ev" data-pack="${esc(String(eid))}" data-rel="${esc(preferredEvidenceRel(f) || "")}">Open Evidence mode</button>`
+              : ""
+          }
+        </div>
+      </div>`;
+  }
+
+  function bindContextActions(root, f) {
+    if (!root) return;
+    root.querySelectorAll(".report-cite").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const path = btn.getAttribute("data-path");
+        const line = btn.getAttribute("data-line");
+        if (!path) return;
+        if (window.VulnForgeModes?.goExplorer) {
+          window.VulnForgeModes.goExplorer(path, line ? Number(line) : undefined);
+        } else {
+          window.VulnForgeModes?.setMode?.("explorer");
+          window.VulnForgeExplorer?.reveal?.(path, line ? Number(line) : undefined);
+        }
+      });
+    });
+    root.querySelectorAll(".report-ctx-ev").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const pack = btn.getAttribute("data-pack");
+        const rel = btn.getAttribute("data-rel");
+        if (pack && rel) loadContextEvidence(pack, rel);
+      });
+    });
+    root.querySelectorAll(".report-open-ev").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const pack = btn.getAttribute("data-pack");
+        const rel = btn.getAttribute("data-rel") || null;
+        if (!pack) return;
+        if (window.VulnForgeModes?.goEvidence) {
+          window.VulnForgeModes.goEvidence(pack, rel || undefined);
+        } else {
+          window.VulnForgeModes?.setMode?.("evidence");
+          if (typeof window.openEvidenceFile === "function" && rel) {
+            window.openEvidenceFile(pack, rel);
+          }
+        }
+      });
+    });
+  }
+
+  async function loadContextCode(f, token) {
+    const host = $("#report-ctx-code");
+    if (!host) return;
+    const b = bodyOf(f);
+    const cites = (b.citations || []).filter((c) => c && c.path);
+    const primary = cites[0];
+    if (!primary) return;
+    const tid = meta.target_id;
+    const rid = meta.run_id;
+    if (!tid || !rid) {
+      host.innerHTML = `<div class="controls-hint">No run loaded.</div>`;
+      return;
+    }
+    try {
+      const data = await callApi(
+        `/api/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}/target/read?path=${encodeURIComponent(primary.path)}`
+      );
+      if (token !== contextToken) return;
+      const lines = String(data.content || "").split("\n");
+      const base = data.start_line || 1;
+      const focus = primary.start_line != null ? Number(primary.start_line) : null;
+      const end = primary.end_line != null ? Number(primary.end_line) : focus;
+      const windowPad = 4;
+      let from = 0;
+      let to = Math.min(lines.length, 40);
+      if (focus != null) {
+        from = Math.max(0, focus - base - windowPad);
+        to = Math.min(lines.length, (end || focus) - base + 1 + windowPad);
+      }
+      const slice = lines.slice(from, to);
+      host.innerHTML = `
+        <div class="report-ctx-code-head mono">${esc(pathLabel(primary))}</div>
+        <pre class="report-ctx-pre">${slice
+          .map((ln, i) => {
+            const n = base + from + i;
+            const hl =
+              focus != null && n >= focus && n <= (end || focus) ? " is-cite" : "";
+            return `<div class="code-line${hl}" data-line="${n}"><span class="ln">${n}</span><span class="tx">${esc(ln)}</span></div>`;
+          })
+          .join("")}</pre>`;
+    } catch (e) {
+      if (token !== contextToken) return;
+      host.innerHTML = `<div class="empty" style="color:var(--bad)">${esc(e.message || e)}</div>`;
+    }
+  }
+
+  async function loadContextEvidence(pack, rel, token) {
+    const host = $("#report-ctx-evidence");
+    if (!host || !pack || !rel) return;
+    const tid = meta.target_id;
+    const rid = meta.run_id;
+    if (!tid || !rid) return;
+    const myToken = token == null ? contextToken : token;
+    host.innerHTML = `<div class="controls-hint">Loading ${esc(rel)}…</div>`;
+    try {
+      const data = await callApi(
+        `/api/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}/evidence/${encodeURIComponent(pack)}/${rel
+          .split("/")
+          .map(encodeURIComponent)
+          .join("/")}`
+      );
+      if (myToken !== contextToken) return;
+      const content = String(data.content ?? "");
+      const clipped = content.length > 4000 ? content.slice(0, 4000) + "\n…" : content;
+      host.innerHTML = `
+        <div class="report-ctx-code-head mono">${esc(pack)} / ${esc(rel)}</div>
+        <pre class="report-ctx-pre report-ctx-ev-pre">${esc(clipped)}</pre>`;
+    } catch (e) {
+      if (myToken !== contextToken) return;
+      host.innerHTML = `<div class="empty" style="color:var(--bad)">${esc(e.message || e)}</div>`;
+    }
+  }
+
+  function renderContext(f) {
+    const c = $("#report-context");
+    if (!c) return;
+    if (!f) {
+      c.innerHTML = emptyContextHtml();
+      return;
+    }
+    contextToken += 1;
+    const token = contextToken;
+    c.innerHTML = contextShellHtml(f);
+    bindContextActions(c, f);
+    loadContextCode(f, token);
+    const rel = preferredEvidenceRel(f);
+    const eid = f.evidence_id || bodyOf(f).evidence_id;
+    if (eid && rel) loadContextEvidence(String(eid), rel, token);
+  }
+
+
+    function preferredEvidenceRel(f) {
     const b = bodyOf(f);
     const eid = f.evidence_id || b.evidence_id;
     if (!eid) return null;
@@ -684,6 +899,7 @@
             : `Finding #${fid} marked needs human review`
       );
       // Refresh snapshot so table + evidence packs update
+      openId = Number(fid);
       if (typeof window.loadRunFull === "function") {
         await window.loadRunFull();
       } else if (r && r.finding) {
@@ -699,14 +915,8 @@
         renderSummary();
         renderTable();
         const f = cache.find((x) => Number(x.id) === Number(fid));
-        const d = $("#report-detail");
-        if (d && f) {
-          d.hidden = false;
-          d.innerHTML = detailHtml(f);
-          bindDetailActions(d);
-        }
+        if (f) showFindingDetail(f);
       }
-      openId = Number(fid);
     } catch (e) {
       toast(e.message || String(e), true);
     }
@@ -1458,13 +1668,8 @@
       });
     });
     root.querySelector(".report-close-detail")?.addEventListener("click", () => {
-      openId = null;
+      clearFindingPanes();
       renderTable();
-      const d = $("#report-detail");
-      if (d) {
-        d.hidden = true;
-        d.innerHTML = "";
-      }
     });
   }
 
@@ -1543,24 +1748,13 @@
       const openDetail = () => {
         const id = Number(tr.getAttribute("data-fid"));
         if (Number(openId) === id) {
-          openId = null;
-          const d = $("#report-detail");
-          if (d) {
-            d.hidden = true;
-            d.innerHTML = "";
-          }
+          clearFindingPanes();
           renderTable();
           return;
         }
         openId = id;
         const f = cache.find((x) => Number(x.id) === id);
-        const d = $("#report-detail");
-        if (d && f) {
-          d.hidden = false;
-          d.innerHTML = detailHtml(f);
-          bindDetailActions(d);
-          d.scrollIntoView({ block: "nearest", behavior: "smooth" });
-        }
+        if (f) showFindingDetail(f);
         renderTable();
       };
       tr.addEventListener("click", openDetail);
@@ -2033,12 +2227,7 @@
       renderTable();
       if (openId != null) {
         const f = cache.find((x) => Number(x.id) === Number(openId));
-        const d = $("#report-detail");
-        if (d && f) {
-          d.hidden = false;
-          d.innerHTML = detailHtml(f);
-          bindDetailActions(d);
-        }
+        if (f) showFindingDetail(f);
       }
     } catch (e) {
       if (el) {
@@ -2467,13 +2656,8 @@
     updateSearchCount();
     updateSortHeaders();
     const f = cache.find((x) => Number(x.id) === Number(openId));
-    const d = $("#report-detail");
-    if (d && f) {
-      d.hidden = false;
-      d.innerHTML = detailHtml(f);
-      bindDetailActions(d);
-      d.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
+    if (f) showFindingDetail(f);
+    else clearFindingPanes();
   }
 
   function renderReport(snap) {
@@ -2507,17 +2691,14 @@
       const f = stillVisible
         ? cache.find((x) => Number(x.id) === Number(openId))
         : null;
-      const d = $("#report-detail");
-      if (d && f) {
-        d.hidden = false;
-        d.innerHTML = detailHtml(f);
-        bindDetailActions(d);
-      } else if (d) {
-        d.hidden = true;
-        d.innerHTML = "";
-        openId = null;
+      if (f) {
+        showFindingDetail(f);
+      } else {
+        clearFindingPanes();
         renderTable();
       }
+    } else {
+      clearFindingPanes();
     }
 
     // Keep open POC workshop headers in sync when snap refreshes

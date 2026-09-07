@@ -157,39 +157,55 @@
             </div>
           </div>
           <div id="report-summary" role="group" aria-label="Filter findings by state"></div>
-          <div class="card report-table-card">
-            <div class="table-wrap">
-              <table class="data report-table">
-                <thead>
-                  <tr>
-                    <th class="report-check-col" title="Select for attack chain"></th>
-                    <th class="th-sortable" data-sort="id" aria-sort="none" scope="col">
-                      <button type="button" class="th-sort-btn">ID</button>
-                    </th>
-                    <th class="th-sortable" data-sort="title" aria-sort="none" scope="col">
-                      <button type="button" class="th-sort-btn">Title</button>
-                    </th>
-                    <th class="th-sortable" data-sort="class" aria-sort="none" scope="col">
-                      <button type="button" class="th-sort-btn">Class</button>
-                    </th>
-                    <th class="th-sortable" data-sort="severity" aria-sort="none" scope="col">
-                      <button type="button" class="th-sort-btn">Severity</button>
-                    </th>
-                    <th class="th-sortable sorted-asc" data-sort="state" aria-sort="ascending" scope="col">
-                      <button type="button" class="th-sort-btn" aria-pressed="true">State</button>
-                    </th>
-                    <th class="th-sortable" data-sort="location" aria-sort="none" scope="col">
-                      <button type="button" class="th-sort-btn">Location</button>
-                    </th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody id="report-tbody">
-                  <tr><td colspan="8" class="empty">Loading...</td></tr>
-                </tbody>
-              </table>
+          <div class="card report-table-card report-review-card">
+            <div class="report-review-panes" id="report-review-panes" aria-label="Finding review">
+              <section class="report-pane report-list-pane" aria-label="Findings list">
+                <div class="report-pane-head">Findings</div>
+                <div class="table-wrap report-list-wrap">
+                  <table class="data report-table">
+                    <thead>
+                      <tr>
+                        <th class="report-check-col" title="Select for attack chain"></th>
+                        <th class="th-sortable" data-sort="id" aria-sort="none" scope="col">
+                          <button type="button" class="th-sort-btn">ID</button>
+                        </th>
+                        <th class="th-sortable" data-sort="title" aria-sort="none" scope="col">
+                          <button type="button" class="th-sort-btn">Title</button>
+                        </th>
+                        <th class="th-sortable report-col-class" data-sort="class" aria-sort="none" scope="col">
+                          <button type="button" class="th-sort-btn">Class</button>
+                        </th>
+                        <th class="th-sortable" data-sort="severity" aria-sort="none" scope="col">
+                          <button type="button" class="th-sort-btn">Sev</button>
+                        </th>
+                        <th class="th-sortable sorted-asc" data-sort="state" aria-sort="ascending" scope="col">
+                          <button type="button" class="th-sort-btn" aria-pressed="true">State</button>
+                        </th>
+                        <th class="th-sortable report-col-location" data-sort="location" aria-sort="none" scope="col">
+                          <button type="button" class="th-sort-btn">Location</button>
+                        </th>
+                        <th class="report-col-action"></th>
+                      </tr>
+                    </thead>
+                    <tbody id="report-tbody">
+                      <tr><td colspan="8" class="empty">Loading...</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+              <section class="report-pane report-detail-pane" aria-label="Finding detail">
+                <div class="report-pane-head">Detail</div>
+                <div id="report-detail" class="report-detail">
+                  <div class="report-pane-empty">Select a finding to review.</div>
+                </div>
+              </section>
+              <section class="report-pane report-context-pane" aria-label="Evidence and context">
+                <div class="report-pane-head">Evidence / context</div>
+                <div id="report-context" class="report-context">
+                  <div class="report-pane-empty">Citation snippets and evidence pack preview appear here.</div>
+                </div>
+              </section>
             </div>
-            <div id="report-detail" class="report-detail" hidden></div>
           </div>
           <div class="card report-clusters-card" id="report-clusters-card">
             <div class="report-panel-head">
@@ -601,6 +617,8 @@
     </div>
   </div>
 
+  <script src="/static/monaco_boot.js"></script>
+  <script src="/static/monaco_loader.js"></script>
   <script src="/static/mission_overview_helpers.js"></script>
   <script src="/static/architecture_diagram_helpers.js"></script>
   <script src="/static/app.js"></script>
