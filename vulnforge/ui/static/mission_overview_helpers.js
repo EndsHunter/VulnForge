@@ -85,8 +85,7 @@
       (snap.architecture && (snap.architecture.summary || "").trim())
     );
     const recon = summarizePipelineStage(tasks, "recon", hasArch);
-    // If architecture exists but recon tasks still queued (re-recon), keep running/queued.
-    if (hasArch && recon.status === "pending") recon.status = "done";
+    // hasArch passed as extraDone: empty recon + architecture ⇒ done (no second pending→done patch).
 
     const hunt = summarizePipelineStage(tasks, "hunt", false);
     const mech = summarizePipelineStage(tasks, "validate_mech", false);
