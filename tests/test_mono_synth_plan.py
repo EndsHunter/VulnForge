@@ -39,8 +39,7 @@ def _cfg(max_tasks: int = 50) -> dict:
 def _large_default_inv(*, file_count: int = 501) -> tuple[dict, dict]:
     """Synthetic inventory+arch that yields many active-fallback tasks.
 
-    Components drive areas so fan-out is 6 * len(active) == 30 with 5 active
-    classes before max_tasks clipping.
+    Components drive areas so fan-out is 6 * len(_active()) before max_tasks clipping.
     """
     components = [
         {"name": f"comp{i:02d}", "path_hints": [f"comp{i:02d}/a.py"]}
@@ -75,9 +74,9 @@ def test_h3_active_fallback_respects_max_tasks_not_hard_cap_24():
 
     tasks, source = plan_hunt_tasks(arch, inv, _cfg(max_tasks=50))
     assert source == "active_fallback"
-    # Full active plan fits under max_tasks=50 (30 with seed active set)
+    # Full active plan fits under max_tasks=50 (size follows active set)
     assert len(tasks) == len(uncapped)
-    assert len(tasks) == 30
+    assert len(tasks) == 6 * len(_active())
     assert {t["class"] for t in tasks} <= set(_active())
 
 
@@ -85,11 +84,12 @@ def test_h3_file_count_does_not_force_24_cap():
     """Large trees no longer force a 24-task hard-cap independent of settings."""
     arch, inv = _large_default_inv(file_count=500)
     uncapped = _fallback_hunt_tasks(arch, inv)
-    assert len(uncapped) == 6 * len(_active())  # 30 with seed active set
+    assert len(uncapped) == 6 * len(_active())
 
     tasks, source = plan_hunt_tasks(arch, inv, _cfg(max_tasks=50))
     assert source == "active_fallback"
-    assert len(tasks) == 30
+    assert len(tasks) == len(uncapped)
+    assert len(tasks) == 6 * len(_active())
 
 
 def test_h3_hunt_focus_path_still_honors_max_tasks():

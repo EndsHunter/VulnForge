@@ -1,0 +1,36 @@
+name: offline-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: offline-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Never require live LLM campaigns in CI
+      VF_LIVE: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package (dev)
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[dev]"
+
+      - name: Living docs check
+        run: python scripts/check_docs.py
+
+      - name: Offline pytest (exclude live)
+        run: pytest -q -m "not live"
