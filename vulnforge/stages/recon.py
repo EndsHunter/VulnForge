@@ -215,6 +215,7 @@ def _arch_structure_part(arch: dict[str, Any] | None) -> dict[str, Any]:
             "trust_boundaries": [],
             "input_surfaces": [],
             "hunt_focus": [],
+            "relations": [],
         }
     return {
         "summary": arch.get("summary") or "",
@@ -230,6 +231,7 @@ def _arch_structure_part(arch: dict[str, Any] | None) -> dict[str, Any]:
         "hunt_focus": list(arch.get("hunt_focus") or [])
         if isinstance(arch.get("hunt_focus"), list)
         else [],
+        "relations": normalize_relations(arch.get("relations")),
     }
 
 
@@ -242,6 +244,7 @@ def _arch_json_for_merge(arch: dict[str, Any] | None) -> dict[str, Any]:
         "trust_boundaries": p.get("trust_boundaries") or [],
         "input_surfaces": p.get("input_surfaces") or [],
         "hunt_focus": p.get("hunt_focus") or [],
+        "relations": p.get("relations") or [],
     }
 
 
@@ -262,6 +265,7 @@ def parse_architecture_merge_content(content: str | None) -> dict[str, Any] | No
         "components": _coerce_list_field(parsed.get("components")),
         "input_surfaces": _coerce_list_field(parsed.get("input_surfaces")),
         "hunt_focus": _coerce_list_field(parsed.get("hunt_focus")),
+        "relations": normalize_relations(parsed.get("relations")),
     }
 
 
@@ -289,7 +293,7 @@ def llm_merge_architectures(
             "Merge prior and incoming architecture JSON into one map. "
             "Keep solid prior detail; union lists; cohesive summary. "
             "Reply with JSON only: summary, components, trust_boundaries, "
-            "input_surfaces, hunt_focus.\n"
+            "input_surfaces, hunt_focus, relations.\n"
         )
     prior_j = _arch_json_for_merge(prior)
     inc_j = _arch_json_for_merge(incoming)
@@ -311,6 +315,7 @@ def llm_merge_architectures(
                 "trust_boundaries": (obj.get("trust_boundaries") or [])[:40],
                 "input_surfaces": (obj.get("input_surfaces") or [])[:40],
                 "hunt_focus": (obj.get("hunt_focus") or [])[:40],
+                "relations": (obj.get("relations") or [])[:40],
             }
             s = json.dumps(slim, indent=2, default=str)
             if len(s) > half:
@@ -933,6 +938,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                         "trust_boundaries": existing.get("trust_boundaries"),
                         "input_surfaces": existing.get("input_surfaces"),
                         "hunt_focus": existing.get("hunt_focus"),
+                        "relations": existing.get("relations"),
                     },
                     indent=2,
                 )
@@ -1903,6 +1909,7 @@ def merge_architectures(
         "components",
         "input_surfaces",
         "hunt_focus",
+        "relations",
     )
     summary = _merge_summary_paragraphs(parts)
     merged_lists: dict[str, list] = {f: [] for f in list_fields}
@@ -1930,12 +1937,15 @@ def merge_architectures(
                 seen[f].add(key)
                 merged_lists[f].append(item)
 
+    # Normalize relations after merge (dedupe / validate shape).
+    relations = normalize_relations(merged_lists["relations"])
     out: dict[str, Any] = {
         "summary": summary,
         "trust_boundaries": merged_lists["trust_boundaries"],
         "components": merged_lists["components"],
         "input_surfaces": merged_lists["input_surfaces"],
         "hunt_focus": merged_lists["hunt_focus"],
+        "relations": relations,
     }
     if agents_run is not None:
         out["recon_agents_run"] = list(agents_run)
@@ -1946,6 +1956,17 @@ def _arch_item_key(item: object) -> str:
     if isinstance(item, str):
         return "s:" + item.strip().lower()
     if isinstance(item, dict):
+        frm = item.get("from") or item.get("src")
+        to = item.get("to") or item.get("dst")
+        if frm and to:
+            kind = str(item.get("kind") or item.get("type") or "").strip().lower()
+            return (
+                "rel:"
+                + str(frm).strip().lower()
+                + "->"
+                + str(to).strip().lower()
+                + ("|" + kind if kind else "")
+            )
         for k in ("name", "area", "id", "path"):
             if item.get(k):
                 extra = ""
@@ -1984,6 +2005,40 @@ def _coerce_list_field(value: object) -> list:
     return []
 
 
+def normalize_relations(value: object, *, limit: int = 80) -> list[dict[str, Any]]:
+    """Validate/normalize optional architecture relations[{from,to,kind,note}].
+
+    Additive field: missing/invalid input yields []. Requires non-empty from+to.
+    Drops exploit-ish payloads by accepting only short strings (no nested blobs).
+    """
+    items = _coerce_list_field(value)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        frm = str(item.get("from") or item.get("src") or "").strip()
+        to = str(item.get("to") or item.get("dst") or "").strip()
+        if not frm or not to:
+            continue
+        kind = str(item.get("kind") or item.get("type") or "related").strip() or "related"
+        note = str(item.get("note") or item.get("description") or "").strip()
+        frm = frm[:200]
+        to = to[:200]
+        kind = kind[:80]
+        key = f"{frm.lower()}|{to.lower()}|{kind.lower()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        rel: dict[str, Any] = {"from": frm, "to": to, "kind": kind}
+        if note:
+            rel["note"] = note[:400]
+        out.append(rel)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def parse_architecture(llm_result, session: dict) -> dict:
     if session.get("architecture"):
         a = session["architecture"]
@@ -1993,6 +2048,7 @@ def parse_architecture(llm_result, session: dict) -> dict:
             "components": _coerce_list_field(a.get("components")),
             "input_surfaces": _coerce_list_field(a.get("input_surfaces")),
             "hunt_focus": _coerce_list_field(a.get("hunt_focus")),
+            "relations": normalize_relations(a.get("relations")),
         }
     # Shared free-text / JSON-slice parser (force-submit salvage uses the same).
     from vulnforge.agent_runtime.round_limit import architecture_from_content
@@ -2005,6 +2061,7 @@ def parse_architecture(llm_result, session: dict) -> dict:
             "components": _coerce_list_field(parsed.get("components")),
             "input_surfaces": _coerce_list_field(parsed.get("input_surfaces")),
             "hunt_focus": _coerce_list_field(parsed.get("hunt_focus")),
+            "relations": normalize_relations(parsed.get("relations")),
         }
     return {
         "summary": "",
@@ -2012,6 +2069,7 @@ def parse_architecture(llm_result, session: dict) -> dict:
         "components": [],
         "input_surfaces": [],
         "hunt_focus": [],
+        "relations": [],
     }
 
 

@@ -3735,11 +3735,15 @@ function renderArchDiagramCard(arch, summary) {
   }
   // Prefer summary (compact components + trust_boundaries); fall back to raw arch.
   const src =
-    summary && (Array.isArray(summary.components) || Array.isArray(summary.trust_boundaries))
+    summary &&
+    (Array.isArray(summary.components) ||
+      Array.isArray(summary.trust_boundaries) ||
+      Array.isArray(summary.relations))
       ? {
           components: summary.components || [],
           trust_boundaries: summary.trust_boundaries || [],
           modules: summary.modules || [],
+          relations: summary.relations || [],
         }
       : arch || summary || {};
   return helpers.renderDiagramCardHtml(src);

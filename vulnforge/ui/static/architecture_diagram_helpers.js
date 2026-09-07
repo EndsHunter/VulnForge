@@ -1,9 +1,10 @@
 /**
- * Pure helpers for Architecture Diagram v0 (inferred graph + SVG).
+ * Pure helpers for Architecture Diagram (formal relations + inferred fallback).
  * UMD/CommonJS — browser script tag and node --test.
  *
- * Edges are heuristic only (trust_boundaries text + shared path_hints).
- * Not a formal architecture model.
+ * Prefer architecture.relations[{from,to,kind,note}] when present.
+ * Otherwise fall back to v0 heuristics (trust_boundaries text + shared path_hints).
+ * Inferred edges keep an honesty disclaimer; formal edges are labeled separately.
  */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
@@ -15,6 +16,8 @@
   "use strict";
 
   var DISCLAIMER = "Inferred from architecture map — not a formal model.";
+  var FORMAL_DISCLAIMER =
+    "Formal relations from submit_architecture — labeled separately from inferred edges.";
 
   /** Normalize a component-like object into {id,name,role,path_hints}. */
   function normalizeComponent(c, index) {
@@ -107,6 +110,36 @@
   }
 
   /**
+   * Normalize formal relations[{from,to,kind,note}] from architecture / summary.
+   * Invalid items (missing from/to) are dropped. Additive — empty when absent.
+   */
+  function extractRelations(archOrSummary) {
+    var src = archOrSummary && typeof archOrSummary === "object" ? archOrSummary : {};
+    var raw = Array.isArray(src.relations) ? src.relations : [];
+    var out = [];
+    var seen = Object.create(null);
+    for (var i = 0; i < raw.length && out.length < 80; i++) {
+      var x = raw[i];
+      if (!x || typeof x !== "object") continue;
+      var frm = String(x.from || x.src || "").trim();
+      var to = String(x.to || x.dst || "").trim();
+      if (!frm || !to) continue;
+      var kind = String(x.kind || x.type || "related").trim() || "related";
+      var note = String(x.note || x.description || "").trim();
+      frm = frm.slice(0, 200);
+      to = to.slice(0, 200);
+      kind = kind.slice(0, 80);
+      var key = frm.toLowerCase() + "|" + to.toLowerCase() + "|" + kind.toLowerCase();
+      if (seen[key]) continue;
+      seen[key] = true;
+      var rel = { from: frm, to: to, kind: kind };
+      if (note) rel.note = note.slice(0, 400);
+      out.push(rel);
+    }
+    return out;
+  }
+
+  /**
    * Split a trust-boundary phrase into candidate tokens that may name components.
    * Separators: arrows, slash, " to ", " vs ", " and ", "↔".
    */
@@ -156,9 +189,9 @@
     var edges = [];
     var seen = Object.create(null);
 
-    function addEdge(a, b, kind, label) {
+    function addEdge(a, b, kind, label, source) {
       if (!a || !b || a.id === b.id) return;
-      var k = edgeKey(a.id, b.id) + "::" + kind;
+      var k = edgeKey(a.id, b.id) + "::" + kind + "::" + (source || "inferred");
       if (seen[k]) return;
       seen[k] = true;
       edges.push({
@@ -166,7 +199,33 @@
         to: b.id,
         kind: kind,
         label: label || kind,
+        source: source || "inferred",
       });
+    }
+
+    // Prefer formal relations when present (matched to component names).
+    var formalRels = extractRelations(archOrSummary);
+    var formalMatched = 0;
+    var fi;
+    for (fi = 0; fi < formalRels.length; fi++) {
+      var rel = formalRels[fi];
+      var aNode = matchComponent(rel.from, nodes);
+      var bNode = matchComponent(rel.to, nodes);
+      if (!aNode || !bNode) continue;
+      var label = rel.kind || "relation";
+      if (rel.note) label = label + ": " + rel.note;
+      // Cap label length for SVG
+      if (label.length > 48) label = label.slice(0, 46) + "…";
+      addEdge(aNode, bNode, "formal", label, "formal");
+      formalMatched++;
+    }
+    if (formalMatched > 0) {
+      return {
+        nodes: nodes,
+        edges: edges,
+        disclaimer: FORMAL_DISCLAIMER,
+        edgeSource: "formal",
+      };
     }
 
     var bounds = extractTrustBoundaries(archOrSummary);
@@ -180,7 +239,7 @@
       }
       // Pair consecutive matched components in the phrase
       for (mi = 0; mi + 1 < matched.length; mi++) {
-        addEdge(matched[mi], matched[mi + 1], "boundary", "trust boundary");
+        addEdge(matched[mi], matched[mi + 1], "boundary", "trust boundary", "inferred");
       }
     }
 
@@ -244,12 +303,17 @@
         }
         if (!bestRoot) continue;
         if (rootNodeCount(bestRoot) > MAX_NODES_PER_SHARED_ROOT) continue;
-        addEdge(nodes[ni], nodes[nj], "path", "shared path");
+        addEdge(nodes[ni], nodes[nj], "path", "shared path", "inferred");
         pathEdgeCount++;
       }
     }
 
-    return { nodes: nodes, edges: edges, disclaimer: DISCLAIMER };
+    return {
+      nodes: nodes,
+      edges: edges,
+      disclaimer: DISCLAIMER,
+      edgeSource: "inferred",
+    };
   }
 
   /** Escape XML/SVG text. */
@@ -316,8 +380,12 @@
       if (!a || !b) continue;
       var midX = (a.x + b.x) / 2;
       var midY = (a.y + b.y) / 2;
-      var kindClass =
-        e.kind === "boundary" ? "arch-diag-edge-boundary" : "arch-diag-edge-path";
+      var kindClass = "arch-diag-edge-path";
+      if (e.kind === "formal" || e.source === "formal") {
+        kindClass = "arch-diag-edge-formal";
+      } else if (e.kind === "boundary") {
+        kindClass = "arch-diag-edge-boundary";
+      }
       edgeLines.push(
         '<line class="arch-diag-edge ' +
           kindClass +
@@ -399,7 +467,7 @@
       height +
       '" role="' +
       svgRole +
-      '" aria-label="Inferred architecture diagram">' +
+      '" aria-label="Architecture diagram">' +
       "<defs>" +
       '<marker id="arch-diag-arrow" viewBox="0 0 10 10" refX="10" refY="5" ' +
       'markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
@@ -422,6 +490,8 @@
     var emptyMsg =
       opts.emptyMessage ||
       "No components recorded — diagram appears after recon maps components.";
+    var disclaimer =
+      graph.edgeSource === "formal" ? FORMAL_DISCLAIMER : DISCLAIMER;
     if (!graph.nodes.length) {
       return (
         '<section class="card arch-diagram-card" id="arch-diagram-card">' +
@@ -436,14 +506,27 @@
       );
     }
     var svg = renderArchitectureSvg(graph, opts);
-    var edgeNote =
-      graph.edges.length === 0
-        ? '<p class="controls-hint arch-diagram-edge-note">No edges inferred yet (need trust_boundaries naming components, or shared path_hints).</p>'
-        : '<p class="controls-hint arch-diagram-edge-note">' +
-          graph.edges.length +
-          " inferred edge" +
-          (graph.edges.length === 1 ? "" : "s") +
-          " (boundaries + shared paths). Click a node with path_hints to open Explorer.</p>";
+    var edgeNote;
+    if (graph.edges.length === 0) {
+      edgeNote =
+        '<p class="controls-hint arch-diagram-edge-note">No edges yet (emit relations[{from,to,kind,note}], or trust_boundaries naming components / shared path_hints).</p>';
+    } else if (graph.edgeSource === "formal") {
+      edgeNote =
+        '<p class="controls-hint arch-diagram-edge-note">' +
+        '<span class="arch-diagram-edge-badge arch-diagram-edge-badge-formal">Formal</span> ' +
+        graph.edges.length +
+        " formal relation" +
+        (graph.edges.length === 1 ? "" : "s") +
+        " from architecture map. Click a node with path_hints to open Explorer.</p>";
+    } else {
+      edgeNote =
+        '<p class="controls-hint arch-diagram-edge-note">' +
+        '<span class="arch-diagram-edge-badge arch-diagram-edge-badge-inferred">Inferred</span> ' +
+        graph.edges.length +
+        " inferred edge" +
+        (graph.edges.length === 1 ? "" : "s") +
+        " (boundaries + shared paths — not a formal model). Click a node with path_hints to open Explorer.</p>";
+    }
     return (
       '<section class="card arch-diagram-card" id="arch-diagram-card">' +
       '<header class="arch-section-head"><h3>Diagram</h3>' +
@@ -451,7 +534,7 @@
       graph.nodes.length +
       "</span></header>" +
       '<p class="arch-diagram-disclaimer">' +
-      escXml(DISCLAIMER) +
+      escXml(disclaimer) +
       "</p>" +
       '<div class="arch-diagram-viewport">' +
       svg +
@@ -463,9 +546,11 @@
 
   return {
     DISCLAIMER: DISCLAIMER,
+    FORMAL_DISCLAIMER: FORMAL_DISCLAIMER,
     normalizeComponent: normalizeComponent,
     extractComponents: extractComponents,
     extractTrustBoundaries: extractTrustBoundaries,
+    extractRelations: extractRelations,
     splitBoundaryTokens: splitBoundaryTokens,
     matchComponent: matchComponent,
     buildArchitectureGraph: buildArchitectureGraph,

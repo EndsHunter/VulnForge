@@ -111,6 +111,45 @@ SPEC = ToolSpec(
                 },
             },
         },
+        "relations": {
+            "type": "array",
+            "description": (
+                "Optional formal architecture edges between named components "
+                "(or surfaces). Prefer when trust/data-flow is known from "
+                "inspection. Shape: {from, to, kind, note}. Additive — omit "
+                "when unknown; old maps without relations remain valid. "
+                "Do not invent exploit edges."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from": {
+                        "type": "string",
+                        "description": (
+                            "Source component/surface name (match components)."
+                        ),
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": (
+                            "Target component/surface name (match components)."
+                        ),
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": (
+                            "Edge kind, e.g. trust_boundary, calls, data_flow, "
+                            "depends_on, auth_gate."
+                        ),
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Optional short evidence note (path or role).",
+                    },
+                },
+                "required": ["from", "to"],
+            },
+        },
     },
     required=("summary",),
     critical_for=("recon",),

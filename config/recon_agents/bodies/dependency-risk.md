@@ -87,6 +87,11 @@ Stay on dependency and install trust; do not re-map every HTTP route.
 | `components` | Manifest roots, loaders, updaters with path_hints |
 | `input_surfaces` | Install scripts, plugin install, remote package fetch, update endpoints |
 | `hunt_focus` | Prefer registered `supply-chain` (and related) only where justified |
+| `relations` | Optional formal edges `[{ from, to, kind, note }]` when known — omit if unsure |
+
+### Formal relations (optional)
+
+When inspection shows clear trust or data-flow edges between named components, emit `relations` as `{ "from": "<component>", "to": "<component>", "kind": "<kind>", "note": "<optional path/role>" }`. Use component names that match `components[].name`. Kinds may include `trust_boundary`, `calls`, `data_flow`, `depends_on`, `auth_gate`. Omit when unknown — the UI falls back to inferred edges. Architecture only: no exploit/PoC content in notes.
 
 ## Hunt focus discipline
 

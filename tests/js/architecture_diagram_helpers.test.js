@@ -10,7 +10,9 @@ const helpers = require(
 
 const {
   DISCLAIMER,
+  FORMAL_DISCLAIMER,
   extractComponents,
+  extractRelations,
   splitBoundaryTokens,
   buildArchitectureGraph,
   renderDiagramCardHtml,
@@ -186,5 +188,82 @@ describe("path edge shared-root cap", () => {
     const pathEdges = g.edges.filter((e) => e.kind === "path");
     // auth/ touches 3 nodes (<=4) → Auth-Login, Auth-Session
     assert.equal(pathEdges.length, 2);
+  });
+});
+
+describe("extractRelations", () => {
+  it("keeps valid from/to and drops incomplete", () => {
+    const rels = extractRelations({
+      relations: [
+        { from: "API", to: "Auth", kind: "calls", note: "login" },
+        { from: "API" },
+        { from: "API", to: "Auth", kind: "calls" },
+      ],
+    });
+    assert.equal(rels.length, 1);
+    assert.equal(rels[0].kind, "calls");
+    assert.equal(rels[0].note, "login");
+  });
+});
+
+describe("formal relations preference", () => {
+  it("prefers formal relations over inferred edges", () => {
+    const g = buildArchitectureGraph({
+      components: [
+        { name: "API", path_hints: ["api/"] },
+        { name: "Auth", path_hints: ["api/auth.py"] },
+        { name: "DB", path_hints: ["db/"] },
+      ],
+      // Would infer path edge API↔Auth via shared api/
+      trust_boundaries: ["API → Auth"],
+      relations: [
+        { from: "API", to: "DB", kind: "data_flow", note: "writes" },
+      ],
+    });
+    assert.equal(g.edgeSource, "formal");
+    assert.equal(g.disclaimer, FORMAL_DISCLAIMER);
+    assert.equal(g.edges.length, 1);
+    assert.equal(g.edges[0].kind, "formal");
+    assert.equal(g.edges[0].source, "formal");
+    const ids = [g.edges[0].from, g.edges[0].to].join(" ");
+    assert.ok(ids.includes("api") && ids.includes("db"));
+  });
+
+  it("falls back to inferred when relations absent or unmatched", () => {
+    const g = buildArchitectureGraph({
+      components: [
+        { name: "API", path_hints: ["api/"] },
+        { name: "Auth", path_hints: ["auth/"] },
+      ],
+      trust_boundaries: ["API → Auth"],
+      relations: [{ from: "Ghost", to: "Nope", kind: "calls" }],
+    });
+    assert.equal(g.edgeSource, "inferred");
+    assert.equal(g.disclaimer, DISCLAIMER);
+    assert.ok(g.edges.some((e) => e.kind === "boundary"));
+  });
+
+  it("labels formal vs inferred in diagram card HTML", () => {
+    const formalHtml = renderDiagramCardHtml({
+      components: [
+        { name: "API", path_hints: ["a.py"] },
+        { name: "DB", path_hints: ["d.py"] },
+      ],
+      relations: [{ from: "API", to: "DB", kind: "depends_on" }],
+    });
+    assert.ok(formalHtml.includes(FORMAL_DISCLAIMER));
+    assert.ok(formalHtml.includes("Formal"));
+    assert.ok(formalHtml.includes("arch-diag-edge-formal"));
+
+    const inferredHtml = renderDiagramCardHtml({
+      components: [
+        { name: "API", path_hints: ["api/"] },
+        { name: "Auth", path_hints: ["auth/"] },
+      ],
+      trust_boundaries: ["API → Auth"],
+    });
+    assert.ok(inferredHtml.includes(DISCLAIMER));
+    assert.ok(inferredHtml.includes("Inferred"));
+    assert.ok(!inferredHtml.includes(FORMAL_DISCLAIMER));
   });
 });

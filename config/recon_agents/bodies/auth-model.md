@@ -84,6 +84,11 @@ Map identity and access; do not deep-dive unrelated parsers or full dep graphs.
 | `components` | Auth modules, middleware, session/token stores with path_hints |
 | `input_surfaces` | Login, OAuth callbacks, token/API-key endpoints, admin gates |
 | `hunt_focus` | Prefer registered `access-control` / `web-protocol-auth` where justified |
+| `relations` | Optional formal edges `[{ from, to, kind, note }]` when known — omit if unsure |
+
+### Formal relations (optional)
+
+When inspection shows clear trust or data-flow edges between named components, emit `relations` as `{ "from": "<component>", "to": "<component>", "kind": "<kind>", "note": "<optional path/role>" }`. Use component names that match `components[].name`. Kinds may include `trust_boundary`, `calls`, `data_flow`, `depends_on`, `auth_gate`. Omit when unknown — the UI falls back to inferred edges. Architecture only: no exploit/PoC content in notes.
 
 ## Hunt focus discipline
 

@@ -1229,6 +1229,31 @@ button.cov-plan-action.is-current {
   stroke: var(--arch-components, #ff3d6e);
   stroke-opacity: 0.65;
 }
+.arch-diag-edge-formal {
+  stroke: var(--accent, #7aa2ff);
+  stroke-width: 2;
+  stroke-opacity: 0.9;
+}
+.arch-diagram-edge-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  margin-right: 0.25rem;
+  vertical-align: middle;
+}
+.arch-diagram-edge-badge-formal {
+  color: var(--bg, #121018);
+  background: var(--accent, #7aa2ff);
+}
+.arch-diagram-edge-badge-inferred {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 22%, transparent);
+  border: 1px solid var(--border);
+}
 .arch-diag-edge-label {
   fill: var(--muted);
   font-size: 9px;
