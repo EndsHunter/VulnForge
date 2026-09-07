@@ -79,6 +79,11 @@ def test_submit_architecture_finish_contract():
     props = (fn.get("parameters") or {}).get("properties") or {}
     assert props["summary"].get("description")
     assert "hunt_focus" in props
+    assert "relations" in props
+    rel = props["relations"]
+    assert rel.get("type") == "array"
+    rel_props = (rel.get("items") or {}).get("properties") or {}
+    assert "from" in rel_props and "to" in rel_props
 
 
 def test_submit_candidate_and_none_finish_contracts():

@@ -1760,6 +1760,33 @@ def hunt_from_selection(
         db.close()
 
 
+def _compact_relations(raw: object, *, limit: int = 40) -> list[dict[str, Any]]:
+    """Pass through validated formal relations for Mission/Architecture UI."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        frm = str(item.get("from") or "").strip()
+        to = str(item.get("to") or "").strip()
+        if not frm or not to:
+            continue
+        kind = str(item.get("kind") or "related").strip() or "related"
+        note = str(item.get("note") or "").strip()
+        rel: dict[str, Any] = {
+            "from": frm[:200],
+            "to": to[:200],
+            "kind": kind[:80],
+        }
+        if note:
+            rel["note"] = note[:400]
+        out.append(rel)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _compact_component(c: Any) -> Optional[dict[str, Any]]:
     if not c:
         return None
@@ -1837,6 +1864,7 @@ def architecture_summary(
         "trust_boundaries": [],
         "input_surfaces": [],
         "hunt_focus": [],
+        "relations": [],
         "seed_sinks": [],
         "imports_preview": [],
         "exports_preview": [],
@@ -1887,6 +1915,7 @@ def architecture_summary(
         "hunt_focus": list(arch.get("hunt_focus") or [])[:40]
         if isinstance(arch.get("hunt_focus"), list)
         else [],
+        "relations": _compact_relations(arch.get("relations")),
         "seed_sinks": seed_sinks,
         "imports_preview": imports_preview,
         "exports_preview": exports_preview,

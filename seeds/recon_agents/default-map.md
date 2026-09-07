@@ -101,7 +101,12 @@ Call **`submit_architecture`** with these fields (only `summary` is strictly req
 | `components` | `{ name, path_hints[] }` major modules/services |
 | `input_surfaces` | HTTP, CLI, queues, files, IPC, webhooks, etc. |
 | `hunt_focus` | Optional `[{ area, class, path_hints }]` — registered class ids only |
+| `relations` | Optional formal edges `[{ from, to, kind, note }]` when known — omit if unsure |
 | *(comparables)* | Similar systems for baseline — put in `summary` (no separate tool field) |
+
+### Formal relations (optional)
+
+When inspection shows clear trust or data-flow edges between named components, emit `relations` as `{ "from": "<component>", "to": "<component>", "kind": "<kind>", "note": "<optional path/role>" }`. Use component names that match `components[].name`. Kinds may include `trust_boundary`, `calls`, `data_flow`, `depends_on`, `auth_gate`. Omit when unknown — the UI falls back to inferred edges. Architecture only: no exploit/PoC content in notes.
 
 ## Hunt focus discipline
 

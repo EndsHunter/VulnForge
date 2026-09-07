@@ -90,6 +90,11 @@ Focus on **where untrusted data enters** and where those paths cross trust bound
 | `components` | Entrypoint modules with path_hints |
 | `input_surfaces` | **Primary deliverable** — concrete, path-backed untrusted inputs |
 | `hunt_focus` | Optional area × class × path_hints; registered ids only |
+| `relations` | Optional formal edges `[{ from, to, kind, note }]` when known — omit if unsure |
+
+### Formal relations (optional)
+
+When inspection shows clear trust or data-flow edges between named components, emit `relations` as `{ "from": "<component>", "to": "<component>", "kind": "<kind>", "note": "<optional path/role>" }`. Use component names that match `components[].name`. Kinds may include `trust_boundary`, `calls`, `data_flow`, `depends_on`, `auth_gate`. Omit when unknown — the UI falls back to inferred edges. Architecture only: no exploit/PoC content in notes.
 
 ## Hunt focus discipline
 

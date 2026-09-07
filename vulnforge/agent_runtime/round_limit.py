@@ -87,6 +87,7 @@ def architecture_from_content(content: str | None) -> dict[str, Any] | None:
         "components": _list_field("components"),
         "input_surfaces": _list_field("input_surfaces"),
         "hunt_focus": _list_field("hunt_focus"),
+        "relations": _list_field("relations"),
     }
 
 
