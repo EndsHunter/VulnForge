@@ -13,6 +13,11 @@ const {
   summarizePipelineStage,
   buildPipelineStages,
   countMissionTaskActivity,
+  isHuntKind,
+  huntTaskLabel,
+  summarizeHuntQueue,
+  listNeedsHumanFindings,
+  summarizeCoverageResidual,
 } = helpers;
 
 describe("pipelineStageOfKind", () => {
@@ -140,5 +145,75 @@ describe("buildPipelineStages", () => {
     const stages = buildPipelineStages({ tasks: [] });
     assert.equal(stages[0].status, "pending");
     assert.equal(stages[1].status, "pending");
+  });
+});
+
+
+describe("isHuntKind / huntTaskLabel", () => {
+  it("detects hunt kinds", () => {
+    assert.equal(isHuntKind("hunt"), true);
+    assert.equal(isHuntKind("hunt:injection"), true);
+    assert.equal(isHuntKind("hunt/area"), true);
+    assert.equal(isHuntKind("recon"), false);
+  });
+
+  it("labels area × class from payload", () => {
+    assert.equal(
+      huntTaskLabel({ kind: "hunt", payload: { area: "app", class: "injection" } }),
+      "app × injection"
+    );
+    assert.equal(huntTaskLabel({ kind: "hunt:injection", payload: {} }), "injection");
+  });
+});
+
+describe("summarizeHuntQueue", () => {
+  it("counts and orders feed active → queued → done", () => {
+    const q = summarizeHuntQueue([
+      { id: 1, kind: "hunt", state: "succeeded", payload: { area: "a", class: "x" } },
+      { id: 2, kind: "hunt", state: "queued", payload: { area: "b", class: "y" } },
+      { id: 3, kind: "hunt", state: "leased", payload: { area: "c", class: "z" } },
+      { id: 4, kind: "recon", state: "queued", payload: {} },
+    ]);
+    assert.equal(q.total, 3);
+    assert.equal(q.active, 1);
+    assert.equal(q.queued, 1);
+    assert.equal(q.done, 1);
+    assert.deepEqual(
+      q.feed.map((f) => f.id),
+      [3, 2, 1]
+    );
+  });
+
+  it("empty when no hunts", () => {
+    const q = summarizeHuntQueue([{ id: 1, kind: "recon", state: "queued" }]);
+    assert.equal(q.total, 0);
+    assert.equal(q.feed.length, 0);
+  });
+});
+
+describe("listNeedsHumanFindings", () => {
+  it("filters list and counts map", () => {
+    const fromList = listNeedsHumanFindings([
+      { id: 1, state: "needs_human", title: "A" },
+      { id: 2, state: "confirmed", title: "B" },
+      { id: 3, state: "candidate", title: "C" },
+    ]);
+    assert.equal(fromList.count, 2);
+    assert.equal(fromList.items.length, 2);
+    const fromMap = listNeedsHumanFindings({ needs_human: 4, candidate: 1, confirmed: 2 });
+    assert.equal(fromMap.count, 5);
+    assert.equal(fromMap.items.length, 0);
+  });
+});
+
+describe("summarizeCoverageResidual", () => {
+  it("counts residual empty cells in full matrix", () => {
+    const s = summarizeCoverageResidual({
+      areas: ["a", "b"],
+      classes: ["injection"],
+      cells: [{ area: "a", class: "injection", last_depth: "shallow" }],
+    });
+    assert.equal(s.residual, 2); // a shallow + b empty
+    assert.equal(s.hasFinding, 0);
   });
 });
