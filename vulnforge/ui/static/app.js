@@ -2081,6 +2081,176 @@ function findingStateCounts(snap) {
   return typeof f === "object" && !Array.isArray(f) ? f : {};
 }
 
+/** Mission Overview pure helpers — see mission_overview_helpers.js */
+const {
+  pipelineStageOfKind,
+  summarizePipelineStage,
+  buildPipelineStages,
+  countMissionTaskActivity,
+} = globalThis.MissionOverviewHelpers;
+
+function pipelineStatusLabel(status) {
+  const map = {
+    idle: "Idle",
+    pending: "Pending",
+    queued: "Queued",
+    running: "Running",
+    done: "Done",
+    partial: "In progress",
+    failed: "Failed",
+  };
+  return map[status] || status || "—";
+}
+
+/** Compact KPI strip for Mission Overview — uses existing snap fields only. */
+function renderMissionKpiStrip(snap) {
+  const fCounts = findingStateCounts(snap);
+  const needsHuman = (fCounts.needs_human || 0) + (fCounts.candidate || 0);
+  const confirmed = fCounts.confirmed || 0;
+  const sev = snap.severity || {};
+  const highPlus = (sev.critical || 0) + (sev.high || 0);
+  const taskCounts = Array.isArray(snap.tasks)
+    ? snap.tasks.reduce((acc, x) => {
+        const st = String(x.state || "unknown").toLowerCase();
+        acc[st] = (acc[st] || 0) + 1;
+        return acc;
+      }, {})
+    : { ...(snap.tasks_summary || {}) };
+  const { queued, running } = countMissionTaskActivity(taskCounts);
+  const runner = snap.runner || {};
+  const runnerState = runner.state || (snap.active ? "running" : "idle");
+  const progressPct = Math.round((snap.progress || 0) * 100);
+  const statusTone =
+    runnerState === "running" || snap.active
+      ? "info"
+      : snap.incomplete || snap.has_work
+        ? "warn"
+        : "good";
+
+  const items = [
+    {
+      key: "status",
+      label: "Status",
+      value: stateLabel(runnerState),
+      tone: statusTone,
+      title: "Runner / campaign status",
+      stat: "progress",
+    },
+    {
+      key: "progress",
+      label: "Progress",
+      value: `${progressPct}%`,
+      tone: "info",
+      title: "Task completion progress",
+      stat: "progress",
+    },
+    {
+      key: "tasks",
+      label: "Tasks",
+      value: `${snap.done_tasks || 0}/${snap.total_tasks || 0}`,
+      sub: queued || running ? `${running} run · ${queued} queue` : null,
+      tone: "",
+      title: "Done / total tasks",
+      stat: "tasks",
+    },
+    {
+      key: "queue",
+      label: "Queued",
+      value: String(queued),
+      tone: queued ? "warn" : "",
+      title: "Queued + paused tasks",
+      stat: "tasks",
+    },
+    {
+      key: "needs_human",
+      label: "Needs human",
+      value: String(needsHuman),
+      tone: "warn",
+      title: "Findings awaiting human review",
+      stat: "needs_human",
+    },
+    {
+      key: "confirmed",
+      label: "Confirmed",
+      value: String(confirmed),
+      tone: "good",
+      title: "Human-accepted findings",
+      stat: "confirmed",
+    },
+    {
+      key: "high",
+      label: "High+",
+      value: String(highPlus),
+      tone: highPlus ? "bad" : "",
+      title: "Critical + high severity findings",
+      stat: "high",
+    },
+  ];
+
+  const cells = items
+    .map((it) => {
+      const tone = it.tone ? ` ${it.tone}` : "";
+      const sub = it.sub
+        ? `<div class="mission-kpi-sub">${esc(it.sub)}</div>`
+        : "";
+      return `<button type="button" class="mission-kpi-item stat-link${tone}" data-stat="${esc(it.stat)}" data-kpi="${esc(it.key)}" title="${esc(it.title)}">
+        <div class="mission-kpi-label">${esc(it.label)}</div>
+        <div class="mission-kpi-value">${esc(it.value)}</div>
+        ${sub}
+      </button>`;
+    })
+    .join("");
+
+  return `
+    <div class="mission-kpi-strip" role="group" aria-label="Mission KPIs">
+      ${cells}
+    </div>`;
+}
+
+/** Visual recon → hunt → validate_mech → validate_llm pipeline timeline. */
+function renderPipelineTimeline(snap) {
+  const stages = buildPipelineStages(snap);
+  const nodes = stages
+    .map((s, i) => {
+      const countLabel =
+        s.total > 0
+          ? `${s.done}/${s.total}`
+          : s.status === "done"
+            ? "ready"
+            : "—";
+      const connector =
+        i < stages.length - 1
+          ? `<div class="mission-pipeline-connector" data-from="${esc(s.status)}" aria-hidden="true"></div>`
+          : "";
+      return `
+        <div class="mission-pipeline-stage mission-pipeline-${esc(s.status)}" data-stage="${esc(s.id)}" title="${esc(s.hint)}">
+          <div class="mission-pipeline-dot" aria-hidden="true"></div>
+          <div class="mission-pipeline-body">
+            <div class="mission-pipeline-label">${esc(s.label)}</div>
+            <div class="mission-pipeline-meta">
+              <span class="mission-pipeline-status">${esc(pipelineStatusLabel(s.status))}</span>
+              <span class="mission-pipeline-count mono">${esc(countLabel)}</span>
+            </div>
+          </div>
+        </div>
+        ${connector}`;
+    })
+    .join("");
+
+  return `
+    <div class="mission-pipeline card" role="list" aria-label="Campaign pipeline">
+      <div class="mission-pipeline-head">
+        <h2 class="mission-pipeline-title">Pipeline</h2>
+        <p class="controls-hint mission-pipeline-hint">
+          Recon → hunt → validate (mech, then LLM disprove). Stage state from task kinds on this run.
+        </p>
+      </div>
+      <div class="mission-pipeline-track">
+        ${nodes}
+      </div>
+    </div>`;
+}
+
 function renderOverview(snap) {
   const el = $("#overview-panel");
   if (!el) return;
@@ -2113,6 +2283,8 @@ function renderOverview(snap) {
     : "";
   el.innerHTML = `
     ${vllmFootgun}
+    ${renderMissionKpiStrip(snap)}
+    ${renderPipelineTimeline(snap)}
     <div class="overview-grid overview-grid-3">
       <div class="card">
         <h2>Campaign</h2>
@@ -2198,7 +2370,7 @@ function renderOverview(snap) {
     window.VulnForgeModes?.setMode?.("mission", "arch");
     setTimeout(() => $("#codemap-card")?.scrollIntoView?.({ block: "nearest", behavior: "smooth" }), 60);
   });
-  el.querySelectorAll(".overview-stat").forEach((btn) => {
+  el.querySelectorAll(".overview-stat, .mission-kpi-item[data-stat]").forEach((btn) => {
     btn.addEventListener("click", () => goStatLink(btn.getAttribute("data-stat")));
   });
 }

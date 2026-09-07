@@ -71,7 +71,8 @@
         <button class="tab" data-tab="arch" type="button" role="tab">Architecture</button>
       </div>
       <div class="tab-panel active" id="panel-overview">
-        <div id="overview-panel"></div>
+        <!-- Mission Overview cockpit: KPI strip + pipeline timeline + cards (filled by app.js) -->
+        <div id="overview-panel" class="mission-overview-cockpit" aria-label="Mission overview"></div>
       </div>
       <div class="tab-panel" id="panel-arch">
         <div id="arch-panel"></div>
@@ -598,6 +599,7 @@
     </div>
   </div>
 
+  <script src="/static/mission_overview_helpers.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/explorer.js"></script>
   <script src="/static/report.js"></script>
