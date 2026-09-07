@@ -4885,7 +4885,7 @@ function mountExplorer() {
             <label for="explorer-op-notes" class="controls-hint">Notes for hunt (optional)</label>
             <input id="explorer-op-notes" type="text" placeholder="Extra guidance for this selection hunt..." style="width:100%" />
           </div>
-          <pre class="code-view" id="explorer-code" tabindex="0">Open a file from the tree...</pre>
+          <div class="code-view monaco-host" id="explorer-monaco" tabindex="0" role="region" aria-label="Target file viewer">Open a file from the tree...</div>
           <div class="controls-hint" id="explorer-sel-meta">Select text to set a line range for a candidate hunt.</div>
         </div>
       </div>

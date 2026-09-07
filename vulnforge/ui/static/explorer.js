@@ -1,4 +1,4 @@
-/* VulnForge Target Explorer  -  polished research surface */
+/* VulnForge Target Explorer — Monaco code viewer (Ticket 5) */
 
 (function () {
   const $ = (sel, el = document) => el.querySelector(sel);
@@ -13,6 +13,10 @@
     treeLoaded: false,
     entries: [],
     lastTaskId: null,
+    editor: null,
+    model: null,
+    decoIds: [],
+    focusLine: null,
   };
 
   function esc(s) {
@@ -84,11 +88,141 @@
     return html;
   }
 
+  function languageFromPath(path) {
+    if (window.VulnForgeMonaco?.languageFromPath) {
+      return window.VulnForgeMonaco.languageFromPath(path);
+    }
+    return "plaintext";
+  }
+
+  function disposeEditor() {
+    if (state.model) {
+      try {
+        state.model.dispose();
+      } catch (_) {}
+      state.model = null;
+    }
+    if (state.editor) {
+      try {
+        state.editor.dispose();
+      } catch (_) {}
+      state.editor = null;
+    }
+    state.decoIds = [];
+  }
+
+  async function ensureEditor() {
+    const host = $("#explorer-monaco");
+    if (!host) return null;
+    if (state.editor && state.editor.getDomNode()?.isConnected) {
+      return state.editor;
+    }
+    disposeEditor();
+    const monacoApi = window.VulnForgeMonaco;
+    if (!monacoApi?.loadMonaco) {
+      host.innerHTML = `<pre class="code-view-fallback">Monaco loader unavailable. Open a file after scripts load.</pre>`;
+      return null;
+    }
+    host.innerHTML = "";
+    let monaco;
+    try {
+      monaco = await monacoApi.loadMonaco();
+    } catch (e) {
+      host.innerHTML = `<pre class="code-view-fallback">Monaco failed to load (${esc(
+        e.message || e
+      )}). Check network/CDN.</pre>`;
+      return null;
+    }
+    monacoApi.defineCockpitTheme?.(monaco);
+    monaco.editor.setTheme("vulnforge-cockpit");
+    state.editor = monaco.editor.create(host, {
+      value: "",
+      language: "plaintext",
+      readOnly: true,
+      automaticLayout: true,
+      minimap: { enabled: false },
+      scrollBeyondLastLine: false,
+      fontFamily: 'var(--mono), "Cascadia Code", Consolas, monospace',
+      fontSize: 12,
+      lineNumbers: "on",
+      renderLineHighlight: "line",
+      wordWrap: "off",
+      contextmenu: false,
+      folding: true,
+      padding: { top: 8, bottom: 8 },
+      overviewRulerLanes: 0,
+      scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
+    });
+    state.editor.onDidChangeCursorSelection(() => updateSelectionFromEditor());
+    return state.editor;
+  }
+
+  function setEditorContent(path, content, focusLine) {
+    const monaco = window.monaco;
+    if (!state.editor || !monaco) return;
+    const lang = languageFromPath(path);
+    const uri = monaco.Uri.parse("inmemory://vf-target/" + String(path || "file").replace(/\\/g, "/"));
+    if (state.model) {
+      try {
+        state.model.dispose();
+      } catch (_) {}
+      state.model = null;
+    }
+    // Reuse URI if a stale model lingers
+    const existing = monaco.editor.getModel(uri);
+    if (existing) existing.dispose();
+    state.model = monaco.editor.createModel(content || "", lang, uri);
+    state.editor.setModel(state.model);
+    state.decoIds = [];
+    if (focusLine != null && Number(focusLine) > 0) {
+      highlightFocusLine(Number(focusLine));
+    }
+  }
+
+  function highlightFocusLine(line) {
+    if (!state.editor || !window.monaco) return;
+    const n = Math.max(1, Number(line) || 1);
+    state.focusLine = n;
+    state.decoIds = state.editor.deltaDecorations(state.decoIds || [], [
+      {
+        range: new window.monaco.Range(n, 1, n, 1),
+        options: {
+          isWholeLine: true,
+          className: "vf-monaco-focus-line",
+          linesDecorationsClassName: "vf-monaco-focus-glyph",
+        },
+      },
+    ]);
+    state.editor.revealLineInCenter(n);
+    state.editor.setPosition({ lineNumber: n, column: 1 });
+  }
+
+  function updateSelectionFromEditor() {
+    const meta = $("#explorer-sel-meta");
+    if (!state.editor || !state.openFile) return;
+    const sel = state.editor.getSelection();
+    if (!sel || sel.isEmpty()) {
+      state.selRange = null;
+      if (meta)
+        meta.textContent =
+          "Whole file ready to hunt  -  or select lines for a tighter scope.";
+      updateHuntButton();
+      return;
+    }
+    const start = Math.min(sel.startLineNumber, sel.endLineNumber);
+    const end = Math.max(sel.startLineNumber, sel.endLineNumber);
+    state.selRange = { start_line: start, end_line: end };
+    if (meta)
+      meta.textContent = `Selection: lines ${start}-${end} in ${state.openFile}`;
+    updateHuntButton();
+  }
+
   function mount() {
     const el = $("#explorer-panel");
     if (!el) return;
     const prevClass = $("#explorer-hunt-class")?.value || "wildcard";
     const prevNotes = $("#explorer-op-notes")?.value || "";
+    disposeEditor();
 
     el.innerHTML = `
     <div class="card explorer-card">
@@ -122,7 +256,7 @@
             </div>
             <div class="controls-hint" id="explorer-last-task"></div>
           </div>
-          <pre class="code-view" id="explorer-code" tabindex="0">Open a file from the tree...</pre>
+          <div class="code-view monaco-host" id="explorer-monaco" tabindex="0" role="region" aria-label="Target file viewer">Open a file from the tree...</div>
         </div>
       </div>
     </div>`;
@@ -149,17 +283,15 @@
       loadTree();
     });
     $("#explorer-hunt-sel")?.addEventListener("click", enqueueHunt);
-    const code = $("#explorer-code");
-    code?.addEventListener("mouseup", updateSelection);
-    code?.addEventListener("keyup", updateSelection);
 
     state.mounted = true;
     state.treeLoaded = false;
-    // Export flags for legacy app.js
     window.explorerMounted = true;
     window.explorerTreeLoaded = false;
+    ensureEditor().then(() => {
+      if (state.openFile) loadFile(state.openFile, state.focusLine);
+    });
     loadTree();
-    if (state.openFile) loadFile(state.openFile);
     updateHuntButton();
   }
 
@@ -189,7 +321,6 @@
       });
       state.treeLoaded = true;
       window.explorerTreeLoaded = true;
-      // Single-file / PE binary runs: only one leaf — open it automatically
       if (data.single_file && state.entries.length === 1 && !state.entries[0].is_dir) {
         const only = state.entries[0].name;
         if (!state.openFile || normalize(state.openFile) !== normalize(only)) {
@@ -198,10 +329,7 @@
         }
       }
       renderTreeList();
-      if (data.hint && list) {
-        // soft banner above tree when re-rendered empty is handled in renderTreeList
-        state._targetHint = data.hint || "";
-      }
+      if (data.hint) state._targetHint = data.hint || "";
     } catch (e) {
       list.innerHTML = `<div class="empty" style="color:var(--bad)">${esc(e.message)}</div>`;
     }
@@ -276,91 +404,46 @@
   async function loadFile(path, focusLine) {
     state.openFile = path;
     state.selRange = null;
+    state.focusLine = focusLine != null ? Number(focusLine) : null;
     window.explorerOpenFile = path;
     const label = $("#explorer-file-label");
-    const code = $("#explorer-code");
     if (label) label.textContent = path;
-    if (code) code.textContent = "Loading...";
+    const host = $("#explorer-monaco");
+    if (host && !state.editor) host.textContent = "Loading...";
     updateHuntButton();
     try {
       const data = await api(
         `${runApiBase()}/target/read?path=${encodeURIComponent(path)}`
       );
-      const lines = (data.content || "").split("\n");
-      const base = data.start_line || 1;
-      if (code) {
-        code.innerHTML = lines
+      const content = data.content || "";
+      await ensureEditor();
+      if (state.editor) {
+        setEditorContent(path, content, state.focusLine);
+      } else if (host) {
+        // Fallback: plain pre if Monaco unavailable
+        const lines = content.split("\n");
+        const base = data.start_line || 1;
+        host.innerHTML = `<pre class="code-view-fallback">${lines
           .map((ln, i) => {
             const n = base + i;
             return `<div class="code-line" data-line="${n}"><span class="ln">${n}</span><span class="tx">${esc(ln)}</span></div>`;
           })
-          .join("");
+          .join("")}</pre>`;
+        if (state.focusLine != null) {
+          const el = host.querySelector(`.code-line[data-line="${state.focusLine}"]`);
+          el?.classList.add("sel-hl");
+          el?.scrollIntoView({ block: "center" });
+        }
       }
       const meta = $("#explorer-sel-meta");
       if (meta) {
-        meta.textContent = "Whole file ready to hunt  -  or select lines for a tighter scope.";
+        meta.textContent =
+          "Whole file ready to hunt  -  or select lines for a tighter scope.";
       }
       renderTreeList();
-      if (focusLine != null && code) {
-        const el = code.querySelector(`.code-line[data-line="${focusLine}"]`);
-        if (el) {
-          el.classList.add("sel-hl");
-          el.scrollIntoView({ block: "center" });
-        }
-      }
       updateHuntButton();
     } catch (e) {
-      if (code) code.textContent = e.message;
-    }
-  }
-
-  function updateSelection() {
-    const code = $("#explorer-code");
-    const meta = $("#explorer-sel-meta");
-    if (!code || !state.openFile) return;
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !code.contains(sel.anchorNode)) {
-      state.selRange = null;
-      clearLineHighlight();
-      if (meta)
-        meta.textContent = "Whole file ready to hunt  -  or select lines for a tighter scope.";
-      updateHuntButton();
-      return;
-    }
-    const getLine = (node) => {
-      let el = node.nodeType === 3 ? node.parentElement : node;
-      while (el && el !== code) {
-        if (el.dataset && el.dataset.line) return parseInt(el.dataset.line, 10);
-        el = el.parentElement;
-      }
-      return null;
-    };
-    let a = getLine(sel.anchorNode);
-    let b = getLine(sel.focusNode);
-    if (a == null || b == null) {
-      state.selRange = null;
-      updateHuntButton();
-      return;
-    }
-    const start = Math.min(a, b);
-    const end = Math.max(a, b);
-    state.selRange = { start_line: start, end_line: end };
-    highlightLines(start, end);
-    if (meta)
-      meta.textContent = `Selection: lines ${start}-${end} in ${state.openFile}`;
-    updateHuntButton();
-  }
-
-  function clearLineHighlight() {
-    $$("#explorer-code .code-line.sel-hl").forEach((el) =>
-      el.classList.remove("sel-hl")
-    );
-  }
-
-  function highlightLines(start, end) {
-    clearLineHighlight();
-    for (let n = start; n <= end; n++) {
-      $(`#explorer-code .code-line[data-line="${n}"]`)?.classList.add("sel-hl");
+      if (host) host.textContent = e.message;
     }
   }
 
@@ -374,6 +457,7 @@
       toast("Open a file first", true);
       return;
     }
+    updateSelectionFromEditor();
     const cls = $("#explorer-hunt-class")?.value || "wildcard";
     const notes = ($("#explorer-op-notes")?.value || "").trim();
     const body = {
@@ -417,7 +501,6 @@
     loadTree().then(() => loadFile(norm, line != null ? Number(line) : undefined));
   }
 
-  // Public API
   window.VulnForgeExplorer = {
     mount,
     ensureMounted,
@@ -429,7 +512,6 @@
     },
   };
 
-  // Override legacy symbols used by app.js
   window.mountExplorer = mount;
   window.renderExplorer = mount;
   window.loadExplorerTree = loadTree;
@@ -437,15 +519,11 @@
   window.loadArchTree = loadTree;
   window.loadArchFile = loadFile;
 
-  // Auto-mount if panel visible on load
   function boot() {
     if (document.body?.dataset?.page !== "run") return;
-    // Delay so app.js can set globals first
     setTimeout(() => {
-      // Mode panel is data-mode-panel="explorer" with #explorer-panel (not legacy #panel-explorer)
       const explorerMode = document.querySelector('.mode-panel[data-mode-panel="explorer"]');
       if (explorerMode?.classList.contains("active") || $("#explorer-panel")) {
-        // Only auto-mount when explorer mode is active
         if (explorerMode?.classList.contains("active")) ensureMounted();
       }
     }, 0);
