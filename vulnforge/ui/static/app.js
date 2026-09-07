@@ -2081,115 +2081,13 @@ function findingStateCounts(snap) {
   return typeof f === "object" && !Array.isArray(f) ? f : {};
 }
 
-/** Classify a task kind into pipeline stage: recon | hunt | validate_mech | validate_llm | other. */
-function pipelineStageOfKind(kind) {
-  const k = String(kind || "").toLowerCase();
-  if (k === "recon" || k.startsWith("recon:") || k.startsWith("recon/")) return "recon";
-  if (k === "hunt" || k.startsWith("hunt:") || k.startsWith("hunt/")) return "hunt";
-  if (k === "validate_mech" || k.startsWith("validate_mech")) return "validate_mech";
-  if (k === "validate_llm" || k.startsWith("validate_llm")) return "validate_llm";
-  return "other";
-}
-
-const PIPELINE_DONE_STATES = new Set([
-  "succeeded",
-  "done",
-  "failed_task",
-  "failed_infra",
-  "deadletter",
-  "cancelled",
-  "blocked",
-]);
-const PIPELINE_ACTIVE_STATES = new Set(["leased", "running"]);
-const PIPELINE_QUEUED_STATES = new Set(["queued", "paused"]);
-
-/** Aggregate task list for one pipeline stage. */
-function summarizePipelineStage(tasks, stageId, extraDone) {
-  const mine = (tasks || []).filter((t) => pipelineStageOfKind(t.kind) === stageId);
-  let queued = 0;
-  let active = 0;
-  let done = 0;
-  let failed = 0;
-  for (const t of mine) {
-    const st = String(t.state || "").toLowerCase();
-    if (PIPELINE_ACTIVE_STATES.has(st)) active += 1;
-    else if (PIPELINE_QUEUED_STATES.has(st)) queued += 1;
-    else if (st === "failed_task" || st === "failed_infra" || st === "deadletter") {
-      failed += 1;
-      done += 1;
-    } else if (PIPELINE_DONE_STATES.has(st) || st === "succeeded") {
-      done += 1;
-    }
-  }
-  const total = mine.length;
-  let status = "idle"; // idle | pending | queued | running | done | partial | failed
-  if (extraDone && total === 0) {
-    status = "done";
-  } else if (total === 0) {
-    status = "pending";
-  } else if (active > 0) {
-    status = "running";
-  } else if (queued > 0 && done === 0) {
-    status = "queued";
-  } else if (queued > 0 && done > 0) {
-    status = "partial";
-  } else if (failed > 0 && failed === total) {
-    status = "failed";
-  } else if (done === total) {
-    status = failed > 0 ? "partial" : "done";
-  } else {
-    status = "partial";
-  }
-  return { id: stageId, total, queued, active, done, failed, status };
-}
-
-/**
- * Build recon → hunt → validate_mech → validate_llm stage summaries from snap.tasks
- * plus architecture/findings signals when task rows are sparse.
- */
-function buildPipelineStages(snap) {
-  const tasks = Array.isArray(snap.tasks) ? snap.tasks : [];
-  const hasArch = !!(
-    snap.has_architecture ||
-    snap.architecture_summary?.has_architecture ||
-    (snap.architecture && (snap.architecture.summary || "").trim())
-  );
-  const recon = summarizePipelineStage(tasks, "recon", hasArch);
-  // If architecture exists but recon tasks still queued (re-recon), keep running/queued.
-  if (hasArch && recon.status === "pending") recon.status = "done";
-
-  const hunt = summarizePipelineStage(tasks, "hunt", false);
-  const mech = summarizePipelineStage(tasks, "validate_mech", false);
-  const vllm = summarizePipelineStage(tasks, "validate_llm", false);
-
-  // Cascade "pending" labels: later stages stay pending until earlier work exists.
-  const priorTouched = (s) => s.total > 0 || s.status === "done" || s.status === "running" || s.status === "partial" || s.status === "failed" || s.status === "queued";
-  if (!priorTouched(recon) && hunt.status === "pending") {
-    /* leave hunt pending */
-  }
-  return [
-    {
-      ...recon,
-      label: "Recon",
-      hint: "Architecture map (LLM)",
-    },
-    {
-      ...hunt,
-      label: "Hunt",
-      hint: "Area × skill investigation (LLM)",
-    },
-    {
-      ...mech,
-      label: "Validate · mech",
-      hint: "Mechanical gates (no LLM)",
-    },
-    {
-      ...vllm,
-      label: "Validate · LLM",
-      hint: "Dual-disprove (never auto-confirms)",
-    },
-  ];
-}
+/** Mission Overview pure helpers — see mission_overview_helpers.js */
+const {
+  pipelineStageOfKind,
+  summarizePipelineStage,
+  buildPipelineStages,
+  countMissionTaskActivity,
+} = globalThis.MissionOverviewHelpers;
 
 function pipelineStatusLabel(status) {
   const map = {
@@ -2218,9 +2116,7 @@ function renderMissionKpiStrip(snap) {
         return acc;
       }, {})
     : { ...(snap.tasks_summary || {}) };
-  const queued =
-    (taskCounts.queued || 0) + (taskCounts.paused || 0);
-  const running = taskCounts.leased || taskCounts.running || 0;
+  const { queued, running } = countMissionTaskActivity(taskCounts);
   const runner = snap.runner || {};
   const runnerState = runner.state || (snap.active ? "running" : "idle");
   const progressPct = Math.round((snap.progress || 0) * 100);
