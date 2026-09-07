@@ -10,11 +10,14 @@ import os
 
 import pytest
 
-# Live only — skip unless explicitly enabled
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("VF_LIVE"),
-    reason="Set VF_LIVE=1 for live fixture recall (optional; not CI gate)",
-)
+# Live only — marked live so CI `-m "not live"` deselects; skip unless VF_LIVE
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        not os.environ.get("VF_LIVE"),
+        reason="Set VF_LIVE=1 for live fixture recall (optional; not CI gate)",
+    ),
+]
 
 
 def test_live_recall_placeholder():
