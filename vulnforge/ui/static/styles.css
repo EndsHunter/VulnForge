@@ -1191,6 +1191,91 @@ button.cov-plan-action.is-current {
   margin-bottom: 0;
 }
 
+/* Architecture diagram v0 (inferred SVG) */
+.arch-diagram-card {
+  border-left: 3px solid var(--arch-components, #ff3d6e);
+}
+.arch-diagram-disclaimer {
+  margin: 0 0 0.65rem;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.arch-diagram-viewport {
+  width: 100%;
+  overflow: auto;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg, #121018) 88%, #1a1420);
+  border: 1px solid var(--border);
+}
+.arch-diag-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 280px;
+  color: var(--muted);
+}
+.arch-diag-edge {
+  stroke: color-mix(in srgb, var(--muted) 55%, transparent);
+  stroke-width: 1.5;
+  fill: none;
+}
+.arch-diag-edge-boundary {
+  stroke: var(--arch-boundaries, #3dd6c6);
+  stroke-dasharray: 5 4;
+}
+.arch-diag-edge-path {
+  stroke: var(--arch-components, #ff3d6e);
+  stroke-opacity: 0.65;
+}
+.arch-diag-edge-label {
+  fill: var(--muted);
+  font-size: 9px;
+  font-family: inherit;
+  pointer-events: none;
+}
+.arch-diag-node-circle {
+  fill: color-mix(in srgb, var(--arch-components, #ff3d6e) 18%, var(--bg-card, #1a1420));
+  stroke: var(--arch-components, #ff3d6e);
+  stroke-width: 1.75;
+}
+.arch-diag-node-label {
+  fill: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+  font-family: inherit;
+  pointer-events: none;
+}
+.arch-diag-node {
+  cursor: default;
+}
+.arch-diag-node-clickable {
+  cursor: pointer;
+}
+.arch-diag-node-clickable:hover .arch-diag-node-circle,
+.arch-diag-node-clickable:focus .arch-diag-node-circle {
+  fill: color-mix(in srgb, var(--arch-components, #ff3d6e) 32%, var(--bg-card, #1a1420));
+  stroke-width: 2.25;
+}
+.arch-diag-node:focus {
+  outline: none;
+}
+.arch-diag-node:focus .arch-diag-node-circle {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--arch-components, #ff3d6e) 60%, transparent));
+}
+.arch-diag-empty-text {
+  fill: var(--muted);
+  font-size: 13px;
+  font-family: inherit;
+}
+.arch-diagram-empty {
+  padding: 0.75rem 0.25rem 0.25rem;
+}
+.arch-diagram-edge-note {
+  margin: 0.55rem 0 0;
+}
+
 /* Component cards */
 .arch-comp-grid {
   display: grid;
