@@ -126,11 +126,169 @@
     return { queued, running };
   }
 
+  /** True when task kind is a hunt (hunt / hunt:class / hunt/…). */
+  function isHuntKind(kind) {
+    const k = String(kind || "").toLowerCase();
+    return k === "hunt" || k.startsWith("hunt:") || k.startsWith("hunt/");
+  }
+
+  /** Compact area × class label for a hunt task row. */
+  function huntTaskLabel(task) {
+    const p = (task && task.payload) || {};
+    const area = String(p.area || "").trim();
+    const cls = String(p.class || p.weakness_class || "").trim();
+    if (area && cls) return area + " × " + cls;
+    if (cls) return cls;
+    if (area) return area;
+    const k = String((task && task.kind) || "");
+    if (k.toLowerCase().startsWith("hunt:")) return k.slice(5) || "hunt";
+    if (k.toLowerCase().startsWith("hunt/")) return k.slice(5) || "hunt";
+    return "hunt";
+  }
+
+  const FEED_ACTIVE = new Set(["leased", "running"]);
+  const FEED_QUEUED = new Set(["queued", "paused"]);
+  const FEED_DONE = new Set([
+    "succeeded",
+    "done",
+    "failed_task",
+    "failed_infra",
+    "deadletter",
+    "cancelled",
+    "blocked",
+  ]);
+
+  function huntFeedRank(state) {
+    const st = String(state || "").toLowerCase();
+    if (FEED_ACTIVE.has(st)) return 0;
+    if (FEED_QUEUED.has(st)) return 1;
+    if (FEED_DONE.has(st)) return 2;
+    return 3;
+  }
+
+  /**
+   * Hunt queue counts + compact live feed from snap.tasks.
+   * Feed prefers active → queued → recent done (by id desc within rank).
+   */
+  function summarizeHuntQueue(tasks, opts) {
+    const limit = (opts && opts.limit) || 8;
+    const all = Array.isArray(tasks) ? tasks : [];
+    const hunts = all.filter((t) => isHuntKind(t.kind));
+    const counts = summarizePipelineStage(hunts, "hunt", false);
+    const feed = hunts
+      .slice()
+      .sort((a, b) => {
+        const ra = huntFeedRank(a.state);
+        const rb = huntFeedRank(b.state);
+        if (ra !== rb) return ra - rb;
+        return (Number(b.id) || 0) - (Number(a.id) || 0);
+      })
+      .slice(0, limit)
+      .map((t) => ({
+        id: t.id,
+        state: String(t.state || "").toLowerCase(),
+        kind: t.kind,
+        label: huntTaskLabel(t),
+        has_transcript: !!t.has_transcript,
+        area: (t.payload && t.payload.area) || "",
+        class: (t.payload && (t.payload.class || t.payload.weakness_class)) || "",
+      }));
+    return {
+      total: counts.total,
+      queued: counts.queued,
+      active: counts.active,
+      done: counts.done,
+      failed: counts.failed,
+      status: counts.status,
+      feed,
+    };
+  }
+
+  /**
+   * needs_human + candidate findings for the strip.
+   * findings may be a list (full snap) or a state→count map (SSE card).
+   */
+  function listNeedsHumanFindings(findings, opts) {
+    const limit = (opts && opts.limit) || 6;
+    if (Array.isArray(findings)) {
+      const items = findings.filter((f) => {
+        const st = String((f && f.state) || "").toLowerCase();
+        return st === "needs_human" || st === "candidate";
+      });
+      const sliced = items.slice(0, limit).map((f) => ({
+        id: f.id,
+        state: String(f.state || "").toLowerCase(),
+        title: f.title || f.stable_key || ("Finding #" + f.id),
+        severity: f.severity || "",
+        class: f.weakness_class || f.class || f.hunt_class || "",
+      }));
+      return { count: items.length, items: sliced };
+    }
+    const counts = findings && typeof findings === "object" ? findings : {};
+    const count = (counts.needs_human || 0) + (counts.candidate || 0);
+    return { count, items: [] };
+  }
+
+  /**
+   * Lightweight residual / finding cell counts from snap.coverage
+   * (missing area×class cells count as residual empty).
+   */
+  function summarizeCoverageResidual(cov) {
+    const areas = (cov && cov.areas) || [];
+    const classes = (cov && cov.classes) || [];
+    const cells = (cov && cov.cells) || [];
+    const map = Object.create(null);
+    for (const c of cells) {
+      map[String(c.area || "") + "\0" + String(c.class || "")] = c;
+    }
+    const residualDepths = new Set(["", "planned", "shallow", "none", "aborted"]);
+    const findingDepths = new Set(["candidate", "confirmed", "needs_human"]);
+    let residual = 0;
+    let hasFinding = 0;
+    let empty = 0;
+    if (areas.length && classes.length) {
+      for (const a of areas) {
+        for (const cl of classes) {
+          const cell = map[String(a) + "\0" + String(cl)];
+          const d = String((cell && (cell.last_depth || cell.depth)) || "").toLowerCase();
+          if (!cell || residualDepths.has(d)) {
+            residual += 1;
+            if (!cell || d === "" || d === "planned") empty += 1;
+          } else if (findingDepths.has(d)) {
+            hasFinding += 1;
+          }
+        }
+      }
+    } else {
+      for (const c of cells) {
+        const d = String(c.last_depth || c.depth || "").toLowerCase();
+        if (findingDepths.has(d)) hasFinding += 1;
+        else {
+          residual += 1;
+          if (!d || d === "planned") empty += 1;
+        }
+      }
+    }
+    return {
+      residual,
+      hasFinding,
+      empty,
+      areas: areas.length,
+      classes: classes.length,
+      cells: cells.length,
+    };
+  }
+
   return {
     pipelineStageOfKind,
     summarizePipelineStage,
     buildPipelineStages,
     countMissionTaskActivity,
+    isHuntKind,
+    huntTaskLabel,
+    summarizeHuntQueue,
+    listNeedsHumanFindings,
+    summarizeCoverageResidual,
     PIPELINE_DONE_STATES,
     PIPELINE_ACTIVE_STATES,
     PIPELINE_QUEUED_STATES,

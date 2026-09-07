@@ -2087,6 +2087,11 @@ const {
   summarizePipelineStage,
   buildPipelineStages,
   countMissionTaskActivity,
+  isHuntKind,
+  huntTaskLabel,
+  summarizeHuntQueue,
+  listNeedsHumanFindings,
+  summarizeCoverageResidual,
 } = globalThis.MissionOverviewHelpers;
 
 function pipelineStatusLabel(status) {
@@ -2206,6 +2211,205 @@ function renderMissionKpiStrip(snap) {
       ${cells}
     </div>`;
 }
+
+/** Compact Hunts strip: live hunt feed + needs_human above coverage matrix. */
+function renderHuntsStripHtml(snap, opts = {}) {
+  const variant = opts.variant || "mission"; // mission | hunts
+  const includeMatrix = !!opts.includeMatrix;
+  const showOpenHunts = opts.showOpenHunts !== false && variant === "mission";
+  const queue = summarizeHuntQueue(snap?.tasks, { limit: opts.feedLimit || 8 });
+  const needs = listNeedsHumanFindings(snap?.findings, { limit: opts.needsLimit || 6 });
+  const residual = summarizeCoverageResidual(snap?.coverage);
+  const empty =
+    queue.total === 0 &&
+    needs.count === 0 &&
+    residual.cells === 0 &&
+    residual.areas === 0;
+
+  const stat = (label, value, tone, title) => {
+    const toneCls = tone ? ` ${tone}` : "";
+    return `<div class="hunts-strip-stat${toneCls}" title="${esc(title || label)}">
+      <div class="hunts-strip-stat-label">${esc(label)}</div>
+      <div class="hunts-strip-stat-value mono">${esc(String(value))}</div>
+    </div>`;
+  };
+
+  const feedRows = queue.feed.length
+    ? queue.feed
+        .map((t) => {
+          const open =
+            t.has_transcript && t.id != null
+              ? `<button type="button" class="btn btn-ghost btn-sm hunts-strip-open-log" data-tid="${esc(String(t.id))}">Log</button>`
+              : t.id != null
+                ? `<button type="button" class="btn btn-ghost btn-sm hunts-strip-open-tasks" data-tid="${esc(String(t.id))}">Tasks</button>`
+                : "";
+          const cellBtn =
+            t.area && t.class
+              ? `<button type="button" class="btn btn-ghost btn-sm hunts-strip-open-cell" data-area="${esc(t.area)}" data-class="${esc(t.class)}" title="Open cell in Hunts">Cell</button>`
+              : "";
+          return `<li class="hunts-strip-feed-row" data-state="${esc(t.state)}">
+            <span class="mono hunts-strip-tid">#${esc(String(t.id))}</span>
+            ${badge(t.state)}
+            <span class="hunts-strip-feed-label" title="${esc(t.label)}">${esc(t.label)}</span>
+            <span class="hunts-strip-feed-actions">${cellBtn}${open}</span>
+          </li>`;
+        })
+        .join("")
+    : `<li class="controls-hint hunts-strip-empty-row">${
+        queue.total === 0
+          ? "No hunts yet — run recon or open Hunts to plan area × skill batches."
+          : "No recent hunt activity in this snapshot."
+      }</li>`;
+
+  const needsRows = needs.items.length
+    ? needs.items
+        .map((f) => {
+          const sev = f.severity
+            ? `<span class="sev-pill ${esc(String(f.severity).toLowerCase())}">${esc(f.severity)}</span>`
+            : "";
+          const cls = f.class
+            ? `<span class="mono controls-hint">${esc(f.class)}</span>`
+            : "";
+          return `<li class="hunts-strip-needs-row">
+            ${badge(f.state)}
+            ${sev}
+            <button type="button" class="btn btn-ghost btn-sm hunts-strip-open-finding" data-fid="${esc(String(f.id))}">#${esc(String(f.id))} ${esc(f.title)}</button>
+            ${cls}
+          </li>`;
+        })
+        .join("")
+    : `<li class="controls-hint hunts-strip-empty-row">${
+        needs.count
+          ? `${needs.count} awaiting review (open Report for full list).`
+          : "No needs_human / candidate findings yet."
+      }</li>`;
+
+  const openBtn = showOpenHunts
+    ? `<button type="button" class="btn btn-sm" id="hunts-strip-go-hunts">Open Hunts</button>`
+    : `<button type="button" class="btn btn-sm" id="hunts-strip-go-tasks">Open Tasks</button>`;
+
+  const matrixBlock = includeMatrix
+    ? `<div class="hunts-strip-matrix" id="coverage-inline">${renderCoverageHtml(snap.coverage, { interactive: false })}</div>`
+    : "";
+
+  const hint =
+    variant === "mission"
+      ? "Live hunt queue and needs_human without leaving Mission. Matrix below is preview-only."
+      : "Live hunt queue and needs_human — residual matrix below.";
+
+  return `
+    <section class="hunts-strip card hunts-strip-${esc(variant)}" aria-label="Hunts strip">
+      <div class="hunts-strip-head">
+        <div class="hunts-strip-head-text">
+          <h2 class="hunts-strip-title">${esc(variant === "hunts" ? "Live queue" : "Hunts")}</h2>
+          <p class="controls-hint hunts-strip-hint">${esc(hint)}</p>
+        </div>
+        <div class="hunts-strip-head-actions toolbar">${openBtn}</div>
+      </div>
+      <div class="hunts-strip-stats" role="group" aria-label="Hunt queue counts">
+        ${stat("Queued", queue.queued, queue.queued ? "warn" : "", "Queued + paused hunt tasks")}
+        ${stat("Running", queue.active, queue.active ? "info" : "", "Leased / running hunt tasks")}
+        ${stat("Done", queue.done, "", "Completed hunt tasks (incl. failed)")}
+        ${stat("Residual", residual.residual, residual.residual ? "warn" : "", "Empty / planned / shallow / none / aborted cells")}
+        <button type="button" class="hunts-strip-stat warn hunts-strip-stat-btn" data-stat="needs_human" title="Open Report: needs human review">
+          <div class="hunts-strip-stat-label">Needs human</div>
+          <div class="hunts-strip-stat-value mono">${esc(String(needs.count))}</div>
+        </button>
+      </div>
+      ${
+        empty
+          ? `<div class="hunts-strip-empty empty"><div class="empty-ico">*</div>No hunts yet. Run recon (enqueue hunts) or open Hunts to plan area × skill batches.</div>`
+          : `<div class="hunts-strip-body">
+        <div class="hunts-strip-feed-panel">
+          <h3 class="hunts-strip-subhead">Live feed</h3>
+          <ul class="hunts-strip-feed">${feedRows}</ul>
+        </div>
+        <div class="hunts-strip-needs-panel">
+          <h3 class="hunts-strip-subhead">Needs human</h3>
+          <ul class="hunts-strip-needs">${needsRows}</ul>
+        </div>
+      </div>`
+      }
+      ${matrixBlock}
+    </section>`;
+}
+
+function bindHuntsStrip(root) {
+  const scope = root || document;
+  scope.querySelector("#hunts-strip-go-hunts")?.addEventListener("click", () => {
+    window.VulnForgeModes?.goHunts?.() ||
+      window.VulnForgeModes?.goCoverage?.() ||
+      window.VulnForgeModes?.setMode?.("hunts");
+  });
+  scope.querySelector("#hunts-strip-go-tasks")?.addEventListener("click", () => {
+    window.VulnForgeModes?.setMode?.("audit", "tasks");
+  });
+  scope.querySelectorAll(".hunts-strip-stat-btn[data-stat]").forEach((btn) => {
+    btn.addEventListener("click", () => goStatLink(btn.getAttribute("data-stat")));
+  });
+  scope.querySelectorAll(".hunts-strip-open-finding").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fid = btn.getAttribute("data-fid");
+      window.VulnForgeModes?.setMode?.("report", "report");
+      if (window.VulnForgeReport?.openFinding) {
+        window.VulnForgeReport.openFinding(fid);
+      } else {
+        window.VulnForgeReport?.setFilter?.("needs_human");
+      }
+    });
+  });
+  scope.querySelectorAll(".hunts-strip-open-log").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tid = btn.getAttribute("data-tid");
+      if (tid && typeof window.openTranscript === "function") {
+        try {
+          window.openTranscript(Number(tid));
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+  });
+  scope.querySelectorAll(".hunts-strip-open-tasks").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      window.VulnForgeModes?.setMode?.("audit", "tasks");
+    });
+  });
+  scope.querySelectorAll(".hunts-strip-open-cell").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const area = btn.getAttribute("data-area");
+      const cls = btn.getAttribute("data-class");
+      window.VulnForgeModes?.goHunts?.() || window.VulnForgeModes?.setMode?.("hunts");
+      if (area && cls && typeof window.openCoverageCell === "function") {
+        setTimeout(() => window.openCoverageCell(area, cls), 60);
+      } else if (area && cls && window.VulnForgeCoverage?.openCell) {
+        setTimeout(() => window.VulnForgeCoverage.openCell(area, cls), 60);
+      }
+    });
+  });
+}
+
+function paintHuntsModeStrip(snap) {
+  const el = document.querySelector("#hunts-strip");
+  if (!el) return;
+  el.hidden = false;
+  el.innerHTML = renderHuntsStripHtml(snap, {
+    variant: "hunts",
+    includeMatrix: false,
+    showOpenHunts: false,
+  });
+  // Flatten: paint into #hunts-strip without nesting an extra outer card chrome clash
+  const inner = el.querySelector(".hunts-strip");
+  if (inner) {
+    el.className = inner.className;
+    el.innerHTML = inner.innerHTML;
+  }
+  bindHuntsStrip(el);
+}
+
+window.renderHuntsStripHtml = renderHuntsStripHtml;
+window.bindHuntsStrip = bindHuntsStrip;
+window.paintHuntsModeStrip = paintHuntsModeStrip;
 
 /** Visual recon → hunt → validate_mech → validate_llm pipeline timeline. */
 function renderPipelineTimeline(snap) {
@@ -2342,21 +2546,10 @@ function renderOverview(snap) {
     ${renderArchitectureBriefCard(archText, archSum, snap)}
     ${renderCodemapBriefCard(snap)}
     ${renderLlmUsageCard(snap)}
-    <div class="card" style="margin-top:1rem">
-      <div class="toolbar" style="margin-bottom:0.5rem">
-        <h2 style="margin:0;flex:1">Hunts (area × skill)</h2>
-        <button type="button" class="btn" id="overview-go-coverage">Open Hunts</button>
-      </div>
-      <p class="controls-hint" style="margin-top:0">Preview only. Open Hunts to plan batches or re-queue residual cells.</p>
-      <div id="coverage-inline">${renderCoverageHtml(snap.coverage, { interactive: false })}</div>
-    </div>
+    ${renderHuntsStripHtml(snap, { variant: "mission", includeMatrix: true, showOpenHunts: true })}
   `;
   bindLlmUsageCard(el);
-  $("#overview-go-coverage")?.addEventListener("click", () => {
-    window.VulnForgeModes?.goHunts?.() ||
-      window.VulnForgeModes?.goCoverage?.() ||
-      window.VulnForgeModes?.setMode?.("hunts");
-  });
+  bindHuntsStrip(el);
   $("#overview-go-report")?.addEventListener("click", () => {
     window.VulnForgeModes?.goReport?.("all") || window.VulnForgeModes?.setMode?.("report");
   });

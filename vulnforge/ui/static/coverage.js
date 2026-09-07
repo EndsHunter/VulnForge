@@ -1852,6 +1852,9 @@
     renderSummary(covCache);
     renderModeBar(window.__VF_cov_policy);
     renderActions();
+    if (typeof window.paintHuntsModeStrip === "function") {
+      window.paintHuntsModeStrip(snap);
+    }
     paintMatrix();
     // Keep selection highlight; detail panel is user-driven (avoids wiping notes on refresh)
   }
