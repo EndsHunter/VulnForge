@@ -182,14 +182,14 @@
       for (mi = 0; mi + 1 < matched.length; mi++) {
         addEdge(matched[mi], matched[mi + 1], "boundary", "trust boundary");
       }
-      // Also connect all pairs when exactly 2 matches (same as consecutive)
-      // When >2, consecutive already covers the chain.
-      if (matched.length === 2) {
-        addEdge(matched[0], matched[1], "boundary", "trust boundary");
-      }
     }
 
-    // Shared path_hints: same hint, or one is a prefix of another
+    // Shared path_hints: same hint, or one is a prefix of another.
+    // Cap edges from overly common shared roots (avoids dense graphs when
+    // many components share e.g. "src/" or "packages/").
+    var MAX_NODES_PER_SHARED_ROOT = 4;
+    var MAX_PATH_EDGES = 24;
+
     function normalizeHint(h) {
       return String(h || "")
         .replace(/\\/g, "/")
@@ -197,28 +197,55 @@
         .replace(/\/+$/, "")
         .toLowerCase();
     }
-    function hintsRelated(a, b) {
-      if (!a || !b) return false;
-      if (a === b) return true;
-      return a.indexOf(b + "/") === 0 || b.indexOf(a + "/") === 0;
+    /** Longest related root: exact match, or the shorter prefix path. */
+    function sharedRootOf(a, b) {
+      if (!a || !b) return null;
+      if (a === b) return a;
+      if (a.indexOf(b + "/") === 0) return b;
+      if (b.indexOf(a + "/") === 0) return a;
+      return null;
     }
+
+    var nodeHints = [];
     var ni, nj, hi, hj;
     for (ni = 0; ni < nodes.length; ni++) {
-      for (nj = ni + 1; nj < nodes.length; nj++) {
-        var ha = nodes[ni].path_hints.map(normalizeHint).filter(Boolean);
-        var hb = nodes[nj].path_hints.map(normalizeHint).filter(Boolean);
-        var shared = false;
-        for (hi = 0; hi < ha.length && !shared; hi++) {
-          for (hj = 0; hj < hb.length; hj++) {
-            if (hintsRelated(ha[hi], hb[hj])) {
-              shared = true;
-              break;
-            }
+      nodeHints[ni] = nodes[ni].path_hints.map(normalizeHint).filter(Boolean);
+    }
+
+    var rootCountCache = Object.create(null);
+    function rootNodeCount(root) {
+      if (rootCountCache[root] != null) return rootCountCache[root];
+      var count = 0;
+      for (var ri = 0; ri < nodeHints.length; ri++) {
+        var hs = nodeHints[ri];
+        for (var rj = 0; rj < hs.length; rj++) {
+          if (hs[rj] === root || hs[rj].indexOf(root + "/") === 0) {
+            count++;
+            break;
           }
         }
-        if (shared) {
-          addEdge(nodes[ni], nodes[nj], "path", "shared path");
+      }
+      rootCountCache[root] = count;
+      return count;
+    }
+
+    var pathEdgeCount = 0;
+    for (ni = 0; ni < nodes.length && pathEdgeCount < MAX_PATH_EDGES; ni++) {
+      for (nj = ni + 1; nj < nodes.length && pathEdgeCount < MAX_PATH_EDGES; nj++) {
+        var ha = nodeHints[ni];
+        var hb = nodeHints[nj];
+        var bestRoot = null;
+        for (hi = 0; hi < ha.length; hi++) {
+          for (hj = 0; hj < hb.length; hj++) {
+            var root = sharedRootOf(ha[hi], hb[hj]);
+            if (!root) continue;
+            if (!bestRoot || root.length > bestRoot.length) bestRoot = root;
+          }
         }
+        if (!bestRoot) continue;
+        if (rootNodeCount(bestRoot) > MAX_NODES_PER_SHARED_ROOT) continue;
+        addEdge(nodes[ni], nodes[nj], "path", "shared path");
+        pathEdgeCount++;
       }
     }
 
@@ -318,6 +345,7 @@
     }
 
     var nodeEls = [];
+    var anyClickable = false;
     for (i = 0; i < n; i++) {
       var node = nodes[i];
       var p = positions[node.id];
@@ -325,7 +353,13 @@
       var title = node.name + (node.role ? " — " + node.role : "");
       if (path0) title += " → " + path0;
       var label = node.name.length > 22 ? node.name.slice(0, 20) + "…" : node.name;
-      var clickable = path0 ? " arch-diag-node-clickable" : "";
+      var clickable = "";
+      var interactiveAttrs = "";
+      if (path0) {
+        anyClickable = true;
+        clickable = " arch-diag-node-clickable";
+        interactiveAttrs = ' tabindex="0" role="button"';
+      }
       nodeEls.push(
         '<g class="arch-diag-node' +
           clickable +
@@ -333,7 +367,9 @@
           escXml(node.id) +
           '" data-path="' +
           escXml(path0) +
-          '" tabindex="0" role="button" aria-label="' +
+          '"' +
+          interactiveAttrs +
+          ' aria-label="' +
           escXml(title) +
           '">' +
           "<title>" +
@@ -355,12 +391,15 @@
       );
     }
 
+    var svgRole = anyClickable ? "group" : "img";
     return (
       '<svg class="arch-diag-svg" viewBox="0 0 ' +
       width +
       " " +
       height +
-      '" role="img" aria-label="Inferred architecture diagram">' +
+      '" role="' +
+      svgRole +
+      '" aria-label="Inferred architecture diagram">' +
       "<defs>" +
       '<marker id="arch-diag-arrow" viewBox="0 0 10 10" refX="10" refY="5" ' +
       'markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +

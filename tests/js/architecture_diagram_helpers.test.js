@@ -103,11 +103,88 @@ describe("renderDiagramCardHtml", () => {
 });
 
 describe("renderArchitectureSvg", () => {
-  it("marks clickable nodes that have path_hints", () => {
+  it("marks clickable nodes that have path_hints with tabindex/role=button", () => {
     const g = buildArchitectureGraph({
       components: [{ name: "API", path_hints: ["app.py"] }],
     });
     const svg = renderArchitectureSvg(g);
     assert.ok(svg.includes("arch-diag-node-clickable"));
+    assert.ok(svg.includes('tabindex="0"'));
+    assert.ok(svg.includes('role="button"'));
+    assert.ok(svg.includes('role="group"'));
+  });
+
+  it("omits tabindex/role=button on nodes without path_hints", () => {
+    const g = buildArchitectureGraph({
+      components: [
+        { name: "API", path_hints: ["app.py"] },
+        { name: "Docs", role: "docs only" },
+      ],
+    });
+    const svg = renderArchitectureSvg(g);
+    assert.ok(svg.includes("arch-diag-node-clickable"));
+    // Exactly one interactive button (the API node)
+    const buttons = svg.match(/role="button"/g) || [];
+    assert.equal(buttons.length, 1);
+    const tabindexes = svg.match(/tabindex="0"/g) || [];
+    assert.equal(tabindexes.length, 1);
+    // Docs node present but not clickable
+    assert.ok(svg.includes("Docs") || svg.includes("docs"));
+    assert.ok(svg.includes('data-path=""'));
+  });
+
+  it("uses role=img when no nodes are clickable", () => {
+    const g = buildArchitectureGraph({
+      components: [{ name: "Abstract", role: "no paths" }],
+    });
+    const svg = renderArchitectureSvg(g);
+    assert.ok(svg.includes('role="img"'));
+    assert.equal((svg.match(/role="button"/g) || []).length, 0);
+    assert.equal((svg.match(/tabindex=/g) || []).length, 0);
+  });
+});
+
+describe("path edge shared-root cap", () => {
+  it("still links specific shared path prefixes", () => {
+    const g = buildArchitectureGraph({
+      components: [
+        { name: "Routes", path_hints: ["api/"] },
+        { name: "Handlers", path_hints: ["api/handlers.py"] },
+        { name: "Other", path_hints: ["lib/"] },
+      ],
+      trust_boundaries: [],
+    });
+    const pathEdges = g.edges.filter((e) => e.kind === "path");
+    assert.equal(pathEdges.length, 1);
+  });
+
+  it("does not explode on an overly common shared root", () => {
+    const components = [
+      { name: "Root", path_hints: ["src/"] },
+      { name: "A", path_hints: ["src/a.py"] },
+      { name: "B", path_hints: ["src/b.py"] },
+      { name: "C", path_hints: ["src/c.py"] },
+      { name: "D", path_hints: ["src/d.py"] },
+      { name: "E", path_hints: ["src/e.py"] },
+    ];
+    const g = buildArchitectureGraph({ components, trust_boundaries: [] });
+    const pathEdges = g.edges.filter((e) => e.kind === "path");
+    // Without a cap, Root↔each file = 5 star edges (src/ touches 6 nodes).
+    assert.equal(pathEdges.length, 0);
+  });
+
+  it("keeps edges when a shared root touches few nodes", () => {
+    const g = buildArchitectureGraph({
+      components: [
+        { name: "Auth", path_hints: ["auth/"] },
+        { name: "Login", path_hints: ["auth/login.py"] },
+        { name: "Session", path_hints: ["auth/session.py"] },
+        { name: "Unrelated", path_hints: ["payments/"] },
+      ],
+      trust_boundaries: [],
+    });
+    const pathEdges = g.edges.filter((e) => e.kind === "path");
+    // auth/ touches 3 nodes (<=4) → Auth-Login, Auth-Session
+    assert.equal(pathEdges.length, 2);
   });
 });

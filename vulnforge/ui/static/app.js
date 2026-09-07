@@ -3701,7 +3701,8 @@ function archRevealPath(path) {
 
 function bindArchDiagramHandlers(root) {
   const scope = root || document;
-  scope.querySelectorAll(".arch-diag-node").forEach((nodeEl) => {
+  // Only nodes with path_hints are keyboard/click activatable (helpers set role/tabindex).
+  scope.querySelectorAll(".arch-diag-node-clickable").forEach((nodeEl) => {
     const go = () => {
       const path = nodeEl.getAttribute("data-path") || "";
       if (!path) {

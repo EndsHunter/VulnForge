@@ -1258,10 +1258,10 @@ button.cov-plan-action.is-current {
   fill: color-mix(in srgb, var(--arch-components, #ff3d6e) 32%, var(--bg-card, #1a1420));
   stroke-width: 2.25;
 }
-.arch-diag-node:focus {
+.arch-diag-node-clickable:focus {
   outline: none;
 }
-.arch-diag-node:focus .arch-diag-node-circle {
+.arch-diag-node-clickable:focus .arch-diag-node-circle {
   filter: drop-shadow(0 0 4px color-mix(in srgb, var(--arch-components, #ff3d6e) 60%, transparent));
 }
 .arch-diag-empty-text {
