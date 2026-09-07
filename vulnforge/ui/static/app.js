@@ -2239,9 +2239,9 @@ function renderHuntsStripHtml(snap, opts = {}) {
         .map((t) => {
           const open =
             t.has_transcript && t.id != null
-              ? `<button type="button" class="btn btn-ghost btn-sm hunts-strip-open-task" data-tid="${esc(String(t.id))}">Log</button>`
+              ? `<button type="button" class="btn btn-ghost btn-sm hunts-strip-open-log" data-tid="${esc(String(t.id))}">Log</button>`
               : t.id != null
-                ? `<button type="button" class="btn btn-ghost btn-sm hunts-strip-open-task" data-tid="${esc(String(t.id))}">Tasks</button>`
+                ? `<button type="button" class="btn btn-ghost btn-sm hunts-strip-open-tasks" data-tid="${esc(String(t.id))}">Tasks</button>`
                 : "";
           const cellBtn =
             t.area && t.class
@@ -2358,17 +2358,20 @@ function bindHuntsStrip(root) {
       }
     });
   });
-  scope.querySelectorAll(".hunts-strip-open-task").forEach((btn) => {
+  scope.querySelectorAll(".hunts-strip-open-log").forEach((btn) => {
     btn.addEventListener("click", () => {
       const tid = btn.getAttribute("data-tid");
       if (tid && typeof window.openTranscript === "function") {
         try {
           window.openTranscript(Number(tid));
-          return;
         } catch {
-          /* fall through */
+          /* ignore */
         }
       }
+    });
+  });
+  scope.querySelectorAll(".hunts-strip-open-tasks").forEach((btn) => {
+    btn.addEventListener("click", () => {
       window.VulnForgeModes?.setMode?.("audit", "tasks");
     });
   });
