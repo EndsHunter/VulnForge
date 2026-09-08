@@ -279,10 +279,189 @@
     };
   }
 
+  /**
+   * Display fold of validate_mech + validate_llm. Does not change task kinds.
+   * Empty side (total 0, not running/queued) is ignored so validate_llm-off
+   * does not leave Validate pending after mech finishes.
+   */
+  function foldValidateStatus(mech, llm) {
+    const a = mech || {};
+    const b = llm || {};
+    if (a.status === "running" || b.status === "running") return "running";
+    if (a.status === "queued" || b.status === "queued") {
+      return (a.done || 0) > 0 || (b.done || 0) > 0 ? "partial" : "queued";
+    }
+    const aEmpty = (a.total || 0) === 0;
+    const bEmpty = (b.total || 0) === 0;
+    const aDone = a.status === "done" || ((a.total || 0) > 0 && a.done === a.total);
+    const bDone = b.status === "done" || ((b.total || 0) > 0 && b.done === b.total);
+    if ((aDone || aEmpty) && (bDone || bEmpty) && (aDone || bDone)) {
+      const total = (a.total || 0) + (b.total || 0);
+      const failed = (a.failed || 0) + (b.failed || 0);
+      if (failed > 0 && failed === total) return "failed";
+      if (failed > 0) return "partial";
+      return "done";
+    }
+    if (a.status === "partial" || b.status === "partial") return "partial";
+    if (a.status === "failed" || b.status === "failed") return "partial";
+    if (a.status === "idle" && b.status === "idle") return "idle";
+    return "pending";
+  }
+
+  function buildVisualPipeline(snap) {
+    const stages = buildPipelineStages(snap);
+    const recon = stages[0];
+    const hunt = stages[1];
+    const mech = stages[2];
+    const llm = stages[3];
+    return [
+      {
+        id: "recon",
+        label: recon.label,
+        hint: recon.hint,
+        status: recon.status,
+        done: recon.done,
+        total: recon.total,
+      },
+      {
+        id: "hunt",
+        label: hunt.label,
+        hint: hunt.hint,
+        status: hunt.status,
+        done: hunt.done,
+        total: hunt.total,
+      },
+      {
+        id: "validate",
+        label: "Validate",
+        hint: "Mechanical gates, then LLM disprove (never auto-confirms)",
+        status: foldValidateStatus(mech, llm),
+        done: (mech.done || 0) + (llm.done || 0),
+        total: (mech.total || 0) + (llm.total || 0),
+        mech,
+        llm,
+      },
+    ];
+  }
+
+  function countFindingState(snap, state) {
+    const findings = snap && snap.findings;
+    if (Array.isArray(findings)) {
+      return findings.filter(
+        (f) => String((f && f.state) || "").toLowerCase() === state
+      ).length;
+    }
+    const counts = findings && typeof findings === "object" ? findings : {};
+    return Number(counts[state] || 0) || 0;
+  }
+
+  function buildMissionKpis(snap) {
+    const s = snap || {};
+    const done = Number(s.done_tasks || 0);
+    const total = Number(s.total_tasks || 0);
+    const barTasks = Math.round((Number(s.progress) || 0) * 100);
+    const needs = countFindingState(s, "needs_human");
+    const cov = summarizeCoverageResidual(s.coverage);
+    const denom =
+      cov.areas && cov.classes ? cov.areas * cov.classes : cov.cells;
+    const covPct = denom > 0 ? Math.round((100 * (denom - cov.residual)) / denom) : null;
+    return [
+      {
+        id: "tasks",
+        label: "Tasks",
+        value: done + "/" + total,
+        hint: "Done / total tasks",
+        barPct: barTasks,
+        nav: { mode: "audit", tab: "tasks" },
+      },
+      {
+        id: "needs_human",
+        label: "Needs human",
+        value: String(needs),
+        hint: "Mechanical gates passed. Not confirmed.",
+        barPct: null,
+        nav: { mode: "report", tab: "report", filter: "needs_human" },
+      },
+      {
+        id: "coverage",
+        label: "Coverage",
+        value: covPct == null ? "—" : covPct + "%",
+        hint: "Share of area × class cells that are not residual. Not proof.",
+        barPct: covPct,
+        nav: { mode: "hunts", tab: "hunts" },
+      },
+    ];
+  }
+
+  function buildArchitectureBrief(snap) {
+    const s = snap || {};
+    const sum = s.architecture_summary || {};
+    const arch = s.architecture || {};
+    const inv = s.target_inventory || {};
+    const text = String(sum.summary || arch.summary || "").trim();
+    const comps = Array.isArray(sum.components) ? sum.components : [];
+    const rels = Array.isArray(sum.relations) ? sum.relations : [];
+    const focus = Array.isArray(sum.hunt_focus) ? sum.hunt_focus : [];
+    const hasArchitecture = !!(
+      sum.has_architecture ||
+      s.has_architecture ||
+      text ||
+      comps.length
+    );
+    const fileCount =
+      inv.file_count == null || inv.file_count === ""
+        ? null
+        : Number(inv.file_count);
+    const eps = Array.isArray(inv.entrypoints) ? inv.entrypoints : [];
+    const lr = inv.last_recon;
+    const lastReconError =
+      lr && lr.state && lr.state !== "succeeded"
+        ? String(lr.error || lr.state)
+        : null;
+    const diagramSource = hasArchitecture
+      ? {
+          components: sum.components || [],
+          trust_boundaries: sum.trust_boundaries || [],
+          modules: sum.modules || [],
+          relations: sum.relations || [],
+        }
+      : null;
+    const snippet =
+      text.length > 420 ? text.slice(0, 420) + "…" : text;
+    return {
+      title: sum.title || "Architecture",
+      hasArchitecture,
+      snippet,
+      componentCount: comps.length,
+      relationCount: rels.length,
+      huntFocusCount: focus.length,
+      fileCount: Number.isFinite(fileCount) ? fileCount : null,
+      entrypointCount: eps.length,
+      lastReconError,
+      diagramSource,
+    };
+  }
+
+  function buildMissionCockpit(snap, opts) {
+    const s = snap || {};
+    const events = opts && Array.isArray(opts.recentEvents) ? opts.recentEvents.slice() : [];
+    return {
+      kpis: buildMissionKpis(s),
+      pipeline: buildVisualPipeline(s),
+      events,
+      architecture: buildArchitectureBrief(s),
+      validateLlmOn: !!s.validate_llm_on,
+    };
+  }
+
   return {
     pipelineStageOfKind,
     summarizePipelineStage,
     buildPipelineStages,
+    buildVisualPipeline,
+    buildMissionKpis,
+    buildArchitectureBrief,
+    buildMissionCockpit,
     countMissionTaskActivity,
     isHuntKind,
     huntTaskLabel,

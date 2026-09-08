@@ -460,6 +460,7 @@
     }
 
     var svgRole = anyClickable ? "group" : "img";
+    var markerId = String(opts.idPrefix || "") + "arch-diag-arrow";
     return (
       '<svg class="arch-diag-svg" viewBox="0 0 ' +
       width +
@@ -469,7 +470,9 @@
       svgRole +
       '" aria-label="Architecture diagram">' +
       "<defs>" +
-      '<marker id="arch-diag-arrow" viewBox="0 0 10 10" refX="10" refY="5" ' +
+      '<marker id="' +
+      markerId +
+      '" viewBox="0 0 10 10" refX="10" refY="5" ' +
       'markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
       '<path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />' +
       "</marker>" +
@@ -492,9 +495,12 @@
       "No components recorded — diagram appears after recon maps components.";
     var disclaimer =
       graph.edgeSource === "formal" ? FORMAL_DISCLAIMER : DISCLAIMER;
+    var cardId = String(opts.idPrefix || "") + "arch-diagram-card";
     if (!graph.nodes.length) {
       return (
-        '<section class="card arch-diagram-card" id="arch-diagram-card">' +
+        '<section class="card arch-diagram-card" id="' +
+        escXml(cardId) +
+        '">' +
         '<header class="arch-section-head"><h3>Diagram</h3></header>' +
         '<p class="arch-diagram-disclaimer controls-hint">' +
         escXml(DISCLAIMER) +
@@ -528,7 +534,9 @@
         " (boundaries + shared paths — not a formal model). Click a node with path_hints to open Explorer.</p>";
     }
     return (
-      '<section class="card arch-diagram-card" id="arch-diagram-card">' +
+      '<section class="card arch-diagram-card" id="' +
+      escXml(cardId) +
+      '">' +
       '<header class="arch-section-head"><h3>Diagram</h3>' +
       '<span class="arch-section-count">' +
       graph.nodes.length +

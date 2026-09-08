@@ -6,15 +6,12 @@
   const $ = (sel, el = document) => el.querySelector(sel);
   const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 
-  const MODE_DEFAULT_TAB = {
-    mission: "overview",
-    hunts: "hunts",
-    explorer: "explorer",
-    report: "report",
-    evidence: "evidence",
-    audit: "tasks", // UI label: Tasks
-    ai: "ai",
-  };
+  const table = window.RunNav;
+  const RUN_NAV = table?.RUN_NAV || [];
+  const primaryNav = table?.primaryNav || ((nav) => (nav || []).filter((i) => i.kind === "mode"));
+  const footerNav = table?.footerNav || ((nav) => (nav || []).filter((i) => i.kind === "href"));
+  const isRunMode = table?.isRunMode || (() => false);
+  const defaultTabFor = table?.defaultTabFor || (() => null);
 
   /**
    * Parse hash segment. `#poc/<id>` is the current PoC workshop deep link
@@ -38,7 +35,6 @@
   }
 
   function activateTab(tabId) {
-    // Only toggle tabs/panels inside the active mode panel (and global if any)
     $$(".mode-panel.active .tab").forEach((t) => {
       t.classList.toggle("active", t.getAttribute("data-tab") === tabId);
     });
@@ -56,21 +52,58 @@
     }
   }
 
+  function renderRunRail(root, nav) {
+    if (!root) return;
+    const items = nav || RUN_NAV;
+    const primary = primaryNav(items);
+    const footer = footerNav(items);
+    const primaryHtml = primary
+      .map(
+        (item) =>
+          `<button type="button" class="run-rail-item" role="tab" data-nav-id="${item.id}" data-mode="${item.mode}" aria-selected="false">${item.label}</button>`
+      )
+      .join("");
+    const footerHtml = footer
+      .map(
+        (item) =>
+          `<a class="run-rail-item run-rail-href" data-nav-id="${item.id}" href="${item.href}">${item.label}</a>`
+      )
+      .join("");
+    root.innerHTML = `<nav class="run-rail-primary" role="tablist" aria-label="Workspace mode">${primaryHtml}</nav><div class="run-rail-footer">${footerHtml}</div>`;
+  }
+
+  function bindRunRail(root, nav) {
+    if (!root) return;
+    const items = nav || RUN_NAV;
+    root.querySelectorAll("[data-nav-id]").forEach((el) => {
+      const id = el.getAttribute("data-nav-id");
+      const item = items.find((row) => row.id === id);
+      if (!item || item.kind !== "mode") return;
+      el.addEventListener("click", () => setMode(item.mode));
+    });
+  }
+
   function setMode(mode, preferredTab) {
-    // Close Develop POC modal when leaving Report for another workspace mode.
     if (mode !== "report" && window.VulnForgeReport?.isPocOpen?.()) {
       window.VulnForgeReport.closeDevelopPoc({ stayOnReport: false, skipHash: true });
     }
 
-    $$(".mode-tab").forEach((t) => {
-      const on = t.getAttribute("data-mode") === mode;
+    $$("[data-nav-id]").forEach((t) => {
+      const id = t.getAttribute("data-nav-id");
+      const item = RUN_NAV.find((row) => row.id === id);
+      if (!item || item.kind !== "mode") {
+        t.removeAttribute("aria-selected");
+        t.classList.remove("active");
+        return;
+      }
+      const on = item.mode === mode;
       t.classList.toggle("active", on);
       t.setAttribute("aria-selected", on ? "true" : "false");
     });
     $$(".mode-panel").forEach((p) => {
       p.classList.toggle("active", p.getAttribute("data-mode-panel") === mode);
     });
-    const tab = preferredTab || MODE_DEFAULT_TAB[mode] || "overview";
+    const tab = preferredTab || defaultTabFor(mode) || "overview";
     activateTab(tab);
     if (mode === "report" && typeof window.renderReport === "function") {
       const snap = window.__VF_last_snap;
@@ -88,7 +121,6 @@
       if (snap) window.VulnForgeCoverage.render(snap);
     }
     try {
-      // Preserve #poc/<id> hash while POC modal is open on report
       if (
         mode === "report" &&
         window.VulnForgeReport?.isPocOpen?.() &&
@@ -113,23 +145,22 @@
     const [rawMode, rawTab] = h.split("/");
     const resolved = resolveModeHash(rawMode, rawTab || "");
     const mode = resolved.mode;
-    if (!MODE_DEFAULT_TAB[mode]) return null;
+    if (!isRunMode(mode)) return null;
     return {
       mode,
-      tab: resolved.tab || MODE_DEFAULT_TAB[mode],
+      tab: resolved.tab || defaultTabFor(mode),
       pocFindingId: resolved.pocFindingId || null,
     };
   }
 
   function setupModes() {
     if (!document.body || document.body.dataset.page !== "run") return;
-    if (!$(".mode-nav")) return;
+    const rail = $("[data-run-rail]");
+    if (!rail) return;
 
-    $$(".mode-tab").forEach((btn) => {
-      btn.addEventListener("click", () => setMode(btn.getAttribute("data-mode")));
-    });
+    renderRunRail(rail, RUN_NAV);
+    bindRunRail(rail, RUN_NAV);
 
-    // Sub-tabs within modes
     $$(".mode-panel .tab").forEach((tab) => {
       tab.addEventListener("click", () => {
         const tabId = tab.getAttribute("data-tab");
@@ -145,7 +176,6 @@
       });
     });
 
-    // Deep-link helpers for the rest of the app
     function goExplorer(path, line) {
       setMode("explorer");
       if (path && window.VulnForgeExplorer?.reveal) {
@@ -207,7 +237,6 @@
        * @param {number|string} findingId
        */
       goDevelopPoc(findingId) {
-        // Stay on Report underneath; open modal only
         setMode("report", "report");
         if (findingId != null && window.VulnForgeReport?.openDevelopPoc) {
           window.VulnForgeReport.openDevelopPoc(findingId);
@@ -222,13 +251,11 @@
       if (fid && fid !== "poc" && window.VulnForgeReport?.openDevelopPoc) {
         const n = Number(fid);
         if (Number.isFinite(n) && n > 0) {
-          // Defer until report cache may load
           setTimeout(() => window.VulnForgeReport.openDevelopPoc(n), 0);
         }
       }
     } else setMode("mission", "overview");
 
-    // Keyboard: e -> Explorer (now a top-level mode)
     document.addEventListener("keydown", (ev) => {
       if (ev.target && /^(INPUT|TEXTAREA|SELECT)$/i.test(ev.target.tagName)) return;
       if (ev.key === "Escape" && window.VulnForgeReport?.isPocOpen?.()) {
