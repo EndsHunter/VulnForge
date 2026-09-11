@@ -12,6 +12,10 @@ const {
   pipelineStageOfKind,
   summarizePipelineStage,
   buildPipelineStages,
+  buildVisualPipeline,
+  buildMissionKpis,
+  buildArchitectureBrief,
+  buildMissionCockpit,
   countMissionTaskActivity,
   isHuntKind,
   huntTaskLabel,
@@ -215,5 +219,148 @@ describe("summarizeCoverageResidual", () => {
     });
     assert.equal(s.residual, 2); // a shallow + b empty
     assert.equal(s.hasFinding, 0);
+  });
+});
+
+describe("buildVisualPipeline", () => {
+  it("returns three stages and leaves mechanical pipeline at four", () => {
+    const snap = { tasks: [] };
+    const visual = buildVisualPipeline(snap);
+    assert.equal(visual.length, 3);
+    assert.deepEqual(
+      visual.map((s) => s.id),
+      ["recon", "hunt", "validate"]
+    );
+    assert.equal(buildPipelineStages(snap).length, 4);
+  });
+
+  it("folds running from either validate kind", () => {
+    const visual = buildVisualPipeline({
+      tasks: [
+        { kind: "validate_mech", state: "succeeded" },
+        { kind: "validate_llm", state: "leased" },
+      ],
+    });
+    assert.equal(visual[2].status, "running");
+    assert.equal(visual[2].done, 1);
+    assert.equal(visual[2].total, 2);
+    assert.equal(visual[2].mech.status, "done");
+    assert.equal(visual[2].llm.status, "running");
+  });
+
+  it("treats empty llm as vacuous so mech-done is validate done", () => {
+    const visual = buildVisualPipeline({
+      tasks: [{ kind: "validate_mech", state: "succeeded" }],
+    });
+    assert.equal(visual[2].status, "done");
+    assert.equal(visual[2].llm.total, 0);
+  });
+});
+
+describe("buildMissionKpis", () => {
+  it("returns tasks, needs_human, coverage", () => {
+    const kpis = buildMissionKpis({
+      done_tasks: 3,
+      total_tasks: 10,
+      progress: 0.3,
+      findings: [
+        { state: "needs_human" },
+        { state: "candidate" },
+        { state: "confirmed" },
+      ],
+      coverage: {
+        areas: ["a", "b"],
+        classes: ["injection"],
+        cells: [{ area: "a", class: "injection", last_depth: "needs_human" }],
+      },
+    });
+    assert.equal(kpis.length, 3);
+    assert.deepEqual(
+      kpis.map((k) => k.id),
+      ["tasks", "needs_human", "coverage"]
+    );
+    assert.equal(kpis[0].value, "3/10");
+    assert.equal(kpis[0].barPct, 30);
+    assert.equal(kpis[1].value, "1");
+    assert.equal(kpis[1].barPct, null);
+    assert.equal(kpis[2].value, "50%");
+    assert.equal(kpis[2].barPct, 50);
+  });
+
+  it("counts needs_human only from a state map", () => {
+    const kpis = buildMissionKpis({
+      findings: { needs_human: 4, candidate: 2, confirmed: 9 },
+    });
+    assert.equal(kpis[1].value, "4");
+  });
+
+  it("leaves coverage bar null when there are no cells", () => {
+    const kpis = buildMissionKpis({ coverage: { areas: [], classes: [], cells: [] } });
+    assert.equal(kpis[2].barPct, null);
+    assert.equal(kpis[2].value, "—");
+  });
+});
+
+describe("buildMissionCockpit", () => {
+  it("assembles kpis, 3-stage pipeline, events, architecture from snap", () => {
+    const snap = {
+      done_tasks: 1,
+      total_tasks: 2,
+      progress: 0.5,
+      findings: [{ state: "needs_human" }, { state: "candidate" }],
+      validate_llm_on: true,
+      architecture_summary: {
+        title: "App",
+        has_architecture: true,
+        summary: "HTTP API over SQLite",
+        components: [{ name: "API" }],
+        relations: [{ from: "API", to: "DB" }],
+        hunt_focus: [{ area: "auth" }],
+      },
+      target_inventory: {
+        file_count: 12,
+        entrypoints: ["app.py", "cli.py"],
+      },
+    };
+    const events = [
+      { event: "task_done", ts: "1" },
+      { event: "hunt_split", ts: "2" },
+    ];
+    const vm = buildMissionCockpit(snap, { recentEvents: events });
+    assert.equal(vm.kpis.length, 3);
+    assert.deepEqual(
+      vm.kpis.map((k) => k.id),
+      ["tasks", "needs_human", "coverage"]
+    );
+    assert.equal(vm.kpis[1].value, "1");
+    assert.equal(vm.pipeline.length, 3);
+    assert.deepEqual(
+      vm.pipeline.map((s) => s.id),
+      ["recon", "hunt", "validate"]
+    );
+    assert.equal(buildPipelineStages(snap).length, 4);
+    assert.equal(vm.events.length, 2);
+    assert.equal(vm.events[0].event, "task_done");
+    assert.equal(vm.validateLlmOn, true);
+    assert.equal(vm.architecture.title, "App");
+    assert.equal(vm.architecture.componentCount, 1);
+    assert.equal(vm.architecture.fileCount, 12);
+    assert.equal(vm.architecture.entrypointCount, 2);
+    assert.equal(vm.architecture.huntFocusCount, 1);
+    assert.ok(vm.architecture.diagramSource);
+    assert.equal(vm.architecture.diagramSource.components.length, 1);
+  });
+
+  it("does not invent architecture inventory", () => {
+    const brief = buildArchitectureBrief({
+      architecture_summary: { has_architecture: false },
+      target_inventory: {},
+    });
+    assert.equal(brief.hasArchitecture, false);
+    assert.equal(brief.diagramSource, null);
+    assert.equal(brief.fileCount, null);
+    assert.equal(brief.componentCount, 0);
+    assert.equal(brief.snippet.includes("Cloudflare"), false);
+    assert.equal(brief.snippet.includes("PHP"), false);
   });
 });

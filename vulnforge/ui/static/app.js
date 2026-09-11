@@ -1664,431 +1664,9 @@ function goStatLink(nav) {
   }
 }
 
-function renderStats(snap) {
-  const s = $("#stats");
-  if (!s) return;
-  // findings may be a list (full snap) or counts object (SSE card)
-  let f = snap.findings || {};
-  if (Array.isArray(f)) {
-    f = f.reduce((acc, x) => {
-      const st = (x.state || "unknown").toLowerCase();
-      acc[st] = (acc[st] || 0) + 1;
-      return acc;
-    }, {});
-  }
-  const sev = snap.severity || {};
-  const rejected =
-    (f.rejected_mech || 0) +
-    (f.rejected_llm || 0) +
-    (f.rejected_human || 0) +
-    (f.superseded || 0);
-  const needsHuman = (f.needs_human || 0) + (f.candidate || 0);
-  s.innerHTML = `
-    <button type="button" class="stat info stat-link" data-stat="progress" title="Open Mission overview">
-      <div class="label">Progress</div>
-      <div class="value">${Math.round((snap.progress || 0) * 100)}%</div>
-    </button>
-    <button type="button" class="stat stat-link" data-stat="tasks" title="Open Tasks">
-      <div class="label">Tasks done</div>
-      <div class="value">${snap.done_tasks || 0}<span style="font-size:0.7em;color:var(--muted)">/${snap.total_tasks || 0}</span></div>
-    </button>
-    <button type="button" class="stat warn stat-link" data-stat="needs_human" title="Open Report: needs human review">
-      <div class="label">Needs human</div>
-      <div class="value">${needsHuman}</div>
-    </button>
-    <button type="button" class="stat good stat-link" data-stat="confirmed" title="Open Report: confirmed">
-      <div class="label">Confirmed</div>
-      <div class="value">${f.confirmed || 0}</div>
-    </button>
-    <button type="button" class="stat bad stat-link" data-stat="rejected" title="Open Report: rejected">
-      <div class="label">Rejected</div>
-      <div class="value">${rejected}</div>
-    </button>
-    <button type="button" class="stat stat-link" data-stat="high" title="Open Report">
-      <div class="label">High+</div>
-      <div class="value">${(sev.critical || 0) + (sev.high || 0)}</div>
-    </button>
-    <button type="button" class="stat stat-link" data-stat="events" title="Open event timeline">
-      <div class="label">Events</div>
-      <div class="value">${snap.event_count || 0}</div>
-    </button>
-    <button type="button" class="stat info stat-link" data-stat="progress" title="LLM token usage (see overview)">
-      <div class="label">LLM tokens</div>
-      <div class="value">${fmtTokens(llmUsageOf(snap).total_tokens || 0)}</div>
-    </button>
-  `;
-  s.querySelectorAll("[data-stat]").forEach((btn) => {
-    btn.addEventListener("click", () => goStatLink(btn.getAttribute("data-stat")));
-  });
-  const p = $("#main-progress");
-  if (p) p.innerHTML = progressBar(snap.progress);
-}
-
-function usageKindLabel(kind) {
-  const k = String(kind || "");
-  if (k.startsWith("hunt:")) return k.slice(5) || "hunt";
-  if (k.startsWith("recon:")) return k.slice(6) || "recon";
-  return k;
-}
-
-function emptyUsageBucket() {
-  return {
-    prompt_tokens: 0,
-    completion_tokens: 0,
-    total_tokens: 0,
-    reasoning_tokens: 0,
-    llm_calls: 0,
-  };
-}
-
-function addUsageBucket(acc, v) {
-  if (!v) return acc;
-  acc.prompt_tokens += v.prompt_tokens || 0;
-  acc.completion_tokens += v.completion_tokens || 0;
-  acc.total_tokens += v.total_tokens || 0;
-  acc.reasoning_tokens += v.reasoning_tokens || 0;
-  acc.llm_calls += v.llm_calls || 0;
-  return acc;
-}
-
-/** Map a usage kind string to a top-level group: recon | hunt | other. */
-function usageStageGroup(kind) {
-  const k = String(kind || "").toLowerCase();
-  if (k === "recon" || k.startsWith("recon:") || k.startsWith("recon/")) return "recon";
-  if (k === "hunt" || k.startsWith("hunt:") || k.startsWith("hunt/")) return "hunt";
-  return "other";
-}
-
-/** Aggregate by_kind rows that are hunt / hunt:<class> into per-class totals. */
-function usageByHuntClass(byKind) {
-  const out = {};
-  for (const [k, v] of Object.entries(byKind || {})) {
-    if (!k || !v) continue;
-    let cls = null;
-    if (k.startsWith("hunt:")) cls = k.slice(5) || "hunt";
-    else if (k === "hunt") cls = "(unscoped)";
-    if (!cls) continue;
-    if (!out[cls]) out[cls] = emptyUsageBucket();
-    addUsageBucket(out[cls], v);
-  }
-  return out;
-}
-
-/** Aggregate recon kinds into per-agent totals (recon:agent-id → agent-id). */
-function usageByReconAgent(byKind) {
-  const out = {};
-  for (const [k, v] of Object.entries(byKind || {})) {
-    if (!k || !v) continue;
-    if (usageStageGroup(k) !== "recon") continue;
-    let agent = "(default)";
-    if (k.startsWith("recon:") && k.length > 6) agent = k.slice(6);
-    else if (k !== "recon") agent = k;
-    if (!out[agent]) out[agent] = emptyUsageBucket();
-    addUsageBucket(out[agent], v);
-  }
-  return out;
-}
-
-function usageTotalsFromKinds(byKind, group) {
-  const acc = emptyUsageBucket();
-  for (const [k, v] of Object.entries(byKind || {})) {
-    if (usageStageGroup(k) === group) addUsageBucket(acc, v);
-  }
-  return acc;
-}
-
-function usageTotalsFromTasks(tasks) {
-  const acc = emptyUsageBucket();
-  for (const t of tasks) {
-    addUsageBucket(acc, {
-      prompt_tokens: t.prompt,
-      completion_tokens: t.completion,
-      total_tokens: t.total,
-      reasoning_tokens: t.reasoning,
-      llm_calls: t.calls,
-    });
-  }
-  return acc;
-}
-
-function usageMetaLine(v) {
-  const tokens = fmtTokens(v.total_tokens || 0);
-  const calls = v.llm_calls || 0;
-  const p = v.prompt_tokens || 0;
-  const c = v.completion_tokens || 0;
-  const pc =
-    p || c
-      ? ` · <span class="llm-usage-pc">${fmtTokens(p)}/${fmtTokens(c)}</span>`
-      : "";
-  return `${tokens} <span class="llm-usage-calls">${calls} call${calls === 1 ? "" : "s"}</span>${pc}`;
-}
-
-function usageBreakdownRows(entries, { monoKey = true, limit = 24 } = {}) {
-  return Object.entries(entries || {})
-    .sort((a, b) => (b[1].total_tokens || 0) - (a[1].total_tokens || 0))
-    .slice(0, limit)
-    .map(([k, v]) => {
-      const keyClass = monoKey ? "mono" : "";
-      return (
-        `<div class="llm-usage-row">` +
-        `<div class="llm-usage-row-k ${keyClass}" title="${esc(k)}">${esc(k)}</div>` +
-        `<div class="llm-usage-row-v mono">${usageMetaLine(v)}</div>` +
-        `</div>`
-      );
-    })
-    .join("");
-}
-
-function usageTaskRows(tasks, { limit = 24 } = {}) {
-  return (tasks || [])
-    .slice(0, limit)
-    .map((t) => {
-      const title = `Open task #${t.tid} transcript`;
-      const meta = {
-        total_tokens: t.total,
-        llm_calls: t.calls,
-        prompt_tokens: t.prompt,
-        completion_tokens: t.completion,
-      };
-      return (
-        `<button type="button" class="llm-usage-row llm-usage-task" data-task-id="${esc(t.tid)}" title="${esc(title)}">` +
-        `<div class="llm-usage-row-k" title="task ${esc(t.tid)}">` +
-        `<span class="llm-usage-task-id">#${esc(t.tid)}</span>` +
-        (t.detail ? ` <span class="llm-usage-task-detail">${esc(t.detail)}</span>` : "") +
-        `</div>` +
-        `<div class="llm-usage-row-v mono">${usageMetaLine(meta)}</div>` +
-        `</button>`
-      );
-    })
-    .join("");
-}
-
-function usageSection(heading, bodyHtml) {
-  if (!bodyHtml) return "";
-  return (
-    `<div class="llm-usage-section">` +
-    `<div class="llm-usage-section-h">${esc(heading)}</div>` +
-    `<div class="llm-usage-section-body">${bodyHtml}</div>` +
-    `</div>`
-  );
-}
-
-/**
- * Expandable stage group (Recon / Hunt / Other).
- * openSet: Set of group ids that should stay open across re-renders.
- */
-function usageGroupDetails(groupId, title, totals, sectionsHtml, openSet) {
-  if (!(totals.total_tokens || totals.llm_calls)) return "";
-  const isOpen = openSet && openSet.has(groupId);
-  return `
-    <details class="llm-usage-group" data-group="${esc(groupId)}"${isOpen ? " open" : ""}>
-      <summary class="llm-usage-group-sum">
-        <span class="llm-usage-group-title">${esc(title)}</span>
-        <span class="llm-usage-group-meta mono">${usageMetaLine(totals)}</span>
-        <span class="llm-usage-group-hint">details</span>
-      </summary>
-      <div class="llm-usage-group-body">
-        ${sectionsHtml || `<p class="controls-hint" style="margin:0">No per-task breakdown.</p>`}
-      </div>
-    </details>`;
-}
-
-function parseUsageTasks(byTask) {
-  return Object.entries(byTask || {}).map(([tid, v]) => {
-    const kind = v.kind || "";
-    const group = usageStageGroup(kind);
-    const cls =
-      v.class ||
-      (kind.startsWith("hunt:") ? kind.slice(5) : "") ||
-      (kind.startsWith("recon:") ? kind.slice(6) : "");
-    const area = v.area ? String(v.area) : "";
-    let detail = "";
-    if (group === "hunt") {
-      detail = [cls || "hunt", area].filter(Boolean).join(" · ");
-    } else if (group === "recon") {
-      detail = cls || usageKindLabel(kind) || "recon";
-    } else {
-      detail = usageKindLabel(kind) || kind || "task";
-    }
-    return {
-      tid,
-      group,
-      kind,
-      detail,
-      total: v.total_tokens || 0,
-      calls: v.llm_calls || 0,
-      prompt: v.prompt_tokens || 0,
-      completion: v.completion_tokens || 0,
-      reasoning: v.reasoning_tokens || 0,
-    };
-  });
-}
-
-function collectOpenUsageGroups() {
-  const open = new Set();
-  document.querySelectorAll(".llm-usage-group[open][data-group]").forEach((el) => {
-    const g = el.getAttribute("data-group");
-    if (g) open.add(g);
-  });
-  return open;
-}
-
-function bindLlmUsageCard(root) {
-  const el = root || document;
-  el.querySelectorAll(".llm-usage-task[data-task-id]").forEach((btn) => {
-    btn.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      const id = btn.getAttribute("data-task-id");
-      if (!id) return;
-      if (typeof openTranscript === "function") {
-        openTranscript(id);
-      } else if (typeof window.openTranscript === "function") {
-        window.openTranscript(id);
-      }
-    });
-  });
-}
-
-function renderLlmUsageCard(snap) {
-  const u = llmUsageOf(snap);
-  const total = u.total_tokens || 0;
-  const calls = u.llm_calls || 0;
-  const byKind = u.by_kind || {};
-  const byModel = u.by_model || {};
-  const byTask = u.by_task || {};
-  const openSet = collectOpenUsageGroups();
-
-  const allTasks = parseUsageTasks(byTask).sort((a, b) => b.total - a.total);
-  const reconTasks = allTasks.filter((t) => t.group === "recon");
-  const huntTasks = allTasks.filter((t) => t.group === "hunt");
-  const otherTasks = allTasks.filter((t) => t.group === "other");
-
-  let reconTotals = usageTotalsFromKinds(byKind, "recon");
-  let huntTotals = usageTotalsFromKinds(byKind, "hunt");
-  let otherTotals = usageTotalsFromKinds(byKind, "other");
-  // Prefer kind rollups; fall back to task sums when by_kind is sparse
-  if (!reconTotals.total_tokens && !reconTotals.llm_calls && reconTasks.length) {
-    reconTotals = usageTotalsFromTasks(reconTasks);
-  }
-  if (!huntTotals.total_tokens && !huntTotals.llm_calls && huntTasks.length) {
-    huntTotals = usageTotalsFromTasks(huntTasks);
-  }
-  if (!otherTotals.total_tokens && !otherTotals.llm_calls && otherTasks.length) {
-    otherTotals = usageTotalsFromTasks(otherTasks);
-  }
-
-  const reconAgents = usageByReconAgent(byKind);
-  const huntClasses = usageByHuntClass(byKind);
-  const otherKinds = {};
-  for (const [k, v] of Object.entries(byKind)) {
-    if (usageStageGroup(k) === "other") otherKinds[k] = v;
-  }
-
-  const reconBody =
-    usageSection("By agent", usageBreakdownRows(reconAgents, { monoKey: true })) +
-    usageSection(
-      "By task",
-      usageTaskRows(reconTasks) ||
-        (reconTotals.total_tokens
-          ? `<p class="controls-hint" style="margin:0">No per-task rows (older run or missing task_id).</p>`
-          : "")
-    );
-
-  const huntBody =
-    usageSection("By hunt class", usageBreakdownRows(huntClasses, { monoKey: true })) +
-    usageSection(
-      "By task",
-      usageTaskRows(huntTasks) ||
-        (huntTotals.total_tokens
-          ? `<p class="controls-hint" style="margin:0">No per-task rows (older run or missing task_id).</p>`
-          : "")
-    );
-
-  const otherBody =
-    usageSection("By stage", usageBreakdownRows(otherKinds, { monoKey: false })) +
-    usageSection("By task", usageTaskRows(otherTasks));
-
-  const modelEntries = Object.entries(byModel)
-    .sort((a, b) => (b[1].total_tokens || 0) - (a[1].total_tokens || 0))
-    .slice(0, 6);
-  const modelBody = modelEntries.length
-    ? usageGroupDetails(
-        "models",
-        "Models",
-        modelEntries.reduce((acc, [, v]) => addUsageBucket(acc, v), emptyUsageBucket()),
-        usageSection("By model", usageBreakdownRows(Object.fromEntries(modelEntries), { monoKey: true })),
-        openSet
-      )
-    : "";
-
-  const hasAny =
-    total ||
-    calls ||
-    reconTotals.total_tokens ||
-    huntTotals.total_tokens ||
-    otherTotals.total_tokens ||
-    modelEntries.length;
-
-  const source = u.source && u.source !== "none" ? u.source : "—";
-  const groupsHtml =
-    usageGroupDetails("recon", "Recon", reconTotals, reconBody, openSet) +
-    usageGroupDetails("hunt", "Hunt", huntTotals, huntBody, openSet) +
-    usageGroupDetails("other", "Other stages", otherTotals, otherBody, openSet) +
-    modelBody;
-
-  return `
-    <div class="card llm-usage-card" style="margin-top:1rem">
-      <h2>LLM usage</h2>
-      <div class="llm-usage-totals">
-        <div class="llm-usage-total-main">
-          <span class="llm-usage-total-n mono">${fmtTokens(total)}</span>
-          <span class="llm-usage-total-lbl">tokens</span>
-          <span class="llm-usage-total-sep">·</span>
-          <span class="mono">${calls}</span>
-          <span class="llm-usage-total-lbl">calls</span>
-        </div>
-        <div class="llm-usage-total-sub">
-          <span>Prompt / completion <span class="mono">${fmtTokens(u.prompt_tokens || 0)} / ${fmtTokens(u.completion_tokens || 0)}</span></span>
-          <span class="llm-usage-total-sep">·</span>
-          <span>Source <span class="mono">${esc(source)}</span></span>
-          ${
-            u.reasoning_tokens
-              ? `<span class="llm-usage-total-sep">·</span><span>Reasoning <span class="mono">${fmtTokens(u.reasoning_tokens)}</span></span>`
-              : ""
-          }
-        </div>
-      </div>
-      ${
-        hasAny
-          ? `<div class="llm-usage-groups">${groupsHtml || `<p class="controls-hint" style="margin:0.5rem 0 0">No stage breakdown yet.</p>`}</div>
-             <p class="controls-hint llm-usage-footer">Click <strong>Recon</strong> or <strong>Hunt</strong> for breakdowns. Task rows open the transcript.</p>`
-          : `<p class="controls-hint" style="margin:0.5rem 0 0">No LLM calls recorded yet for this run.</p>`
-      }
-    </div>`;
-}
-
-function findingStateCounts(snap) {
-  const list = Array.isArray(snap.findings) ? snap.findings : [];
-  if (list.length) {
-    return list.reduce((acc, x) => {
-      const st = String(x.state || "unknown").toLowerCase();
-      acc[st] = (acc[st] || 0) + 1;
-      return acc;
-    }, {});
-  }
-  const f = snap.findings || {};
-  return typeof f === "object" && !Array.isArray(f) ? f : {};
-}
-
 /** Mission Overview pure helpers — see mission_overview_helpers.js */
 const {
-  pipelineStageOfKind,
-  summarizePipelineStage,
-  buildPipelineStages,
-  countMissionTaskActivity,
-  isHuntKind,
-  huntTaskLabel,
+  buildMissionCockpit,
   summarizeHuntQueue,
   listNeedsHumanFindings,
   summarizeCoverageResidual,
@@ -2105,111 +1683,6 @@ function pipelineStatusLabel(status) {
     failed: "Failed",
   };
   return map[status] || status || "—";
-}
-
-/** Compact KPI strip for Mission Overview — uses existing snap fields only. */
-function renderMissionKpiStrip(snap) {
-  const fCounts = findingStateCounts(snap);
-  const needsHuman = (fCounts.needs_human || 0) + (fCounts.candidate || 0);
-  const confirmed = fCounts.confirmed || 0;
-  const sev = snap.severity || {};
-  const highPlus = (sev.critical || 0) + (sev.high || 0);
-  const taskCounts = Array.isArray(snap.tasks)
-    ? snap.tasks.reduce((acc, x) => {
-        const st = String(x.state || "unknown").toLowerCase();
-        acc[st] = (acc[st] || 0) + 1;
-        return acc;
-      }, {})
-    : { ...(snap.tasks_summary || {}) };
-  const { queued, running } = countMissionTaskActivity(taskCounts);
-  const runner = snap.runner || {};
-  const runnerState = runner.state || (snap.active ? "running" : "idle");
-  const progressPct = Math.round((snap.progress || 0) * 100);
-  const statusTone =
-    runnerState === "running" || snap.active
-      ? "info"
-      : snap.incomplete || snap.has_work
-        ? "warn"
-        : "good";
-
-  const items = [
-    {
-      key: "status",
-      label: "Status",
-      value: stateLabel(runnerState),
-      tone: statusTone,
-      title: "Runner / campaign status",
-      stat: "progress",
-    },
-    {
-      key: "progress",
-      label: "Progress",
-      value: `${progressPct}%`,
-      tone: "info",
-      title: "Task completion progress",
-      stat: "progress",
-    },
-    {
-      key: "tasks",
-      label: "Tasks",
-      value: `${snap.done_tasks || 0}/${snap.total_tasks || 0}`,
-      sub: queued || running ? `${running} run · ${queued} queue` : null,
-      tone: "",
-      title: "Done / total tasks",
-      stat: "tasks",
-    },
-    {
-      key: "queue",
-      label: "Queued",
-      value: String(queued),
-      tone: queued ? "warn" : "",
-      title: "Queued + paused tasks",
-      stat: "tasks",
-    },
-    {
-      key: "needs_human",
-      label: "Needs human",
-      value: String(needsHuman),
-      tone: "warn",
-      title: "Findings awaiting human review",
-      stat: "needs_human",
-    },
-    {
-      key: "confirmed",
-      label: "Confirmed",
-      value: String(confirmed),
-      tone: "good",
-      title: "Human-accepted findings",
-      stat: "confirmed",
-    },
-    {
-      key: "high",
-      label: "High+",
-      value: String(highPlus),
-      tone: highPlus ? "bad" : "",
-      title: "Critical + high severity findings",
-      stat: "high",
-    },
-  ];
-
-  const cells = items
-    .map((it) => {
-      const tone = it.tone ? ` ${it.tone}` : "";
-      const sub = it.sub
-        ? `<div class="mission-kpi-sub">${esc(it.sub)}</div>`
-        : "";
-      return `<button type="button" class="mission-kpi-item stat-link${tone}" data-stat="${esc(it.stat)}" data-kpi="${esc(it.key)}" title="${esc(it.title)}">
-        <div class="mission-kpi-label">${esc(it.label)}</div>
-        <div class="mission-kpi-value">${esc(it.value)}</div>
-        ${sub}
-      </button>`;
-    })
-    .join("");
-
-  return `
-    <div class="mission-kpi-strip" role="group" aria-label="Mission KPIs">
-      ${cells}
-    </div>`;
 }
 
 /** Compact Hunts strip: live hunt feed + needs_human above coverage matrix. */
@@ -2411,17 +1884,74 @@ window.renderHuntsStripHtml = renderHuntsStripHtml;
 window.bindHuntsStrip = bindHuntsStrip;
 window.paintHuntsModeStrip = paintHuntsModeStrip;
 
-/** Visual recon → hunt → validate_mech → validate_llm pipeline timeline. */
-function renderPipelineTimeline(snap) {
-  const stages = buildPipelineStages(snap);
-  const nodes = stages
+const missionEventRing = {
+  limit: 12,
+  _items: [],
+  reset() {
+    this._items = [];
+  },
+  push(events) {
+    if (!events || !events.length) return;
+    this._items = this._items.concat(events);
+    if (this._items.length > this.limit) {
+      this._items = this._items.slice(-this.limit);
+    }
+  },
+  snapshot() {
+    return this._items.slice();
+  },
+};
+
+function applyKpiNav(nav) {
+  if (!nav) return;
+  const modes = window.VulnForgeModes;
+  if (nav.filter) {
+    if (modes?.goReport) modes.goReport(nav.filter);
+    else modes?.setMode?.("report", nav.tab || "report");
+    return;
+  }
+  modes?.setMode?.(nav.mode, nav.tab);
+}
+
+function paintCockpitBanner(on) {
+  const el = document.querySelector("[data-cockpit-banner]");
+  if (!el) return;
+  el.innerHTML = on
+    ? `<div class="disclaimer-banner"><span>!</span><div><strong>validate_llm is ON</strong>. Mech-pass is <code>needs_human</code>; disprove may <code>rejected_llm</code> only (never auto-confirm). Same-model signal is weak.</div></div>`
+    : "";
+}
+
+function paintMissionKpis(kpis) {
+  const el = document.querySelector("[data-cockpit-kpis]");
+  if (!el) return;
+  el.innerHTML = (kpis || [])
+    .map((k) => {
+      const bar =
+        k.barPct == null
+          ? ""
+          : `<div class="cockpit-kpi-bar" style="--pct:${Number(k.barPct)}%"><i></i></div>`;
+      return `<button type="button" class="cockpit-kpi" data-kpi="${esc(k.id)}" title="${esc(k.hint)}">
+        <span class="cockpit-kpi-mark" aria-hidden="true"></span>
+        <span class="cockpit-kpi-body">
+          <span class="cockpit-kpi-label">${esc(k.label)}</span>
+          <span class="cockpit-kpi-value">${esc(k.value)}</span>
+          ${bar}
+        </span>
+      </button>`;
+    })
+    .join("");
+  el.querySelectorAll(".cockpit-kpi").forEach((btn, i) => {
+    btn.addEventListener("click", () => applyKpiNav(kpis[i] && kpis[i].nav));
+  });
+}
+
+function paintMissionPipeline(stages) {
+  const el = document.querySelector("[data-cockpit-pipeline]");
+  if (!el) return;
+  const nodes = (stages || [])
     .map((s, i) => {
       const countLabel =
-        s.total > 0
-          ? `${s.done}/${s.total}`
-          : s.status === "done"
-            ? "ready"
-            : "—";
+        s.total > 0 ? `${s.done}/${s.total}` : s.status === "done" ? "ready" : "—";
       const connector =
         i < stages.length - 1
           ? `<div class="mission-pipeline-connector" data-from="${esc(s.status)}" aria-hidden="true"></div>`
@@ -2440,132 +1970,104 @@ function renderPipelineTimeline(snap) {
         ${connector}`;
     })
     .join("");
-
-  return `
+  el.innerHTML = `
     <div class="mission-pipeline card" role="list" aria-label="Campaign pipeline">
       <div class="mission-pipeline-head">
         <h2 class="mission-pipeline-title">Pipeline</h2>
         <p class="controls-hint mission-pipeline-hint">
-          Recon → hunt → validate (mech, then LLM disprove). Stage state from task kinds on this run.
+          Recon → hunt → validate. Mech and LLM disprove fold into one stage. Never auto-confirms.
         </p>
       </div>
-      <div class="mission-pipeline-track">
-        ${nodes}
-      </div>
+      <div class="mission-pipeline-track">${nodes}</div>
     </div>`;
 }
 
-function renderOverview(snap) {
-  const el = $("#overview-panel");
+function paintMissionEvents(events) {
+  const el = document.querySelector("[data-cockpit-events]");
   if (!el) return;
-  const t = snap.tasks_summary || snap.tasks || {};
-  // tasks may be array on full snap  -  use card task counts
-  const taskCounts = Array.isArray(snap.tasks)
-    ? snap.tasks.reduce((acc, x) => {
-        acc[x.state] = (acc[x.state] || 0) + 1;
-        return acc;
-      }, {})
-    : t;
-  const fCounts = findingStateCounts(snap);
-  const needsHuman =
-    (fCounts.needs_human || 0) + (fCounts.candidate || 0);
-  const confirmed = fCounts.confirmed || 0;
-  const rejected =
-    (fCounts.rejected_mech || 0) +
-    (fCounts.rejected_llm || 0) +
-    (fCounts.rejected_human || 0) +
-    (fCounts.superseded || 0);
-  const evidenceN = Array.isArray(snap.evidence) ? snap.evidence.length : 0;
-  const archSum = snap.architecture_summary || {};
-  const archText = (archSum.summary || snap.architecture?.summary || "").trim();
-  const runner = snap.runner || {};
-  const runnerState = runner.state || "idle";
-  // Trust line in the page header is the single mech disclaimer.
-  // Only surface validate_llm footgun here when that flag is on.
-  const vllmFootgun = snap.validate_llm_on
-    ? `<div class="disclaimer-banner"><span>!</span><div><strong>validate_llm is ON</strong> - mech-pass is <code>needs_human</code>; disprove may <code>rejected_llm</code> only (never auto-confirm). Same-model signal is weak.</div></div>`
-    : "";
+  const rows = (events || [])
+    .map((ev) => {
+      const name = ev.event || ev.type || "event";
+      return `<li class="cockpit-event">
+        <span class="ts">${esc(ev.ts || "")}</span>
+        <span class="name">${esc(name)}</span>
+      </li>`;
+    })
+    .join("");
   el.innerHTML = `
-    ${vllmFootgun}
-    ${renderMissionKpiStrip(snap)}
-    ${renderPipelineTimeline(snap)}
-    <div class="overview-grid overview-grid-3">
-      <div class="card">
-        <h2>Campaign</h2>
-        <div class="kv">
-          <div class="k">Target</div><div class="v mono">${esc(snap.target_path || " - ")}</div>
-          <div class="k">Profile</div><div class="v">${esc(snap.profile || " - ")}</div>
-          ${(() => {
-            const strategy = snap.strategy || snap.config?.strategy || "";
-            if (!strategy) return "";
-            const label = STRATEGY_LABELS[strategy] || strategy;
-            const docs = snap.docs_path || snap.config?.docs_path || "";
-            const docsRow = docs
-              ? `<div class="k">Docs path</div><div class="v mono">${esc(docs)}</div>`
-              : "";
-            return `<div class="k">Strategy</div><div class="v">${esc(label)} <span class="mono" style="color:var(--muted);font-size:0.85em">(${esc(strategy)})</span></div>${docsRow}`;
-          })()}
-          <div class="k">Runner</div><div class="v">${badge(runnerState)}${runner.pid ? ` <span class="mono controls-hint">pid ${esc(String(runner.pid))}</span>` : ""}</div>
-          <div class="k">Created</div><div class="v">${esc(snap.created_at || " - ")} | ${esc(relativeTime(snap.created_at || snap.mtime))}</div>
-          <div class="k">Pin</div><div class="v mono">${esc(snap.prompt_pin || " - ")}</div>
-          <div class="k">Queue</div><div class="v">${snap.has_work ? "work remaining (queued/leased/paused)" : "idle"} ${snap.incomplete ? badge("incomplete") : ""}</div>
-        </div>
+    <section class="card cockpit-events-card">
+      <div class="toolbar cockpit-events-head">
+        <h2 class="cockpit-split-title">Recent events</h2>
+        <button type="button" class="btn btn-sm" data-cockpit-events-all>View all</button>
       </div>
-      <div class="card">
-        <h2>Findings queue</h2>
-        <div class="overview-findings-stats">
-          <button type="button" class="stat warn stat-link overview-stat" data-stat="needs_human">
-            <div class="label">Needs human</div><div class="value">${needsHuman}</div>
-          </button>
-          <button type="button" class="stat good stat-link overview-stat" data-stat="confirmed">
-            <div class="label">Confirmed</div><div class="value">${confirmed}</div>
-          </button>
-          <button type="button" class="stat bad stat-link overview-stat" data-stat="rejected">
-            <div class="label">Rejected</div><div class="value">${rejected}</div>
-          </button>
-        </div>
-        <div class="task-mix-sev" style="margin-top:0.75rem">
-          <div class="sev-heading">Severity (open + confirmed)</div>
-          ${sevPills(snap.severity)}
-        </div>
-        <div class="overview-quick-links" style="margin-top:0.75rem">
-          <button type="button" class="btn btn-primary btn-sm" id="overview-go-report">Open Report</button>
-          <button type="button" class="btn btn-sm" id="overview-go-evidence">Evidence (${evidenceN})</button>
-        </div>
-      </div>
-      <div class="card">
-        <h2>Task progress</h2>
-        <div class="meta" style="color:var(--muted);margin-bottom:0.5rem">${esc(fmtCounts(taskCounts))}</div>
-        ${progressBar(snap.progress)}
-        <p class="controls-hint" style="margin:0.65rem 0 0">
-          Ralph drains the queue (recon → hunts → validate). Start/Resume in the mission bar keeps the loop going.
-        </p>
-      </div>
-    </div>
-    ${renderTargetInventoryCard(snap.target_inventory, snap)}
-    ${renderArchitectureBriefCard(archText, archSum, snap)}
-    ${renderCodemapBriefCard(snap)}
-    ${renderLlmUsageCard(snap)}
-    ${renderHuntsStripHtml(snap, { variant: "mission", includeMatrix: true, showOpenHunts: true })}
-  `;
-  bindLlmUsageCard(el);
-  bindHuntsStrip(el);
-  $("#overview-go-report")?.addEventListener("click", () => {
-    window.VulnForgeModes?.goReport?.("all") || window.VulnForgeModes?.setMode?.("report");
+      <ul class="cockpit-event-list">${rows || `<li class="controls-hint">No events yet.</li>`}</ul>
+    </section>`;
+  el.querySelector("[data-cockpit-events-all]")?.addEventListener("click", () => {
+    window.VulnForgeModes?.setMode?.("audit", "timeline");
   });
-  $("#overview-go-evidence")?.addEventListener("click", () => {
-    window.VulnForgeModes?.goEvidence?.() || window.VulnForgeModes?.setMode?.("evidence");
-  });
-  $("#overview-go-arch")?.addEventListener("click", () => {
+}
+
+function paintMissionArchitecture(arch) {
+  const el = document.querySelector("[data-cockpit-arch]");
+  if (!el) return;
+  const a = arch || {};
+  const counts = [];
+  if (a.fileCount != null) counts.push(["Files", String(a.fileCount)]);
+  if (a.entrypointCount) counts.push(["Entrypoints", String(a.entrypointCount)]);
+  if (a.componentCount) counts.push(["Components", String(a.componentCount)]);
+  if (a.relationCount) counts.push(["Relations", String(a.relationCount)]);
+  if (a.huntFocusCount) counts.push(["Hunt focus", String(a.huntFocusCount)]);
+  const countHtml = counts.length
+    ? `<ul class="cockpit-arch-counts">${counts
+        .map(([k, v]) => `<li><span class="k">${esc(k)}</span><span class="v mono">${esc(v)}</span></li>`)
+        .join("")}</ul>`
+    : "";
+  const err = a.lastReconError
+    ? `<p class="controls-hint cockpit-arch-error"><strong>Last recon:</strong> <span class="mono">${esc(a.lastReconError)}</span></p>`
+    : "";
+  const snippet = a.snippet
+    ? `<p class="overview-arch-snippet">${esc(a.snippet)}</p>`
+    : "";
+  let diagram = "";
+  const helpers = window.ArchitectureDiagramHelpers;
+  if (a.diagramSource && helpers?.renderDiagramCardHtml) {
+    diagram = helpers.renderDiagramCardHtml(a.diagramSource, { idPrefix: "overview-" });
+  } else if (!a.hasArchitecture) {
+    diagram = `<p class="controls-hint">No architecture yet. Run recon from the Architecture tab.</p>`;
+  }
+  el.innerHTML = `
+    <section class="card cockpit-arch-card">
+      <div class="toolbar cockpit-arch-head">
+        <h2 class="cockpit-split-title">${esc(a.title || "Architecture")}</h2>
+        <button type="button" class="btn btn-sm" data-cockpit-go-arch>Architecture tab</button>
+      </div>
+      ${snippet}
+      ${countHtml}
+      ${err}
+      ${diagram}
+    </section>`;
+  el.querySelector("[data-cockpit-go-arch]")?.addEventListener("click", () => {
     window.VulnForgeModes?.setMode?.("mission", "arch");
   });
-  $("#overview-go-codemap")?.addEventListener("click", () => {
-    window.VulnForgeModes?.setMode?.("mission", "arch");
-    setTimeout(() => $("#codemap-card")?.scrollIntoView?.({ block: "nearest", behavior: "smooth" }), 60);
+  bindArchDiagramHandlers(el);
+}
+
+function paintMissionCockpit(vm) {
+  paintCockpitBanner(vm.validateLlmOn);
+  paintMissionKpis(vm.kpis);
+  paintMissionPipeline(vm.pipeline);
+  paintMissionEvents(vm.events);
+  paintMissionArchitecture(vm.architecture);
+}
+
+function renderOverview(snap) {
+  if (!document.querySelector("#overview-panel")) return;
+  const helpers = globalThis.MissionOverviewHelpers;
+  if (!helpers?.buildMissionCockpit) return;
+  const vm = helpers.buildMissionCockpit(snap, {
+    recentEvents: missionEventRing.snapshot(),
   });
-  el.querySelectorAll(".overview-stat, .mission-kpi-item[data-stat]").forEach((btn) => {
-    btn.addEventListener("click", () => goStatLink(btn.getAttribute("data-stat")));
-  });
+  paintMissionCockpit(vm);
 }
 
 function reconFailureHint(snap) {
@@ -2587,163 +2089,6 @@ function reconFailureHint(snap) {
       " Architecture may exist, but hunt planning produced zero tasks (check run.max_tasks and active hunt skills).";
   }
   return `<p class="controls-hint" style="margin:0.5rem 0 0;color:var(--danger, #c44)"><strong>Last recon:</strong> <span class="mono">${esc(String(err))}</span>${gen}.${tip}${retry}</p>`;
-}
-
-function renderArchitectureBriefCard(archText, archSum, snap) {
-  const title = archSum?.title || "Architecture";
-  if (!archText && !(archSum && archSum.has_architecture)) {
-    return `
-    <div class="card" style="margin-top:1rem">
-      <h2>${esc(title)}</h2>
-      <p class="controls-hint" style="margin:0">No architecture yet — run recon from Mission → Architecture (Refine recon). Map lives under that tab after recon succeeds. Architecture is stored in the run DB only (not under project/).</p>
-      ${reconFailureHint(snap)}
-    </div>`;
-  }
-  const comps = Array.isArray(archSum?.components) ? archSum.components.length : 0;
-  const focus = Array.isArray(archSum?.hunt_focus) ? archSum.hunt_focus.length : 0;
-  const agentsRun = Array.isArray(archSum?.recon_agents_run) ? archSum.recon_agents_run : [];
-  const agentsLabel = agentsRun.length
-    ? agentsRun
-        .map((a) => {
-          const id = a?.id || "?";
-          const ok = a?.ok === false ? "✗" : a?.ok === true ? "✓" : "";
-          return ok ? `${id}${ok}` : id;
-        })
-        .join(", ")
-    : "";
-  const snippet = archText
-    ? esc(archText.length > 420 ? archText.slice(0, 420) + "…" : archText)
-    : `<span class='controls-hint'>Architecture present (see Architecture tab).</span>`;
-  const meta = `${comps ? `${comps} component(s)` : "components n/a"} · ${focus ? `${focus} hunt_focus item(s)` : "no hunt_focus yet"}`;
-  return `
-    <div class="card" style="margin-top:1rem">
-      <div class="toolbar" style="margin-bottom:0.35rem">
-        <h2 style="margin:0;flex:1">${esc(title)}</h2>
-        <button type="button" class="btn btn-sm" id="overview-go-arch">Architecture tab</button>
-      </div>
-      <p class="overview-arch-snippet">${snippet}</p>
-      <div class="controls-hint">${esc(meta)}${agentsLabel ? ` · agents: <span class="mono">${esc(agentsLabel)}</span>` : ""}</div>
-    </div>`;
-}
-
-function renderCodemapBriefCard(snap) {
-  const sum = snap.codemap_summary || {};
-  const has =
-    !!(sum.has_codemap || snap.has_codemap || (snap.codemap && (snap.codemap.modules || []).length));
-  if (!has) {
-    return `
-    <div class="card" style="margin-top:1rem">
-      <h2>Codemap</h2>
-      <p class="controls-hint" style="margin:0">No codemap yet — run recon (or Rebuild after init). Mechanical structure lives under Mission → Architecture.</p>
-    </div>`;
-  }
-  const mods = sum.module_count != null ? sum.module_count : (snap.codemap?.modules || []).length;
-  const files = sum.file_count != null ? sum.file_count : 0;
-  const syms = sum.symbol_count != null ? sum.symbol_count : 0;
-  const roots = Array.isArray(sum.package_roots) ? sum.package_roots : [];
-  const anns = sum.annotation_count != null ? sum.annotation_count : 0;
-  const langObj = sum.languages || {};
-  const topLangs = Object.entries(langObj)
-    .sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0))
-    .slice(0, 4)
-    .map(([k]) => k)
-    .join(", ");
-  const meta = [
-    `${files} file(s)`,
-    `${mods} module(s)`,
-    syms ? `${syms} symbol(s)` : null,
-    roots.length ? `${roots.length} package root(s)` : null,
-    topLangs ? topLangs : null,
-    anns ? `${anns} annotation(s)` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  return `
-    <div class="card" style="margin-top:1rem">
-      <div class="toolbar" style="margin-bottom:0.35rem">
-        <h2 style="margin:0;flex:1">Codemap</h2>
-        <button type="button" class="btn btn-sm" id="overview-go-codemap">View codemap</button>
-      </div>
-      <div class="controls-hint">${esc(meta)}</div>
-      ${
-        roots.length
-          ? `<div class="arch-chip-row" style="margin-top:0.45rem">${roots
-              .slice(0, 6)
-              .map((r) => `<span class="arch-chip mono">${esc(String(r))}</span>`)
-              .join("")}</div>`
-          : ""
-      }
-    </div>`;
-}
-
-function renderTargetInventoryCard(inv, snap) {
-  const i = inv || {};
-  const fc = i.file_count;
-  const cap = i.planning_seed_cap ?? i.sample_paths_cap ?? 500;
-  const partial = !!i.planning_seed_partial;
-  const filesLabel = fc == null ? "—" : String(fc);
-  const seedLabel = partial
-    ? `stratified seed of ${cap} paths (tree has ${esc(filesLabel)} files)`
-    : fc == null
-      ? `up to ${cap} paths (packet seed)`
-      : `full tree in seed (${esc(filesLabel)} files)`;
-  const hps = i.hunt_plan_source;
-  let planLabel = i.recon_done ? "unknown" : "waiting for recon";
-  let planHint = "";
-  if (hps === "hunt_focus") {
-    planLabel = "LLM hunt_focus";
-    planHint = "Recon submitted hunt areas; preferred path.";
-  } else if (hps === "active_fallback" || hps === "defaults_fallback") {
-    planLabel = "active fallback";
-    planHint =
-      "Recon did not yield usable hunt_focus — mechanical areas × active hunt skills.";
-  } else if (hps) {
-    planLabel = String(hps);
-  }
-  const enq =
-    i.hunt_enqueued != null
-      ? `<div class="k">Hunts from recon</div><div class="v">${esc(String(i.hunt_enqueued))}</div>`
-      : "";
-  const lr = i.last_recon;
-  const lastReconRow =
-    lr && lr.state && lr.state !== "succeeded"
-      ? `<div class="k">Last recon</div><div class="v mono" style="color:var(--danger, #c44)">${esc(
-          String(lr.error || lr.state)
-        )}${
-          lr.recon_generation != null
-            ? ` · gen ${esc(String(lr.recon_generation))}`
-            : ""
-        }${lr.recon_requeued ? " · retry queued" : ""}</div>`
-      : "";
-  const eps = Array.isArray(i.entrypoints) ? i.entrypoints : [];
-  const epsRow = eps.length
-    ? `<div class="k">Entrypoints</div><div class="v mono">${esc(eps.slice(0, 6).join(", "))}${eps.length > 6 ? "…" : ""}</div>`
-    : "";
-  return `
-    <div class="card" style="margin-top:1rem">
-      <h2>Target inventory</h2>
-      <p class="controls-hint" style="margin-top:-0.2rem">
-        Full tree is counted and huntable. The planning seed is only a size budget for the
-        recon packet / default path hints — <strong>not</strong> a cap on Ralph or how far hunts can go.
-      </p>
-      <div class="kv">
-        <div class="k">Files on disk</div><div class="v mono">${esc(filesLabel)}</div>
-        <div class="k">Planning seed</div><div class="v">${seedLabel}</div>
-        <div class="k">Hunt plan</div><div class="v mono" title="${esc(planHint)}">${esc(planLabel)}</div>
-        ${enq}
-        ${lastReconRow}
-        ${epsRow}
-      </div>
-      ${
-        partial
-          ? `<p class="controls-hint" style="margin:0.65rem 0 0">
-              Seed is stratified across top-level folders (not “first N alphabetical”).
-              Hunters still <code>list_dir</code> / <code>grep</code> / <code>read_file</code> the whole tree.
-              Use Architecture → Refine recon or Explorer enqueues to deepen coverage — Ralph keeps looping while work remains.
-            </p>`
-          : ""
-      }
-    </div>`;
 }
 
 function runApiBase() {
@@ -3696,30 +3041,36 @@ const EVENT_ICONS = {
 };
 
 function appendEvents(events) {
+  const list = Array.isArray(events) ? events : [];
   const tl = $("#timeline");
-  if (!tl || !events?.length) return;
-  const frag = document.createDocumentFragment();
-  for (const ev of events) {
-    const name = ev.event || ev.type || "event";
-    const div = document.createElement("div");
-    div.className = `ev ${name}`;
-    const copy = { ...ev };
-    delete copy._line;
-    delete copy.event;
-    delete copy.ts;
-    delete copy.source;
-    const ico = EVENT_ICONS[name] || " | ";
-    div.innerHTML = `<div class="ico" title="${esc(name)}">${ico}</div>
+  if (tl && list.length) {
+    const frag = document.createDocumentFragment();
+    for (const ev of list) {
+      const name = ev.event || ev.type || "event";
+      const div = document.createElement("div");
+      div.className = `ev ${name}`;
+      const copy = { ...ev };
+      delete copy._line;
+      delete copy.event;
+      delete copy.ts;
+      delete copy.source;
+      const ico = EVENT_ICONS[name] || " | ";
+      div.innerHTML = `<div class="ico" title="${esc(name)}">${ico}</div>
       <div class="body">
         <span class="ts">${esc(ev.ts || "")}</span>
         <span class="name">${esc(name)}</span>
         <div class="detail">${esc(JSON.stringify(copy).slice(0, 320))}</div>
       </div>`;
-    frag.appendChild(div);
+      frag.appendChild(div);
+    }
+    tl.appendChild(frag);
+    if ($("#autoscroll")?.checked) {
+      tl.scrollTop = tl.scrollHeight;
+    }
   }
-  tl.appendChild(frag);
-  if ($("#autoscroll")?.checked) {
-    tl.scrollTop = tl.scrollHeight;
+  missionEventRing.push(list);
+  if (document.querySelector("[data-cockpit-events]")) {
+    paintMissionEvents(missionEventRing.snapshot());
   }
 }
 
@@ -5299,7 +4650,6 @@ async function loadRunFull() {
   // Chat mutators / operator UI refresh alias
   window.refreshSnapshot = loadRunFull;
   window.__VF_max_task_attempts = Number(snap.max_task_attempts) || 3;
-  renderStats(snap);
   renderRunner(snap.runner || {}, snap);
   renderOverview(snap);
   renderTasks(snap.tasks || []);
@@ -5356,7 +4706,6 @@ function connectStream() {
       const data = JSON.parse(msg.data);
       if (data.type === "snapshot") {
         const card = data.card || {};
-        renderStats(card);
         renderRunner(data.runner || card.runner || {}, card);
         // Lightweight card includes task state counters (leased/queued/done).
         // When they drift from the last full snap, pull tasks/report/coverage.
@@ -5479,8 +4828,7 @@ async function control(action) {
 }
 
 function setupTabs() {
-  // Mode-nav UI (modes.js) owns tab switching on the run page.
-  if ($(".mode-nav")) return;
+  if ($("[data-run-rail]")) return;
   $$(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
       $$(".tab").forEach((t) => t.classList.remove("active"));
@@ -5742,6 +5090,7 @@ document.addEventListener("DOMContentLoaded", () => {
           `/api/runs/${encodeURIComponent(target_id)}/${encodeURIComponent(run_id)}/events?after=0&limit=2000`
         );
         $("#timeline") && ($("#timeline").innerHTML = "");
+        missionEventRing.reset();
         appendEvents(ev.events || []);
         eventOffset = ev.next || 0;
         connectStream();

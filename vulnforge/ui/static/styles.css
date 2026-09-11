@@ -4359,6 +4359,7 @@ tr.task-row:hover td { background: rgba(255, 61, 110, 0.08); }
   font-weight: 650;
   font-size: 13px;
   line-height: 1.25;
+  color: var(--text);
 }
 .mission-pipeline-meta {
   display: flex;
@@ -5797,4 +5798,250 @@ button.llm-usage-task:focus-visible {
   background: var(--accent);
   width: 3px !important;
   margin-left: 3px;
+}
+
+/* Run page: left rail + Mission cockpit. Gated so Home/Dev/Settings stay unchanged. */
+body[data-page="run"] {
+  overflow: hidden;
+}
+body[data-page="run"] .run-shell {
+  display: flex;
+  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
+}
+body[data-page="run"] [data-run-rail] {
+  width: 220px;
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: #09060c;
+  border-right: 1px solid var(--border);
+  padding: 0.85rem 0.55rem 1rem;
+  overflow-y: auto;
+}
+body[data-page="run"] .run-rail-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+body[data-page="run"] .run-rail-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+}
+body[data-page="run"] .run-rail-item {
+  appearance: none;
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-weight: 650;
+  font-size: 13px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem 0.5rem 0.85rem;
+  cursor: pointer;
+  text-decoration: none;
+  position: relative;
+}
+body[data-page="run"] a.run-rail-item:hover {
+  text-decoration: none;
+}
+body[data-page="run"] .run-rail-item:hover {
+  color: var(--text);
+  background: rgba(255, 61, 110, 0.08);
+}
+body[data-page="run"] .run-rail-item.active {
+  color: var(--text);
+  background: rgba(255, 61, 110, 0.14);
+}
+body[data-page="run"] .run-rail-item.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+body[data-page="run"] .run-workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+body[data-page="run"] .run-workspace > .app-header {
+  flex: 0 0 auto;
+}
+body[data-page="run"] .run-workspace > .main {
+  flex: 1 1 auto;
+  max-width: none;
+  margin: 0;
+  overflow: auto;
+}
+body[data-page="run"] [data-cockpit-kpis] {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+body[data-page="run"] .cockpit-kpi {
+  appearance: none;
+  display: flex;
+  align-items: stretch;
+  gap: 0.7rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+}
+body[data-page="run"] .cockpit-kpi:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: var(--bg-card-hover);
+}
+body[data-page="run"] .cockpit-kpi-mark {
+  width: 8px;
+  border-radius: 4px;
+  background: var(--border-strong);
+  flex-shrink: 0;
+}
+body[data-page="run"] .cockpit-kpi[data-kpi="tasks"] .cockpit-kpi-mark {
+  background: var(--accent);
+}
+body[data-page="run"] .cockpit-kpi[data-kpi="needs_human"] .cockpit-kpi-mark {
+  background: var(--warn);
+}
+body[data-page="run"] .cockpit-kpi[data-kpi="coverage"] .cockpit-kpi-mark {
+  background: var(--info);
+}
+body[data-page="run"] .cockpit-kpi-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+body[data-page="run"] .cockpit-kpi-label {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 650;
+}
+body[data-page="run"] .cockpit-kpi-value {
+  font-size: 1.35rem;
+  font-weight: 750;
+  margin-top: 0.1rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+body[data-page="run"] .cockpit-kpi-bar {
+  height: 4px;
+  border-radius: 99px;
+  background: var(--border);
+  margin-top: 0.45rem;
+  overflow: hidden;
+}
+body[data-page="run"] .cockpit-kpi-bar > i {
+  display: block;
+  height: 100%;
+  width: var(--pct, 0%);
+  background: var(--accent);
+  border-radius: inherit;
+}
+body[data-page="run"] [data-cockpit-pipeline] {
+  margin-bottom: 0.85rem;
+}
+body[data-page="run"] .mission-pipeline-connector {
+  background: none;
+  height: 0;
+  border-top: 2px dashed var(--border-strong);
+}
+body[data-page="run"] .mission-pipeline-connector[data-from="done"] {
+  border-top-style: solid;
+  border-top-color: var(--good);
+  background: none;
+  opacity: 1;
+}
+body[data-page="run"] .mission-pipeline-connector[data-from="running"],
+body[data-page="run"] .mission-pipeline-connector[data-from="partial"] {
+  border-top-style: solid;
+  border-top-color: var(--accent);
+  background: none;
+}
+body[data-page="run"] [data-cockpit-split] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.85rem;
+  align-items: start;
+}
+body[data-page="run"] .cockpit-split-title {
+  margin: 0;
+  font-size: 0.95rem;
+}
+body[data-page="run"] .cockpit-event-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 22rem;
+  overflow: auto;
+}
+body[data-page="run"] .cockpit-event {
+  display: flex;
+  gap: 0.65rem;
+  font-size: 12.5px;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+body[data-page="run"] .cockpit-event .ts {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 9rem;
+}
+body[data-page="run"] .cockpit-event .name {
+  font-family: var(--mono);
+}
+body[data-page="run"] .cockpit-arch-counts {
+  list-style: none;
+  margin: 0 0 0.65rem;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem 0.75rem;
+  font-size: 13px;
+}
+body[data-page="run"] .cockpit-arch-counts .k {
+  color: var(--muted);
+}
+body[data-page="run"] .cockpit-arch-counts .v {
+  margin-left: 0.35rem;
+}
+body[data-page="run"] .cockpit-arch-error {
+  color: var(--bad);
+}
+@media (max-width: 980px) {
+  body[data-page="run"] [data-cockpit-kpis],
+  body[data-page="run"] [data-cockpit-split] {
+    grid-template-columns: 1fr;
+  }
+  body[data-page="run"] [data-run-rail] {
+    width: 180px;
+    flex-basis: 180px;
+  }
 }

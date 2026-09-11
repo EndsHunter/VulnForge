@@ -10,6 +10,9 @@
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body data-page="run" data-run-key="{{ target_id }}/{{ run_id }}">
+  <div class="run-shell">
+  <aside data-run-rail aria-label="Run navigation"></aside>
+  <div class="run-workspace">
   <header class="app-header mission-bar">
     <div class="brand">
       <a href="/" class="home-link" title="Home  -  all runs">
@@ -27,12 +30,10 @@
         <span id="live-label">...</span>
       </span>
       <span id="runner-status" class="runner-status"></span>
-      <!-- Primary runner control: one of Start / Pause / Resume shown by JS -->
       <button class="btn btn-good" id="btn-start" type="button" title="Start Ralph outer loop">Start</button>
       <button class="btn btn-warn" id="btn-pause" type="button" title="Pause after current task" hidden>Pause</button>
       <button class="btn btn-primary" id="btn-resume" type="button" title="Resume Ralph" hidden>Resume</button>
       <button class="btn" id="btn-refresh" type="button" title="Refresh snapshot">Refresh</button>
-      <a class="btn" href="/settings" id="btn-settings" title="LLM &amp; validation settings">Settings</a>
       <details class="danger-menu">
         <summary class="btn btn-ghost" title="More actions">··· More</summary>
         <div class="danger-menu-body">
@@ -45,24 +46,11 @@
 
   <main class="main">
     <p id="run-subtitle" class="run-subtitle"></p>
-    <div id="main-progress" class="main-progress"></div>
-    <div class="stats" id="stats"></div>
 
     <p class="trust-line" role="note" id="trust-line">
       <strong>needs_human</strong> = mechanical gates passed.
       <strong>confirmed</strong> = human accepted. Neither is exploit proof.
     </p>
-
-    <!-- Primary modes (research cockpit) -->
-    <div class="mode-nav" role="tablist" aria-label="Workspace mode">
-      <button class="mode-tab active" data-mode="mission" type="button" role="tab" aria-selected="true">Mission</button>
-      <button class="mode-tab" data-mode="hunts" type="button" role="tab">Hunts</button>
-      <button class="mode-tab" data-mode="explorer" type="button" role="tab">Explorer</button>
-      <button class="mode-tab" data-mode="report" type="button" role="tab" aria-selected="false">Report</button>
-      <button class="mode-tab" data-mode="evidence" type="button" role="tab" aria-selected="false">Evidence</button>
-      <button class="mode-tab" data-mode="audit" type="button" role="tab" aria-selected="false">Tasks</button>
-      <button class="mode-tab" data-mode="ai" type="button" role="tab" aria-selected="false">AI</button>
-    </div>
 
     <!-- Mission -->
     <div class="mode-panel active" data-mode-panel="mission">
@@ -71,8 +59,15 @@
         <button class="tab" data-tab="arch" type="button" role="tab">Architecture</button>
       </div>
       <div class="tab-panel active" id="panel-overview">
-        <!-- Mission Overview cockpit: KPI strip + pipeline timeline + cards (filled by app.js) -->
-        <div id="overview-panel" class="mission-overview-cockpit" aria-label="Mission overview"></div>
+        <div id="overview-panel" class="mission-overview-cockpit" aria-label="Mission overview">
+          <div data-cockpit-banner></div>
+          <div data-cockpit-kpis></div>
+          <div data-cockpit-pipeline></div>
+          <div data-cockpit-split>
+            <div data-cockpit-events></div>
+            <div data-cockpit-arch></div>
+          </div>
+        </div>
       </div>
       <div class="tab-panel" id="panel-arch">
         <div id="arch-panel"></div>
@@ -329,6 +324,8 @@
     </div>
 
   </main>
+  </div>
+  </div>
 
   <div class="modal-backdrop" id="transcript-modal">
     <div class="modal modal-wide modal-tall">
@@ -619,6 +616,7 @@
 
   <script src="/static/monaco_boot.js"></script>
   <script src="/static/monaco_loader.js"></script>
+  <script src="/static/run_nav.js"></script>
   <script src="/static/mission_overview_helpers.js"></script>
   <script src="/static/architecture_diagram_helpers.js"></script>
   <script src="/static/app.js"></script>

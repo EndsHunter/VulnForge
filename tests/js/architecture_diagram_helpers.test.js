@@ -86,6 +86,30 @@ describe("buildArchitectureGraph", () => {
   });
 });
 
+describe("idPrefix marker ids", () => {
+  it("keeps default marker id without prefix", () => {
+    const g = buildArchitectureGraph({
+      components: [{ name: "API", path_hints: ["app.py"] }],
+    });
+    const svg = renderArchitectureSvg(g);
+    assert.ok(svg.includes('id="arch-diag-arrow"'));
+  });
+
+  it("does not share marker ids across prefixes", () => {
+    const src = { components: [{ name: "API", path_hints: ["app.py"] }] };
+    const overview = renderDiagramCardHtml(src, { idPrefix: "overview-" });
+    const tab = renderDiagramCardHtml(src, { idPrefix: "tab-" });
+    assert.ok(overview.includes('id="overview-arch-diag-arrow"'));
+    assert.ok(overview.includes('id="overview-arch-diagram-card"'));
+    assert.ok(tab.includes('id="tab-arch-diag-arrow"'));
+    assert.ok(tab.includes('id="tab-arch-diagram-card"'));
+    assert.equal(overview.includes('id="arch-diag-arrow"'), false);
+    assert.equal(tab.includes('id="arch-diag-arrow"'), false);
+    assert.equal(overview.includes("tab-arch-diag-arrow"), false);
+    assert.equal(tab.includes("overview-arch-diag-arrow"), false);
+  });
+});
+
 describe("renderDiagramCardHtml", () => {
   it("includes disclaimer and SVG when components exist", () => {
     const html = renderDiagramCardHtml({
