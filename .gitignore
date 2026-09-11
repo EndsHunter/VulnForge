@@ -37,6 +37,9 @@ VulnForge-main.zip
 # Offline release artifacts
 /dist/*.zip
 
+# Verification skill proof artifacts (instance state lives under /tmp)
+.cursor/skills/verify-vulnforge/artifacts/
+
 # Unrelated siblings in this workspace (not part of VulnForge package)
 katie/
 ornith.py

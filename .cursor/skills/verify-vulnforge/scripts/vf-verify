@@ -1,0 +1,374 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HOST = "127.0.0.1"
+PORT_FLOOR = 18787
+READY_WAIT_S = 45.0
+STOP_WAIT_S = 8.0
+LATEST_PATH = Path("/tmp/vf-verify-latest")
+
+
+def skill_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for p in [here] + list(here.parents):
+        if (p / "pyproject.toml").is_file() and (p / "vulnforge").is_dir():
+            return p
+    raise SystemExit("could not find VulnForge repo root")
+
+
+def artifacts_root() -> Path:
+    return skill_dir() / "artifacts"
+
+
+def instance_dir(run_id: str) -> Path:
+    return Path(f"/tmp/vf-verify-{run_id}")
+
+
+def instance_path(run_id: str) -> Path:
+    return instance_dir(run_id) / "instance.json"
+
+
+def resolve_run_id(explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    env = os.environ.get("VF_VERIFY_RUN_ID", "").strip()
+    if env:
+        return env
+    if LATEST_PATH.is_file():
+        return LATEST_PATH.read_text(encoding="utf-8").strip()
+    raise SystemExit("no VF_VERIFY_RUN_ID, --run-id, or /tmp/vf-verify-latest")
+
+
+def load_instance(run_id: str) -> dict:
+    path = instance_path(run_id)
+    if not path.is_file():
+        raise SystemExit(f"missing instance file: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def http_get(url: str, timeout: float = 3.0) -> tuple[int, str]:
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return int(resp.status), body
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        return int(e.code), body
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+        raise ConnectionError(str(e)) from e
+
+
+def port_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def pick_port(host: str, requested: int | None) -> int:
+    if requested is not None:
+        if not port_free(host, requested):
+            raise SystemExit(f"port {host}:{requested} is in use")
+        return requested
+    for port in range(PORT_FLOOR, PORT_FLOOR + 100):
+        if port_free(host, port):
+            return port
+    raise SystemExit("no free port in 18787-18886")
+
+
+def pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def cmdline_of(pid: int) -> str:
+    path = Path(f"/proc/{pid}/cmdline")
+    if not path.is_file():
+        return ""
+    raw = path.read_bytes().replace(b"\x00", b" ")
+    return raw.decode("utf-8", errors="replace").strip()
+
+
+def ensure_venv(repo: Path) -> Path:
+    vf = repo / ".venv" / "bin" / "vf"
+    if vf.is_file():
+        return vf
+    python = shutil.which("python3")
+    if not python:
+        raise SystemExit("python3 not on PATH")
+    print("creating .venv and installing vulnforge[dev]", file=sys.stderr)
+    subprocess.check_call([python, "-m", "venv", str(repo / ".venv")])
+    pip = repo / ".venv" / "bin" / "pip"
+    subprocess.check_call([str(pip), "install", "-U", "pip"])
+    subprocess.check_call([str(pip), "install", "-e", ".[dev]"], cwd=str(repo))
+    if not vf.is_file():
+        raise SystemExit(f"missing {vf} after install")
+    return vf
+
+
+def cmd_launch(args: argparse.Namespace) -> int:
+    repo = repo_root()
+    vf = ensure_venv(repo)
+    run_id = args.run_id or os.environ.get("VF_VERIFY_RUN_ID") or time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
+    host = args.host
+    port = pick_port(host, args.port)
+    inst = instance_dir(run_id)
+    if inst.exists():
+        raise SystemExit(f"instance dir already exists: {inst}")
+    runs_root = inst / "runs"
+    runs_root.mkdir(parents=True)
+    log_path = inst / "dashboard.log"
+    artifacts = artifacts_root() / run_id
+    artifacts.mkdir(parents=True, exist_ok=True)
+    logf = log_path.open("w", encoding="utf-8")
+    proc = subprocess.Popen(
+        [
+            str(vf),
+            "dashboard",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--runs-root",
+            str(runs_root),
+        ],
+        cwd=str(repo),
+        stdout=logf,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    url = f"http://{host}:{port}"
+    deadline = time.time() + READY_WAIT_S
+    health = None
+    last_err = ""
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            logf.flush()
+            tail = log_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+            raise SystemExit(f"dashboard exited {proc.returncode}\n{tail}")
+        try:
+            status, body = http_get(f"{url}/api/health")
+            if status == 200:
+                health = json.loads(body)
+                if health.get("ok") is True:
+                    break
+        except (ConnectionError, json.JSONDecodeError, TimeoutError) as e:
+            last_err = str(e)
+        time.sleep(0.2)
+    else:
+        proc.terminate()
+        raise SystemExit(f"dashboard not ready at {url}/api/health: {last_err}")
+    record = {
+        "artifacts": str(artifacts),
+        "host": host,
+        "log": str(log_path),
+        "pgid": os.getpgid(proc.pid),
+        "pid": proc.pid,
+        "port": port,
+        "project_root": str(repo),
+        "run_id": run_id,
+        "runs_root": str(runs_root.resolve()),
+        "url": url,
+        "vf": str(vf),
+    }
+    write_json(instance_path(run_id), record)
+    write_json(artifacts / "launch.json", record)
+    LATEST_PATH.write_text(run_id + "\n", encoding="utf-8")
+    print(f"launched")
+    print(f"run_id={run_id}")
+    print(f"url={url}")
+    print(f"pid={proc.pid}")
+    print(f"runs_root={record['runs_root']}")
+    print(f"artifacts={artifacts}")
+    print(f"instance={instance_path(run_id)}")
+    if health:
+        print(f"health={json.dumps(health, sort_keys=True)}")
+    return 0
+
+
+def doctor_report(inst: dict) -> tuple[bool, dict]:
+    checks = []
+    pid = int(inst["pid"])
+    url = inst["url"]
+    alive = pid_alive(pid)
+    checks.append({"id": "pid_alive", "ok": alive, "detail": f"pid={pid}"})
+    cmd = cmdline_of(pid) if alive else ""
+    cmd_ok = alive and ("dashboard" in cmd)
+    checks.append({"id": "cmdline_dashboard", "ok": cmd_ok, "detail": cmd})
+    health_ok = False
+    health = None
+    home_ok = False
+    settings_ok = False
+    dev_ok = False
+    try:
+        status, body = http_get(f"{url}/api/health")
+        health = json.loads(body) if body else None
+        health_ok = (
+            status == 200
+            and isinstance(health, dict)
+            and health.get("ok") is True
+            and Path(str(health.get("runs_root", ""))).resolve() == Path(inst["runs_root"]).resolve()
+            and Path(str(health.get("project_root", ""))).resolve() == Path(inst["project_root"]).resolve()
+        )
+        checks.append(
+            {
+                "id": "health",
+                "ok": health_ok,
+                "detail": health,
+            }
+        )
+    except (ConnectionError, json.JSONDecodeError, TimeoutError) as e:
+        checks.append({"id": "health", "ok": False, "detail": str(e)})
+    try:
+        status, body = http_get(f"{url}/")
+        home_ok = status == 200 and 'data-page="home"' in body
+        checks.append({"id": "home_html", "ok": home_ok, "detail": f"status={status}"})
+    except (ConnectionError, TimeoutError) as e:
+        checks.append({"id": "home_html", "ok": False, "detail": str(e)})
+    try:
+        status, body = http_get(f"{url}/settings")
+        settings_ok = status == 200 and 'data-page="settings"' in body
+        checks.append({"id": "settings_html", "ok": settings_ok, "detail": f"status={status}"})
+    except (ConnectionError, TimeoutError) as e:
+        checks.append({"id": "settings_html", "ok": False, "detail": str(e)})
+    try:
+        status, body = http_get(f"{url}/dev")
+        dev_ok = status == 200 and 'data-page="dev"' in body
+        checks.append({"id": "dev_html", "ok": dev_ok, "detail": f"status={status}"})
+    except (ConnectionError, TimeoutError) as e:
+        checks.append({"id": "dev_html", "ok": False, "detail": str(e)})
+    ok = all(c["ok"] for c in checks)
+    return ok, {"ok": ok, "instance": inst, "checks": checks, "health": health}
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    run_id = resolve_run_id(args.run_id)
+    inst = load_instance(run_id)
+    ok, report = doctor_report(inst)
+    if args.write:
+        art = Path(inst["artifacts"])
+        art.mkdir(parents=True, exist_ok=True)
+        write_json(art / "doctor.json", report)
+        if report.get("health") is not None:
+            write_json(art / "health.json", report["health"])
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if ok else 1
+
+
+def cmd_env(args: argparse.Namespace) -> int:
+    run_id = resolve_run_id(args.run_id)
+    inst = load_instance(run_id)
+    exports = {
+        "VF_VERIFY_RUN_ID": inst["run_id"],
+        "VF_VERIFY_HOST": inst["host"],
+        "VF_VERIFY_PORT": str(inst["port"]),
+        "VF_VERIFY_URL": inst["url"],
+        "VF_VERIFY_PID": str(inst["pid"]),
+        "VF_VERIFY_RUNS_ROOT": inst["runs_root"],
+        "VF_VERIFY_ARTIFACTS": inst["artifacts"],
+        "VF_VERIFY_REPO": inst["project_root"],
+        "VF_VERIFY_VF": inst["vf"],
+    }
+    for key, value in exports.items():
+        print(f"export {key}={json.dumps(value)}")
+    return 0
+
+
+def cmd_instance(args: argparse.Namespace) -> int:
+    run_id = resolve_run_id(args.run_id)
+    inst = load_instance(run_id)
+    print(json.dumps(inst, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    run_id = resolve_run_id(args.run_id)
+    inst = load_instance(run_id)
+    pid = int(inst["pid"])
+    pgid = int(inst.get("pgid") or pid)
+    inst_dir = instance_dir(run_id)
+    if not str(inst_dir).startswith("/tmp/vf-verify-"):
+        raise SystemExit(f"refusing to delete {inst_dir}")
+    if pid_alive(pid):
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        deadline = time.time() + STOP_WAIT_S
+        while time.time() < deadline and pid_alive(pid):
+            time.sleep(0.1)
+        if pid_alive(pid):
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            time.sleep(0.2)
+    shutil.rmtree(inst_dir, ignore_errors=False)
+    if LATEST_PATH.is_file() and LATEST_PATH.read_text(encoding="utf-8").strip() == run_id:
+        LATEST_PATH.unlink()
+    print(f"stopped pid={pid} run_id={run_id}")
+    print(f"removed {inst_dir}")
+    print(f"artifacts kept at {inst['artifacts']}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="vf-verify")
+    sub = p.add_subparsers(dest="command", required=True)
+    launch = sub.add_parser("launch", help="start an isolated dashboard")
+    launch.add_argument("--host", default=HOST)
+    launch.add_argument("--port", type=int, default=None)
+    launch.add_argument("--run-id", default=None)
+    launch.set_defaults(func=cmd_launch)
+    doctor = sub.add_parser("doctor", help="check the recorded instance")
+    doctor.add_argument("--run-id", default=None)
+    doctor.add_argument("--write", action="store_true", help="write doctor.json and health.json")
+    doctor.set_defaults(func=cmd_doctor)
+    envp = sub.add_parser("env", help="print export VF_VERIFY_* lines")
+    envp.add_argument("--run-id", default=None)
+    envp.set_defaults(func=cmd_env)
+    inst = sub.add_parser("instance", help="print instance.json")
+    inst.add_argument("--run-id", default=None)
+    inst.set_defaults(func=cmd_instance)
+    stop = sub.add_parser("stop", help="stop the recorded pid and delete /tmp instance dir")
+    stop.add_argument("--run-id", default=None)
+    stop.set_defaults(func=cmd_stop)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
