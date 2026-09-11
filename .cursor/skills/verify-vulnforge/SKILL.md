@@ -47,12 +47,14 @@ Run this first whenever anything looks off.
 .cursor/skills/verify-vulnforge/scripts/vf-verify doctor --write
 ```
 
-Pass only if all of these hold:
+Pass only if `doctor --write` prints `"ok": true`. The helper requires all of these:
 
 - Recorded pid is alive and its cmdline contains `dashboard`.
 - `GET $VF_VERIFY_URL/api/health` is `ok: true` and `runs_root` matches the recorded directory.
 - `project_root` matches this repo.
 - `GET $VF_VERIFY_URL/` contains `data-page="home"`.
+- `GET $VF_VERIFY_URL/settings` contains `data-page="settings"`.
+- `GET $VF_VERIFY_URL/dev` contains `data-page="dev"`.
 
 Refuse to drive on failure. Do not fall back to port 8787 or `pgrep`.
 
@@ -74,12 +76,12 @@ In a browser with browser-use or CDP, first navigation is `new_tab($VF_VERIFY_UR
 CLI:
 
 ```bash
-.venv/bin/vf init --target fixtures/toy_sqli --runs-root "$VF_VERIFY_RUNS_ROOT"
+.venv/bin/vf init --target fixtures/toy_sqli --runs-root "$VF_VERIFY_RUNS_ROOT" --no-enqueue-hunts
 .venv/bin/vf status --run-dir "$VF_VERIFY_RUNS_ROOT"/<target_id>/<run_id>
 .venv/bin/vf --help
 ```
 
-`vf init` prints the run directory and exits 0. It does not start Ralph. Prefer `--no-enqueue-hunts` when you only need a listed run.
+`vf init` prints the run directory and exits 0. It does not start Ralph. Use `--no-enqueue-hunts` when you only need a listed run.
 
 Do not click **Start**, **Resume**, **Hard stop**, or **Delete run**. Do not submit **New audit** with **Start Ralph after create** checked. Do not click **Save settings**. Do not **Reseed**, **Import setup**, or toggle Active on Dev. Those writes leave this repo's `config/` and the operator collection.
 

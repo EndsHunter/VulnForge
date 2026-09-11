@@ -17,7 +17,7 @@ This directory is the maintained source for verifying operator-facing VulnForge 
 - Start every recipe from the baseline state unless its preconditions say otherwise.
 - Prefer ids, `data-page`, `data-nav-id`, `data-mode-panel`, and `data-dev-tab` over CSS position.
 - Treat every command as literal. Keep quoted names and flags unchanged.
-- Run browser actions against `$VF_VERIFY_URL`. First navigation is `new_tab(url)`. Keep one tab.
+- Run browser actions against `$VF_VERIFY_URL`. First navigation is `new_tab(url)` unless a tab is already on that host and port. Keep one tab. Do not open a second tab on the same URL.
 - Run terminal actions with `$VF_VERIFY_VF` (the venv `vf`) and `--runs-root "$VF_VERIFY_RUNS_ROOT"`.
 - Restore nothing on disk except by `vf-verify stop`. Do not remove proof artifacts during cleanup.
 

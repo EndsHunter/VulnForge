@@ -31,12 +31,14 @@ Preconditions:
 - **Files.** That directory contains `harness.db`, `target_manifest.json`, `evidence/`, `inbox/`, and `project/`. `target_id` starts with `toy_sqli-`.
 - **Status.** Run `$VF_VERIFY_VF status --run-dir <that path>`. Exit code `0`. Stdout includes `run_dir:`, `target:` pointing at `fixtures/toy_sqli`, `profile: code_static`, and a `tasks:` line.
 - **Dashboard sees it.** If the isolated dashboard is up, `GET $VF_VERIFY_URL/api/runs` lists the same `target_id` and `run_id`. Home shows `a.run-row` for it (see [Home fleet](./home-fleet.md)).
-- **Missing target.** Run `$VF_VERIFY_VF init --target /tmp/vf-verify-does-not-exist --runs-root "$VF_VERIFY_RUNS_ROOT"`. Exit code is non-zero. Stderr contains `target not found`.
+- **Missing target.** Run `$VF_VERIFY_VF init --target /tmp/vf-verify-does-not-exist --runs-root "$VF_VERIFY_RUNS_ROOT"`. Exit code is `30`. Stderr contains `target not found`.
 - **Proof.** Save `init.stdout.txt`, `status.stdout.txt`, `help.stdout.txt`, and a listing of the run directory. Keep the run until Home proof is done, then leave it for `vf-verify stop` to delete with the instance dir.
 
 ## Gotchas
 
 - `vf init` and `vf status` exit `0` on success (`EXIT_PROGRESS`). Treat that as success, not "still running".
+- `vf status` may print a `validate_llm` note on stderr. Assert the stdout fields. Do not treat that stderr line as failure.
+- A missing target exits `30` (`EXIT_CONFIG`). The stderr line starts with `target not found`.
 - Omit `--runs-root` and `vf` writes `runs/` in the repo. The isolated dashboard will not list it. `stop` will not delete it.
 - First run under a target is `run-001`. A second init becomes `run-002`.
 - `target_id` is `{directory-name}-{8 hex chars}` of the resolved target path. Do not hard-code the hex. Read it from init stdout.
