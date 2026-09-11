@@ -45,8 +45,8 @@ Keep implementation details out of the map. Name only user paths, stable handles
 
 ## Features
 
-- [Home fleet](./home-fleet.md) covers the all-runs Home page, search, New audit, and opening a run.
-- [Run workspace](./run-workspace.md) covers the run rail, mode panels, Explorer shortcut, and footer Dev/Settings links.
+- [Home fleet](./home-fleet.md) covers the run list, search, New audit, dock icons, and the Ask bubble.
+- [Run workspace](./run-workspace.md) covers the icon rail, mode panels, Explorer shortcut, run switch, and footer Settings/Dev/Tool gaps links.
 - [CLI init and status](./cli-init-status.md) covers `vf init`, `vf status`, and `vf --help`.
 - [Settings](./settings.md) covers the Settings page fields and read-only API check.
 - [Dev dashboard](./dev-dashboard.md) covers hunt skills, collection tabs, and the read-only skill list.
