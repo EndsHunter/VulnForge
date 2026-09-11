@@ -12,6 +12,8 @@ from vulnforge.paths import PROJECT_ROOT
 
 HELPERS = PROJECT_ROOT / "vulnforge" / "ui" / "static" / "run_nav.js"
 TEST_JS = PROJECT_ROOT / "tests" / "js" / "run_nav.test.js"
+HOME_HTML = PROJECT_ROOT / "vulnforge" / "ui" / "templates" / "index.html"
+HOME_JS = PROJECT_ROOT / "vulnforge" / "ui" / "static" / "app.js"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
@@ -29,3 +31,22 @@ def test_run_nav_js():
         f"node --test failed (rc={proc.returncode})\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
+
+
+def test_home_html_is_the_list():
+    html = HOME_HTML.read_text(encoding="utf-8")
+    js = HOME_JS.read_text(encoding="utf-8")
+    assert 'id="btn-open-ai-chat"' not in html
+    assert "home-cta-row" not in html
+    for html_id in (
+        "btn-settings",
+        "btn-open-dev",
+        "btn-open-tool-gaps",
+        "home-search",
+        "btn-new-run",
+        "run-list",
+    ):
+        assert f'id="{html_id}"' in html
+    assert 'class="run-row"' in js
+    assert "No runs match." in js
+    assert "No runs yet. Start a new audit" in js

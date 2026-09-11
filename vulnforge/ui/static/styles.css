@@ -428,6 +428,69 @@ table.data td.mono, .mono { font-family: var(--mono); font-size: 12px; }
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
+.home-fleet {
+  max-width: 760px;
+  padding: 16px 16px 64px;
+}
+.home-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.home-mark {
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.home-mark:hover { text-decoration: none; color: var(--accent); }
+.home-head #home-search {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.65rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--hairline);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  color-scheme: dark;
+}
+.home-head #home-search:focus {
+  outline: none;
+  border-color: var(--warn);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 25%, transparent);
+}
+.home-label {
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 0 8px 6px;
+}
+.home-group {
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 12px 8px 4px;
+}
+.home-dock {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+.home-dock-btn {
+  font-size: 11px;
+  color: var(--text-faint);
+  text-decoration: none;
+  padding: 4px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+.home-dock-btn:hover {
+  color: var(--text);
+  text-decoration: none;
+  border-color: var(--hairline-strong);
+}
 .run-list {
   display: flex;
   flex-direction: column;
@@ -451,6 +514,34 @@ table.data td.mono, .mono { font-family: var(--mono); font-size: 12px; }
   background: var(--row-hover);
   text-decoration: none;
 }
+.run-row .title {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-row .meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.run-row .right {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.run-row .review { color: var(--warn); font-size: 11px; }
+.run-row .st.run { color: var(--accent); }
+.run-row .st.fail { color: var(--bad); }
 .run-row .row-top {
   display: flex;
   justify-content: space-between;
@@ -462,30 +553,6 @@ table.data td.mono, .mono { font-family: var(--mono); font-size: 12px; }
   min-width: 0;
   flex: 1;
   overflow: hidden;
-}
-.run-row .title {
-  font-weight: 700;
-  font-size: 15px;
-  letter-spacing: -0.01em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.run-row .meta {
-  color: var(--muted);
-  font-size: 12px;
-  margin-top: 0.2rem;
-  /* Prefer ellipsis over mid-token wrap on long Windows paths */
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-/* Ellipsize from the left so drive+parent shrink first; keep leaf path readable */
-.run-row .meta.path-meta {
-  direction: rtl;
-  text-align: left;
-  font-variant-ligatures: none;
 }
 .run-row .meta.path-meta::before {
   content: "";
@@ -5043,28 +5110,10 @@ button.llm-usage-task:focus-visible {
   color: var(--muted);
 }
 
-/* Home tool gaps + Dev CTAs */
-.home-cta-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.85rem;
-  margin: 0 0 1.25rem;
-}
-@media (max-width: 800px) {
-  .home-cta-row { grid-template-columns: 1fr; }
-}
 .home-tool-gaps-card,
 .home-dev-card {
   margin: 0;
   padding: 1rem 1.1rem;
-}
-.home-tool-gaps-cta {
-  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
-  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 6%, transparent), transparent);
-}
-.home-dev-cta {
-  border-color: rgba(158,120,255,0.28);
-  background: linear-gradient(90deg, rgba(158,120,255,0.07), transparent);
 }
 .tool-gaps-per-run { margin-top: 0.5rem; }
 .task-loop { white-space: nowrap; font-size: 12px; }
@@ -5362,12 +5411,6 @@ button.llm-usage-task:focus-visible {
 }
 
 /* ---- Operator AI chat ---- */
-.home-cta-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-}
 .operator-chat-root,
 .oc-shell {
   display: flex;
