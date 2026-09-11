@@ -38,6 +38,8 @@ def test_home_html_is_the_list():
     html = HOME_HTML.read_text(encoding="utf-8")
     js = HOME_JS.read_text(encoding="utf-8")
     assert 'id="btn-open-ai-chat"' not in html
+    assert 'id="ai-fab"' in html
+    assert 'id="ai-sheet"' in html
     assert "home-cta-row" not in html
     for html_id in (
         "btn-settings",
@@ -64,3 +66,6 @@ def test_run_html_icon_rail_chrome():
     assert 'id="btn-start"' in html
     assert 'id="btn-refresh"' in html
     assert 'id="operator-chat-root"' in html
+    assert 'id="ai-fab"' in html
+    assert 'id="ai-sheet"' in html
+    assert html.index('id="ai-sheet"') < html.index('id="operator-chat-root"')

@@ -1569,7 +1569,7 @@
     window.VulnForgeModes?.setMode?.("ai");
     const ok = window.VulnForgeChat?.prefill?.(text);
     if (!ok) {
-      toast("AI chat unavailable — open the AI tab and paste the compare prompt", true);
+      toast("Ask is unavailable. Open the bubble and paste the compare prompt.", true);
     }
   }
 

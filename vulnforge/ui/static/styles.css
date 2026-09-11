@@ -5410,6 +5410,82 @@ button.llm-usage-task:focus-visible {
   min-width: 14rem;
 }
 
+.ai-fab {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--hairline-strong);
+  background: var(--bg-raised);
+  color: var(--text-faint);
+  display: grid;
+  place-items: center;
+  z-index: 46;
+  padding: 0;
+  cursor: pointer;
+}
+.ai-fab svg {
+  width: 16px;
+  height: 16px;
+}
+.ai-fab:hover,
+.ai-fab.open { color: var(--warn); }
+.ai-badge {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.ai-sheet {
+  position: fixed;
+  right: 16px;
+  bottom: 60px;
+  width: 360px;
+  height: 420px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 88px);
+  background: var(--bg-raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+}
+.ai-sheet[hidden] { display: none !important; }
+.ai-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 13px;
+  font-weight: 500;
+}
+.ai-head button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ai-sheet .operator-chat-root,
+.ai-sheet .oc-shell {
+  min-height: 0;
+  max-height: none;
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 /* ---- Operator AI chat ---- */
 .operator-chat-root,
 .oc-shell {

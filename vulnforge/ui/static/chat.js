@@ -41,7 +41,88 @@
     pending: null,
     chips: [],
     mounted: false,
+    sheetOpen: false,
+    fab: null,
+    sheet: null,
+    scopeKey: "",
   };
+
+  function currentScopeKey() {
+    if (document.body.getAttribute("data-page") === "run") {
+      return document.body.getAttribute("data-run-key") || "run";
+    }
+    return "fleet";
+  }
+
+  function syncBadge() {
+    const badge = state.fab && state.fab.querySelector(".ai-badge");
+    if (!badge) return;
+    badge.hidden = !state.pending;
+  }
+
+  function resetSession() {
+    state.sessionId = null;
+    state.pending = null;
+    state.mounted = false;
+    const root = document.getElementById("operator-chat-root");
+    if (root) {
+      delete root.dataset.ready;
+      root.innerHTML = "";
+    }
+    syncBadge();
+  }
+
+  function bindChrome() {
+    state.fab = document.getElementById("ai-fab");
+    state.sheet = document.getElementById("ai-sheet");
+    const key = currentScopeKey();
+    if (state.scopeKey && state.scopeKey !== key) resetSession();
+    state.scopeKey = key;
+    const title = document.getElementById("ai-title");
+    if (title) {
+      title.textContent = key === "fleet" ? "Across runs" : key.replace("/", " / ");
+    }
+    if (state.fab && !state.fab.dataset.bound) {
+      state.fab.dataset.bound = "1";
+      state.fab.addEventListener("click", () => toggleSheet());
+    }
+    const closeBtn = document.getElementById("ai-close");
+    if (closeBtn && !closeBtn.dataset.bound) {
+      closeBtn.dataset.bound = "1";
+      closeBtn.addEventListener("click", () => closeSheet());
+    }
+    syncBadge();
+  }
+
+  function openSheet() {
+    bindChrome();
+    const key = currentScopeKey();
+    if (state.scopeKey !== key) {
+      resetSession();
+      state.scopeKey = key;
+    }
+    ensureMounted();
+    state.sheetOpen = true;
+    if (state.sheet) state.sheet.hidden = false;
+    if (state.fab) {
+      state.fab.classList.add("open");
+      state.fab.setAttribute("aria-expanded", "true");
+    }
+  }
+
+  function closeSheet() {
+    state.sheetOpen = false;
+    if (state.sheet) state.sheet.hidden = true;
+    if (state.fab) {
+      state.fab.classList.remove("open");
+      state.fab.setAttribute("aria-expanded", "false");
+    }
+  }
+
+  function toggleSheet() {
+    if (state.sheetOpen) closeSheet();
+    else openSheet();
+  }
 
   function mount(root, opts) {
     if (!root) return;
@@ -59,13 +140,15 @@
   function ensureMounted() {
     const root = document.getElementById("operator-chat-root");
     if (!root) return;
-    if (!state.mounted || root.dataset.ready !== "1") {
-      mount(root, {
-        scope: "run",
-        chips: defaultChips("run"),
-      });
-      root.dataset.ready = "1";
+    if (state.mounted && root.dataset.ready === "1") {
+      const input = root.querySelector("#oc-input");
+      if (input) setTimeout(() => input.focus(), 50);
+      return;
     }
+    const page = document.body.getAttribute("data-page");
+    const scope = page === "run" ? "run" : "home";
+    mount(root, { scope, chips: defaultChips(scope) });
+    root.dataset.ready = "1";
     const input = root.querySelector("#oc-input");
     if (input) setTimeout(() => input.focus(), 50);
   }
@@ -241,6 +324,7 @@
         },
       ]);
     });
+    syncBadge();
   }
 
   function hideConfirm() {
@@ -250,6 +334,7 @@
       el.hidden = true;
       el.innerHTML = "";
     }
+    syncBadge();
   }
 
   async function send() {
@@ -349,5 +434,24 @@
     if (input) input.disabled = !on;
   }
 
-  window.VulnForgeChat = { mount, ensureMounted, prefill };
+  function bootChrome() {
+    if (!document.getElementById("ai-fab")) return;
+    bindChrome();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bootChrome);
+  } else {
+    bootChrome();
+  }
+
+  window.VulnForgeChat = {
+    mount,
+    ensureMounted,
+    prefill,
+    bindChrome,
+    openSheet,
+    closeSheet,
+    toggleSheet,
+  };
 })();

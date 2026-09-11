@@ -27,6 +27,20 @@
     </nav>
   </main>
 
+  <button type="button" id="ai-fab" class="ai-fab" aria-label="Ask" aria-expanded="false">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+      <path d="M3 3.4h10v7.2H6.6L3 13.2V3.4z"/>
+    </svg>
+    <span class="ai-badge" hidden></span>
+  </button>
+  <div id="ai-sheet" class="ai-sheet" hidden>
+    <header class="ai-head">
+      <div id="ai-title">Across runs</div>
+      <button type="button" id="ai-close" aria-label="Close">Close</button>
+    </header>
+    <div id="operator-chat-root" class="operator-chat-root" data-chat-scope="home"></div>
+  </div>
+
   <div class="modal-backdrop" id="init-modal">
     <div class="modal modal-init" role="dialog" aria-labelledby="init-modal-title" aria-modal="true">
       <header class="modal-init-header">
@@ -523,5 +537,6 @@
 
   <script src="/static/mission_overview_helpers.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/chat.js"></script>
 </body>
 </html>
