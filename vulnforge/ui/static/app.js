@@ -237,6 +237,68 @@ function matchesQuery(r, q) {
   return blob.includes(q.toLowerCase());
 }
 
+function classifyRun(r) {
+  const runner = r.runner || {};
+  const st = String(runner.state || "").toLowerCase();
+  const last = r.last_event && typeof r.last_event === "object" ? r.last_event : {};
+  const lastKind = String(last.event || last.kind || "").toLowerCase();
+  if (st === "failed" || lastKind === "failed_infra") return "failed";
+  if (["busy", "running", "paused", "pausing"].includes(st) || r.active || r.has_work) {
+    return "live";
+  }
+  return "settled";
+}
+
+function lastEventLine(r) {
+  const ev = r.last_event;
+  if (!ev || typeof ev !== "object") return "";
+  const raw = ev.message || ev.event || ev.kind || ev.stage || "";
+  return String(raw).replace(/_/g, " ").trim();
+}
+
+function shortAge(isoOrTs) {
+  const full = relativeTime(isoOrTs);
+  if (!full || full === " - ") return "";
+  return full.replace(/ ago$/, "");
+}
+
+function runStatusLabel(r, group) {
+  if (group === "failed") return { text: "Failed", cls: "st fail" };
+  const st = String((r.runner || {}).state || (r.active ? "busy" : "idle")).toLowerCase();
+  if (st === "running" || st === "busy" || st === "pausing") {
+    return { text: "Running", cls: "st run" };
+  }
+  if (st === "paused") return { text: "Paused", cls: "st" };
+  if (group === "live") return { text: "Idle", cls: "st" };
+  return { text: "", cls: "st" };
+}
+
+function renderRunRow(r, group) {
+  const tpath = r.target_path || "";
+  const runLabel = `${r.target_id || ""} / ${r.run_id || ""}`;
+  const last = lastEventLine(r);
+  const queued = Number((r.tasks || {}).queued || 0);
+  const accepted = Number((r.findings || {}).confirmed || 0);
+  const review = Number((r.findings || {}).needs_human || 0);
+  const metaBits = [tpath, last].filter(Boolean);
+  if (group !== "settled" && queued > 0) metaBits.push(`${queued} queued`);
+  if (group === "settled" && accepted > 0) metaBits.push(`${accepted} accepted`);
+  const status = runStatusLabel(r, group);
+  const age = shortAge(r.updated_at || r.created_at || r.mtime);
+  return `
+      <a class="run-row" href="/runs/${encodeURIComponent(r.target_id)}/${encodeURIComponent(r.run_id)}" title="${esc(runLabel)}">
+        <span>
+          <div class="title">${esc(runLabel)}</div>
+          <div class="meta">${esc(metaBits.join(" · "))}</div>
+        </span>
+        <span class="right">
+          ${status.text ? `<span class="${status.cls}">${esc(status.text)}</span>` : ""}
+          ${review > 0 ? `<span class="review">${review} review</span>` : ""}
+          ${age ? `<span class="ago">${esc(age)}</span>` : ""}
+        </span>
+      </a>`;
+}
+
 /* ---------- Home ---------- */
 
 function fmtTokens(n) {
@@ -291,57 +353,42 @@ function sevPills(sev) {
 function renderRunCards(runs) {
   const box = $("#run-list");
   if (!box) return;
-  const filtered = runs.filter(
-    (r) => !r.error && matchesFilter(r, homeFilter) && matchesQuery(r, homeQuery)
-  );
+  const filtered = runs.filter((r) => !r.error && matchesQuery(r, homeQuery));
   const errors = runs.filter((r) => r.error);
   if (!runs.length) {
-    box.innerHTML = `<div class="empty"><div class="empty-ico">*</div>No runs yet. Start a new audit to begin recon -> hunt -> validate.</div>`;
+    box.innerHTML = `<div class="empty">No runs yet. Start a new audit to begin recon -> hunt -> validate.</div>`;
     return;
   }
   if (!filtered.length && !errors.length) {
-    box.innerHTML = `<div class="empty"><div class="empty-ico">x</div>No runs match this filter.</div>`;
+    const clear = homeQuery
+      ? ` <button type="button" class="btn btn-ghost" id="home-search-clear">Clear</button>`
+      : "";
+    box.innerHTML = `<div class="empty">No runs match.${clear}</div>`;
+    $("#home-search-clear")?.addEventListener("click", () => {
+      homeQuery = "";
+      const input = $("#home-search");
+      if (input) input.value = "";
+      renderRunCards(homeRunsCache);
+    });
     return;
   }
-  const cards = filtered
-    .map((r) => {
-      const runner = r.runner || {};
-      const incomplete = !!r.incomplete;
-      const st = runner.state || (r.active ? "busy" : "idle");
-      const when = relativeTime(r.updated_at || r.created_at || r.mtime);
-      const tpath = r.target_path || "";
-      const runLabel = `${r.target_id || ""} / ${r.run_id || ""}`;
-      return `
-      <a class="run-row" href="/runs/${encodeURIComponent(r.target_id)}/${encodeURIComponent(r.run_id)}" title="${esc(runLabel)} — ${esc(tpath)}">
-        <div class="row-top">
-          <div>
-            <div class="title" title="${esc(runLabel)}">${esc(r.target_id)} <span class="mono" style="color:var(--muted);font-weight:500">/${esc(r.run_id)}</span></div>
-            <div class="meta path-meta" title="${esc(tpath)}">${esc(tpath)}</div>
-          </div>
-          <div class="chips">
-            ${badge(st)}
-            ${incomplete ? badge("incomplete") : ""}
-          </div>
-        </div>
-        ${progressBar(r.progress)}
-        <div class="meta">${r.done_tasks || 0}/${r.total_tasks || 0} tasks | findings ${esc(fmtCounts(r.findings))}${
-          llmUsageOf(r).total_tokens
-            ? ` | ${fmtTokens(llmUsageOf(r).total_tokens)} tok`
-            : ""
-        }</div>
-        <div class="sev-row">${sevPills(r.severity)}
-          <span style="margin-left:auto">${esc(when)} | ${esc(r.profile || " - ")}</span>
-        </div>
-      </a>`;
-    })
-    .join("");
+  const live = filtered.filter((r) => classifyRun(r) === "live");
+  const failed = filtered.filter((r) => classifyRun(r) === "failed");
+  const settled = filtered.filter((r) => classifyRun(r) === "settled");
+  const parts = [];
+  parts.push(...live.map((r) => renderRunRow(r, "live")));
+  parts.push(...failed.map((r) => renderRunRow(r, "failed")));
+  if (settled.length) {
+    parts.push(`<div class="home-group">Settled</div>`);
+    parts.push(...settled.map((r) => renderRunRow(r, "settled")));
+  }
   const errHtml = errors
     .map(
       (r) =>
-        `<div class="run-row" style="cursor:default;opacity:0.85"><div class="title">${esc(r.key || "error")}</div><div class="meta" style="color:var(--bad)">${esc(r.error)}</div></div>`
+        `<div class="run-row"><span><div class="title">${esc(r.key || "error")}</div><div class="meta" style="color:var(--bad)">${esc(r.error)}</div></span></div>`
     )
     .join("");
-  box.innerHTML = cards + errHtml;
+  box.innerHTML = parts.join("") + errHtml;
 }
 
 async function deleteRun(target_id, run_id, opts = {}) {
@@ -1921,6 +1968,30 @@ function paintCockpitBanner(on) {
     : "";
 }
 
+function missionFailReason(snap) {
+  const last = snap?.last_event && typeof snap.last_event === "object" ? snap.last_event : {};
+  const kind = String(last.event || last.kind || "").toLowerCase();
+  if (kind === "failed_infra") return last.message || "Infra failure";
+  const lr = snap?.target_inventory?.last_recon;
+  if (lr && lr.state && lr.state !== "succeeded") {
+    return lr.error || lr.state || "failed";
+  }
+  return "";
+}
+
+function paintMissionFailure(snap) {
+  const el = document.querySelector("[data-cockpit-banner]");
+  if (!el) return false;
+  const reason = missionFailReason(snap);
+  if (!reason) return false;
+  el.innerHTML = `<div class="mission-fail">
+    <p class="mission-fail-reason">${esc(reason)}</p>
+    <button type="button" class="btn btn-primary" id="mission-retry">Retry</button>
+  </div>`;
+  $("#mission-retry")?.addEventListener("click", () => control("start"));
+  return true;
+}
+
 function paintMissionKpis(kpis) {
   const el = document.querySelector("[data-cockpit-kpis]");
   if (!el) return;
@@ -2052,9 +2123,12 @@ function paintMissionArchitecture(arch) {
   bindArchDiagramHandlers(el);
 }
 
-function paintMissionCockpit(vm) {
-  paintCockpitBanner(vm.validateLlmOn);
+function paintMissionCockpit(vm, snap) {
+  const failed = paintMissionFailure(snap);
+  if (!failed) paintCockpitBanner(vm.validateLlmOn);
   paintMissionKpis(vm.kpis);
+  const kpis = document.querySelector("[data-cockpit-kpis]");
+  if (kpis) kpis.classList.toggle("is-muted", !!failed);
   paintMissionPipeline(vm.pipeline);
   paintMissionEvents(vm.events);
   paintMissionArchitecture(vm.architecture);
@@ -2067,7 +2141,7 @@ function renderOverview(snap) {
   const vm = helpers.buildMissionCockpit(snap, {
     recentEvents: missionEventRing.snapshot(),
   });
-  paintMissionCockpit(vm);
+  paintMissionCockpit(vm, snap);
 }
 
 function reconFailureHint(snap) {
@@ -4631,13 +4705,48 @@ window.selectEvidencePack = selectEvidencePack;
 
 /* ---------- Project / Report ---------- */
 
+let runSwitchBound = false;
+
+function fillRunSwitch(snap) {
+  const sel = $("#run-switch");
+  if (!sel) return;
+  const current = `${snap.target_id}/${snap.run_id}`;
+  const keep = sel.dataset.filled === "1";
+  if (!keep) {
+    sel.innerHTML = `<option value="/runs/${encodeURIComponent(snap.target_id)}/${encodeURIComponent(snap.run_id)}" selected>${esc(current)}</option>`;
+  }
+  api("/api/runs")
+    .then((data) => {
+      const runs = (data.runs || []).filter((r) => !r.error && r.target_id && r.run_id);
+      if (!runs.length) return;
+      const opts = runs
+        .map((r) => {
+          const key = `${r.target_id}/${r.run_id}`;
+          const href = `/runs/${encodeURIComponent(r.target_id)}/${encodeURIComponent(r.run_id)}`;
+          return `<option value="${href}" ${key === current ? "selected" : ""}>${esc(key)}</option>`;
+        })
+        .join("");
+      sel.innerHTML = opts;
+      sel.dataset.filled = "1";
+    })
+    .catch(() => {});
+  if (!runSwitchBound) {
+    runSwitchBound = true;
+    sel.addEventListener("change", () => {
+      const href = sel.value;
+      if (!href) return;
+      const hash = location.hash || "";
+      location.href = href + hash;
+    });
+  }
+}
+
 async function loadRunFull() {
   const [target_id, run_id] = currentKey.split("/");
   const snap = await api(
     `/api/runs/${encodeURIComponent(target_id)}/${encodeURIComponent(run_id)}`
   );
-  $("#run-title") &&
-    ($("#run-title").textContent = `${snap.target_id} / ${snap.run_id}`);
+  fillRunSwitch(snap);
   $("#run-subtitle") &&
     ($("#run-subtitle").textContent = snap.target_path || snap.path || "");
   window.__VF_cov_policy = snap.coverage_policy || { mode: "auto" };
@@ -5044,7 +5153,6 @@ document.addEventListener("DOMContentLoaded", () => {
   if (page === "home") {
     loadRuns();
     setInterval(loadRuns, 5000);
-    loadHomeToolGapsSummary();
     wirePathPicker();
     wireInitHelpTips();
     $("#btn-new-run")?.addEventListener("click", openInitModal);
@@ -5064,14 +5172,6 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#home-search")?.addEventListener("input", (e) => {
       homeQuery = e.target.value || "";
       renderRunCards(homeRunsCache);
-    });
-    $$(".chip[data-filter]").forEach((chip) => {
-      chip.addEventListener("click", () => {
-        $$(".chip[data-filter]").forEach((c) => c.classList.remove("active"));
-        chip.classList.add("active");
-        homeFilter = chip.getAttribute("data-filter") || "all";
-        renderRunCards(homeRunsCache);
-      });
     });
   }
   if (page === "tool-gaps") {

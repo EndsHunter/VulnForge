@@ -61,34 +61,34 @@
   function defineCockpitTheme(monaco) {
     if (!monaco || monaco.__vfCockpitTheme) return;
     // Hex only: monaco.editor.defineTheme does not accept CSS variables.
-    // Pairing: bg-inset #0a0e13, text #e8eef6, muted #8b9bb0, accent #f97316,
-    // accent-bright #fb923c, bg-card #141b24, bg-card-hover #1a232e,
-    // border #243044, border-strong #33465c.
+    // Pairing: bg-inset #121317, text #ece7dc, muted #9a9488, accent #6aa8a2,
+    // accent-bright #8bc0bb, bg-card #26272e, bg-card-hover #2c2d35,
+    // border #2d2e32, border-strong #3a3b40.
     monaco.editor.defineTheme("vulnforge-cockpit", {
       base: "vs-dark",
       inherit: true,
       rules: [
-        { token: "comment", foreground: "8b9bb0", fontStyle: "italic" },
-        { token: "string", foreground: "f0b429" },
-        { token: "keyword", foreground: "fb923c" },
-        { token: "number", foreground: "7eb8e8" },
-        { token: "type", foreground: "c78bff" }
+        { token: "comment", foreground: "9a9488", fontStyle: "italic" },
+        { token: "string", foreground: "e3a01a" },
+        { token: "keyword", foreground: "8bc0bb" },
+        { token: "number", foreground: "8bb8b3" },
+        { token: "type", foreground: "c3a6ff" }
       ],
       colors: {
-        "editor.background": "#0a0e13",
-        "editor.foreground": "#e8eef6",
-        "editorLineNumber.foreground": "#8b9bb0",
-        "editorLineNumber.activeForeground": "#fb923c",
-        "editor.selectionBackground": "#f9731655",
-        "editor.inactiveSelectionBackground": "#f9731633",
-        "editor.lineHighlightBackground": "#1a232e88",
-        "editorCursor.foreground": "#f97316",
-        "editorWidget.background": "#141b24",
-        "editorWidget.border": "#243044",
-        "editorIndentGuide.background": "#24304488",
-        "editorGutter.background": "#0a0e13",
-        "scrollbarSlider.background": "#24304488",
-        "scrollbarSlider.hoverBackground": "#33465caa"
+        "editor.background": "#121317",
+        "editor.foreground": "#ece7dc",
+        "editorLineNumber.foreground": "#9a9488",
+        "editorLineNumber.activeForeground": "#8bc0bb",
+        "editor.selectionBackground": "#6aa8a255",
+        "editor.inactiveSelectionBackground": "#6aa8a233",
+        "editor.lineHighlightBackground": "#2c2d3588",
+        "editorCursor.foreground": "#6aa8a2",
+        "editorWidget.background": "#26272e",
+        "editorWidget.border": "#2d2e32",
+        "editorIndentGuide.background": "#2d2e3288",
+        "editorGutter.background": "#121317",
+        "scrollbarSlider.background": "#2d2e3288",
+        "scrollbarSlider.hoverBackground": "#3a3b40aa"
       }
     });
     monaco.__vfCockpitTheme = true;

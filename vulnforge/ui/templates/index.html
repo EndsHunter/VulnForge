@@ -10,84 +10,36 @@
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body data-page="home">
-  <header class="app-header">
-    <div class="brand">
-      <a href="/" class="home-link" title="Home  -  all runs">
-        <img class="logo" src="/static/logo-128.png" width="32" height="32" alt="" />
-        <div>
-          VulnForge
-          <div class="sub">Vulnerability research cockpit</div>
-        </div>
-      </a>
-    </div>
-    <div class="header-actions">
-      <a class="btn btn-primary home-btn" href="/" title="Home">⌂ Home</a>
-      <a class="btn" href="/settings" id="btn-settings" title="LLM &amp; validation settings">⚙ Settings</a>
-      <span class="controls-hint mono">{{ runs_root }}</span>
-      <button class="btn btn-primary" id="btn-new-run" type="button">+ New audit</button>
-    </div>
-  </header>
-
-  <main class="main">
-    <div class="page-hero">
-      <div>
-        <h1>Audit runs</h1>
-        <p>Durable recon - hunt - validate loops. Open a run for the research cockpit: Mission, Hunts, Explorer, Report, Evidence, and Tasks. Develop POC is a workshop modal from Report.</p>
-      </div>
-    </div>
-
-    <div class="stats" id="home-stats" style="display:none"></div>
-
-    <div class="home-cta-row">
-      <div class="card home-ai-card home-ai-cta" id="home-ai">
-        <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.5rem;align-items:center">
-          <div style="flex:1;min-width:12rem">
-            <h2 style="margin:0">AI Chat</h2>
-            <p class="controls-hint" style="margin:0.35rem 0 0">
-              Fleet co-pilot: query results across runs, start and inspect hunts, init audits, control Ralph.
-            </p>
-          </div>
-          <a class="btn btn-primary" href="/chat" id="btn-open-ai-chat">Open AI Chat</a>
-        </div>
-      </div>
-      <div class="card home-tool-gaps-card home-tool-gaps-cta" id="home-tool-gaps">
-        <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.5rem;align-items:center">
-          <div style="flex:1;min-width:12rem">
-            <h2 style="margin:0">Tool capability gaps</h2>
-            <p class="controls-hint" style="margin:0.35rem 0 0" id="home-tool-gaps-meta">
-              Missing tools agents wanted across campaigns (AI hybrid).
-            </p>
-          </div>
-          <a class="btn btn-primary" href="/tool-gaps" id="btn-open-tool-gaps">Open tool gaps</a>
-        </div>
-      </div>
-      <div class="card home-dev-card home-dev-cta" id="home-dev">
-        <div class="toolbar" style="margin-bottom:0.35rem;flex-wrap:wrap;gap:0.5rem;align-items:center">
-          <div style="flex:1;min-width:12rem">
-            <h2 style="margin:0">Dev dashboard</h2>
-            <p class="controls-hint" style="margin:0.35rem 0 0">
-              Edit hunt skills, recon agents, and tools. Export setup transfers your whole Dev pack to a fresh install.
-            </p>
-          </div>
-          <a class="btn btn-primary" href="/dev" id="btn-open-dev">Open Dev</a>
-        </div>
-      </div>
-    </div>
-
-    <div class="home-toolbar">
-      <input type="search" id="home-search" placeholder="Search target, run id, path..." aria-label="Search runs" />
-      <div class="filter-chips" role="group" aria-label="Filter runs">
-        <button type="button" class="chip active" data-filter="all">All</button>
-        <button type="button" class="chip" data-filter="running">Running</button>
-        <button type="button" class="chip" data-filter="incomplete">Incomplete</button>
-        <button type="button" class="chip" data-filter="idle">Idle</button>
-      </div>
-    </div>
-
+  <main class="home-fleet">
+    <header class="home-head">
+      <a href="/" class="home-mark" title="Home">VF</a>
+      <input type="search" id="home-search" placeholder="Search target, run id, path" aria-label="Search runs" />
+      <button class="btn btn-primary" id="btn-new-run" type="button">New</button>
+    </header>
+    <div class="home-label">Runs</div>
     <div class="run-list" id="run-list">
       <div class="empty">Loading...</div>
     </div>
+    <nav class="home-dock" aria-label="Operator tools">
+      <a href="/settings" id="btn-settings" class="home-dock-btn" title="Settings">Settings</a>
+      <a href="/dev" id="btn-open-dev" class="home-dock-btn" title="Dev">Dev</a>
+      <a href="/tool-gaps" id="btn-open-tool-gaps" class="home-dock-btn" title="Tool gaps">Tool gaps</a>
+    </nav>
   </main>
+
+  <button type="button" id="ai-fab" class="ai-fab" aria-label="Ask" aria-expanded="false">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+      <path d="M3 3.4h10v7.2H6.6L3 13.2V3.4z"/>
+    </svg>
+    <span class="ai-badge" hidden></span>
+  </button>
+  <div id="ai-sheet" class="ai-sheet" hidden>
+    <header class="ai-head">
+      <div id="ai-title">Across runs</div>
+      <button type="button" id="ai-close" aria-label="Close">Close</button>
+    </header>
+    <div id="operator-chat-root" class="operator-chat-root" data-chat-scope="home"></div>
+  </div>
 
   <div class="modal-backdrop" id="init-modal">
     <div class="modal modal-init" role="dialog" aria-labelledby="init-modal-title" aria-modal="true">
@@ -585,5 +537,6 @@
 
   <script src="/static/mission_overview_helpers.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/chat.js"></script>
 </body>
 </html>

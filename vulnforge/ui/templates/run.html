@@ -11,20 +11,16 @@
 </head>
 <body data-page="run" data-run-key="{{ target_id }}/{{ run_id }}">
   <div class="run-shell">
-  <aside data-run-rail aria-label="Run navigation"></aside>
+  <aside class="icon-rail" data-run-rail aria-label="Run navigation"></aside>
   <div class="run-workspace">
-  <header class="app-header mission-bar">
-    <div class="brand">
-      <a href="/" class="home-link" title="Home  -  all runs">
-        <img class="logo" src="/static/logo-128.png" width="32" height="32" alt="" />
-        <div>
-          VulnForge
-          <div class="sub" id="run-title">{{ target_id }} / {{ run_id }}</div>
-        </div>
-      </a>
+  <header class="app-header mission-bar run-strip">
+    <div class="strip-id">
+      <label class="visually-hidden" for="run-switch">Run</label>
+      <select id="run-switch" aria-label="Switch run">
+        <option value="/runs/{{ target_id }}/{{ run_id }}" selected>{{ target_id }} / {{ run_id }}</option>
+      </select>
     </div>
     <div class="header-actions">
-      <a class="btn btn-ghost home-btn" href="/" title="Home">Home</a>
       <span class="live-cluster" title="Live updates">
         <span class="live-dot" id="live-dot"></span>
         <span id="live-label">...</span>
@@ -33,10 +29,10 @@
       <button class="btn btn-good" id="btn-start" type="button" title="Start Ralph outer loop">Start</button>
       <button class="btn btn-warn" id="btn-pause" type="button" title="Pause after current task" hidden>Pause</button>
       <button class="btn btn-primary" id="btn-resume" type="button" title="Resume Ralph" hidden>Resume</button>
-      <button class="btn" id="btn-refresh" type="button" title="Refresh snapshot">Refresh</button>
       <details class="danger-menu">
-        <summary class="btn btn-ghost" title="More actions">··· More</summary>
+        <summary class="btn btn-ghost" title="More actions">···</summary>
         <div class="danger-menu-body">
+          <button class="btn" id="btn-refresh" type="button" title="Refresh snapshot">Refresh</button>
           <button class="btn btn-bad" id="btn-stop" type="button" title="Kill Ralph process immediately">Hard stop</button>
           <button class="btn btn-bad" id="btn-delete-run" type="button" title="Permanently delete this run">Delete run</button>
         </div>
@@ -45,12 +41,6 @@
   </header>
 
   <main class="main">
-    <p id="run-subtitle" class="run-subtitle"></p>
-
-    <p class="trust-line" role="note" id="trust-line">
-      <strong>needs_human</strong> = mechanical gates passed.
-      <strong>confirmed</strong> = human accepted. Neither is exploit proof.
-    </p>
 
     <!-- Mission -->
     <div class="mode-panel active" data-mode-panel="mission">
@@ -246,20 +236,8 @@
       </div>
     </div>
 
-    <!-- AI operator chat (campaign co-pilot) -->
     <div class="mode-panel" data-mode-panel="ai">
-      <div class="tab-panel active" id="panel-ai">
-        <div class="ai-mode-shell">
-          <div class="ai-mode-header">
-            <h2 class="coverage-title">AI</h2>
-            <p class="controls-hint">
-              Campaign co-pilot for this run: start and query hunts, status, findings, coverage, and runner control.
-              Mutating actions require confirmation. Same LLM as Settings.
-            </p>
-          </div>
-          <div id="operator-chat-root" class="operator-chat-root"></div>
-        </div>
-      </div>
+      <div class="tab-panel active" id="panel-ai"></div>
     </div>
 
     <!-- Tasks mode (data-mode=audit; deep links #audit/tasks and #tasks/* still work) -->
@@ -325,6 +303,20 @@
 
   </main>
   </div>
+  </div>
+
+  <button type="button" id="ai-fab" class="ai-fab" aria-label="Ask" aria-expanded="false">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+      <path d="M3 3.4h10v7.2H6.6L3 13.2V3.4z"/>
+    </svg>
+    <span class="ai-badge" hidden></span>
+  </button>
+  <div id="ai-sheet" class="ai-sheet" hidden>
+    <header class="ai-head">
+      <div id="ai-title">{{ target_id }} / {{ run_id }}</div>
+      <button type="button" id="ai-close" aria-label="Close">Close</button>
+    </header>
+    <div id="operator-chat-root" class="operator-chat-root" data-chat-scope="run"></div>
   </div>
 
   <div class="modal-backdrop" id="transcript-modal">
