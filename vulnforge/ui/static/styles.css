@@ -5860,67 +5860,120 @@ body[data-page="run"] .run-shell {
   height: 100vh;
   overflow: hidden;
 }
+.icon-rail,
 body[data-page="run"] [data-run-rail] {
-  width: 220px;
-  flex: 0 0 220px;
+  width: var(--icon-rail);
+  flex: 0 0 var(--icon-rail);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--hairline);
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  background: var(--bg-elev);
-  border-right: 1px solid var(--border);
-  padding: 0.85rem 0.55rem 1rem;
+  align-items: center;
+  padding: 8px 0;
+  gap: 4px;
   overflow-y: auto;
+  justify-content: flex-start;
 }
 body[data-page="run"] .run-rail-primary {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
 }
 body[data-page="run"] .run-rail-footer {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border);
-  margin-top: 1rem;
+  align-items: center;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+  margin-top: auto;
 }
 body[data-page="run"] .run-rail-item {
   appearance: none;
-  display: block;
-  width: 100%;
-  text-align: left;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-height: 36px;
+  padding: 4px 0;
   font: inherit;
-  font-weight: 650;
-  font-size: 13px;
-  color: var(--muted);
+  color: var(--text-faint);
   background: transparent;
   border: 0;
-  border-radius: 8px;
-  padding: 0.5rem 0.75rem 0.5rem 0.85rem;
+  border-radius: var(--radius);
   cursor: pointer;
   text-decoration: none;
   position: relative;
+}
+body[data-page="run"] .run-rail-item svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+body[data-page="run"] [data-run-rail] button .lab,
+body[data-page="run"] [data-run-rail] a .lab {
+  display: none;
+  font-size: 9px;
+  line-height: 1.1;
+  margin-top: 2px;
+}
+body[data-page="run"] [data-run-rail] button.on .lab,
+body[data-page="run"] [data-run-rail] button.active .lab {
+  display: block;
 }
 body[data-page="run"] a.run-rail-item:hover {
   text-decoration: none;
 }
 body[data-page="run"] .run-rail-item:hover {
   color: var(--text);
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: var(--row-hover);
 }
-body[data-page="run"] .run-rail-item.active {
+body[data-page="run"] .run-rail-item.active,
+body[data-page="run"] .run-rail-item.on {
+  color: var(--accent);
+  background: var(--row-active);
+}
+body[data-page="run"] .run-strip {
+  gap: 0.75rem;
+  padding: 0 0.75rem;
+}
+body[data-page="run"] .strip-id {
+  min-width: 0;
+  flex: 1;
+}
+body[data-page="run"] #run-switch {
+  max-width: 100%;
+  min-width: 12rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--hairline);
+  background: var(--bg-input);
   color: var(--text);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  font: inherit;
+  font-size: 13px;
+  color-scheme: dark;
 }
-body[data-page="run"] .run-rail-item.active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 2px;
-  background: var(--accent);
+body[data-page="run"] .mission-fail {
+  border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--hairline));
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+  color: var(--bad);
+  border-radius: var(--radius);
+  padding: 0.65rem 0.75rem;
+  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+body[data-page="run"] .mission-fail-reason {
+  margin: 0;
+  flex: 1;
+  font-size: 13px;
+}
+body[data-page="run"] [data-cockpit-kpis].is-muted {
+  opacity: 0.55;
 }
 body[data-page="run"] .run-workspace {
   flex: 1 1 auto;
@@ -6091,7 +6144,7 @@ body[data-page="run"] .cockpit-arch-error {
     grid-template-columns: 1fr;
   }
   body[data-page="run"] [data-run-rail] {
-    width: 180px;
-    flex-basis: 180px;
+    width: var(--icon-rail);
+    flex-basis: var(--icon-rail);
   }
 }

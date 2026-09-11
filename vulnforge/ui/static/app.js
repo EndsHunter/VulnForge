@@ -1968,6 +1968,30 @@ function paintCockpitBanner(on) {
     : "";
 }
 
+function missionFailReason(snap) {
+  const last = snap?.last_event && typeof snap.last_event === "object" ? snap.last_event : {};
+  const kind = String(last.event || last.kind || "").toLowerCase();
+  if (kind === "failed_infra") return last.message || "Infra failure";
+  const lr = snap?.target_inventory?.last_recon;
+  if (lr && lr.state && lr.state !== "succeeded") {
+    return lr.error || lr.state || "failed";
+  }
+  return "";
+}
+
+function paintMissionFailure(snap) {
+  const el = document.querySelector("[data-cockpit-banner]");
+  if (!el) return false;
+  const reason = missionFailReason(snap);
+  if (!reason) return false;
+  el.innerHTML = `<div class="mission-fail">
+    <p class="mission-fail-reason">${esc(reason)}</p>
+    <button type="button" class="btn btn-primary" id="mission-retry">Retry</button>
+  </div>`;
+  $("#mission-retry")?.addEventListener("click", () => control("start"));
+  return true;
+}
+
 function paintMissionKpis(kpis) {
   const el = document.querySelector("[data-cockpit-kpis]");
   if (!el) return;
@@ -2099,9 +2123,12 @@ function paintMissionArchitecture(arch) {
   bindArchDiagramHandlers(el);
 }
 
-function paintMissionCockpit(vm) {
-  paintCockpitBanner(vm.validateLlmOn);
+function paintMissionCockpit(vm, snap) {
+  const failed = paintMissionFailure(snap);
+  if (!failed) paintCockpitBanner(vm.validateLlmOn);
   paintMissionKpis(vm.kpis);
+  const kpis = document.querySelector("[data-cockpit-kpis]");
+  if (kpis) kpis.classList.toggle("is-muted", !!failed);
   paintMissionPipeline(vm.pipeline);
   paintMissionEvents(vm.events);
   paintMissionArchitecture(vm.architecture);
@@ -2114,7 +2141,7 @@ function renderOverview(snap) {
   const vm = helpers.buildMissionCockpit(snap, {
     recentEvents: missionEventRing.snapshot(),
   });
-  paintMissionCockpit(vm);
+  paintMissionCockpit(vm, snap);
 }
 
 function reconFailureHint(snap) {
@@ -4678,13 +4705,48 @@ window.selectEvidencePack = selectEvidencePack;
 
 /* ---------- Project / Report ---------- */
 
+let runSwitchBound = false;
+
+function fillRunSwitch(snap) {
+  const sel = $("#run-switch");
+  if (!sel) return;
+  const current = `${snap.target_id}/${snap.run_id}`;
+  const keep = sel.dataset.filled === "1";
+  if (!keep) {
+    sel.innerHTML = `<option value="/runs/${encodeURIComponent(snap.target_id)}/${encodeURIComponent(snap.run_id)}" selected>${esc(current)}</option>`;
+  }
+  api("/api/runs")
+    .then((data) => {
+      const runs = (data.runs || []).filter((r) => !r.error && r.target_id && r.run_id);
+      if (!runs.length) return;
+      const opts = runs
+        .map((r) => {
+          const key = `${r.target_id}/${r.run_id}`;
+          const href = `/runs/${encodeURIComponent(r.target_id)}/${encodeURIComponent(r.run_id)}`;
+          return `<option value="${href}" ${key === current ? "selected" : ""}>${esc(key)}</option>`;
+        })
+        .join("");
+      sel.innerHTML = opts;
+      sel.dataset.filled = "1";
+    })
+    .catch(() => {});
+  if (!runSwitchBound) {
+    runSwitchBound = true;
+    sel.addEventListener("change", () => {
+      const href = sel.value;
+      if (!href) return;
+      const hash = location.hash || "";
+      location.href = href + hash;
+    });
+  }
+}
+
 async function loadRunFull() {
   const [target_id, run_id] = currentKey.split("/");
   const snap = await api(
     `/api/runs/${encodeURIComponent(target_id)}/${encodeURIComponent(run_id)}`
   );
-  $("#run-title") &&
-    ($("#run-title").textContent = `${snap.target_id} / ${snap.run_id}`);
+  fillRunSwitch(snap);
   $("#run-subtitle") &&
     ($("#run-subtitle").textContent = snap.target_path || snap.path || "");
   window.__VF_cov_policy = snap.coverage_policy || { mode: "auto" };

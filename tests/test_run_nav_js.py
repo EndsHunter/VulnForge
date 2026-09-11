@@ -14,6 +14,7 @@ HELPERS = PROJECT_ROOT / "vulnforge" / "ui" / "static" / "run_nav.js"
 TEST_JS = PROJECT_ROOT / "tests" / "js" / "run_nav.test.js"
 HOME_HTML = PROJECT_ROOT / "vulnforge" / "ui" / "templates" / "index.html"
 HOME_JS = PROJECT_ROOT / "vulnforge" / "ui" / "static" / "app.js"
+RUN_HTML = PROJECT_ROOT / "vulnforge" / "ui" / "templates" / "run.html"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
@@ -50,3 +51,16 @@ def test_home_html_is_the_list():
     assert 'class="run-row"' in js
     assert "No runs match." in js
     assert "No runs yet. Start a new audit" in js
+
+
+def test_run_html_icon_rail_chrome():
+    html = RUN_HTML.read_text(encoding="utf-8")
+    assert 'data-run-rail' in html
+    assert 'id="run-switch"' in html
+    assert 'id="trust-line"' not in html
+    assert 'href="/" title="Home"' not in html
+    for mode in ("mission", "hunts", "explorer", "report", "evidence", "audit", "ai"):
+        assert f'data-mode-panel="{mode}"' in html
+    assert 'id="btn-start"' in html
+    assert 'id="btn-refresh"' in html
+    assert 'id="operator-chat-root"' in html
