@@ -299,6 +299,10 @@ def _write_version(
     root: Optional[Path] = None,
 ) -> dict[str, Any]:
     path = _version_path(str(snap["def_id"]), int(snap["version"]), root)
+    if path.is_file():
+        raise BenchmarkLibraryError(
+            f"immutable version exists: {snap['def_id']}@{snap['version']}"
+        )
     _atomic_write_json(path, snap)
     return snap
 

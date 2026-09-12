@@ -155,3 +155,19 @@ def test_library_page_lists_hook():
         assert page.status_code == 200
         assert 'id="bench-library-table"' in page.text
         assert "/api/benchmarks" in page.text
+
+
+def test_write_version_refuses_overwrite():
+    """FS immutability: existing version file must not be overwritten."""
+    from vulnforge.benchmarks import store as bench_store
+
+    app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
+    with TestClient(app) as client:
+        r = client.get("/api/benchmarks/toy_sqli/versions/1")
+        assert r.status_code == 200, r.text
+        snap = r.json()["version"]
+    try:
+        bench_store._write_version(snap)
+        raise AssertionError("expected BenchmarkLibraryError")
+    except bench_store.BenchmarkLibraryError as e:
+        assert "immutable" in str(e).lower() or "exists" in str(e).lower()
