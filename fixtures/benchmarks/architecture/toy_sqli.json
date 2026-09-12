@@ -1,0 +1,28 @@
+{
+  "summary": "Tiny intentional SQLi toy app (fixture architecture for mechanical recon scoring).",
+  "components": [
+    {
+      "name": "app",
+      "path_hints": ["app.py"],
+      "role": "application entry / SQL query helper"
+    }
+  ],
+  "trust_boundaries": [
+    {
+      "id": "client-to-app",
+      "from": "untrusted_client",
+      "to": "app",
+      "notes": "query parameter q crosses into SQL construction"
+    }
+  ],
+  "relations": [
+    {
+      "from": "app",
+      "to": "sqlite",
+      "kind": "uses",
+      "notes": "search_users builds SQL via string concat"
+    }
+  ],
+  "input_surfaces": ["q query parameter"],
+  "hunt_focus": ["injection"]
+}

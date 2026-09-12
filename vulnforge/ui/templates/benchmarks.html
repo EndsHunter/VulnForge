@@ -34,8 +34,8 @@
       <div>
         <h1>Benchmarks</h1>
         <p>
-          Bench desk: run hunt suites (mechanical L0), review results, and browse the library.
-          Live LLM hunt is optional and off by default.
+          Bench desk: run recon / hunt / finding_report suites (mechanical L0), review results,
+          and browse the library. Live LLM is optional and off by default. No poc_dev on Run.
         </p>
       </div>
     </div>
@@ -59,10 +59,18 @@
     <section class="card" id="bench-panel-run" data-bench-panel="run">
       <h2 style="margin-top:0">Run</h2>
       <p class="controls-hint">
-        Mechanical hunt: sink preindex → score_findings against the immutable oracle snapshot.
-        No live model required.
+        Mechanical benches: hunt (sink preindex → score_findings), recon (architecture signals),
+        finding_report (required fields / citation density / honesty labels).
+        No live model required. poc_dev is not available here.
       </p>
       <div class="controls" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0">
+        <label for="bench-run-type-filter">Type</label>
+        <select id="bench-run-type-filter" class="mono" aria-label="Filter defs by type">
+          <option value="">Any runnable</option>
+          <option value="hunt">hunt</option>
+          <option value="recon">recon</option>
+          <option value="finding_report">finding_report</option>
+        </select>
         <label for="bench-run-def">Benchmark</label>
         <select id="bench-run-def" class="mono" aria-label="Benchmark def">
           <option value="">Loading…</option>
@@ -77,35 +85,56 @@
     (function () {
       if (document.body.getAttribute("data-bench-page") !== "run") return;
       var sel = document.getElementById("bench-run-def");
+      var typeFilter = document.getElementById("bench-run-type-filter");
       var out = document.getElementById("bench-run-last");
       var btn = document.getElementById("bench-run-mechanical");
       if (!sel || !out || !btn) return;
+      var RUNNABLE = { hunt: 1, recon: 1, finding_report: 1 };
+      var allRows = [];
 
       function show(obj) {
         out.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
       }
 
+      function runnableTypes(b) {
+        return (b.types || []).filter(function (t) { return RUNNABLE[t]; });
+      }
+
+      function fillDefs() {
+        var want = typeFilter ? typeFilter.value : "";
+        var rows = allRows.filter(function (b) {
+          var rt = runnableTypes(b);
+          if (!rt.length) return false;
+          if (!want) return true;
+          return rt.indexOf(want) >= 0;
+        });
+        sel.textContent = "";
+        if (!rows.length) {
+          var opt = document.createElement("option");
+          opt.value = "";
+          opt.textContent = "No matching benches";
+          sel.appendChild(opt);
+          return;
+        }
+        rows.forEach(function (b) {
+          var opt = document.createElement("option");
+          opt.value = b.id || "";
+          var types = runnableTypes(b).join(",");
+          opt.textContent = (b.id || "") + " [" + types + "] (v"
+            + (b.head_version != null ? b.head_version : "?") + ")";
+          opt.setAttribute("data-types", types);
+          if (b.id === "toy_sqli" || b.id === "toy_sqli_recon") opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
+
       fetch("/api/benchmarks")
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          var rows = ((data && data.benchmarks) || []).filter(function (b) {
-            return (b.types || []).indexOf("hunt") >= 0;
+          allRows = ((data && data.benchmarks) || []).filter(function (b) {
+            return runnableTypes(b).length > 0;
           });
-          sel.textContent = "";
-          if (!rows.length) {
-            var opt = document.createElement("option");
-            opt.value = "";
-            opt.textContent = "No hunt benches";
-            sel.appendChild(opt);
-            return;
-          }
-          rows.forEach(function (b) {
-            var opt = document.createElement("option");
-            opt.value = b.id || "";
-            opt.textContent = (b.id || "") + " (v" + (b.head_version != null ? b.head_version : "?") + ")";
-            if (b.id === "toy_sqli") opt.selected = true;
-            sel.appendChild(opt);
-          });
+          fillDefs();
         })
         .catch(function () {
           sel.textContent = "";
@@ -115,18 +144,33 @@
           sel.appendChild(opt);
         });
 
+      if (typeFilter) {
+        typeFilter.addEventListener("change", fillDefs);
+      }
+
       btn.addEventListener("click", function () {
         var defId = sel.value;
         if (!defId) {
-          show("Pick a hunt benchmark first.");
+          show("Pick a benchmark first.");
+          return;
+        }
+        var opt = sel.options[sel.selectedIndex];
+        var typeStr = (opt && opt.getAttribute("data-types")) || "";
+        var types = typeStr.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+        var want = typeFilter ? typeFilter.value : "";
+        if (want) {
+          types = types.filter(function (t) { return t === want; });
+        }
+        if (!types.length) {
+          show("No runnable types for this def (poc_dev excluded).");
           return;
         }
         btn.disabled = true;
-        show("Running mechanical hunt for " + defId + "…");
+        show("Running mechanical (" + types.join(",") + ") for " + defId + "…");
         fetch("/api/benchmarks/runs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ def_id: defId, types: ["hunt"], mode: "mechanical" })
+          body: JSON.stringify({ def_id: defId, types: types, mode: "mechanical" })
         })
           .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
           .then(function (res) {
@@ -151,7 +195,7 @@
              data-detail-run-id="{{ detail_run_id or '' }}">
       <h2 style="margin-top:0">Results</h2>
       <p class="controls-hint">
-        BenchmarkRun history (hunt). Metrics from score_findings; findings are never auto-confirmed.
+        BenchmarkRun history (recon / hunt / finding_report). Type metrics in Scores; findings never auto-confirmed.
         Click a row for full run detail.
       </p>
 
@@ -184,6 +228,8 @@
         <select id="bench-filter-type" class="mono" aria-label="Filter by type">
           <option value="">Any</option>
           <option value="hunt">hunt</option>
+          <option value="recon">recon</option>
+          <option value="finding_report">finding_report</option>
         </select>
         <label for="bench-sort">Sort</label>
         <select id="bench-sort" class="mono" data-bench-sort="1" aria-label="Sort by">
@@ -227,17 +273,44 @@
 
       function fmtRecall(m) {
         m = m || {};
-        var recall = m.recall;
-        var hit = m.hit_count;
-        var oracle = m.oracle_count;
         var parts = [];
-        if (typeof recall === "number") {
-          parts.push((Math.round(recall * 1000) / 10) + "%");
+        var bt = m.bench_type || "";
+        if (bt) parts.push(bt);
+        if (typeof m.recall === "number") {
+          parts.push((Math.round(m.recall * 1000) / 10) + "%");
         }
-        if (hit != null || oracle != null) {
-          parts.push(String(hit != null ? hit : "?") + "/" + String(oracle != null ? oracle : "?"));
+        if (m.hit_count != null || m.oracle_count != null) {
+          parts.push(String(m.hit_count != null ? m.hit_count : "?") + "/"
+            + String(m.oracle_count != null ? m.oracle_count : "?"));
         }
-        return parts.join(" ");
+        if (typeof m.score === "number" && m.recall == null) {
+          parts.push("score=" + (Math.round(m.score * 1000) / 1000));
+        }
+        if (typeof m.component_recall === "number") {
+          parts.push("comp=" + (Math.round(m.component_recall * 1000) / 10) + "%");
+        }
+        if (typeof m.path_hint_recall === "number") {
+          parts.push("paths=" + (Math.round(m.path_hint_recall * 1000) / 10) + "%");
+        }
+        if (m.relations_ok != null) parts.push("rel=" + (m.relations_ok ? "ok" : "miss"));
+        if (m.trust_boundaries_ok != null) parts.push("tb=" + (m.trust_boundaries_ok ? "ok" : "miss"));
+        if (typeof m.required_fields_recall === "number") {
+          parts.push("fields=" + (Math.round(m.required_fields_recall * 1000) / 10) + "%");
+        }
+        if (m.citation_density != null) parts.push("cites=" + m.citation_density);
+        if (typeof m.honesty_labels_recall === "number") {
+          parts.push("honesty=" + (Math.round(m.honesty_labels_recall * 1000) / 10) + "%");
+        }
+        if (m.by_type && typeof m.by_type === "object") {
+          Object.keys(m.by_type).forEach(function (k) {
+            var sm = m.by_type[k] || {};
+            var bit = k;
+            if (typeof sm.score === "number") bit += ":" + (Math.round(sm.score * 1000) / 1000);
+            else if (typeof sm.recall === "number") bit += ":" + (Math.round(sm.recall * 1000) / 10) + "%";
+            parts.push(bit);
+          });
+        }
+        return parts.join(" ") || "—";
       }
 
       function shortTs(s) {
@@ -385,7 +458,7 @@
     <section class="card" id="bench-panel-library" data-bench-panel="library">
       <h2 style="margin-top:0">Library</h2>
       <p class="controls-hint">
-        Hunt benches seeded from <span class="mono">fixtures/ground_truth</span>.
+        Benches seeded from <span class="mono">fixtures/ground_truth</span> (hunt) and <span class="mono">fixtures/benchmarks</span> (recon / finding_report).
         Versions are immutable snapshots.
       </p>
       <div class="table-wrap">

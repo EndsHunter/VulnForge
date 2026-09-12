@@ -1,4 +1,4 @@
-"""Thin FastAPI router for the benchmark library + hunt runs."""
+"""Thin FastAPI router for the benchmark library + bench runs."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from vulnforge.benchmarks.runner import run_hunt
+from vulnforge.benchmarks.runner import run_benchmark
 from vulnforge.benchmarks.runs import (
     BenchmarkRunError,
     get_run,
@@ -44,7 +44,7 @@ class BenchmarkBody(BaseModel):
 class BenchmarkRunBody(BaseModel):
     def_id: str
     version: Optional[int] = None
-    types: Optional[list[str]] = Field(default_factory=lambda: ["hunt"])
+    types: Optional[list[str]] = None
     mode: Optional[str] = "mechanical"
 
 
@@ -78,7 +78,7 @@ def api_benchmarks_list():
 
 @router.post("/seed")
 def api_benchmarks_seed():
-    """Import missing GT hunt benches only — never clobber existing ids."""
+    """Import missing GT + fixtures/benchmarks defs — never clobber existing ids."""
     try:
         ensure_library()
         return seed_from_ground_truth(missing_only=True)
@@ -123,13 +123,16 @@ def api_benchmark_runs_list(
 
 @router.post("/runs")
 def api_benchmark_runs_create(body: BenchmarkRunBody):
-    """Create + execute a hunt bench run (sync for mechanical)."""
+    """Create + execute a bench run (recon|hunt|finding_report; sync mechanical).
+
+    ``poc_dev`` is refused. Default types = all runnable types on the snapshot.
+    """
     try:
         ensure_library()
-        run = run_hunt(
+        run = run_benchmark(
             def_id=body.def_id,
             version=body.version,
-            types=body.types or ["hunt"],
+            types=body.types,
             mode=body.mode or "mechanical",
         )
         return {"ok": True, "run": run}

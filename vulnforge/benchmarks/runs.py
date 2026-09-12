@@ -89,6 +89,10 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+# Run-page runnable types (poc_dev refused on Run path).
+RUNNABLE_TYPES = frozenset({"recon", "hunt", "finding_report"})
+
+
 def _normalize_types_run(raw: object) -> list[str]:
     if raw is None:
         return ["hunt"]
@@ -102,13 +106,10 @@ def _normalize_types_run(raw: object) -> list[str]:
     seen: set[str] = set()
     for t in items:
         key = str(t or "").strip().lower().replace(" ", "_")
-        if key != "hunt" or key in seen:
-            # Ticket 3: hunt only
-            if key and key != "hunt":
-                continue
-            if key in seen:
-                continue
-        if not key:
+        if not key or key in seen:
+            continue
+        # poc_dev and unknown types are dropped (Run path refuses poc_dev)
+        if key not in RUNNABLE_TYPES:
             continue
         seen.add(key)
         out.append(key)

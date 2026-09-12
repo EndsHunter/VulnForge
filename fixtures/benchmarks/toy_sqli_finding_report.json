@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "toy_sqli_finding_report",
+  "target": "fixtures/toy_sqli",
+  "type": "finding_report",
+  "description": "Mechanical finding_report bench: required fields, citation density, honesty labels.",
+  "required_fields": [
+    "title",
+    "summary",
+    "weakness_class",
+    "threat_model",
+    "citations",
+    "severity_claim"
+  ],
+  "min_citation_density": 1.0,
+  "honesty_labels": ["severity_claim", "needs_human"],
+  "fixture_report_ref": "fixtures/benchmarks/reports/toy_sqli_report.json"
+}
