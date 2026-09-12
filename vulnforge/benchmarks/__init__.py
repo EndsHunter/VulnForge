@@ -13,6 +13,7 @@ from __future__ import annotations
 from vulnforge.benchmarks.runner import mechanical_hunt_score, run_hunt
 from vulnforge.benchmarks.runs import (
     RUN_STATUSES,
+    SORT_KEYS,
     TERMINAL_STATUSES,
     BenchmarkRunError,
     create_run,
@@ -48,6 +49,7 @@ __all__ = [
     "COLLECTION_FORMAT",
     "DEF_ID_RE",
     "RUN_STATUSES",
+    "SORT_KEYS",
     "TERMINAL_STATUSES",
     "BenchmarkLibraryError",
     "BenchmarkRunError",

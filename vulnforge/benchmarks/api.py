@@ -90,10 +90,33 @@ def api_benchmarks_seed():
 
 
 @router.get("/runs")
-def api_benchmark_runs_list(def_id: Optional[str] = None):
-    """List BenchmarkRun records (newest first)."""
+def api_benchmark_runs_list(
+    def_id: Optional[str] = None,
+    version: Optional[int] = None,
+    status: Optional[str] = None,
+    type: Optional[str] = None,
+    sort: Optional[str] = "started_at",
+    order: Optional[str] = "desc",
+):
+    """List BenchmarkRun records with filters/sort (default newest started_at first).
+
+    Query:
+      def_id, version, status, type (types_run contains),
+      sort=started_at|finished_at|recall|status|def_id,
+      order=asc|desc
+    """
     try:
-        return {"ok": True, "runs": list_runs(def_id=def_id)}
+        return {
+            "ok": True,
+            "runs": list_runs(
+                def_id=def_id,
+                version=version,
+                status=status,
+                run_type=type,
+                sort=sort or "started_at",
+                order=order or "desc",
+            ),
+        }
     except BenchmarkRunError as e:
         raise _http_run(e) from e
 
