@@ -209,6 +209,63 @@
         <pre id="bench-detail-body" class="mono" style="white-space:pre-wrap;margin:0;min-height:6rem">Loading…</pre>
       </div>
       {% else %}
+      <div id="bench-chart" class="card bench-chart-card" data-bench-chart="1">
+        <h3 class="bench-panel-title">Score over time</h3>
+        <p class="controls-hint">Recall (or type score) for the selected def, oldest first.</p>
+        <div class="controls bench-chart-controls" data-bench-chart-controls="1">
+          <label for="bench-chart-def">Def</label>
+          <select id="bench-chart-def" class="mono" data-bench-chart-def="1" aria-label="Chart benchmark def"></select>
+          <label for="bench-chart-type">Type</label>
+          <select id="bench-chart-type" class="mono" data-bench-chart-type="1" aria-label="Chart type">
+            <option value="">Any (recall / score)</option>
+            <option value="hunt">hunt</option>
+            <option value="recon">recon</option>
+            <option value="finding_report">finding_report</option>
+          </select>
+          <button type="button" class="btn" id="bench-chart-apply">Chart</button>
+        </div>
+        <div id="bench-chart-frame" class="bench-chart-frame" data-bench-chart-frame="1">
+          <svg id="bench-chart-svg" class="bench-chart-svg" data-bench-chart-svg="1"
+               viewBox="0 0 640 180" role="img" aria-label="Score over time">
+            <g id="bench-chart-grid" data-bench-chart-grid="1"></g>
+            <polyline id="bench-chart-line" class="bench-chart-line" data-bench-chart-line="1"
+                      fill="none" points=""></polyline>
+            <g id="bench-chart-dots" data-bench-chart-dots="1"></g>
+          </svg>
+          <p id="bench-chart-empty" class="controls-hint bench-chart-empty" data-bench-chart-empty="1">
+            Pick a def to chart.
+          </p>
+        </div>
+      </div>
+
+      <div id="bench-compare" class="card bench-compare-card" data-bench-compare="1">
+        <h3 class="bench-panel-title">Version compare</h3>
+        <p class="controls-hint">Latest / aggregate metrics for two versions of the same def.</p>
+        <div class="controls bench-compare-controls" data-bench-compare-controls="1">
+          <label for="bench-compare-def">Def</label>
+          <select id="bench-compare-def" class="mono" data-bench-compare-def="1" aria-label="Compare benchmark def"></select>
+          <label for="bench-compare-a">Version A</label>
+          <select id="bench-compare-a" class="mono" data-bench-compare-a="1" aria-label="Version A"></select>
+          <label for="bench-compare-b">Version B</label>
+          <select id="bench-compare-b" class="mono" data-bench-compare-b="1" aria-label="Version B"></select>
+          <label for="bench-compare-type">Type</label>
+          <select id="bench-compare-type" class="mono" data-bench-compare-type="1" aria-label="Compare type">
+            <option value="">Any</option>
+            <option value="hunt">hunt</option>
+            <option value="recon">recon</option>
+            <option value="finding_report">finding_report</option>
+          </select>
+          <button type="button" class="btn" id="bench-compare-apply">Compare</button>
+        </div>
+        <div id="bench-compare-body" class="bench-compare-grid" data-bench-compare-body="1">
+          <div id="bench-compare-side-a" class="bench-compare-side" data-bench-compare-side="a">
+            <div class="controls-hint">Pick versions to compare.</div>
+          </div>
+          <div id="bench-compare-delta" class="bench-compare-delta" data-bench-compare-delta="1"></div>
+          <div id="bench-compare-side-b" class="bench-compare-side" data-bench-compare-side="b"></div>
+        </div>
+      </div>
+
       <div class="controls" id="bench-results-filters"
            data-bench-results-filters="1"
            style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0">
@@ -265,6 +322,7 @@
       </div>
       {% endif %}
     </section>
+    <script src="/static/bench_results_helpers.js"></script>
     <script>
     (function () {
       if (document.body.getAttribute("data-bench-page") !== "results") return;
@@ -452,6 +510,281 @@
         }
       });
       load();
+
+      var H = window.BenchResultsHelpers || {};
+      var chartDef = document.getElementById("bench-chart-def");
+      var chartType = document.getElementById("bench-chart-type");
+      var chartApply = document.getElementById("bench-chart-apply");
+      var chartSvg = document.getElementById("bench-chart-svg");
+      var chartLine = document.getElementById("bench-chart-line");
+      var chartDots = document.getElementById("bench-chart-dots");
+      var chartGrid = document.getElementById("bench-chart-grid");
+      var chartEmpty = document.getElementById("bench-chart-empty");
+      var cmpDef = document.getElementById("bench-compare-def");
+      var cmpA = document.getElementById("bench-compare-a");
+      var cmpB = document.getElementById("bench-compare-b");
+      var cmpType = document.getElementById("bench-compare-type");
+      var cmpApply = document.getElementById("bench-compare-apply");
+      var cmpSideA = document.getElementById("bench-compare-side-a");
+      var cmpSideB = document.getElementById("bench-compare-side-b");
+      var cmpDelta = document.getElementById("bench-compare-delta");
+      var allDefs = [];
+
+      function fillSelect(sel, rows, getVal, getLabel, prefer) {
+        if (!sel) return;
+        var prev = sel.value;
+        sel.textContent = "";
+        if (!rows.length) {
+          var empty = document.createElement("option");
+          empty.value = "";
+          empty.textContent = "—";
+          sel.appendChild(empty);
+          return;
+        }
+        rows.forEach(function (row, i) {
+          var opt = document.createElement("option");
+          opt.value = getVal(row);
+          opt.textContent = getLabel(row);
+          if (prefer && opt.value === prefer) opt.selected = true;
+          else if (!prefer && i === 0) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        if (prefer && sel.value !== prefer && prev && sel.querySelector('option[value="' + prev + '"]')) {
+          sel.value = prev;
+        }
+      }
+
+      function fillDefSelects() {
+        var prefer = "toy_sqli";
+        var ids = allDefs.map(function (b) { return b; });
+        fillSelect(chartDef, ids, function (b) { return b.id || ""; }, function (b) {
+          return (b.id || "") + " (v" + (b.head_version != null ? b.head_version : "?") + ")";
+        }, prefer);
+        fillSelect(cmpDef, ids, function (b) { return b.id || ""; }, function (b) {
+          return (b.id || "") + " (v" + (b.head_version != null ? b.head_version : "?") + ")";
+        }, prefer);
+      }
+
+      function fillVersionSelects(versions) {
+        var rows = versions || [];
+        fillSelect(cmpA, rows, function (v) { return String(v.version); }, function (v) {
+          return "v" + v.version;
+        }, rows.length ? String(rows[0].version) : "");
+        var last = rows.length ? String(rows[rows.length - 1].version) : "";
+        fillSelect(cmpB, rows, function (v) { return String(v.version); }, function (v) {
+          return "v" + v.version;
+        }, last);
+        if (rows.length >= 2 && cmpA && cmpB && cmpA.value === cmpB.value) {
+          cmpA.value = String(rows[0].version);
+          cmpB.value = String(rows[rows.length - 1].version);
+        }
+      }
+
+      function renderChart(points) {
+        if (!chartSvg || !chartLine || !chartDots || !chartGrid) return;
+        var layout = (H.seriesToPolyline || function () { return { points: "", dots: [], empty: true }; })(points, {
+          width: 640, height: 180, pad: 28
+        });
+        chartLine.setAttribute("points", layout.points || "");
+        chartDots.textContent = "";
+        chartGrid.textContent = "";
+        var grid = (H.gridYs || function () { return []; })(layout.height || 180, layout.pad || 28, 2);
+        grid.forEach(function (g) {
+          var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+          line.setAttribute("x1", String(layout.pad || 28));
+          line.setAttribute("x2", String((layout.width || 640) - (layout.pad || 28)));
+          line.setAttribute("y1", String(g.y));
+          line.setAttribute("y2", String(g.y));
+          line.setAttribute("class", "bench-chart-gridline");
+          chartGrid.appendChild(line);
+          var lab = document.createElementNS("http://www.w3.org/2000/svg", "text");
+          lab.setAttribute("x", "6");
+          lab.setAttribute("y", String(g.y + 3));
+          lab.setAttribute("class", "bench-chart-tick");
+          lab.textContent = g.label;
+          chartGrid.appendChild(lab);
+        });
+        (layout.dots || []).forEach(function (d) {
+          var c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          c.setAttribute("cx", String(d.x));
+          c.setAttribute("cy", String(d.y));
+          c.setAttribute("r", "3.5");
+          c.setAttribute("class", "bench-chart-dot");
+          var title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+          title.textContent = (d.started_at || "") + "  score=" + (H.formatScore ? H.formatScore(d.score) : d.score)
+            + (d.version != null ? "  v" + d.version : "");
+          c.appendChild(title);
+          chartDots.appendChild(c);
+        });
+        if (chartEmpty) {
+          if (layout.empty) {
+            chartEmpty.hidden = false;
+            chartEmpty.textContent = "No runs for this def.";
+          } else {
+            chartEmpty.hidden = true;
+          }
+        }
+        chartSvg.setAttribute("data-point-count", String((layout.dots || []).length));
+      }
+
+      function loadChart() {
+        if (!chartDef) return;
+        var defId = chartDef.value;
+        if (!defId) {
+          renderChart([]);
+          if (chartEmpty) { chartEmpty.hidden = false; chartEmpty.textContent = "Pick a def to chart."; }
+          return;
+        }
+        var q = new URLSearchParams();
+        q.set("def_id", defId);
+        if (chartType && chartType.value) q.set("type", chartType.value);
+        fetch("/api/benchmarks/runs/series?" + q.toString())
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            renderChart((data && data.points) || []);
+          })
+          .catch(function () {
+            renderChart([]);
+            if (chartEmpty) { chartEmpty.hidden = false; chartEmpty.textContent = "Failed to load series."; }
+          });
+      }
+
+      function metricLine(label, value) {
+        var div = document.createElement("div");
+        div.className = "bench-metric";
+        var k = document.createElement("span");
+        k.className = "k";
+        k.textContent = label;
+        var v = document.createElement("span");
+        v.className = "v mono";
+        v.textContent = value;
+        div.appendChild(k);
+        div.appendChild(v);
+        return div;
+      }
+
+      function renderSide(el, side, label) {
+        if (!el) return;
+        el.textContent = "";
+        var h = document.createElement("h4");
+        h.className = "bench-compare-heading";
+        h.textContent = label + " · v" + (side && side.version != null ? side.version : "?");
+        el.appendChild(h);
+        if (!side || !side.run_count) {
+          el.appendChild(metricLine("runs", "0"));
+          el.appendChild(metricLine("recall", "0.000"));
+          el.appendChild(metricLine("score", "0.000"));
+          el.appendChild(metricLine("hits", "0/0"));
+          var empty = document.createElement("div");
+          empty.className = "controls-hint";
+          empty.textContent = "No runs for this version.";
+          el.appendChild(empty);
+          return;
+        }
+        var latest = side.latest || {};
+        var agg = side.aggregate || {};
+        el.appendChild(metricLine("runs", String(side.run_count)));
+        el.appendChild(metricLine("latest recall", H.formatScore ? H.formatScore(latest.recall) : String(latest.recall)));
+        el.appendChild(metricLine("latest score", H.formatScore ? H.formatScore(latest.score) : String(latest.score)));
+        el.appendChild(metricLine("hits", String(latest.hit_count != null ? latest.hit_count : 0) + "/"
+          + String(latest.oracle_count != null ? latest.oracle_count : 0)));
+        el.appendChild(metricLine("mean recall", H.formatScore ? H.formatScore(agg.recall) : String(agg.recall)));
+        var by = latest.by_type || agg.by_type || {};
+        Object.keys(by).forEach(function (k) {
+          var sm = by[k] || {};
+          var bit = k;
+          if (typeof sm.score === "number") bit += " score=" + (H.formatScore ? H.formatScore(sm.score) : sm.score);
+          if (typeof sm.recall === "number") bit += " rec=" + (H.formatScore ? H.formatScore(sm.recall) : sm.recall);
+          el.appendChild(metricLine("type " + k, bit));
+        });
+      }
+
+      function renderDelta(el, delta) {
+        if (!el) return;
+        el.textContent = "";
+        var h = document.createElement("h4");
+        h.className = "bench-compare-heading";
+        h.textContent = "Δ B − A";
+        el.appendChild(h);
+        delta = delta || {};
+        ["recall", "score", "hit_count", "run_count"].forEach(function (k) {
+          var raw = delta[k];
+          var tone = H.deltaTone ? H.deltaTone(raw) : "zero";
+          var text = (k === "hit_count" || k === "run_count")
+            ? ((Number(raw) > 0 ? "+" : "") + String(raw == null ? 0 : raw))
+            : (H.formatDelta ? H.formatDelta(raw) : String(raw));
+          var row = metricLine(k, text);
+          row.className = "bench-metric bench-delta-" + tone;
+          el.appendChild(row);
+        });
+      }
+
+      function loadCompare() {
+        if (!cmpDef || !cmpA || !cmpB) return;
+        var defId = cmpDef.value;
+        var va = cmpA.value;
+        var vb = cmpB.value;
+        if (!defId || !va || !vb) {
+          if (cmpSideA) cmpSideA.textContent = "Pick a def and two versions.";
+          if (cmpSideB) cmpSideB.textContent = "";
+          if (cmpDelta) cmpDelta.textContent = "";
+          return;
+        }
+        var q = new URLSearchParams();
+        q.set("def_id", defId);
+        q.set("version_a", va);
+        q.set("version_b", vb);
+        if (cmpType && cmpType.value) q.set("type", cmpType.value);
+        fetch("/api/benchmarks/compare?" + q.toString())
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            renderSide(cmpSideA, data.version_a, "A");
+            renderSide(cmpSideB, data.version_b, "B");
+            renderDelta(cmpDelta, data.delta);
+          })
+          .catch(function () {
+            if (cmpSideA) cmpSideA.textContent = "Failed to compare.";
+            if (cmpSideB) cmpSideB.textContent = "";
+            if (cmpDelta) cmpDelta.textContent = "";
+          });
+      }
+
+      function loadCompareVersions() {
+        if (!cmpDef || !cmpDef.value) {
+          fillVersionSelects([]);
+          return;
+        }
+        fetch("/api/benchmarks/" + encodeURIComponent(cmpDef.value) + "/versions")
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            fillVersionSelects((data && data.versions) || []);
+            loadCompare();
+          })
+          .catch(function () {
+            fillVersionSelects([]);
+          });
+      }
+
+      fetch("/api/benchmarks")
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          allDefs = (data && data.benchmarks) || [];
+          fillDefSelects();
+          loadChart();
+          loadCompareVersions();
+        })
+        .catch(function () {
+          fillDefSelects();
+        });
+
+      if (chartApply) chartApply.addEventListener("click", loadChart);
+      if (chartDef) chartDef.addEventListener("change", loadChart);
+      if (chartType) chartType.addEventListener("change", loadChart);
+      if (cmpApply) cmpApply.addEventListener("click", loadCompare);
+      if (cmpDef) cmpDef.addEventListener("change", loadCompareVersions);
+      if (cmpA) cmpA.addEventListener("change", loadCompare);
+      if (cmpB) cmpB.addEventListener("change", loadCompare);
+      if (cmpType) cmpType.addEventListener("change", loadCompare);
     })();
     </script>
     {% elif active == 'library' %}

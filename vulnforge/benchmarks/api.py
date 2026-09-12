@@ -13,6 +13,7 @@ from vulnforge.benchmarks.runs import (
     get_run,
     list_runs,
 )
+from vulnforge.benchmarks.series import build_series, compare_versions
 from vulnforge.benchmarks.store import (
     BenchmarkLibraryError,
     create_def,
@@ -142,10 +143,85 @@ def api_benchmark_runs_create(body: BenchmarkRunBody):
         raise _http_lib(e) from e
 
 
+@router.get("/runs/series")
+def api_benchmark_runs_series(
+    def_id: Optional[str] = None,
+    type: Optional[str] = None,
+):
+    """Score-over-time points for a def (started_at + recall or type score).
+
+    Query:
+      def_id (required), type (optional types_run filter; score from by_type)
+    """
+    bid = (def_id or "").strip()
+    if not bid:
+        raise HTTPException(400, "def_id is required")
+    try:
+        ensure_library()
+        get_def(bid, include_oracle=False)
+    except BenchmarkLibraryError as e:
+        raise _http_lib(e) from e
+    try:
+        runs = list_runs(
+            def_id=bid,
+            run_type=type,
+            sort="started_at",
+            order="asc",
+            limit=500,
+        )
+        payload = build_series(runs, def_id=bid, run_type=type)
+        return {"ok": True, **payload}
+    except BenchmarkRunError as e:
+        raise _http_run(e) from e
+
+
 @router.get("/runs/{run_id}")
 def api_benchmark_run_get(run_id: str):
     try:
         return {"ok": True, "run": get_run(run_id)}
+    except BenchmarkRunError as e:
+        raise _http_run(e) from e
+
+
+@router.get("/compare")
+def api_benchmark_compare(
+    def_id: Optional[str] = None,
+    version_a: Optional[int] = None,
+    version_b: Optional[int] = None,
+    type: Optional[str] = None,
+):
+    """Side-by-side latest/aggregate metrics for two versions of one def.
+
+    Query:
+      def_id, version_a, version_b (required); type (optional types_run filter).
+    Missing version → empty/zeros (not 404).
+    """
+    bid = (def_id or "").strip()
+    if not bid:
+        raise HTTPException(400, "def_id is required")
+    if version_a is None or version_b is None:
+        raise HTTPException(400, "version_a and version_b are required")
+    try:
+        ensure_library()
+        get_def(bid, include_oracle=False)
+    except BenchmarkLibraryError as e:
+        raise _http_lib(e) from e
+    try:
+        runs = list_runs(
+            def_id=bid,
+            run_type=type,
+            sort="started_at",
+            order="asc",
+            limit=500,
+        )
+        payload = compare_versions(
+            runs,
+            def_id=bid,
+            version_a=int(version_a),
+            version_b=int(version_b),
+            run_type=type,
+        )
+        return {"ok": True, **payload}
     except BenchmarkRunError as e:
         raise _http_run(e) from e
 

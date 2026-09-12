@@ -59,4 +59,10 @@ See `fixtures/benchmarks/README.md` for oracle shapes.
 | POST   | `/api/benchmarks/seed` | missing-only GT + bench fixture import |
 | GET    | `/api/benchmarks/runs` | list runs (filters/sort) |
 | POST   | `/api/benchmarks/runs` | create + execute (mechanical) |
+| GET    | `/api/benchmarks/runs/series` | score-over-time points (`def_id`, optional `type`) |
 | GET    | `/api/benchmarks/runs/{id}` | run detail + type metrics |
+| GET    | `/api/benchmarks/compare` | version A vs B (`def_id`, `version_a`, `version_b`, optional `type`) |
+
+Results UI (`/benchmarks/results`) charts score over time (inline SVG) and
+compares two versions of the same def (latest + aggregate + Δ). Missing
+version runs return zeros / empty latest.
