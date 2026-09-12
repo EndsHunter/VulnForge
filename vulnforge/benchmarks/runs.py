@@ -248,10 +248,69 @@ def get_run(run_id: str) -> dict[str, Any]:
     return _public_run(raw)
 
 
-def list_runs(*, def_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+SORT_KEYS = frozenset({"started_at", "finished_at", "recall", "status", "def_id"})
+ORDER_KEYS = frozenset({"asc", "desc"})
+
+
+def _sort_key_for(row: dict[str, Any], sort: str) -> Any:
+    if sort == "recall":
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        try:
+            return float(metrics.get("recall") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    if sort == "finished_at":
+        return str(row.get("finished_at") or "")
+    if sort == "status":
+        return str(row.get("status") or "")
+    if sort == "def_id":
+        return str(row.get("def_id") or "")
+    # default started_at
+    return str(row.get("started_at") or "")
+
+
+def list_runs(
+    *,
+    def_id: str | None = None,
+    version: int | None = None,
+    status: str | None = None,
+    run_type: str | None = None,
+    sort: str = "started_at",
+    order: str = "desc",
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """List BenchmarkRun records with optional filters and sort.
+
+    Filters:
+      - def_id: exact match
+      - version: exact int match
+      - status: exact match
+      - run_type: types_run contains (query param ``type``)
+
+    Sort: started_at|finished_at|recall|status|def_id (default started_at).
+    Order: asc|desc (default desc — newest first for started_at).
+    """
     root = runs_root()
     if not root.is_dir():
         return []
+    sort_key = str(sort or "started_at").strip().lower()
+    if sort_key not in SORT_KEYS:
+        sort_key = "started_at"
+    order_key = str(order or "desc").strip().lower()
+    if order_key not in ORDER_KEYS:
+        order_key = "desc"
+    reverse = order_key == "desc"
+
+    want_def = str(def_id).strip().lower() if def_id else None
+    want_status = str(status).strip().lower() if status else None
+    want_type = str(run_type).strip().lower().replace(" ", "_") if run_type else None
+    want_ver: int | None = None
+    if version is not None:
+        try:
+            want_ver = int(version)
+        except (TypeError, ValueError):
+            want_ver = None
+
     out: list[dict[str, Any]] = []
     for child in root.iterdir():
         if not child.is_dir():
@@ -266,8 +325,16 @@ def list_runs(*, def_id: str | None = None, limit: int = 200) -> list[dict[str, 
         if not isinstance(raw, dict):
             continue
         row = _public_run(raw)
-        if def_id and row["def_id"] != str(def_id).strip().lower():
+        if want_def and row["def_id"] != want_def:
             continue
+        if want_ver is not None and int(row.get("version") or 0) != want_ver:
+            continue
+        if want_status and row["status"] != want_status:
+            continue
+        if want_type:
+            types = [str(t).lower() for t in (row.get("types_run") or [])]
+            if want_type not in types:
+                continue
         out.append(row)
-    out.sort(key=lambda r: str(r.get("started_at") or ""), reverse=True)
+    out.sort(key=lambda r: _sort_key_for(r, sort_key), reverse=reverse)
     return out[: max(1, int(limit))]

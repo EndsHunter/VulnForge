@@ -147,81 +147,238 @@
       </p>
     </section>
     {% elif active == 'results' %}
-    <section class="card" id="bench-panel-results" data-bench-panel="results">
+    <section class="card" id="bench-panel-results" data-bench-panel="results"
+             data-detail-run-id="{{ detail_run_id or '' }}">
       <h2 style="margin-top:0">Results</h2>
       <p class="controls-hint">
         BenchmarkRun history (hunt). Metrics from score_findings; findings are never auto-confirmed.
+        Click a row for full run detail.
       </p>
+
+      {% if detail_run_id %}
+      <div id="bench-results-detail" class="card" style="margin:0.75rem 0;padding:0.75rem;border:1px solid var(--border, #333)"
+           data-bench-results-detail="1">
+        <div class="controls" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin-bottom:0.5rem">
+          <a class="btn" href="/benchmarks/results" id="bench-results-back">← Back to history</a>
+          <span class="mono" id="bench-detail-id">{{ detail_run_id }}</span>
+        </div>
+        <pre id="bench-detail-body" class="mono" style="white-space:pre-wrap;margin:0;min-height:6rem">Loading…</pre>
+      </div>
+      {% else %}
+      <div class="controls" id="bench-results-filters"
+           data-bench-results-filters="1"
+           style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0">
+        <label for="bench-filter-def">Def</label>
+        <input id="bench-filter-def" class="mono" type="text" placeholder="def_id" style="width:8rem" />
+        <label for="bench-filter-status">Status</label>
+        <select id="bench-filter-status" class="mono" aria-label="Filter by status">
+          <option value="">Any</option>
+          <option value="queued">queued</option>
+          <option value="running">running</option>
+          <option value="passed">passed</option>
+          <option value="failed">failed</option>
+          <option value="error">error</option>
+          <option value="cancelled">cancelled</option>
+        </select>
+        <label for="bench-filter-type">Type</label>
+        <select id="bench-filter-type" class="mono" aria-label="Filter by type">
+          <option value="">Any</option>
+          <option value="hunt">hunt</option>
+        </select>
+        <label for="bench-sort">Sort</label>
+        <select id="bench-sort" class="mono" data-bench-sort="1" aria-label="Sort by">
+          <option value="started_at">started_at</option>
+          <option value="finished_at">finished_at</option>
+          <option value="recall">recall</option>
+          <option value="status">status</option>
+          <option value="def_id">def_id</option>
+        </select>
+        <select id="bench-order" class="mono" data-bench-order="1" aria-label="Sort order">
+          <option value="desc">desc</option>
+          <option value="asc">asc</option>
+        </select>
+        <button type="button" class="btn" id="bench-results-apply">Apply</button>
+      </div>
       <div class="table-wrap">
-        <table class="data" id="bench-results-table">
+        <table class="data" id="bench-results-table" data-bench-results-table="1">
           <thead>
             <tr>
-              <th>Id</th>
               <th>Def</th>
               <th>Ver</th>
               <th>Type</th>
               <th>Status</th>
-              <th>Recall</th>
+              <th>Scores</th>
+              <th>Started</th>
+              <th>Finished</th>
             </tr>
           </thead>
           <tbody id="bench-results-body">
-            <tr><td colspan="6" class="empty">Loading…</td></tr>
+            <tr><td colspan="7" class="empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
+      {% endif %}
     </section>
     <script>
     (function () {
       if (document.body.getAttribute("data-bench-page") !== "results") return;
-      var tbody = document.getElementById("bench-results-body");
-      if (!tbody) return;
-      fetch("/api/benchmarks/runs")
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          var rows = (data && data.runs) || [];
-          tbody.textContent = "";
-          if (!rows.length) {
-            var emptyTr = document.createElement("tr");
-            var emptyTd = document.createElement("td");
-            emptyTd.colSpan = 6;
-            emptyTd.className = "empty";
-            emptyTd.textContent = "No runs yet.";
-            emptyTr.appendChild(emptyTd);
-            tbody.appendChild(emptyTr);
-            return;
-          }
-          rows.forEach(function (r) {
-            var tr = document.createElement("tr");
-            function cell(text, mono) {
-              var td = document.createElement("td");
-              if (mono) td.className = "mono";
-              td.textContent = text == null ? "" : String(text);
-              tr.appendChild(td);
+      var panel = document.getElementById("bench-panel-results");
+      var detailId = panel && panel.getAttribute("data-detail-run-id");
+
+      function fmtRecall(m) {
+        m = m || {};
+        var recall = m.recall;
+        var hit = m.hit_count;
+        var oracle = m.oracle_count;
+        var parts = [];
+        if (typeof recall === "number") {
+          parts.push((Math.round(recall * 1000) / 10) + "%");
+        }
+        if (hit != null || oracle != null) {
+          parts.push(String(hit != null ? hit : "?") + "/" + String(oracle != null ? oracle : "?"));
+        }
+        return parts.join(" ");
+      }
+
+      function shortTs(s) {
+        if (!s) return "";
+        return String(s).replace("T", " ").slice(0, 19);
+      }
+
+      if (detailId) {
+        var body = document.getElementById("bench-detail-body");
+        if (!body) return;
+        fetch("/api/benchmarks/runs/" + encodeURIComponent(detailId))
+          .then(function (r) {
+            return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; });
+          })
+          .then(function (res) {
+            if (!res.ok || !res.body || !res.body.run) {
+              body.textContent = "Failed to load run (" + res.status + "): "
+                + JSON.stringify(res.body || {}, null, 2);
+              return;
             }
-            var m = r.metrics || {};
-            var recall = m.recall;
-            var recallText = (typeof recall === "number")
-              ? (Math.round(recall * 1000) / 10) + "%"
-              : "";
-            cell(r.id || "", true);
-            cell(r.def_id || "", true);
-            cell(r.version != null ? r.version : "", true);
-            cell((r.types_run || []).join(",") || "hunt", true);
-            cell(r.status || "", true);
-            cell(recallText, true);
+            var run = res.body.run;
+            body.textContent = JSON.stringify({
+              id: run.id,
+              def_id: run.def_id,
+              version: run.version,
+              types_run: run.types_run,
+              status: run.status,
+              mode: run.mode,
+              started_at: run.started_at,
+              finished_at: run.finished_at,
+              harness_run_dir: run.harness_run_dir,
+              metrics: run.metrics,
+              error: run.error,
+              target_ref: run.target_ref,
+              oracle_hash: run.oracle_hash,
+              events_ref: run.events_ref
+            }, null, 2);
+          })
+          .catch(function (e) {
+            body.textContent = "Request failed: " + e;
+          });
+        return;
+      }
+
+      var tbody = document.getElementById("bench-results-body");
+      var defIn = document.getElementById("bench-filter-def");
+      var statusSel = document.getElementById("bench-filter-status");
+      var typeSel = document.getElementById("bench-filter-type");
+      var sortSel = document.getElementById("bench-sort");
+      var orderSel = document.getElementById("bench-order");
+      var applyBtn = document.getElementById("bench-results-apply");
+      if (!tbody) return;
+
+      function queryUrl() {
+        var q = new URLSearchParams();
+        var d = defIn && defIn.value.trim();
+        var st = statusSel && statusSel.value;
+        var ty = typeSel && typeSel.value;
+        var sort = sortSel && sortSel.value;
+        var order = orderSel && orderSel.value;
+        if (d) q.set("def_id", d);
+        if (st) q.set("status", st);
+        if (ty) q.set("type", ty);
+        if (sort) q.set("sort", sort);
+        if (order) q.set("order", order);
+        var s = q.toString();
+        return "/api/benchmarks/runs" + (s ? ("?" + s) : "");
+      }
+
+      function load() {
+        tbody.textContent = "";
+        var loading = document.createElement("tr");
+        var ltd = document.createElement("td");
+        ltd.colSpan = 7;
+        ltd.className = "empty";
+        ltd.textContent = "Loading…";
+        loading.appendChild(ltd);
+        tbody.appendChild(loading);
+
+        fetch(queryUrl())
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var rows = (data && data.runs) || [];
+            tbody.textContent = "";
+            if (!rows.length) {
+              var emptyTr = document.createElement("tr");
+              var emptyTd = document.createElement("td");
+              emptyTd.colSpan = 7;
+              emptyTd.className = "empty";
+              emptyTd.textContent = "No runs yet.";
+              emptyTr.appendChild(emptyTd);
+              tbody.appendChild(emptyTr);
+              return;
+            }
+            rows.forEach(function (r) {
+              var tr = document.createElement("tr");
+              tr.style.cursor = "pointer";
+              tr.setAttribute("data-run-id", r.id || "");
+              tr.title = "Open run " + (r.id || "");
+              function cell(text, mono) {
+                var td = document.createElement("td");
+                if (mono) td.className = "mono";
+                td.textContent = text == null ? "" : String(text);
+                tr.appendChild(td);
+              }
+              cell(r.def_id || "", true);
+              cell(r.version != null ? r.version : "", true);
+              cell((r.types_run || []).join(",") || "hunt", true);
+              cell(r.status || "", true);
+              cell(fmtRecall(r.metrics), true);
+              cell(shortTs(r.started_at), true);
+              cell(shortTs(r.finished_at), true);
+              tr.addEventListener("click", function () {
+                if (r.id) window.location.href = "/benchmarks/results/" + encodeURIComponent(r.id);
+              });
+              tbody.appendChild(tr);
+            });
+          })
+          .catch(function () {
+            tbody.textContent = "";
+            var tr = document.createElement("tr");
+            var td = document.createElement("td");
+            td.colSpan = 7;
+            td.className = "empty";
+            td.textContent = "Failed to load runs.";
+            tr.appendChild(td);
             tbody.appendChild(tr);
           });
-        })
-        .catch(function () {
-          tbody.textContent = "";
-          var tr = document.createElement("tr");
-          var td = document.createElement("td");
-          td.colSpan = 6;
-          td.className = "empty";
-          td.textContent = "Failed to load runs.";
-          tr.appendChild(td);
-          tbody.appendChild(tr);
-        });
+      }
+
+      if (applyBtn) applyBtn.addEventListener("click", load);
+      [defIn, statusSel, typeSel, sortSel, orderSel].forEach(function (el) {
+        if (!el) return;
+        el.addEventListener("change", load);
+        if (el.tagName === "INPUT") {
+          el.addEventListener("keydown", function (ev) {
+            if (ev.key === "Enter") load();
+          });
+        }
+      });
+      load();
     })();
     </script>
     {% elif active == 'library' %}

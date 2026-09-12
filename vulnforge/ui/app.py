@@ -654,11 +654,28 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
     @app.get("/benchmarks/results", response_class=HTMLResponse)
     def benchmarks_results_page(request: Request):
-        """Bench desk: Results (stub)."""
+        """Bench desk: Results history table."""
         return TEMPLATES.TemplateResponse(
             request,
             "benchmarks.html",
-            {"runs_root": str(app.state.runs_root), "active": "results"},
+            {
+                "runs_root": str(app.state.runs_root),
+                "active": "results",
+                "detail_run_id": None,
+            },
+        )
+
+    @app.get("/benchmarks/results/{run_id}", response_class=HTMLResponse)
+    def benchmarks_results_detail_page(request: Request, run_id: str):
+        """Bench desk: single BenchmarkRun detail."""
+        return TEMPLATES.TemplateResponse(
+            request,
+            "benchmarks.html",
+            {
+                "runs_root": str(app.state.runs_root),
+                "active": "results",
+                "detail_run_id": run_id,
+            },
         )
 
     @app.get("/benchmarks/library", response_class=HTMLResponse)
