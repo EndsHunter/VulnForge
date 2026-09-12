@@ -95,3 +95,19 @@ def _isolate_benchmarks_library(tmp_path_factory, request):
         yield root
     finally:
         reset_library_root_override()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_benchmarks_runs(tmp_path_factory, request):
+    """Every test gets a fresh bench runs root (never touch benchmarks/runs/)."""
+    if request.node.get_closest_marker("no_bench_isolate"):
+        yield
+        return
+    from vulnforge.benchmarks import reset_runs_root_override, set_runs_root
+
+    root = tmp_path_factory.mktemp("bench_runs")
+    set_runs_root(root)
+    try:
+        yield root
+    finally:
+        reset_runs_root_override()
