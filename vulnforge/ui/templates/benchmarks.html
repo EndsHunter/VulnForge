@@ -186,10 +186,140 @@
     {% elif active == 'poc' %}
     <section class="card" id="bench-panel-poc" data-bench-panel="poc">
       <h2 style="margin-top:0">POC workshop</h2>
-      <p class="controls-hint" style="margin:0">
-        Placeholder — craft and iterate proof-of-concept cases. Coming soon.
+      <p class="controls-hint">
+        Isolated <span class="mono">poc_dev</span> benches: generate a fixture pack stub,
+        run it offline (<span class="mono">network: none</span>), score vs oracle, write a
+        BenchmarkRun. Not the Report Develop POC modal — no live-net PoC, never auto-confirm.
       </p>
+      <div class="controls" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0">
+        <label for="bench-poc-def">Benchmark</label>
+        <select id="bench-poc-def" class="mono" aria-label="poc_dev benchmark def">
+          <option value="">Loading…</option>
+        </select>
+        <button type="button" class="btn btn-primary" id="bench-poc-run">
+          Run workshop
+        </button>
+        <button type="button" class="btn" id="bench-poc-create"
+                title="Create a poc_dev def via Library API">
+          New poc_dev def
+        </button>
+      </div>
+      <pre id="bench-poc-last" class="mono" style="white-space:pre-wrap;margin:0;min-height:4rem">No workshop run yet.</pre>
     </section>
+    <script>
+    (function () {
+      if (document.body.getAttribute("data-bench-page") !== "poc") return;
+      var sel = document.getElementById("bench-poc-def");
+      var out = document.getElementById("bench-poc-last");
+      var btn = document.getElementById("bench-poc-run");
+      var createBtn = document.getElementById("bench-poc-create");
+      if (!sel || !out || !btn) return;
+
+      function show(obj) {
+        out.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+      }
+
+      function isPoc(b) {
+        return (b.types || []).indexOf("poc_dev") >= 0;
+      }
+
+      function fillDefs(rows) {
+        sel.textContent = "";
+        if (!rows.length) {
+          var opt = document.createElement("option");
+          opt.value = "";
+          opt.textContent = "No poc_dev benches — seed or create one";
+          sel.appendChild(opt);
+          return;
+        }
+        rows.forEach(function (b) {
+          var opt = document.createElement("option");
+          opt.value = b.id || "";
+          opt.textContent = (b.id || "") + " [poc_dev] (v"
+            + (b.head_version != null ? b.head_version : "?") + ")";
+          if (b.id === "toy_poc_dev") opt.selected = true;
+          sel.appendChild(opt);
+        });
+      }
+
+      function loadDefs() {
+        return fetch("/api/benchmarks")
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var rows = ((data && data.benchmarks) || []).filter(isPoc);
+            fillDefs(rows);
+            return rows;
+          })
+          .catch(function () {
+            sel.textContent = "";
+            var opt = document.createElement("option");
+            opt.value = "";
+            opt.textContent = "Failed to load";
+            sel.appendChild(opt);
+          });
+      }
+
+      loadDefs();
+
+      btn.addEventListener("click", function () {
+        var defId = sel.value;
+        if (!defId) {
+          show("Pick a poc_dev benchmark first.");
+          return;
+        }
+        btn.disabled = true;
+        show("Running POC workshop for " + defId + " (network:none)…");
+        fetch("/api/benchmarks/poc/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ def_id: defId, mode: "mechanical" })
+        })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
+          .then(function (res) {
+            show(res.body);
+          })
+          .catch(function (e) {
+            show("Request failed: " + e);
+          })
+          .finally(function () { btn.disabled = false; });
+      });
+
+      if (createBtn) {
+        createBtn.addEventListener("click", function () {
+          var id = window.prompt("New poc_dev def id (slug)", "custom_poc_dev");
+          if (!id) return;
+          var name = window.prompt("Display name", id) || id;
+          createBtn.disabled = true;
+          show("Creating " + id + "…");
+          fetch("/api/benchmarks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: id,
+              name: name,
+              types: ["poc_dev"],
+              target_ref: "fixtures/toy_sqli",
+              tags: ["custom", "poc_dev"],
+              oracle: {
+                type: "poc_dev",
+                pack_files: ["poc.py", "poc_meta.json"],
+                poc_run: { ok: true, signal: "fixture_ok", network: "none" },
+                network: "none"
+              },
+              notes: "Created from POC workshop UI"
+            })
+          })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+            .then(function (res) {
+              show(res.body);
+              if (res.ok) return loadDefs();
+            })
+            .catch(function (e) { show("Create failed: " + e); })
+            .finally(function () { createBtn.disabled = false; });
+        });
+      }
+    })();
+    </script>
     {% elif active == 'results' %}
     <section class="card" id="bench-panel-results" data-bench-panel="results"
              data-detail-run-id="{{ detail_run_id or '' }}">

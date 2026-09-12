@@ -1,22 +1,31 @@
-"""Benchmark library + runs (hunt / recon / finding_report).
+"""Benchmark library + runs (hunt / recon / finding_report / poc_dev).
 
 First ``ensure_library()`` seeds from ``fixtures/ground_truth/*.json`` (hunt)
-and ``fixtures/benchmarks/*.json`` (recon / finding_report). Re-seed via
-``seed_from_ground_truth(missing_only=True)`` / ``POST /api/benchmarks/seed``
+and ``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev). Re-seed
+via ``seed_from_ground_truth(missing_only=True)`` / ``POST /api/benchmarks/seed``
 adds missing ids only and never clobbers operator edits.
 
 Runs: ``run_benchmark`` / ``POST /api/benchmarks/runs`` — mechanical L0 by
-default; ``poc_dev`` refused on the Run path. Results under ``benchmarks/runs/``.
+default; ``poc_dev`` refused on the Run path. Workshop:
+``run_poc_workshop`` / ``POST /api/benchmarks/poc/runs`` (network:none).
+Results under ``benchmarks/runs/``.
 """
 
 from __future__ import annotations
 
+from vulnforge.benchmarks.poc_workshop import (
+    generate_pack_stub,
+    run_pack_subprocess,
+    run_poc_workshop,
+    score_poc_dev,
+)
 from vulnforge.benchmarks.runner import (
     mechanical_hunt_score,
     run_benchmark,
     run_hunt,
 )
 from vulnforge.benchmarks.runs import (
+    PERSISTED_TYPES,
     RUN_STATUSES,
     RUNNABLE_TYPES,
     SORT_KEYS,
@@ -64,6 +73,7 @@ __all__ = [
     "BENCHMARK_FIXTURES_ROOT",
     "COLLECTION_FORMAT",
     "DEF_ID_RE",
+    "PERSISTED_TYPES",
     "RUNNABLE_TYPES",
     "RUN_STATUSES",
     "SORT_KEYS",
@@ -89,6 +99,10 @@ __all__ = [
     "oracle_snapshot_hash",
     "reset_library_root_override",
     "reset_runs_root_override",
+    "generate_pack_stub",
+    "run_pack_subprocess",
+    "run_poc_workshop",
+    "score_poc_dev",
     "run_benchmark",
     "run_hunt",
     "runs_root",

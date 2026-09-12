@@ -156,7 +156,7 @@ def _normalize_request_types(
 
     if any(t == "poc_dev" for t in raw):
         raise BenchmarkRunError(
-            "poc_dev is not supported on the Run path (use POC workshop later)"
+            "poc_dev is not supported on the Run path (use POST /api/benchmarks/poc/runs)"
         )
 
     out: list[str] = []

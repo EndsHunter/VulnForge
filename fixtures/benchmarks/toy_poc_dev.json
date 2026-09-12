@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "toy_poc_dev",
+  "target": "fixtures/toy_sqli",
+  "type": "poc_dev",
+  "description": "Mechanical poc_dev bench: pack file expectations + poc_run.json (ok/signal/network:none). Isolated sandbox only — no live network.",
+  "pack_files": ["poc.py", "poc_meta.json"],
+  "poc_run": {
+    "ok": true,
+    "signal": "fixture_ok",
+    "network": "none"
+  },
+  "network": "none"
+}
