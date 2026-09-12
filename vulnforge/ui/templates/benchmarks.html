@@ -35,7 +35,7 @@
         <h1>Benchmarks</h1>
         <p>
           Bench desk: run suites, workshop POCs, review results, and browse the library.
-          Stub shell — runners and store come later.
+          Library store is live; runners and scorers come later.
         </p>
       </div>
     </div>
@@ -79,10 +79,75 @@
     {% elif active == 'library' %}
     <section class="card" id="bench-panel-library" data-bench-panel="library">
       <h2 style="margin-top:0">Library</h2>
-      <p class="controls-hint" style="margin:0">
-        Placeholder — shared suites, fixtures, and case packs. Coming soon.
+      <p class="controls-hint">
+        Hunt benches seeded from <span class="mono">fixtures/ground_truth</span>.
+        Versions are immutable snapshots.
       </p>
+      <div class="table-wrap">
+        <table class="data" id="bench-library-table">
+          <thead>
+            <tr>
+              <th>Id</th>
+              <th>Name</th>
+              <th>Types</th>
+              <th>Target</th>
+              <th>Head</th>
+            </tr>
+          </thead>
+          <tbody id="bench-library-body">
+            <tr><td colspan="5" class="empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
+    <script>
+    (function () {
+      if (document.body.getAttribute("data-bench-page") !== "library") return;
+      var tbody = document.getElementById("bench-library-body");
+      if (!tbody) return;
+      fetch("/api/benchmarks")
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var rows = (data && data.benchmarks) || [];
+          tbody.textContent = "";
+          if (!rows.length) {
+            var emptyTr = document.createElement("tr");
+            var emptyTd = document.createElement("td");
+            emptyTd.colSpan = 5;
+            emptyTd.className = "empty";
+            emptyTd.textContent = "No benchmarks yet.";
+            emptyTr.appendChild(emptyTd);
+            tbody.appendChild(emptyTr);
+            return;
+          }
+          rows.forEach(function (b) {
+            var tr = document.createElement("tr");
+            function cell(text, mono) {
+              var td = document.createElement("td");
+              if (mono) td.className = "mono";
+              td.textContent = text == null ? "" : String(text);
+              tr.appendChild(td);
+            }
+            cell(b.id || "", true);
+            cell(b.name || "", false);
+            cell((b.types || []).join(", "), true);
+            cell(b.target_ref || "", true);
+            cell(b.head_version != null ? b.head_version : "", true);
+            tbody.appendChild(tr);
+          });
+        })
+        .catch(function () {
+          tbody.textContent = "";
+          var tr = document.createElement("tr");
+          var td = document.createElement("td");
+          td.colSpan = 5;
+          td.className = "empty";
+          td.textContent = "Failed to load library.";
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        });
+    })();
+    </script>
     {% endif %}
   </main>
 

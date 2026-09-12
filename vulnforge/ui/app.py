@@ -559,6 +559,10 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
     app.state.project_root = PROJECT_ROOT
     app.state.config = cfg
 
+    from vulnforge.benchmarks.api import router as benchmarks_api
+
+    app.include_router(benchmarks_api)
+
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -659,7 +663,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
     @app.get("/benchmarks/library", response_class=HTMLResponse)
     def benchmarks_library_page(request: Request):
-        """Bench desk: Library (stub)."""
+        """Bench desk: Library (lists defs from /api/benchmarks)."""
         return TEMPLATES.TemplateResponse(
             request,
             "benchmarks.html",
