@@ -2,7 +2,7 @@
 
 Durable store under ``<project>/benchmarks/library/`` (not ``project/``).
 Seeded from ``fixtures/ground_truth/*.json`` (hunt) and
-``fixtures/benchmarks/*.json`` (recon / finding_report).
+``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev).
 """
 
 from __future__ import annotations
@@ -233,7 +233,28 @@ def _normalize_oracle(raw: object, *, default_type: str = "hunt") -> dict[str, A
                 out[key] = deepcopy(raw[key]) if isinstance(raw[key], (dict, list)) else raw[key]
         return out
 
-    # poc_dev (and any future): keep opaque body minus unknown stripping of findings
+    if otype == "poc_dev":
+        for key in (
+            "pack_files",
+            "expected_pack_files",
+            "poc_run",
+            "signal",
+            "network",
+        ):
+            if key in raw:
+                out[key] = (
+                    deepcopy(raw[key]) if isinstance(raw[key], (dict, list)) else raw[key]
+                )
+        # Preserve any extra opaque keys (workshop may extend)
+        for key, val in raw.items():
+            if key in out or key == "type":
+                continue
+            out[key] = deepcopy(val) if isinstance(val, (dict, list)) else val
+        if "network" not in out:
+            out["network"] = "none"
+        return out
+
+    # future types: keep opaque body
     for key, val in raw.items():
         if key == "type":
             continue
@@ -465,9 +486,9 @@ def _seed_payload_from_bench_fixture(path: Path) -> tuple[dict[str, Any], dict[s
     if not isinstance(raw, dict):
         raise BenchmarkLibraryError(f"bench fixture must be object: {path}")
     otype = str(raw.get("type") or "").strip().lower()
-    if otype not in {"recon", "finding_report"}:
+    if otype not in {"recon", "finding_report", "poc_dev"}:
         raise BenchmarkLibraryError(
-            f"bench fixture {path.name} type must be recon or finding_report"
+            f"bench fixture {path.name} type must be recon, finding_report, or poc_dev"
         )
     oracle_ref = _rel_to_project(path)
     target_ref = str(raw.get("target") or "").strip()
@@ -495,7 +516,7 @@ def seed_from_ground_truth(
     missing_only: bool = True,
     root: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Import GT hunt benches + fixtures/benchmarks recon/finding_report defs.
+    """Import GT hunt benches + fixtures/benchmarks recon/finding_report/poc_dev defs.
 
     Default is skip-if-exists (``missing_only=True``): never duplicates or
     overwrites operator edits. Pass ``missing_only=False`` only to fill an

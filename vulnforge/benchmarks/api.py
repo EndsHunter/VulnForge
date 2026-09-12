@@ -7,6 +7,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from vulnforge.benchmarks.poc_workshop import run_poc_workshop
 from vulnforge.benchmarks.runner import run_benchmark
 from vulnforge.benchmarks.runs import (
     BenchmarkRunError,
@@ -46,6 +47,12 @@ class BenchmarkRunBody(BaseModel):
     def_id: str
     version: Optional[int] = None
     types: Optional[list[str]] = None
+    mode: Optional[str] = "mechanical"
+
+
+class PocWorkshopRunBody(BaseModel):
+    def_id: str
+    version: Optional[int] = None
     mode: Optional[str] = "mechanical"
 
 
@@ -134,6 +141,28 @@ def api_benchmark_runs_create(body: BenchmarkRunBody):
             def_id=body.def_id,
             version=body.version,
             types=body.types,
+            mode=body.mode or "mechanical",
+        )
+        return {"ok": True, "run": run}
+    except BenchmarkRunError as e:
+        raise _http_run(e) from e
+    except BenchmarkLibraryError as e:
+        raise _http_lib(e) from e
+
+
+@router.post("/poc/runs")
+def api_benchmark_poc_runs_create(body: PocWorkshopRunBody):
+    """POC workshop: create + execute a ``poc_dev`` BenchmarkRun (isolated).
+
+    Sandbox under ``benchmarks/runs/<id>/sandbox/``; ``network: none``.
+    Never auto-confirms findings. Separate from Report ``#poc-modal``.
+    Run-page ``POST /api/benchmarks/runs`` still refuses ``poc_dev``.
+    """
+    try:
+        ensure_library()
+        run = run_poc_workshop(
+            def_id=body.def_id,
+            version=body.version,
             mode=body.mode or "mechanical",
         )
         return {"ok": True, "run": run}

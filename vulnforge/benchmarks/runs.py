@@ -89,8 +89,10 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-# Run-page runnable types (poc_dev refused on Run path).
+# Run-page runnable types (poc_dev refused on Run path — use POC workshop).
 RUNNABLE_TYPES = frozenset({"recon", "hunt", "finding_report"})
+# Types allowed on BenchmarkRun.types_run (includes workshop poc_dev).
+PERSISTED_TYPES = frozenset({"recon", "hunt", "finding_report", "poc_dev"})
 
 
 def _normalize_types_run(raw: object) -> list[str]:
@@ -108,8 +110,9 @@ def _normalize_types_run(raw: object) -> list[str]:
         key = str(t or "").strip().lower().replace(" ", "_")
         if not key or key in seen:
             continue
-        # poc_dev and unknown types are dropped (Run path refuses poc_dev)
-        if key not in RUNNABLE_TYPES:
+        # Unknown types dropped; poc_dev allowed for workshop runs only
+        # (Run path still refuses poc_dev before create_run).
+        if key not in PERSISTED_TYPES:
             continue
         seen.add(key)
         out.append(key)
