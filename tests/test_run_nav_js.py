@@ -44,6 +44,7 @@ def test_home_html_is_the_list():
     for html_id in (
         "btn-settings",
         "btn-open-dev",
+        "btn-open-benchmarks",
         "btn-open-tool-gaps",
         "home-search",
         "btn-new-run",

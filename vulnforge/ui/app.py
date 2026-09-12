@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -623,6 +623,47 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             request,
             "settings.html",
             {"runs_root": str(app.state.runs_root)},
+        )
+
+    @app.get("/benchmarks", response_class=HTMLResponse)
+    def benchmarks_root(request: Request):
+        """Bench desk hub — redirect to Run so /benchmarks lands on a page."""
+        return RedirectResponse(url="/benchmarks/run", status_code=307)
+
+    @app.get("/benchmarks/run", response_class=HTMLResponse)
+    def benchmarks_run_page(request: Request):
+        """Bench desk: Run (stub)."""
+        return TEMPLATES.TemplateResponse(
+            request,
+            "benchmarks.html",
+            {"runs_root": str(app.state.runs_root), "active": "run"},
+        )
+
+    @app.get("/benchmarks/poc", response_class=HTMLResponse)
+    def benchmarks_poc_page(request: Request):
+        """Bench desk: POC workshop (stub)."""
+        return TEMPLATES.TemplateResponse(
+            request,
+            "benchmarks.html",
+            {"runs_root": str(app.state.runs_root), "active": "poc"},
+        )
+
+    @app.get("/benchmarks/results", response_class=HTMLResponse)
+    def benchmarks_results_page(request: Request):
+        """Bench desk: Results (stub)."""
+        return TEMPLATES.TemplateResponse(
+            request,
+            "benchmarks.html",
+            {"runs_root": str(app.state.runs_root), "active": "results"},
+        )
+
+    @app.get("/benchmarks/library", response_class=HTMLResponse)
+    def benchmarks_library_page(request: Request):
+        """Bench desk: Library (stub)."""
+        return TEMPLATES.TemplateResponse(
+            request,
+            "benchmarks.html",
+            {"runs_root": str(app.state.runs_root), "active": "library"},
         )
 
     # ---------- API: operator AI chat ----------
