@@ -34,8 +34,8 @@
       <div>
         <h1>Benchmarks</h1>
         <p>
-          Bench desk: run suites, workshop POCs, review results, and browse the library.
-          Library store is live; runners and scorers come later.
+          Bench desk: run hunt suites (mechanical L0), review results, and browse the library.
+          Live LLM hunt is optional and off by default.
         </p>
       </div>
     </div>
@@ -58,10 +58,87 @@
     {% if active == 'run' %}
     <section class="card" id="bench-panel-run" data-bench-panel="run">
       <h2 style="margin-top:0">Run</h2>
-      <p class="controls-hint" style="margin:0">
-        Placeholder — pick a suite and kick off a bench run. Coming soon.
+      <p class="controls-hint">
+        Mechanical hunt: sink preindex → score_findings against the immutable oracle snapshot.
+        No live model required.
       </p>
+      <div class="controls" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0">
+        <label for="bench-run-def">Benchmark</label>
+        <select id="bench-run-def" class="mono" aria-label="Benchmark def">
+          <option value="">Loading…</option>
+        </select>
+        <button type="button" class="btn btn-primary" id="bench-run-mechanical">
+          Run mechanical
+        </button>
+      </div>
+      <pre id="bench-run-last" class="mono" style="white-space:pre-wrap;margin:0;min-height:4rem">No run yet.</pre>
     </section>
+    <script>
+    (function () {
+      if (document.body.getAttribute("data-bench-page") !== "run") return;
+      var sel = document.getElementById("bench-run-def");
+      var out = document.getElementById("bench-run-last");
+      var btn = document.getElementById("bench-run-mechanical");
+      if (!sel || !out || !btn) return;
+
+      function show(obj) {
+        out.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+      }
+
+      fetch("/api/benchmarks")
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var rows = ((data && data.benchmarks) || []).filter(function (b) {
+            return (b.types || []).indexOf("hunt") >= 0;
+          });
+          sel.textContent = "";
+          if (!rows.length) {
+            var opt = document.createElement("option");
+            opt.value = "";
+            opt.textContent = "No hunt benches";
+            sel.appendChild(opt);
+            return;
+          }
+          rows.forEach(function (b) {
+            var opt = document.createElement("option");
+            opt.value = b.id || "";
+            opt.textContent = (b.id || "") + " (v" + (b.head_version != null ? b.head_version : "?") + ")";
+            if (b.id === "toy_sqli") opt.selected = true;
+            sel.appendChild(opt);
+          });
+        })
+        .catch(function () {
+          sel.textContent = "";
+          var opt = document.createElement("option");
+          opt.value = "";
+          opt.textContent = "Failed to load";
+          sel.appendChild(opt);
+        });
+
+      btn.addEventListener("click", function () {
+        var defId = sel.value;
+        if (!defId) {
+          show("Pick a hunt benchmark first.");
+          return;
+        }
+        btn.disabled = true;
+        show("Running mechanical hunt for " + defId + "…");
+        fetch("/api/benchmarks/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ def_id: defId, types: ["hunt"], mode: "mechanical" })
+        })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
+          .then(function (res) {
+            show(res.body);
+          })
+          .catch(function (e) {
+            show("Request failed: " + e);
+          })
+          .finally(function () { btn.disabled = false; });
+      });
+    })();
+    </script>
     {% elif active == 'poc' %}
     <section class="card" id="bench-panel-poc" data-bench-panel="poc">
       <h2 style="margin-top:0">POC workshop</h2>
@@ -72,10 +149,81 @@
     {% elif active == 'results' %}
     <section class="card" id="bench-panel-results" data-bench-panel="results">
       <h2 style="margin-top:0">Results</h2>
-      <p class="controls-hint" style="margin:0">
-        Placeholder — scores and diffs from past bench runs. Coming soon.
+      <p class="controls-hint">
+        BenchmarkRun history (hunt). Metrics from score_findings; findings are never auto-confirmed.
       </p>
+      <div class="table-wrap">
+        <table class="data" id="bench-results-table">
+          <thead>
+            <tr>
+              <th>Id</th>
+              <th>Def</th>
+              <th>Ver</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Recall</th>
+            </tr>
+          </thead>
+          <tbody id="bench-results-body">
+            <tr><td colspan="6" class="empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
+    <script>
+    (function () {
+      if (document.body.getAttribute("data-bench-page") !== "results") return;
+      var tbody = document.getElementById("bench-results-body");
+      if (!tbody) return;
+      fetch("/api/benchmarks/runs")
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var rows = (data && data.runs) || [];
+          tbody.textContent = "";
+          if (!rows.length) {
+            var emptyTr = document.createElement("tr");
+            var emptyTd = document.createElement("td");
+            emptyTd.colSpan = 6;
+            emptyTd.className = "empty";
+            emptyTd.textContent = "No runs yet.";
+            emptyTr.appendChild(emptyTd);
+            tbody.appendChild(emptyTr);
+            return;
+          }
+          rows.forEach(function (r) {
+            var tr = document.createElement("tr");
+            function cell(text, mono) {
+              var td = document.createElement("td");
+              if (mono) td.className = "mono";
+              td.textContent = text == null ? "" : String(text);
+              tr.appendChild(td);
+            }
+            var m = r.metrics || {};
+            var recall = m.recall;
+            var recallText = (typeof recall === "number")
+              ? (Math.round(recall * 1000) / 10) + "%"
+              : "";
+            cell(r.id || "", true);
+            cell(r.def_id || "", true);
+            cell(r.version != null ? r.version : "", true);
+            cell((r.types_run || []).join(",") || "hunt", true);
+            cell(r.status || "", true);
+            cell(recallText, true);
+            tbody.appendChild(tr);
+          });
+        })
+        .catch(function () {
+          tbody.textContent = "";
+          var tr = document.createElement("tr");
+          var td = document.createElement("td");
+          td.colSpan = 6;
+          td.className = "empty";
+          td.textContent = "Failed to load runs.";
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        });
+    })();
+    </script>
     {% elif active == 'library' %}
     <section class="card" id="bench-panel-library" data-bench-panel="library">
       <h2 style="margin-top:0">Library</h2>

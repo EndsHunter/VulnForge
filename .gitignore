@@ -53,3 +53,7 @@ benchmark_results.json
 OPTIMIZATION_GUIDE.md
 README_SERVER.md
 requirements.txt
+
+# Benchmark desk durable data (seeded/local; never project/ projection)
+benchmarks/library/
+benchmarks/runs/
