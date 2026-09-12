@@ -74,3 +74,24 @@ def _isolate_hunt_profiles(tmp_path_factory, request):
         yield root
     finally:
         reset_collection_root_override()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_benchmarks_library(tmp_path_factory, request):
+    """Every test gets a fresh seeded bench library (never touch benchmarks/library/)."""
+    if request.node.get_closest_marker("no_bench_isolate"):
+        yield
+        return
+    from vulnforge.benchmarks import (
+        ensure_library,
+        reset_library_root_override,
+        set_library_root,
+    )
+
+    root = tmp_path_factory.mktemp("bench_library")
+    set_library_root(root)
+    ensure_library()
+    try:
+        yield root
+    finally:
+        reset_library_root_override()
