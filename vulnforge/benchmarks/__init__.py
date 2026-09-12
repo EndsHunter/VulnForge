@@ -31,6 +31,13 @@ from vulnforge.benchmarks.runs import (
     update_run,
 )
 from vulnforge.benchmarks.scorers import score_finding_report, score_recon
+from vulnforge.benchmarks.series import (
+    build_series,
+    compare_versions,
+    empty_side,
+    extract_score,
+    summarize_version,
+)
 from vulnforge.benchmarks.store import (
     BENCH_TYPES,
     BENCHMARK_FIXTURES_ROOT,
@@ -63,9 +70,13 @@ __all__ = [
     "TERMINAL_STATUSES",
     "BenchmarkLibraryError",
     "BenchmarkRunError",
+    "build_series",
+    "compare_versions",
     "create_def",
     "create_run",
     "delete_def",
+    "empty_side",
+    "extract_score",
     "ensure_library",
     "get_def",
     "get_run",
@@ -86,6 +97,7 @@ __all__ = [
     "seed_from_ground_truth",
     "set_library_root",
     "set_runs_root",
+    "summarize_version",
     "update_def",
     "update_run",
 ]
