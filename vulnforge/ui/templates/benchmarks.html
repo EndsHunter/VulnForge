@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Benchmarks | VulnForge</title>
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="apple-touch-icon" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body data-page="benchmarks" data-bench-page="{{ active }}">
+  <header class="app-header">
+    <div class="brand">
+      <a href="/" class="home-link" title="Home — all runs">
+        <img class="logo" src="/static/logo-128.png" width="32" height="32" alt="" />
+        <div>
+          VulnForge
+          <div class="sub">Benchmarks</div>
+        </div>
+      </a>
+    </div>
+    <div class="header-actions">
+      <a class="btn btn-primary home-btn" href="/" title="Home">⌂ Home</a>
+      <a class="btn" href="/settings">⚙ Settings</a>
+      <a class="btn" href="/dev">Dev</a>
+      <a class="btn" href="/benchmarks" aria-current="page">Benchmarks</a>
+      <span class="controls-hint mono">{{ runs_root }}</span>
+    </div>
+  </header>
+
+  <main class="main benchmarks-page">
+    <div class="page-hero">
+      <div>
+        <h1>Benchmarks</h1>
+        <p>
+          Bench desk: run suites, workshop POCs, review results, and browse the library.
+          Stub shell — runners and store come later.
+        </p>
+      </div>
+    </div>
+
+    <nav class="tabs bench-subnav" aria-label="Bench desk">
+      <a class="tab{% if active == 'run' %} active{% endif %}"
+         href="/benchmarks/run"
+         {% if active == 'run' %}aria-current="page"{% endif %}>Run</a>
+      <a class="tab{% if active == 'poc' %} active{% endif %}"
+         href="/benchmarks/poc"
+         {% if active == 'poc' %}aria-current="page"{% endif %}>POC workshop</a>
+      <a class="tab{% if active == 'results' %} active{% endif %}"
+         href="/benchmarks/results"
+         {% if active == 'results' %}aria-current="page"{% endif %}>Results</a>
+      <a class="tab{% if active == 'library' %} active{% endif %}"
+         href="/benchmarks/library"
+         {% if active == 'library' %}aria-current="page"{% endif %}>Library</a>
+    </nav>
+
+    {% if active == 'run' %}
+    <section class="card" id="bench-panel-run" data-bench-panel="run">
+      <h2 style="margin-top:0">Run</h2>
+      <p class="controls-hint" style="margin:0">
+        Placeholder — pick a suite and kick off a bench run. Coming soon.
+      </p>
+    </section>
+    {% elif active == 'poc' %}
+    <section class="card" id="bench-panel-poc" data-bench-panel="poc">
+      <h2 style="margin-top:0">POC workshop</h2>
+      <p class="controls-hint" style="margin:0">
+        Placeholder — craft and iterate proof-of-concept cases. Coming soon.
+      </p>
+    </section>
+    {% elif active == 'results' %}
+    <section class="card" id="bench-panel-results" data-bench-panel="results">
+      <h2 style="margin-top:0">Results</h2>
+      <p class="controls-hint" style="margin:0">
+        Placeholder — scores and diffs from past bench runs. Coming soon.
+      </p>
+    </section>
+    {% elif active == 'library' %}
+    <section class="card" id="bench-panel-library" data-bench-panel="library">
+      <h2 style="margin-top:0">Library</h2>
+      <p class="controls-hint" style="margin:0">
+        Placeholder — shared suites, fixtures, and case packs. Coming soon.
+      </p>
+    </section>
+    {% endif %}
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+</body>
+</html>
