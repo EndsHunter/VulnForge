@@ -1,7 +1,8 @@
 """Filesystem JSON library of BenchmarkDef heads + immutable versions.
 
 Durable store under ``<project>/benchmarks/library/`` (not ``project/``).
-Seeded once from ``fixtures/ground_truth/*.json`` as hunt benches.
+Seeded from ``fixtures/ground_truth/*.json`` (hunt) and
+``fixtures/benchmarks/*.json`` (recon / finding_report).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from vulnforge.util import utc_now_iso
 
 COLLECTION_FORMAT = "vulnforge.benchmark_library/v1"
 DEFAULT_LIBRARY_ROOT = PROJECT_ROOT / "benchmarks" / "library"
+BENCHMARK_FIXTURES_ROOT = PROJECT_ROOT / "fixtures" / "benchmarks"
 BENCH_TYPES = frozenset({"recon", "hunt", "finding_report", "poc_dev"})
 # Underscore allowed so GT stems (toy_sqli, mono_synth) are valid ids.
 DEF_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -174,16 +176,69 @@ def _normalize_overlay(raw: object) -> dict[str, Any] | str:
 
 
 def _normalize_oracle(raw: object, *, default_type: str = "hunt") -> dict[str, Any]:
+    """Normalize oracle envelope; preserve type-specific bodies.
+
+    Hunt keeps ``findings[]``. Recon / finding_report keep architecture /
+    report expectation fields (components, required_fields, etc.). Shared
+    keys: ``type``, optional ``id`` / ``target`` / ``schema_version``.
+    """
     if not isinstance(raw, dict):
         return {"type": default_type, "findings": []}
-    findings = raw.get("findings")
-    if not isinstance(findings, list):
-        findings = []
     otype = str(raw.get("type") or default_type).strip().lower() or default_type
     if otype not in BENCH_TYPES:
         otype = default_type
-    clean = [f for f in findings if isinstance(f, dict)]
-    return {"type": otype, "findings": clean}
+
+    out: dict[str, Any] = {"type": otype}
+    for shared in ("id", "target", "schema_version", "description"):
+        if shared in raw and raw.get(shared) is not None:
+            out[shared] = raw.get(shared)
+
+    if otype == "hunt":
+        findings = raw.get("findings")
+        if not isinstance(findings, list):
+            findings = []
+        out["findings"] = [f for f in findings if isinstance(f, dict)]
+        return out
+
+    if otype == "recon":
+        # Expected architecture signals (scored mechanically, not exploit proof).
+        for key in (
+            "components",
+            "expected_components",
+            "require_relations",
+            "require_trust_boundaries",
+            "architecture_ref",
+            "architecture_path",
+            "relations",
+            "trust_boundaries",
+        ):
+            if key in raw:
+                out[key] = deepcopy(raw[key]) if isinstance(raw[key], (dict, list)) else raw[key]
+        if "components" not in out and isinstance(raw.get("findings"), list):
+            # tolerate mistaken findings-shaped payloads
+            out["components"] = []
+        return out
+
+    if otype == "finding_report":
+        for key in (
+            "required_fields",
+            "expected_fields",
+            "min_citation_density",
+            "honesty_labels",
+            "fixture_report_ref",
+            "report_ref",
+            "fixture_report",
+        ):
+            if key in raw:
+                out[key] = deepcopy(raw[key]) if isinstance(raw[key], (dict, list)) else raw[key]
+        return out
+
+    # poc_dev (and any future): keep opaque body minus unknown stripping of findings
+    for key, val in raw.items():
+        if key == "type":
+            continue
+        out[key] = deepcopy(val) if isinstance(val, (dict, list)) else val
+    return out
 
 
 def oracle_snapshot_hash(oracle: dict[str, Any]) -> str:
@@ -199,12 +254,23 @@ def _load_oracle_from_ref(oracle_ref: str) -> dict[str, Any]:
     if not Path(ref).is_absolute():
         candidates.append(PROJECT_ROOT / ref)
     for p in candidates:
-        if p.is_file():
-            try:
-                gt = load_ground_truth(p)
-                return _normalize_oracle({"type": "hunt", "findings": gt.get("findings")})
-            except (OSError, ValueError, json.JSONDecodeError):
-                break
+        if not p.is_file():
+            continue
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            break
+        if not isinstance(raw, dict):
+            break
+        otype = str(raw.get("type") or "").strip().lower()
+        if otype in BENCH_TYPES and otype != "hunt":
+            return _normalize_oracle(raw, default_type=otype)
+        # Hunt / ground_truth shape (findings[] without type)
+        try:
+            gt = load_ground_truth(p)
+            return _normalize_oracle({"type": "hunt", "findings": gt.get("findings")})
+        except (OSError, ValueError, json.JSONDecodeError):
+            return _normalize_oracle(raw, default_type="hunt")
     try:
         gt = load_ground_truth(ref)
         return _normalize_oracle({"type": "hunt", "findings": gt.get("findings")})
@@ -351,13 +417,24 @@ def _gt_seed_candidates() -> list[Path]:
     return sorted(p for p in GROUND_TRUTH_ROOT.glob("*.json") if p.is_file())
 
 
+def _bench_fixture_seed_candidates() -> list[Path]:
+    """Top-level ``fixtures/benchmarks/*.json`` only (not reports/architecture)."""
+    if not BENCHMARK_FIXTURES_ROOT.is_dir():
+        return []
+    return sorted(p for p in BENCHMARK_FIXTURES_ROOT.glob("*.json") if p.is_file())
+
+
+def _rel_to_project(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(PROJECT_ROOT.resolve()))
+    except ValueError:
+        return str(path)
+
+
 def _seed_payload_from_gt(path: Path) -> tuple[dict[str, Any], dict[str, Any], str]:
     bid = _validate_id(path.stem)
     gt = load_ground_truth(path)
-    try:
-        oracle_ref = str(path.resolve().relative_to(PROJECT_ROOT.resolve()))
-    except ValueError:
-        oracle_ref = str(path)
+    oracle_ref = _rel_to_project(path)
     target_ref = str(gt.get("target") or "").strip()
     desc = str(gt.get("description") or "").strip()
     name = bid
@@ -378,12 +455,47 @@ def _seed_payload_from_gt(path: Path) -> tuple[dict[str, Any], dict[str, Any], s
     return defn, oracle, notes
 
 
+def _seed_payload_from_bench_fixture(path: Path) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Build def + oracle from a type-specific fixtures/benchmarks/*.json."""
+    bid = _validate_id(path.stem)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise BenchmarkLibraryError(f"corrupt bench fixture {path}: {e}") from e
+    if not isinstance(raw, dict):
+        raise BenchmarkLibraryError(f"bench fixture must be object: {path}")
+    otype = str(raw.get("type") or "").strip().lower()
+    if otype not in {"recon", "finding_report"}:
+        raise BenchmarkLibraryError(
+            f"bench fixture {path.name} type must be recon or finding_report"
+        )
+    oracle_ref = _rel_to_project(path)
+    target_ref = str(raw.get("target") or "").strip()
+    desc = str(raw.get("description") or "").strip()
+    name = bid
+    if desc and len(desc) <= MAX_NAME:
+        name = desc
+    oracle = _normalize_oracle(raw, default_type=otype)
+    notes = f"seed from {oracle_ref}"
+    defn = {
+        "id": bid,
+        "name": name,
+        "types": [otype],
+        "target_ref": target_ref[:MAX_REF],
+        "oracle_ref": oracle_ref[:MAX_REF],
+        "config_overlay": {},
+        "tags": ["seed", otype],
+        "source": "seed",
+    }
+    return defn, oracle, notes
+
+
 def seed_from_ground_truth(
     *,
     missing_only: bool = True,
     root: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Import each ``fixtures/ground_truth/*.json`` as a hunt BenchmarkDef.
+    """Import GT hunt benches + fixtures/benchmarks recon/finding_report defs.
 
     Default is skip-if-exists (``missing_only=True``): never duplicates or
     overwrites operator edits. Pass ``missing_only=False`` only to fill an
@@ -399,31 +511,51 @@ def seed_from_ground_truth(
     seeded: list[str] = []
     skipped: list[str] = []
     now = utc_now_iso()
-    for path in _gt_seed_candidates():
+
+    def _ingest(path: Path, payload_fn) -> None:
+        nonlocal by_id, seeded, skipped
         try:
             bid = _validate_id(path.stem)
         except BenchmarkLibraryError:
-            continue
+            return
         if bid in by_id and missing_only:
             skipped.append(bid)
-            continue
-        defn, oracle, notes = _seed_payload_from_gt(path)
+            return
+        try:
+            defn, oracle, notes = payload_fn(path)
+        except BenchmarkLibraryError:
+            return
         defn["created_at"] = now
         defn["updated_at"] = now
         defn["head_version"] = 1
         public = _public_def(defn)
         by_id[bid] = public
-        _write_version(
-            _build_version_snapshot(public, oracle, version=1, notes=notes),
-            root=root,
-        )
+        try:
+            _write_version(
+                _build_version_snapshot(public, oracle, version=1, notes=notes),
+                root=root,
+            )
+        except BenchmarkLibraryError as e:
+            # Version file may already exist when re-seeding after partial write;
+            # skip if immutable file present and missing_only.
+            if "immutable version exists" in str(e) and missing_only:
+                skipped.append(bid)
+                return
+            raise
         seeded.append(bid)
+
+    for path in _gt_seed_candidates():
+        _ingest(path, _seed_payload_from_gt)
+    for path in _bench_fixture_seed_candidates():
+        _ingest(path, _seed_payload_from_bench_fixture)
+
     # Preserve existing order; append new seed ids alpha.
     order = [d["id"] for d in coll["defs"] if d["id"] in by_id]
     for bid in sorted(by_id):
         if bid not in order:
             order.append(bid)
     coll["defs"] = [by_id[i] for i in order]
+    coll["seeded_from"] = "fixtures/ground_truth+fixtures/benchmarks"
     _write_collection(coll, root=root)
     return {
         "ok": True,
@@ -435,7 +567,7 @@ def seed_from_ground_truth(
 
 
 def ensure_library(root: Optional[Path] = None) -> dict[str, Any]:
-    """Load the library, seeding from ground_truth when collection is missing.
+    """Load the library, seeding from ground_truth + bench fixtures when missing.
 
     First init (no ``collection.json``) imports every GT file. Later
     ``ensure_library`` calls only load — use ``seed_from_ground_truth`` /

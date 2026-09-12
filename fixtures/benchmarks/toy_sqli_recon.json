@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "toy_sqli_recon",
+  "target": "fixtures/toy_sqli",
+  "type": "recon",
+  "description": "Mechanical recon bench: component/path_hint presence + relations/trust_boundaries keys.",
+  "components": [
+    {
+      "name": "app",
+      "path_hints": ["app.py"]
+    }
+  ],
+  "require_relations": true,
+  "require_trust_boundaries": true,
+  "architecture_ref": "fixtures/benchmarks/architecture/toy_sqli.json"
+}
