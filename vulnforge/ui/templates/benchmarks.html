@@ -61,6 +61,7 @@
       <p class="controls-hint">
         Mechanical benches: hunt (sink preindex → score_findings), recon (architecture signals),
         finding_report (required fields / citation density / honesty labels).
+        Dropdown suites run every hunt, recon, or finding_report def as one request.
         No live model required. poc_dev is not available here.
       </p>
       <div class="controls" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0">
@@ -100,6 +101,21 @@
         return (b.types || []).filter(function (t) { return RUNNABLE[t]; });
       }
 
+      function countType(type) {
+        return allRows.filter(function (b) {
+          return runnableTypes(b).indexOf(type) >= 0;
+        }).length;
+      }
+
+      function addSuite(group, value, label, types) {
+        var opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = label;
+        opt.setAttribute("data-suite", "1");
+        opt.setAttribute("data-types", types);
+        group.appendChild(opt);
+      }
+
       function fillDefs() {
         var want = typeFilter ? typeFilter.value : "";
         var rows = allRows.filter(function (b) {
@@ -109,13 +125,48 @@
           return rt.indexOf(want) >= 0;
         });
         sel.textContent = "";
+        var suiteGroup = document.createElement("optgroup");
+        suiteGroup.label = "Suites";
+        if (!want || want === "hunt") {
+          var nHunt = countType("hunt");
+          if (nHunt) addSuite(suiteGroup, "all-hunt", "All hunts (" + nHunt + ")", "hunt");
+        }
+        if (!want || want === "recon") {
+          var nRecon = countType("recon");
+          if (nRecon) addSuite(suiteGroup, "all-recon", "All recons (" + nRecon + ")", "recon");
+        }
+        if (!want || want === "finding_report") {
+          var nRep = countType("finding_report");
+          if (nRep) {
+            addSuite(
+              suiteGroup,
+              "all-finding_report",
+              "All finding_report (" + nRep + ")",
+              "finding_report"
+            );
+          }
+        }
+        if (!want && allRows.length) {
+          addSuite(
+            suiteGroup,
+            "all-runnable",
+            "All hunts, recons, finding_report (" + allRows.length + ")",
+            "hunt,recon,finding_report"
+          );
+        }
+        if (suiteGroup.childNodes.length) sel.appendChild(suiteGroup);
+
         if (!rows.length) {
-          var opt = document.createElement("option");
-          opt.value = "";
-          opt.textContent = "No matching benches";
-          sel.appendChild(opt);
+          if (!suiteGroup.childNodes.length) {
+            var empty = document.createElement("option");
+            empty.value = "";
+            empty.textContent = "No matching benches";
+            sel.appendChild(empty);
+          }
           return;
         }
+        var defGroup = document.createElement("optgroup");
+        defGroup.label = "Benchmarks";
         rows.forEach(function (b) {
           var opt = document.createElement("option");
           opt.value = b.id || "";
@@ -124,8 +175,9 @@
             + (b.head_version != null ? b.head_version : "?") + ")";
           opt.setAttribute("data-types", types);
           if (b.id === "toy_sqli" || b.id === "toy_sqli_recon") opt.selected = true;
-          sel.appendChild(opt);
+          defGroup.appendChild(opt);
         });
+        sel.appendChild(defGroup);
       }
 
       fetch("/api/benchmarks")
@@ -155,10 +207,11 @@
           return;
         }
         var opt = sel.options[sel.selectedIndex];
+        var isSuite = opt && opt.getAttribute("data-suite") === "1";
         var typeStr = (opt && opt.getAttribute("data-types")) || "";
         var types = typeStr.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
         var want = typeFilter ? typeFilter.value : "";
-        if (want) {
+        if (want && !isSuite) {
           types = types.filter(function (t) { return t === want; });
         }
         if (!types.length) {
@@ -166,11 +219,13 @@
           return;
         }
         btn.disabled = true;
+        var payload = { def_id: defId, types: types, mode: "mechanical" };
+        if (isSuite) payload.suite = true;
         show("Running mechanical (" + types.join(",") + ") for " + defId + "…");
         fetch("/api/benchmarks/runs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ def_id: defId, types: types, mode: "mechanical" })
+          body: JSON.stringify(payload)
         })
           .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
           .then(function (res) {
@@ -464,6 +519,13 @@
         var parts = [];
         var bt = m.bench_type || "";
         if (bt) parts.push(bt);
+        if (m.suite) {
+          parts.push("suite");
+          if (m.count != null) {
+            parts.push(String(m.passed_count != null ? m.passed_count : "?") + "/"
+              + String(m.count));
+          }
+        }
         if (typeof m.recall === "number") {
           parts.push((Math.round(m.recall * 1000) / 10) + "%");
         }

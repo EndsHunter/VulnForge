@@ -24,6 +24,7 @@ from vulnforge.benchmarks.store import (
     BenchmarkLibraryError,
     get_def,
     get_version,
+    list_defs,
 )
 from vulnforge.eval.recall import score_findings
 from vulnforge.paths import PROJECT_ROOT
@@ -33,6 +34,15 @@ from vulnforge.tools.sink_preindex import build_sink_preindex
 # Simple pass bar: any positive recall (or empty oracle catalog scores as pass).
 PASS_RECALL_BAR = 0.0  # passed when recall > PASS_RECALL_BAR, or oracle_count==0
 PASS_SCORE_BAR = 0.0
+
+# Synthetic Run-page ids: one click runs every library def of that type.
+SUITE_TYPE_ORDER = ("hunt", "recon", "finding_report")
+SUITE_DEF_IDS: dict[str, tuple[str, ...]] = {
+    "all-hunt": ("hunt",),
+    "all-recon": ("recon",),
+    "all-finding_report": ("finding_report",),
+    "all-runnable": SUITE_TYPE_ORDER,
+}
 
 
 def _resolve_target(target_ref: str) -> Path:
@@ -189,6 +199,163 @@ def _score_type(
     if bench_type == "finding_report":
         return score_finding_report(None, oracle, target=target)
     raise BenchmarkRunError(f"unsupported run type: {bench_type}")
+
+
+def suite_types_for(def_id: str) -> Optional[tuple[str, ...]]:
+    """Return suite types for a synthetic ``all-*`` def id, else None."""
+    bid = str(def_id or "").strip().lower()
+    return SUITE_DEF_IDS.get(bid)
+
+
+def defs_for_suite(types: list[str]) -> list[tuple[dict[str, Any], list[str]]]:
+    """Library defs that declare at least one of ``types``, with the intersection.
+
+    Sorted by def id. ``poc_dev`` is never included.
+    """
+    want = [t for t in SUITE_TYPE_ORDER if t in {str(x).strip().lower() for x in types}]
+    if not want:
+        want = [t for t in types if str(t).strip().lower() in RUNNABLE_TYPES]
+        want = [str(t).strip().lower() for t in want]
+    out: list[tuple[dict[str, Any], list[str]]] = []
+    for d in list_defs():
+        declared = [str(t).strip().lower() for t in (d.get("types") or [])]
+        match = [t for t in want if t in declared]
+        if match:
+            out.append((d, match))
+    out.sort(key=lambda pair: str(pair[0].get("id") or ""))
+    return out
+
+
+def _suite_def_id(types: list[str]) -> str:
+    key = tuple(t for t in SUITE_TYPE_ORDER if t in types)
+    for sid, mapped in SUITE_DEF_IDS.items():
+        if tuple(mapped) == key:
+            return sid
+    return "all-runnable"
+
+
+def _member_score(metrics: dict[str, Any]) -> Optional[float]:
+    if not isinstance(metrics, dict):
+        return None
+    if metrics.get("score") is not None:
+        try:
+            return float(metrics["score"])
+        except (TypeError, ValueError):
+            return None
+    if metrics.get("recall") is not None:
+        try:
+            return float(metrics["recall"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def run_benchmark_suite(
+    *,
+    types: Optional[list[str]] = None,
+    mode: str = "mechanical",
+) -> dict[str, Any]:
+    """Run every library def that declares one of ``types`` (mechanical L0).
+
+    Persists one parent BenchmarkRun (``all-hunt`` / ``all-recon`` /
+    ``all-finding_report`` / ``all-runnable``) plus a child run per member.
+    Parent ``metrics.members`` lists each child id/status/score. Never
+    auto-confirms findings. ``poc_dev`` is excluded.
+    """
+    raw = [str(t).strip().lower().replace(" ", "_") for t in (types or []) if str(t).strip()]
+    if any(t == "poc_dev" for t in raw):
+        raise BenchmarkRunError(
+            "poc_dev is not supported on the Run path (use POST /api/benchmarks/poc/runs)"
+        )
+    types_n = [t for t in SUITE_TYPE_ORDER if t in set(raw)]
+    if not types_n:
+        if raw:
+            raise BenchmarkRunError(
+                f"unsupported suite types {raw!r}; allow recon|hunt|finding_report"
+            )
+        types_n = list(SUITE_TYPE_ORDER)
+
+    mode_n = str(mode or "mechanical").strip().lower()
+    if mode_n not in ("mechanical", "live"):
+        raise BenchmarkRunError("mode must be 'mechanical' or 'live'")
+
+    members = defs_for_suite(types_n)
+    if not members:
+        raise BenchmarkRunError(
+            "no matching benchmarks for suite types " + ",".join(types_n)
+        )
+
+    suite_id = _suite_def_id(types_n)
+    parent = create_run(
+        def_id=suite_id,
+        version=1,
+        types_run=types_n,
+        mode=mode_n,
+        target_ref="",
+        oracle_hash="",
+        status="running",
+    )
+    rid = parent["id"]
+
+    rows: list[dict[str, Any]] = []
+    for defn, member_types in members:
+        bid = str(defn.get("id") or "")
+        child = run_benchmark(
+            def_id=bid,
+            types=member_types,
+            mode=mode_n,
+        )
+        metrics = child.get("metrics") if isinstance(child.get("metrics"), dict) else {}
+        rows.append(
+            {
+                "def_id": bid,
+                "run_id": child.get("id"),
+                "status": child.get("status"),
+                "types_run": list(child.get("types_run") or member_types),
+                "score": _member_score(metrics),
+                "recall": metrics.get("recall"),
+                "error": child.get("error"),
+            }
+        )
+
+    n = len(rows)
+    n_pass = sum(1 for r in rows if r.get("status") == "passed")
+    n_fail = sum(1 for r in rows if r.get("status") == "failed")
+    n_err = sum(1 for r in rows if r.get("status") == "error")
+    scores = [float(r["score"]) for r in rows if r.get("score") is not None]
+    if n_pass == n and n > 0:
+        status = "passed"
+    elif n_err == n:
+        status = "error"
+    else:
+        status = "failed"
+
+    parent_metrics: dict[str, Any] = {
+        "suite": True,
+        "mode": mode_n,
+        "types_run": list(types_n),
+        "count": n,
+        "passed_count": n_pass,
+        "failed_count": n_fail,
+        "error_count": n_err,
+        "score": round(sum(scores) / len(scores), 4) if scores else 0.0,
+        "passed": status == "passed",
+        "confirmed": False,
+        "members": rows,
+        "member_run_ids": [r.get("run_id") for r in rows],
+        "by_def": {str(r["def_id"]): r for r in rows if r.get("def_id")},
+    }
+    err_msg = None
+    if n_err:
+        sample = [str(r.get("def_id")) for r in rows if r.get("status") == "error"][:8]
+        err_msg = f"{n_err}/{n} members error" + (": " + ", ".join(sample) if sample else "")
+    return update_run(
+        rid,
+        status=status,
+        metrics=parent_metrics,
+        error=err_msg,
+        harness_run_dir=None,
+    )
 
 
 def run_benchmark(

@@ -23,9 +23,13 @@ from vulnforge.benchmarks.poc_workshop import (
     score_poc_dev,
 )
 from vulnforge.benchmarks.runner import (
+    SUITE_DEF_IDS,
+    defs_for_suite,
     mechanical_hunt_score,
     run_benchmark,
+    run_benchmark_suite,
     run_hunt,
+    suite_types_for,
 )
 from vulnforge.benchmarks.runs import (
     PERSISTED_TYPES,
@@ -108,8 +112,12 @@ __all__ = [
     "run_pack_subprocess",
     "run_poc_workshop",
     "score_poc_dev",
+    "SUITE_DEF_IDS",
+    "defs_for_suite",
     "run_benchmark",
+    "run_benchmark_suite",
     "run_hunt",
+    "suite_types_for",
     "runs_root",
     "score_finding_report",
     "score_recon",

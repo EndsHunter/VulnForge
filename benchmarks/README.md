@@ -39,7 +39,10 @@ See `fixtures/benchmarks/README.md` for oracle shapes.
 ## Runs
 
 `POST /api/benchmarks/runs` accepts types `recon` | `hunt` | `finding_report`
-(not `poc_dev`). Mechanical mode only for now:
+(not `poc_dev`). Mechanical mode only for now. Suite ids `all-hunt` /
+`all-recon` / `all-finding_report` / `all-runnable` (or `suite: true` +
+`types`) run every matching library def as one parent BenchmarkRun plus a
+child per def. The Run dropdown lists those suites at the top.
 
 | Type | Scorer |
 |------|--------|
@@ -60,7 +63,7 @@ See `fixtures/benchmarks/README.md` for oracle shapes.
 | GET    | `/api/benchmarks/{id}/versions/{n}` | frozen snapshot (immutable) |
 | POST   | `/api/benchmarks/seed` | missing-only GT + VulnGym slice + bench fixture import |
 | GET    | `/api/benchmarks/runs` | list runs (filters/sort) |
-| POST   | `/api/benchmarks/runs` | create + execute (mechanical) |
+| POST   | `/api/benchmarks/runs` | create + execute (mechanical; `all-*` / `suite` = type suite) |
 | GET    | `/api/benchmarks/runs/series` | score-over-time points (`def_id`, optional `type`) |
 | GET    | `/api/benchmarks/runs/{id}` | run detail + type metrics |
 | GET    | `/api/benchmarks/compare` | version A vs B (`def_id`, `version_a`, `version_b`, optional `type`) |

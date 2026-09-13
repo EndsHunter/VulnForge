@@ -8,7 +8,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from vulnforge.benchmarks.poc_workshop import run_poc_workshop
-from vulnforge.benchmarks.runner import run_benchmark
+from vulnforge.benchmarks.runner import (
+    SUITE_DEF_IDS,
+    run_benchmark,
+    run_benchmark_suite,
+    suite_types_for,
+)
 from vulnforge.benchmarks.runs import (
     BenchmarkRunError,
     get_run,
@@ -44,10 +49,11 @@ class BenchmarkBody(BaseModel):
 
 
 class BenchmarkRunBody(BaseModel):
-    def_id: str
+    def_id: Optional[str] = None
     version: Optional[int] = None
     types: Optional[list[str]] = None
     mode: Optional[str] = "mechanical"
+    suite: bool = False
 
 
 class PocWorkshopRunBody(BaseModel):
@@ -134,11 +140,30 @@ def api_benchmark_runs_create(body: BenchmarkRunBody):
     """Create + execute a bench run (recon|hunt|finding_report; sync mechanical).
 
     ``poc_dev`` is refused. Default types = all runnable types on the snapshot.
+
+    Suite: ``def_id`` of ``all-hunt`` / ``all-recon`` / ``all-finding_report`` /
+    ``all-runnable``, or ``suite=true`` with ``types``. Runs every matching
+    library def as one parent BenchmarkRun plus per-def children.
     """
     try:
         ensure_library()
+        suite_types = suite_types_for(body.def_id or "")
+        if suite_types is None and body.suite:
+            suite_types = tuple(body.types or []) or tuple(SUITE_DEF_IDS["all-runnable"])
+        if suite_types is not None:
+            run = run_benchmark_suite(
+                types=list(suite_types),
+                mode=body.mode or "mechanical",
+            )
+            return {"ok": True, "suite": True, "run": run}
+        if not (body.def_id or "").strip():
+            raise HTTPException(
+                400,
+                "def_id is required (or suite=true / all-hunt|all-recon|"
+                "all-finding_report|all-runnable)",
+            )
         run = run_benchmark(
-            def_id=body.def_id,
+            def_id=body.def_id or "",
             version=body.version,
             types=body.types,
             mode=body.mode or "mechanical",

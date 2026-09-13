@@ -95,6 +95,11 @@ def test_run_and_results_page_hooks():
         assert 'id="bench-run-mechanical"' in run_page.text
         assert 'id="bench-run-def"' in run_page.text
         assert "/api/benchmarks/runs" in run_page.text
+        assert "all-hunt" in run_page.text
+        assert "all-recon" in run_page.text
+        assert "all-finding_report" in run_page.text
+        assert "all-runnable" in run_page.text
+        assert 'data-suite' in run_page.text
 
         results = client.get("/benchmarks/results")
         assert results.status_code == 200
@@ -206,3 +211,107 @@ def test_results_detail_route_and_list_prove():
         assert 'id="bench-detail-body"' in page.text
         assert f"/api/benchmarks/runs/{rid}" in page.text or "/api/benchmarks/runs/" in page.text
         assert 'id="bench-results-back"' in page.text
+
+
+def test_defs_for_suite_excludes_poc_dev():
+    from vulnforge.benchmarks import defs_for_suite, list_defs
+
+    hunts = defs_for_suite(["hunt"])
+    recons = defs_for_suite(["recon"])
+    reports = defs_for_suite(["finding_report"])
+    runnable = defs_for_suite(["hunt", "recon", "finding_report"])
+    hunt_ids = [d["id"] for d, _ in hunts]
+    recon_ids = [d["id"] for d, _ in recons]
+    report_ids = [d["id"] for d, _ in reports]
+    assert "toy_sqli" in hunt_ids
+    assert "toy_sqli_recon" in recon_ids
+    assert "toy_sqli_finding_report" in report_ids
+    assert "toy_poc_dev" not in hunt_ids
+    assert "toy_poc_dev" not in recon_ids
+    assert "toy_poc_dev" not in report_ids
+    by_id = {d["id"]: d for d in list_defs()}
+    for bid in hunt_ids:
+        assert "hunt" in (by_id[bid].get("types") or [])
+    assert {d["id"] for d, _ in runnable} == (
+        set(hunt_ids) | set(recon_ids) | set(report_ids)
+    )
+
+
+def test_api_suite_all_recon_one_parent_plus_children():
+    """All recons is one parent run; each recon def is a child."""
+    from vulnforge.benchmarks import defs_for_suite
+
+    app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/benchmarks/runs",
+            json={"def_id": "all-recon", "types": ["recon"], "mode": "mechanical"},
+        )
+        assert created.status_code == 200, created.text
+        body = created.json()
+        assert body["ok"]
+        assert body.get("suite") is True
+        run = body["run"]
+        assert run["def_id"] == "all-recon"
+        assert run["types_run"] == ["recon"]
+        metrics = run["metrics"]
+        assert metrics.get("suite") is True
+        expect = [d["id"] for d, _ in defs_for_suite(["recon"])]
+        assert metrics["count"] == len(expect)
+        members = metrics.get("members") or []
+        got = [m["def_id"] for m in members]
+        assert got == sorted(expect)
+        assert "toy_sqli_recon" in got
+        assert run["status"] == "passed"
+        assert metrics["passed_count"] == len(expect)
+        assert metrics.get("confirmed") is False
+        child_ids = metrics.get("member_run_ids") or []
+        assert len(child_ids) == len(expect)
+        listed = client.get("/api/benchmarks/runs").json()["runs"]
+        listed_ids = {r["id"] for r in listed}
+        assert run["id"] in listed_ids
+        for cid in child_ids:
+            assert cid in listed_ids
+            detail = client.get(f"/api/benchmarks/runs/{cid}")
+            assert detail.status_code == 200
+            child = detail.json()["run"]
+            assert child["status"] == "passed"
+            assert "recon" in child["types_run"]
+
+
+def test_api_suite_all_hunt_includes_toy_and_flag():
+    from vulnforge.benchmarks import defs_for_suite
+
+    app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/benchmarks/runs",
+            json={"def_id": "all-hunt", "suite": True, "mode": "mechanical"},
+        )
+        assert created.status_code == 200, created.text
+        run = created.json()["run"]
+        assert run["def_id"] == "all-hunt"
+        metrics = run["metrics"]
+        expect = {d["id"] for d, _ in defs_for_suite(["hunt"])}
+        got = {m["def_id"] for m in (metrics.get("members") or [])}
+        assert got == expect
+        assert "toy_sqli" in got
+        toy = metrics["by_def"]["toy_sqli"]
+        assert toy["status"] == "passed"
+        assert toy.get("recall") is not None and toy["recall"] > 0
+        assert metrics.get("confirmed") is False
+
+
+def test_api_suite_true_without_def_id():
+    app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/benchmarks/runs",
+            json={"suite": True, "types": ["finding_report"], "mode": "mechanical"},
+        )
+        assert created.status_code == 200, created.text
+        run = created.json()["run"]
+        assert run["def_id"] == "all-finding_report"
+        assert run["metrics"].get("suite") is True
+        ids = [m["def_id"] for m in run["metrics"]["members"]]
+        assert "toy_sqli_finding_report" in ids
