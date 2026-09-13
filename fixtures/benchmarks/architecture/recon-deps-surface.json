@@ -11,7 +11,7 @@
     {
       "name": "requirements",
       "path_hints": [
-        "requirements.txt"
+        "deps/pip-requirements.txt"
       ],
       "role": "pip requirements"
     },

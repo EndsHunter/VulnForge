@@ -140,4 +140,4 @@ def test_empty_or_missing_architecture_fails_require_keys():
     assert missing_ref["relations_ok"] is False
     assert missing_ref["trust_boundaries_ok"] is False
     assert missing_ref["passed"] is False
-    assert missing_ref.get("architecture_source") in {"synthesize", "unknown"} or True
+    assert missing_ref.get("architecture_source") in {"synthesize", "unknown", None} or "architecture" in missing_ref
