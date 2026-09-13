@@ -1,0 +1,52 @@
+{
+  "summary": "Mechanical recon: multi-package layout (core + util + adapter).",
+  "components": [
+    {
+      "name": "core",
+      "path_hints": [
+        "pkg_core/service.py"
+      ],
+      "role": "domain core"
+    },
+    {
+      "name": "util",
+      "path_hints": [
+        "pkg_util/helpers.py"
+      ],
+      "role": "shared helpers"
+    },
+    {
+      "name": "adapter",
+      "path_hints": [
+        "pkg_adapter/http.py"
+      ],
+      "role": "HTTP adapter"
+    }
+  ],
+  "trust_boundaries": [
+    {
+      "id": "http-to-adapter",
+      "from": "untrusted_client",
+      "to": "adapter",
+      "notes": "external HTTP into adapter pkg"
+    }
+  ],
+  "relations": [
+    {
+      "from": "adapter",
+      "to": "core",
+      "kind": "uses"
+    },
+    {
+      "from": "core",
+      "to": "util",
+      "kind": "uses"
+    }
+  ],
+  "input_surfaces": [
+    "HTTP body"
+  ],
+  "hunt_focus": [
+    "injection"
+  ]
+}

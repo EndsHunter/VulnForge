@@ -1,0 +1,55 @@
+{
+  "summary": "Mechanical recon: SPA frontend + backend API pair.",
+  "components": [
+    {
+      "name": "spa",
+      "path_hints": [
+        "frontend/app.js"
+      ],
+      "role": "SPA shell"
+    },
+    {
+      "name": "api_client",
+      "path_hints": [
+        "frontend/api_client.js"
+      ],
+      "role": "browser API client"
+    },
+    {
+      "name": "backend_api",
+      "path_hints": [
+        "backend/api.py"
+      ],
+      "role": "backend API"
+    }
+  ],
+  "trust_boundaries": [
+    {
+      "id": "browser-to-backend",
+      "from": "spa",
+      "to": "backend_api",
+      "notes": "browser origin to API"
+    }
+  ],
+  "relations": [
+    {
+      "from": "spa",
+      "to": "api_client",
+      "kind": "uses"
+    },
+    {
+      "from": "api_client",
+      "to": "backend_api",
+      "kind": "calls",
+      "notes": "XHR/fetch to backend"
+    }
+  ],
+  "input_surfaces": [
+    "fetch paths",
+    "DOM"
+  ],
+  "hunt_focus": [
+    "xss",
+    "csrf"
+  ]
+}

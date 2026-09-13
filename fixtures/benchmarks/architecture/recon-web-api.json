@@ -1,0 +1,55 @@
+{
+  "summary": "Mechanical recon: web API router + handlers surface.",
+  "components": [
+    {
+      "name": "api_server",
+      "path_hints": [
+        "api/server.py"
+      ],
+      "role": "HTTP entry"
+    },
+    {
+      "name": "routes",
+      "path_hints": [
+        "api/routes.py"
+      ],
+      "role": "route table"
+    },
+    {
+      "name": "handlers",
+      "path_hints": [
+        "api/handlers.py"
+      ],
+      "role": "request handlers"
+    }
+  ],
+  "trust_boundaries": [
+    {
+      "id": "client-to-api",
+      "from": "untrusted_client",
+      "to": "api_server",
+      "notes": "HTTP crosses into API"
+    }
+  ],
+  "relations": [
+    {
+      "from": "api_server",
+      "to": "routes",
+      "kind": "uses",
+      "notes": "server mounts route table"
+    },
+    {
+      "from": "routes",
+      "to": "handlers",
+      "kind": "calls",
+      "notes": "routes dispatch to handlers"
+    }
+  ],
+  "input_surfaces": [
+    "HTTP paths /users /health"
+  ],
+  "hunt_focus": [
+    "injection",
+    "authn"
+  ]
+}

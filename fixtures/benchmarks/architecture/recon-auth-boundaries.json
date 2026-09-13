@@ -1,0 +1,59 @@
+{
+  "summary": "Mechanical recon: auth middleware vs protected handlers.",
+  "components": [
+    {
+      "name": "auth_middleware",
+      "path_hints": [
+        "auth/middleware.py"
+      ],
+      "role": "auth gate"
+    },
+    {
+      "name": "session",
+      "path_hints": [
+        "auth/session.py"
+      ],
+      "role": "session store"
+    },
+    {
+      "name": "protected_handlers",
+      "path_hints": [
+        "app/handlers.py"
+      ],
+      "role": "authenticated handlers"
+    }
+  ],
+  "trust_boundaries": [
+    {
+      "id": "public-to-auth",
+      "from": "untrusted_client",
+      "to": "auth_middleware",
+      "notes": "token presented at gate"
+    },
+    {
+      "id": "auth-to-app",
+      "from": "auth_middleware",
+      "to": "protected_handlers",
+      "notes": "only authenticated traffic"
+    }
+  ],
+  "relations": [
+    {
+      "from": "auth_middleware",
+      "to": "session",
+      "kind": "uses"
+    },
+    {
+      "from": "auth_middleware",
+      "to": "protected_handlers",
+      "kind": "guards"
+    }
+  ],
+  "input_surfaces": [
+    "Authorization token"
+  ],
+  "hunt_focus": [
+    "authz",
+    "session"
+  ]
+}

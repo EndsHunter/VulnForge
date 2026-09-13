@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "recon-cli-tool",
+  "target": "fixtures/recon_benches/recon-cli-tool",
+  "type": "recon",
+  "description": "Mechanical recon: CLI entry + arg parser surface.",
+  "components": [
+    {
+      "name": "cli_main",
+      "path_hints": [
+        "cli/main.py"
+      ]
+    },
+    {
+      "name": "arg_parser",
+      "path_hints": [
+        "cli/args.py"
+      ]
+    },
+    {
+      "name": "commands",
+      "path_hints": [
+        "cli/commands.py"
+      ]
+    }
+  ],
+  "require_relations": true,
+  "require_trust_boundaries": true,
+  "architecture_ref": "fixtures/benchmarks/architecture/recon-cli-tool.json"
+}
