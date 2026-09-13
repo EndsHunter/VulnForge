@@ -14,8 +14,10 @@ This tree holds **type-specific** oracles for mechanical bench desk runs:
 | `toy_sqli_recon.json` | `recon` | `fixtures/toy_sqli` | Expected components / path_hints; requires `relations` + `trust_boundaries` keys |
 | `recon-*.json` (9) | `recon` | `fixtures/recon_benches/<id>` | Library expansion recon×10 seeds (web-api, cli-tool, auth-boundaries, multi-pkg, queue-worker, spa-backend, native-parser, monorepo-shallow, deps-surface) |
 | `toy_sqli_finding_report.json` | `finding_report` | `fixtures/toy_sqli` | Required report fields, min citation density, honesty labels; embeds / refs a fixture report |
+| `report-*.json` (10) | `finding_report` | toy / pe tree / `fixtures/report_benches/vg-*` | Report-writing pack: variants `gold` / `overclaim` / `vacuous_tm` + `expect_pass`; paired toy_sqli, pe-sql/pe-jwt, VulnGym 00319/00080/00447 |
 | `toy_poc_dev.json` | `poc_dev` | `fixtures/toy_sqli` | Pack file expectations + `poc_run.json` (`ok` / `signal` / `network: none`); workshop only |
 | `reports/toy_sqli_report.json` | (input) | — | Deterministic finding report JSON for `score_finding_report` (no live hunt) |
+| `reports/report-*.json` (10) | (input) | — | Report-pack fixture bodies (gold honest / overclaim inflated / vacuous threat_model) |
 | `architecture/*.json` | (input) | — | Architecture oracles for recon scoring (`components` / `relations` / `trust_boundaries`) |
 
 Shared oracle envelope: `id`, `target`, `schema_version`, `type`.
@@ -29,3 +31,10 @@ under `reports/` are inputs, not defs.
 **poc_dev:** run via POC workshop (`POST /api/benchmarks/poc/runs`), not the
 Run page. Harness uses an isolated sandbox + subprocess with `network: none`
 (no live-net PoC; never auto-confirms findings).
+
+**Report-writing pack scoring:** `score_finding_report` metrics include
+`variant`, `expect_pass`, and `accepted`. BenchmarkRun `status` is `passed`
+when `accepted == expect_pass` (golds must be accepted; overclaim / vacuous_tm
+must be rejected). Overclaim signals: CRITICAL/HIGH without concrete impact,
+missing honesty labels, or fabricated citation paths under the target.
+Vacuous_tm: empty / placeholder `threat_model` attacker|boundary|impact.

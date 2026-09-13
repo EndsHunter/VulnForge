@@ -5,7 +5,8 @@ architecture_ref), else synthesizes component path_hint signals from
 filesystem / codemap heuristics (relations / trust_boundaries stay empty
 so require_* fails without a real architecture). Finding_report scores a
 fixture report JSON against required fields / citation density /
-honesty labels.
+honesty labels, plus report-pack variant checks (gold / overclaim /
+vacuous_tm) with ``accepted`` vs ``expect_pass``.
 """
 
 from __future__ import annotations
@@ -348,20 +349,248 @@ def _honesty_hits(report: dict[str, Any], wanted: list[str]) -> tuple[int, int]:
     return hits, len(wanted)
 
 
+# Vacuous threat_model tokens (mirrors validate_mech floor, kept local / mechanical).
+_VACUOUS_TM_TOKENS: frozenset[str] = frozenset(
+    {
+        "n/a",
+        "na",
+        "none",
+        "unknown",
+        "tbd",
+        "todo",
+        "tbc",
+        "-",
+        "—",
+        ".",
+        "see summary",
+        "see above",
+        "same",
+        "various",
+        "misc",
+        "other",
+        "general",
+        "security issue",
+        "security risk",
+        "security concern",
+        "vulnerability",
+        "potential issue",
+        "potential risk",
+        "potential security issue",
+        "could be bad",
+        "could potentially",
+        "might be vulnerable",
+        "may be vulnerable",
+    }
+)
+
+_IMPACT_CONCRETE_HINTS: tuple[str, ...] = (
+    "rce",
+    "remote code",
+    "code exec",
+    "code execution",
+    "command injection",
+    "shell",
+    "auth",
+    "bypass",
+    "privilege",
+    "escalat",
+    "secret",
+    "credential",
+    "password",
+    "token",
+    "session",
+    "leak",
+    "exfil",
+    "inject",
+    "sql",
+    "xss",
+    "ssrf",
+    "path traversal",
+    "arbitrary",
+    "unauthorized",
+    "unauthenticated",
+    "cross-user",
+    "cross user",
+    "tenant",
+    "idor",
+    "overwrite",
+    "delete",
+    "modify",
+    "read ",
+    "write ",
+    "forge",
+    "spoof",
+    "dos",
+    "denial",
+    "crash",
+)
+
+
+def _norm_tm_field(value: object) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _threat_model_ok(report: dict[str, Any]) -> tuple[bool, str]:
+    """Reject empty / placeholder threat_model (vacuous_tm variant fails here)."""
+    tm = report.get("threat_model")
+    if not isinstance(tm, dict) or not tm:
+        return False, "missing_threat_model"
+    attacker = _norm_tm_field(tm.get("attacker"))
+    boundary = _norm_tm_field(tm.get("boundary"))
+    impact = _norm_tm_field(tm.get("impact"))
+    if not attacker or attacker in _VACUOUS_TM_TOKENS or len(attacker) < 8:
+        return False, "vacuous_attacker"
+    if not boundary or boundary in _VACUOUS_TM_TOKENS or len(boundary) < 8:
+        return False, "vacuous_boundary"
+    if not impact or impact in _VACUOUS_TM_TOKENS or len(impact) < 16:
+        return False, "vacuous_impact"
+    for snip in (
+        "could be bad",
+        "could potentially",
+        "potential security issue",
+        "potential security risk",
+        "might be vulnerable",
+        "may be vulnerable",
+    ):
+        if snip in impact:
+            return False, "vacuous_impact"
+    return True, ""
+
+
+def _citation_paths_exist(
+    report: dict[str, Any],
+    target: Path | None,
+) -> tuple[bool, list[str]]:
+    """Return (all_ok, missing_paths). Skips check when target is unavailable."""
+    if target is None or not target.is_dir():
+        return True, []
+    cites = report.get("citations")
+    if not isinstance(cites, list):
+        return True, []
+    missing: list[str] = []
+    for c in cites:
+        if not isinstance(c, dict):
+            continue
+        path = str(c.get("path") or "").strip()
+        if not path:
+            continue
+        if not _path_exists_under(target, path):
+            missing.append(path)
+    return (len(missing) == 0), missing
+
+
+def _overclaim_flags(
+    report: dict[str, Any],
+    oracle: dict[str, Any],
+    *,
+    target: Path | None,
+    honesty_recall: float,
+    honesty_total: int,
+    density: float,
+    min_density: float,
+) -> list[str]:
+    """Detect inflated severity / honesty gaps / fabricated citation paths.
+
+    Used so overclaim variants fail ``accepted`` while golds stay clean.
+    """
+    flags: list[str] = []
+    sev = str(report.get("severity_claim") or "").strip().upper()
+    tm = report.get("threat_model") if isinstance(report.get("threat_model"), dict) else {}
+    impact = _norm_tm_field(tm.get("impact") if isinstance(tm, dict) else "")
+
+    # CRITICAL/HIGH without concrete impact hints → overclaim-ish severity.
+    if sev in ("CRITICAL", "HIGH"):
+        if not any(h in impact for h in _IMPACT_CONCRETE_HINTS):
+            flags.append("severity_without_concrete_impact")
+        # CRITICAL with weak citation density is an overclaim signal.
+        if sev == "CRITICAL" and density < max(min_density, 1.0):
+            flags.append("critical_weak_citations")
+
+    # Required honesty labels missing (oracle asks for them).
+    if honesty_total > 0 and honesty_recall < 1.0:
+        labels_raw = report.get("honesty_labels")
+        if not labels_raw:
+            flags.append("honesty_labels_missing")
+        else:
+            flags.append("honesty_labels_incomplete")
+
+    paths_ok, missing = _citation_paths_exist(report, target)
+    if not paths_ok:
+        flags.append("fabricated_citation_path")
+        # keep metric detail elsewhere; missing list returned via caller if needed
+
+    return flags
+
+
 def score_finding_report(
     report_or_fixture: dict[str, Any] | Path | str | None,
     oracle: dict[str, Any],
+    *,
+    target: Path | str | None = None,
 ) -> dict[str, Any]:
-    """Mechanical finding_report checks: fields, citation density, honesty labels."""
+    """Mechanical finding_report checks: fields, citations, honesty, variants.
+
+    Metrics always include ``variant``, ``expect_pass``, and ``accepted``.
+    Terminal ``passed`` is True iff ``accepted == expect_pass``:
+
+    - **gold** (expect_pass true): honest complete report → accepted true → passed
+    - **overclaim** / **vacuous_tm** (expect_pass false): scorer must reject
+      (accepted false) → passed true when rejection works; if a bad report is
+      wrongly accepted, passed is false
+
+    Overclaim signals: CRITICAL/HIGH without concrete impact, missing honesty
+    labels when required, or citation paths that do not exist under ``target``.
+    Vacuous_tm: empty / placeholder threat_model attacker|boundary|impact.
+    """
     oracle = oracle if isinstance(oracle, dict) else {}
     report = _load_report(report_or_fixture, oracle)
+    variant = str(oracle.get("variant") or "").strip().lower()
+    expect_pass = oracle.get("expect_pass")
+    if expect_pass is None:
+        expect_pass = True
+    else:
+        expect_pass = bool(expect_pass)
+
+    tpath: Path | None = None
+    if target is not None:
+        if isinstance(target, Path):
+            tpath = target if target.is_dir() else None
+        else:
+            resolved = _resolve_path(str(target))
+            if resolved is not None and resolved.is_dir():
+                tpath = resolved
+            else:
+                # target may be a directory path that exists but _resolve_path
+                # only returns files/dirs that exist — also try Path directly
+                p = Path(str(target))
+                if not p.is_absolute():
+                    p2 = PROJECT_ROOT / str(target)
+                    if p2.is_dir():
+                        tpath = p2.resolve()
+                elif p.is_dir():
+                    tpath = p.resolve()
+    if tpath is None:
+        # fall back to oracle.target when present
+        ot = oracle.get("target")
+        if ot:
+            rp = _resolve_path(str(ot))
+            if rp is not None and rp.is_dir():
+                tpath = rp
+            else:
+                p2 = PROJECT_ROOT / str(ot)
+                if p2.is_dir():
+                    tpath = p2.resolve()
+
     if not report:
         return {
             "mode": "mechanical",
             "bench_type": "finding_report",
             "error": "fixture report not found",
             "score": 0.0,
-            "passed": False,
+            "variant": variant or None,
+            "expect_pass": expect_pass,
+            "accepted": False,
+            "passed": bool(False == expect_pass),
             "confirmed": False,
         }
 
@@ -389,18 +618,42 @@ def score_finding_report(
     honesty_hits, honesty_total = _honesty_hits(report, honesty_wanted)
     honesty_recall = (honesty_hits / honesty_total) if honesty_total else 1.0
 
-    parts = [field_recall, 1.0 if density_ok else 0.0, honesty_recall]
-    score = sum(parts) / len(parts)
-    passed = (
-        score > PASS_SCORE_BAR
-        and field_recall > 0
-        and density_ok
-        and (honesty_recall > 0 or honesty_total == 0)
+    tm_ok, tm_reason = _threat_model_ok(report)
+    o_flags = _overclaim_flags(
+        report,
+        oracle,
+        target=tpath,
+        honesty_recall=honesty_recall,
+        honesty_total=honesty_total,
+        density=density,
+        min_density=min_density,
     )
+    paths_ok, missing_paths = _citation_paths_exist(report, tpath)
+    overclaim_ok = len(o_flags) == 0
+
+    parts = [field_recall, 1.0 if density_ok else 0.0, honesty_recall]
+    parts.append(1.0 if tm_ok else 0.0)
+    parts.append(1.0 if overclaim_ok else 0.0)
+    score = sum(parts) / len(parts)
+
+    # accepted = report clears mechanical quality (independent of expect_pass)
+    accepted = (
+        field_recall >= 1.0
+        and density_ok
+        and (honesty_recall >= 1.0 or honesty_total == 0)
+        and tm_ok
+        and overclaim_ok
+        and score > PASS_SCORE_BAR
+    )
+    # BenchmarkRun status alignment: passed iff acceptance matches expectation
+    passed = accepted == expect_pass
 
     return {
         "mode": "mechanical",
         "bench_type": "finding_report",
+        "variant": variant or None,
+        "expect_pass": expect_pass,
+        "accepted": bool(accepted),
         "required_fields_hit": field_hits,
         "required_fields_count": field_total,
         "required_fields_recall": round(field_recall, 4),
@@ -410,6 +663,12 @@ def score_finding_report(
         "honesty_labels_hit": honesty_hits,
         "honesty_labels_count": honesty_total,
         "honesty_labels_recall": round(honesty_recall, 4),
+        "threat_model_ok": tm_ok,
+        "threat_model_reason": tm_reason or None,
+        "overclaim_ok": overclaim_ok,
+        "overclaim_flags": o_flags,
+        "citation_paths_ok": paths_ok,
+        "fabricated_citation_paths": missing_paths,
         "score": round(score, 4),
         "passed": bool(passed),
         "confirmed": False,

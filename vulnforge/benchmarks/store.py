@@ -230,6 +230,8 @@ def _normalize_oracle(raw: object, *, default_type: str = "hunt") -> dict[str, A
             "fixture_report_ref",
             "report_ref",
             "fixture_report",
+            "variant",
+            "expect_pass",
         ):
             if key in raw:
                 out[key] = deepcopy(raw[key]) if isinstance(raw[key], (dict, list)) else raw[key]
@@ -559,6 +561,14 @@ def _seed_payload_from_bench_fixture(path: Path) -> tuple[dict[str, Any], dict[s
         name = desc
     oracle = _normalize_oracle(raw, default_type=otype)
     notes = f"seed from {oracle_ref}"
+    tags: list[str] = ["seed", otype]
+    variant = str(raw.get("variant") or "").strip().lower()
+    if variant and variant not in tags:
+        tags.append(variant)
+    for t in raw.get("tags") or []:
+        ts = str(t).strip().lower()
+        if ts and ts not in tags:
+            tags.append(ts)
     defn = {
         "id": bid,
         "name": name,
@@ -566,7 +576,7 @@ def _seed_payload_from_bench_fixture(path: Path) -> tuple[dict[str, Any], dict[s
         "target_ref": target_ref[:MAX_REF],
         "oracle_ref": oracle_ref[:MAX_REF],
         "config_overlay": {},
-        "tags": ["seed", otype],
+        "tags": tags,
         "source": "seed",
     }
     return defn, oracle, notes

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "report-pe-sql-overclaim",
+  "target": "fixtures/profile_eval/tree",
+  "type": "finding_report",
+  "description": "Report pack overclaim: pe-sql inflated CRITICAL + fabricated path.",
+  "variant": "overclaim",
+  "expect_pass": false,
+  "required_fields": [
+    "title",
+    "summary",
+    "weakness_class",
+    "threat_model",
+    "citations",
+    "severity_claim"
+  ],
+  "min_citation_density": 1.0,
+  "honesty_labels": [
+    "severity_claim",
+    "needs_human"
+  ],
+  "fixture_report_ref": "fixtures/benchmarks/reports/report-pe-sql-overclaim.json",
+  "tags": [
+    "seed",
+    "finding_report",
+    "report-pack",
+    "overclaim",
+    "profile_eval",
+    "pe-sql"
+  ]
+}

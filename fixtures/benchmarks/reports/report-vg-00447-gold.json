@@ -1,0 +1,25 @@
+{
+  "title": "paperclip agent API key endpoints cross-tenant IDOR",
+  "summary": "Agent API key routes fail to enforce tenant isolation, allowing cross-tenant key read/modify (GHSA-47wq-cj9q-wpmp).",
+  "weakness_class": "access-control",
+  "threat_model": {
+    "attacker": "authenticated tenant user guessing peer agent ids",
+    "boundary": "HTTP agent API key routes \u2192 multi-tenant store",
+    "impact": "unauthorized cross-tenant credential leak and key overwrite via IDOR"
+  },
+  "citations": [
+    {
+      "path": "server/src/routes/agents.ts",
+      "start_line": 2218,
+      "end_line": 2230,
+      "symbol": "agentRoutes"
+    }
+  ],
+  "severity_claim": "HIGH",
+  "honesty_labels": [
+    "severity_claim",
+    "needs_human"
+  ],
+  "evidence_id": "fixture-report-vg-00447-gold",
+  "patch_sketch": "Scope agent lookups by tenant_id; deny cross-tenant ids."
+}

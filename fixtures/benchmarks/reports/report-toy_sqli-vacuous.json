@@ -1,0 +1,24 @@
+{
+  "title": "Possible issue in search",
+  "summary": "There may be a security concern related to the search feature in the application.",
+  "weakness_class": "injection",
+  "threat_model": {
+    "attacker": "n/a",
+    "boundary": "various",
+    "impact": "could be bad"
+  },
+  "citations": [
+    {
+      "path": "app.py",
+      "start_line": 10,
+      "end_line": 12,
+      "symbol": "search_users"
+    }
+  ],
+  "severity_claim": "MEDIUM",
+  "honesty_labels": [
+    "severity_claim",
+    "needs_human"
+  ],
+  "evidence_id": "fixture-report-toy-sqli-vacuous"
+}
