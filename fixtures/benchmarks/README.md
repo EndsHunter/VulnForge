@@ -1,6 +1,9 @@
 # Benchmark oracles (non-hunt types)
 
-Hunt benches continue to seed from `fixtures/ground_truth/*.json`.
+Hunt benches seed from `fixtures/ground_truth/*.json` (toy_sqli / mono_synth)
+and from `fixtures/vulngym/slice.json` (one hunt def per frozen finding, with
+`config_overlay.difficulty` and `oracle.findings` length 1). Checkout trees
+live under `.audit/vulngym/trees/{id}` (gitignored; not vendored).
 
 This tree holds **type-specific** oracles for mechanical bench desk runs:
 
@@ -14,9 +17,10 @@ This tree holds **type-specific** oracles for mechanical bench desk runs:
 Shared oracle envelope: `id`, `target`, `schema_version`, `type`.
 
 **Seed:** `ensure_library()` (empty collection) and `POST /api/benchmarks/seed`
-(`seed_from_ground_truth(missing_only=True)`) import missing ids from both
-`fixtures/ground_truth/` (hunt) and `fixtures/benchmarks/*.json` (recon /
-finding_report / poc_dev). Files under `reports/` are inputs, not defs.
+(`seed_from_ground_truth(missing_only=True)`) import missing ids from
+`fixtures/ground_truth/` (hunt), `fixtures/vulngym/slice.json` (16 hunt defs),
+and `fixtures/benchmarks/*.json` (recon / finding_report / poc_dev). Files
+under `reports/` are inputs, not defs.
 
 **poc_dev:** run via POC workshop (`POST /api/benchmarks/poc/runs`), not the
 Run page. Harness uses an isolated sandbox + subprocess with `network: none`

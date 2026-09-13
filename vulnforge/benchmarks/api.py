@@ -86,7 +86,7 @@ def api_benchmarks_list():
 
 @router.post("/seed")
 def api_benchmarks_seed():
-    """Import missing GT + fixtures/benchmarks defs — never clobber existing ids."""
+    """Import missing GT + VulnGym slice + bench-fixture defs — never clobber."""
     try:
         ensure_library()
         return seed_from_ground_truth(missing_only=True)

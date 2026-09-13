@@ -24,9 +24,41 @@ SLICE_IDS = (
     "entry-00462",  # onnx path/TOCTOU write
     "entry-00114",  # typescript-sdk shared transport race
     "entry-00447",  # paperclip cross-tenant IDOR
+    "entry-00097",  # AutoGPT agent-capability
+    "entry-00057",  # open-webui stored XSS
+    "entry-00332",  # trivy supply-chain
+    "entry-00058",  # milvus sourceID auth bypass
+    "entry-00066",  # langchain SSTI
+    "entry-00074",  # ollama missing authz
+    "entry-00061",  # Flowise email-change workflow
+    "entry-00171",  # mlflow hardcoded default creds
+    "entry-00359",  # n8n prototype pollution
+    "entry-00233",  # openclaw macOS agent allowlist
 )
 
 LINE_SLOP = 5
+
+_HARD_MARKERS = ("race", "toctou", "竞争")
+
+
+def difficulty_for_oracle(oracle: dict[str, Any]) -> str:
+    """Return ``easy`` / ``medium`` / ``hard`` for a VulnGym oracle finding.
+
+    Heuristic:
+    - hard if ``l2`` / ``class`` mentions race / TOCTOU / 竞争, or ``trace_len >= 8``
+    - easy if ``trace_len <= 3`` (short/clear sink) and not already hard
+    - else medium
+    """
+    blob = f"{oracle.get('l2') or ''} {oracle.get('class') or ''}".lower()
+    try:
+        trace_len = int(oracle.get("trace_len") or 0)
+    except (TypeError, ValueError):
+        trace_len = 0
+    if any(tok in blob for tok in _HARD_MARKERS) or trace_len >= 8:
+        return "hard"
+    if trace_len <= 3:
+        return "easy"
+    return "medium"
 
 
 def map_hunt_class(l1: str, l2: str) -> str:

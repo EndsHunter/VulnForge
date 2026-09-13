@@ -9,9 +9,11 @@ from fastapi.testclient import TestClient
 
 from vulnforge.benchmarks import (
     get_def,
+    list_defs,
     seed_from_ground_truth,
     update_def,
 )
+from vulnforge.eval.vulngym import SLICE_IDS
 from vulnforge.ui.app import create_app
 
 
@@ -137,6 +139,31 @@ def test_create_update_delete_and_versions_list():
         assert client.get("/api/benchmarks/custom_hunt").status_code == 404
 
 
+def test_seed_includes_vulngym_slice_hunts():
+    defs = list_defs()
+    hunt_ids = [d["id"] for d in defs if "hunt" in (d.get("types") or [])]
+    assert len(hunt_ids) >= 16
+    by_id = {d["id"]: d for d in defs}
+    for eid in SLICE_IDS:
+        assert eid in by_id, eid
+        row = get_def(eid)
+        overlay = row.get("config_overlay") or {}
+        assert overlay.get("difficulty") in {"easy", "medium", "hard"}
+        findings = (row.get("oracle") or {}).get("findings") or []
+        assert len(findings) == 1
+        assert findings[0].get("id") == eid
+        assert row["types"] == ["hunt"]
+        assert row["oracle_ref"] == "fixtures/vulngym/slice.json"
+        assert row["target_ref"] == f".audit/vulngym/trees/{eid}"
+        assert row["source"] == "seed"
+        tags = {str(t).lower() for t in (row.get("tags") or [])}
+        assert "seed" in tags
+        assert "vulngym" in tags
+        hunt_class = str(findings[0].get("class") or "").strip().lower()
+        if hunt_class:
+            assert hunt_class in tags
+
+
 def test_seed_endpoint_idempotent():
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
@@ -145,6 +172,8 @@ def test_seed_endpoint_idempotent():
         body = r.json()
         assert body["ok"]
         assert "toy_sqli" in body["skipped"]
+        for eid in SLICE_IDS:
+            assert eid in body["skipped"]
         assert body["seeded"] == []
 
 

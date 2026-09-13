@@ -30,6 +30,7 @@ if str(ROOT) not in sys.path:
 
 from vulnforge.eval.recall import load_ground_truth, score_findings
 from vulnforge.eval.vulngym import (
+    SLICE_IDS,
     SLICE_PATH,
     checkout_oracle,
     freeze_slice,
@@ -118,7 +119,7 @@ def sensitivity() -> dict[str, Any]:
         "empty_recall": empty["recall"],
         "perfect_recall": perfect["recall"],
         "oracle_count": len(oracles),
-        "ok": empty["recall"] == 0.0 and perfect["recall"] == 1.0 and len(oracles) == 6,
+        "ok": empty["recall"] == 0.0 and perfect["recall"] == 1.0 and len(oracles) == len(SLICE_IDS),
     }
 
 
@@ -432,7 +433,7 @@ def _dashboard_html(history: list[dict[str, Any]], latest: dict[str, Any]) -> st
 </head>
 <body>
 <h1>VulnGym hunt recall</h1>
-<p>Frozen 6-entry verified slice. One hunt per critical_operation file. Recall is path plus line plus or minus 5. GHSA text is not in the packet. Model is {MODEL_ID} at {MODEL_HOST}:{MODEL_PORT}.</p>
+<p>Frozen {len(SLICE_IDS)}-entry verified slice. One hunt per critical_operation file. Recall is path plus line plus or minus 5. GHSA text is not in the packet. Model is {MODEL_ID} at {MODEL_HOST}:{MODEL_PORT}.</p>
 <div class="row">
   <div class="card"><div>Latest recall</div><div class="num" id="latest">{recall_pct}</div></div>
   <div class="card"><div>Baseline</div><div class="num" id="base">{base_pct}</div></div>
