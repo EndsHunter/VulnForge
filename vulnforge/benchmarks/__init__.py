@@ -2,6 +2,7 @@
 
 First ``ensure_library()`` seeds from ``fixtures/ground_truth/*.json`` (hunt,
 including profile_eval ``pe-*`` one-finding defs),
+``fixtures/hunt_extra/*.json`` (micro-fixture hunts),
 ``fixtures/vulngym/slice.json`` (one hunt def per finding), and
 ``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev). Re-seed
 via ``seed_from_ground_truth(missing_only=True)`` / ``POST /api/benchmarks/seed``
@@ -52,6 +53,7 @@ from vulnforge.benchmarks.series import (
 from vulnforge.benchmarks.store import (
     BENCH_TYPES,
     BENCHMARK_FIXTURES_ROOT,
+    HUNT_EXTRA_ROOT,
     COLLECTION_FORMAT,
     DEF_ID_RE,
     BenchmarkLibraryError,
@@ -73,6 +75,7 @@ from vulnforge.benchmarks.store import (
 __all__ = [
     "BENCH_TYPES",
     "BENCHMARK_FIXTURES_ROOT",
+    "HUNT_EXTRA_ROOT",
     "COLLECTION_FORMAT",
     "DEF_ID_RE",
     "PERSISTED_TYPES",
