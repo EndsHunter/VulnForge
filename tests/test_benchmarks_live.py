@@ -164,6 +164,27 @@ def test_api_second_live_post_conflicts(monkeypatch):
         assert detail["run_id"] == run["id"]
 
 
+def test_api_active_lists_held_live_run(monkeypatch):
+    _llm_ok(monkeypatch)
+    _hold_live(monkeypatch)
+    app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
+    with TestClient(app) as client:
+        empty = client.get("/api/benchmarks/runs/active")
+        assert empty.status_code == 200, empty.text
+        assert empty.json()["runs"] == []
+        created = client.post(
+            "/api/benchmarks/runs",
+            json={"def_id": "toy_sqli", "types": ["hunt"], "mode": "live"},
+        )
+        assert created.status_code == 200, created.text
+        rid = created.json()["run"]["id"]
+        active = client.get("/api/benchmarks/runs/active")
+        assert active.status_code == 200, active.text
+        ids = [r["id"] for r in active.json()["runs"]]
+        assert rid in ids
+        assert all(r["status"] in {"queued", "running"} for r in active.json()["runs"])
+
+
 def test_live_refusal_and_hunt_hint_leak():
     assert live_refusal(types=["recon"], suite=False, def_id="toy_sqli_recon")
     assert "hunt" in (live_refusal(types=["recon"], suite=False, def_id="toy_sqli_recon") or "")

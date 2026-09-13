@@ -31,6 +31,7 @@ from vulnforge.benchmarks.runs import (
     BenchmarkRunError,
     create_run,
     get_run,
+    is_suite_run,
     list_runs,
     runs_root,
     update_run,
@@ -200,22 +201,52 @@ def _walk_leak_keys(obj: Any) -> str | None:
     return None
 
 
-def find_active_live_run() -> dict[str, Any] | None:
-    """First live BenchmarkRun still queued or running, preferring a suite parent."""
-    active: list[dict[str, Any]] = []
-    for row in list_runs(limit=500):
-        if row.get("mode") != "live":
-            continue
+def list_active_runs() -> list[dict[str, Any]]:
+    """Queued/running bench runs, suite parents first.
+
+    Live rows are reconciled so a dashboard restart can close or resume them.
+    Queued children of an active suite parent are omitted; a running child stays.
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    for status in ("running", "queued"):
+        for row in list_runs(status=status, limit=200):
+            rid = str(row.get("id") or "")
+            if rid:
+                seen[rid] = row
+    reconciled: list[dict[str, Any]] = []
+    for row in seen.values():
+        if row.get("mode") == "live" and row.get("status") in ("queued", "running"):
+            try:
+                row = reconcile_live_run(str(row["id"]))
+            except BenchmarkRunError:
+                continue
         if row.get("status") not in ("queued", "running"):
             continue
-        active.append(row)
-    if not active:
-        return None
-    for row in active:
-        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
-        if metrics.get("suite"):
+        reconciled.append(row)
+    parents = [r for r in reconciled if is_suite_run(r)]
+    children = [r for r in reconciled if not is_suite_run(r)]
+    member_ids: set[str] = set()
+    for parent in parents:
+        metrics = parent.get("metrics") if isinstance(parent.get("metrics"), dict) else {}
+        for cid in metrics.get("member_run_ids") or []:
+            if cid:
+                member_ids.add(str(cid))
+    children = [
+        c
+        for c in children
+        if str(c.get("id") or "") not in member_ids or c.get("status") == "running"
+    ]
+    parents.sort(key=lambda r: str(r.get("started_at") or ""), reverse=True)
+    children.sort(key=lambda r: str(r.get("started_at") or ""), reverse=True)
+    return parents + children
+
+
+def find_active_live_run() -> dict[str, Any] | None:
+    """First live BenchmarkRun still queued or running, preferring a suite parent."""
+    for row in list_active_runs():
+        if row.get("mode") == "live":
             return row
-    return active[0]
+    return None
 
 
 def start_live_run(
@@ -941,6 +972,7 @@ __all__ = [
     "enqueue_eval_hunt",
     "eval_runs_root_for",
     "find_active_live_run",
+    "list_active_runs",
     "hunt_hints_from_oracle",
     "live_refusal",
     "packet_leaks_oracle",

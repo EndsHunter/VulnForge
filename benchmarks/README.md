@@ -65,6 +65,7 @@ dropdown lists those suites at the top.
 | GET    | `/api/benchmarks/{id}/versions/{n}` | frozen snapshot (immutable) |
 | POST   | `/api/benchmarks/seed` | missing-only GT + VulnGym slice + bench fixture import |
 | GET    | `/api/benchmarks/runs` | list runs (filters/sort; `suite=true` = All hunts / All recons parents) |
+| GET    | `/api/benchmarks/runs/active` | queued/running (live reconciled; suite parents first) |
 | POST   | `/api/benchmarks/runs` | create + execute (mechanical sync; live hunt async; `all-*` / `suite` = type suite; live `only` subsets) |
 | GET    | `/api/benchmarks/runs/series` | score-over-time points (`def_id` including `all-hunt` / `all-recon`, optional `type`) |
 | POST   | `/api/benchmarks/runs/{id}/stop` | cancel a live run (stops Ralph; suite skips queued children) |

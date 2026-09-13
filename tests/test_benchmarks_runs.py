@@ -102,6 +102,8 @@ def test_run_and_results_page_hooks():
         assert run_page.status_code == 200
         assert 'id="bench-run-mechanical"' in run_page.text
         assert 'id="bench-run-live"' in run_page.text
+        assert 'id="bench-active"' in run_page.text
+        assert "/api/benchmarks/runs/active" in run_page.text
         assert 'mode: "live"' in run_page.text
         assert 'id="bench-run-def"' in run_page.text
         assert "/api/benchmarks/runs" in run_page.text

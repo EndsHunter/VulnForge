@@ -90,6 +90,31 @@
       </div>
       <pre id="bench-run-last" class="mono" style="white-space:pre-wrap;margin:0;min-height:4rem">No run yet.</pre>
     </section>
+    <section class="card" id="bench-active" data-bench-active="1">
+      <h2 style="margin-top:0">Active</h2>
+      <p class="controls-hint">
+        Live hunts that are queued or running. Survives a page refresh. Mechanical L0 finishes in the same request.
+        Stop cancels Ralph and marks the BenchmarkRun cancelled.
+      </p>
+      <div class="table-wrap">
+        <table class="data" id="bench-active-table">
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>Def</th>
+              <th>Phase</th>
+              <th>Progress</th>
+              <th>Status</th>
+              <th>Started</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="bench-active-body">
+            <tr><td colspan="7" class="empty">No live hunts running.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
     <script>
     (function () {
       if (document.body.getAttribute("data-bench-page") !== "run") return;
@@ -105,6 +130,7 @@
       var allRows = [];
       var pollTimer = null;
       var liveRunId = null;
+      var firstActiveId = null;
       var livePolling = false;
 
       function show(obj) {
@@ -216,7 +242,7 @@
 
       function syncLiveEnabled() {
         if (liveBtn) liveBtn.disabled = livePolling || !huntOnlySelected();
-        if (stopBtn) stopBtn.disabled = !livePolling;
+        if (stopBtn) stopBtn.disabled = !(livePolling || liveRunId || firstActiveId);
         btn.disabled = livePolling;
       }
 
@@ -242,6 +268,7 @@
                 liveRunId = null;
                 livePolling = false;
                 syncLiveEnabled();
+                loadActive();
                 return;
               }
               pollTimer = setTimeout(tick, 320);
@@ -359,16 +386,122 @@
       if (stopBtn) {
         stopBtn.addEventListener("click", function () {
           if (!liveRunId) return;
-          fetch("/api/benchmarks/runs/" + liveRunId + "/stop", { method: "POST" })
-            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
-            .then(function (res) {
-              show(res.body);
-            })
-            .catch(function (e) {
-              show("Stop failed: " + e);
-            });
+          stopLive(liveRunId);
         });
       }
+
+      var SUITE_LABELS = {
+        "all-hunt": "All hunts",
+        "all-recon": "All recons",
+        "all-finding_report": "All finding_report",
+        "all-runnable": "All hunts, recons, finding_report"
+      };
+      var activeBody = document.getElementById("bench-active-body");
+      var activeTimer = null;
+
+      function defLabel(id) {
+        var key = String(id || "");
+        return SUITE_LABELS[key] ? SUITE_LABELS[key] + " (" + key + ")" : key;
+      }
+
+      function shortTs(s) {
+        if (!s) return "";
+        return String(s).replace("T", " ").slice(0, 19);
+      }
+
+      function stopLive(id) {
+        if (!id) return;
+        fetch("/api/benchmarks/runs/" + encodeURIComponent(id) + "/stop", { method: "POST" })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
+          .then(function (res) {
+            show(res.body);
+            loadActive();
+          })
+          .catch(function (e) {
+            show("Stop failed: " + e);
+          });
+      }
+
+      function renderActive(rows) {
+        if (!activeBody) return;
+        activeBody.textContent = "";
+        firstActiveId = null;
+        if (!rows.length) {
+          var emptyTr = document.createElement("tr");
+          var emptyTd = document.createElement("td");
+          emptyTd.colSpan = 7;
+          emptyTd.className = "empty";
+          emptyTd.textContent = "No live hunts running.";
+          emptyTr.appendChild(emptyTd);
+          activeBody.appendChild(emptyTr);
+          if (!livePolling) {
+            liveRunId = null;
+            syncLiveEnabled();
+          }
+          return;
+        }
+        var liveRows = rows.filter(function (r) { return r.mode === "live"; });
+        if (liveRows.length && !liveRunId) liveRunId = liveRows[0].id;
+        firstActiveId = (liveRows[0] && liveRows[0].id) || (rows[0] && rows[0].id) || null;
+        syncLiveEnabled();
+        rows.forEach(function (r) {
+          var tr = document.createElement("tr");
+          tr.setAttribute("data-run-id", r.id || "");
+          var m = r.metrics || {};
+          var suite = !!m.suite || !!SUITE_LABELS[r.def_id];
+          var live = m.live || {};
+          function cell(text, mono) {
+            var td = document.createElement("td");
+            if (mono) td.className = "mono";
+            td.textContent = text == null ? "" : String(text);
+            tr.appendChild(td);
+          }
+          cell(suite ? "suite" : "def", false);
+          cell(defLabel(r.def_id), true);
+          cell(live.phase || "—", true);
+          var prog = "—";
+          if (m.count != null) {
+            prog = String(m.passed_count != null ? m.passed_count : "?") + "/" + String(m.count);
+          }
+          cell(prog, true);
+          cell(r.status || "", true);
+          cell(shortTs(r.started_at), true);
+          var actions = document.createElement("td");
+          if (r.mode === "live") {
+            var stop = document.createElement("button");
+            stop.type = "button";
+            stop.className = "btn";
+            stop.textContent = "Stop";
+            stop.addEventListener("click", function (ev) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              stopLive(r.id);
+            });
+            actions.appendChild(stop);
+          }
+          var open = document.createElement("a");
+          open.className = "btn";
+          open.href = "/benchmarks/results/" + encodeURIComponent(r.id || "");
+          open.textContent = "Open";
+          actions.appendChild(open);
+          tr.appendChild(actions);
+          activeBody.appendChild(tr);
+        });
+      }
+
+      function loadActive() {
+        fetch("/api/benchmarks/runs/active")
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            renderActive((data && data.runs) || []);
+          })
+          .catch(function () {
+            renderActive([]);
+          });
+      }
+
+      loadActive();
+      activeTimer = setInterval(loadActive, 1000);
     })();
     </script>
     {% elif active == 'poc' %}

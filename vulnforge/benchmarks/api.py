@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from vulnforge.benchmarks.live import (
     cancel_live_run,
     find_active_live_run,
+    list_active_runs,
     reconcile_live_run,
     start_live_run,
     start_live_suite,
@@ -282,6 +283,15 @@ def api_benchmark_runs_series(
         )
         payload = build_series(runs, def_id=bid, run_type=type)
         return {"ok": True, **payload}
+    except BenchmarkRunError as e:
+        raise _http_run(e) from e
+
+
+@router.get("/runs/active")
+def api_benchmark_runs_active():
+    """Queued and running bench runs (live rows reconciled). Suite parents first."""
+    try:
+        return {"ok": True, "runs": list_active_runs()}
     except BenchmarkRunError as e:
         raise _http_run(e) from e
 
