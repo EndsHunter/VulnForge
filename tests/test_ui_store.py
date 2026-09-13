@@ -352,3 +352,23 @@ def test_control_start_kwargs_empty_ui_fallbacks():
     assert kw["task_timeout"] == 900
     assert kw["max_iterations"] == 10_000
     assert kw["max_wall_seconds"] is None
+
+
+def test_pid_alive_false_for_zombie_child():
+    """Exited Ralph child must not count as alive (kill 0 is true for zombies)."""
+    import subprocess
+    import sys
+    import time
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "raise SystemExit(0)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        if runctl._pid_is_zombie(proc.pid) or proc.poll() is not None:
+            break
+        time.sleep(0.05)
+    assert runctl._pid_alive(proc.pid) is False
+    proc.wait(timeout=2)

@@ -36,6 +36,29 @@ def _meta_path(run_dir: Path) -> Path:
     return run_dir / META_NAME
 
 
+def _pid_is_zombie(pid: int) -> bool:
+    """True when /proc/pid is a zombie (kill 0 still succeeds)."""
+    if os.name == "nt" or pid <= 0:
+        return False
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+            rest = f.read().rsplit(")", 1)[-1].strip()
+    except OSError:
+        return False
+    return bool(rest) and rest[0] == "Z"
+
+
+def _reap_if_child(pid: int) -> None:
+    if os.name == "nt" or pid <= 0:
+        return
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return
+    except OSError:
+        return
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -53,6 +76,9 @@ def _pid_alive(pid: int) -> bool:
                 return True
             return False
         os.kill(pid, 0)
+        if _pid_is_zombie(pid):
+            _reap_if_child(pid)
+            return False
         return True
     except OSError:
         return False
