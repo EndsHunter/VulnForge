@@ -1,7 +1,9 @@
 # Benchmark oracles (non-hunt types)
 
 Hunt benches seed from `fixtures/ground_truth/*.json` (toy_sqli / mono_synth,
-plus profile_eval `pe-*` one-finding hunt defs) and from
+plus profile_eval `pe-*` one-finding hunt defs), from
+`fixtures/hunt_extra/*.json` (Juliet/CVE-shaped micro-fixtures; trees under
+`fixtures/hunt_extra/<id>/`), and from
 `fixtures/vulngym/slice.json` (one hunt def per frozen finding, with
 `config_overlay.difficulty` and `oracle.findings` length 1). `pe-*` files
 live under `fixtures/ground_truth/` (target `fixtures/profile_eval/tree`).
@@ -24,7 +26,8 @@ Shared oracle envelope: `id`, `target`, `schema_version`, `type`.
 
 **Seed:** `ensure_library()` (empty collection) and `POST /api/benchmarks/seed`
 (`seed_from_ground_truth(missing_only=True)`) import missing ids from
-`fixtures/ground_truth/` (hunt), `fixtures/vulngym/slice.json` (16 hunt defs),
+`fixtures/ground_truth/` (hunt), `fixtures/hunt_extra/*.json` (micro-fixture hunts),
+`fixtures/vulngym/slice.json` (16 hunt defs),
 and `fixtures/benchmarks/*.json` (recon / finding_report / poc_dev). Files
 under `reports/` are inputs, not defs.
 

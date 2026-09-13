@@ -2,6 +2,7 @@
 
 Durable store under ``<project>/benchmarks/library/`` (not ``project/``).
 Seeded from ``fixtures/ground_truth/*.json`` (hunt),
+``fixtures/hunt_extra/*.json`` (hunt micro-fixtures),
 ``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev), and
 ``fixtures/vulngym/slice.json`` (one hunt def per frozen finding).
 """
@@ -25,6 +26,7 @@ from vulnforge.util import utc_now_iso
 COLLECTION_FORMAT = "vulnforge.benchmark_library/v1"
 DEFAULT_LIBRARY_ROOT = PROJECT_ROOT / "benchmarks" / "library"
 BENCHMARK_FIXTURES_ROOT = PROJECT_ROOT / "fixtures" / "benchmarks"
+HUNT_EXTRA_ROOT = PROJECT_ROOT / "fixtures" / "hunt_extra"
 BENCH_TYPES = frozenset({"recon", "hunt", "finding_report", "poc_dev"})
 # Underscore allowed so GT stems (toy_sqli, mono_synth) are valid ids.
 DEF_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -437,9 +439,15 @@ def _build_version_snapshot(
 
 
 def _gt_seed_candidates() -> list[Path]:
-    if not GROUND_TRUTH_ROOT.is_dir():
-        return []
-    return sorted(p for p in GROUND_TRUTH_ROOT.glob("*.json") if p.is_file())
+    """Hunt GT catalogs: ``fixtures/ground_truth/*.json`` plus
+    ``fixtures/hunt_extra/*.json`` (micro-fixture oracles; id = stem).
+    """
+    out: list[Path] = []
+    if GROUND_TRUTH_ROOT.is_dir():
+        out.extend(p for p in GROUND_TRUTH_ROOT.glob("*.json") if p.is_file())
+    if HUNT_EXTRA_ROOT.is_dir():
+        out.extend(p for p in HUNT_EXTRA_ROOT.glob("*.json") if p.is_file())
+    return sorted(out)
 
 
 def _bench_fixture_seed_candidates() -> list[Path]:
@@ -591,6 +599,7 @@ def seed_from_ground_truth(
 
     Sources: ``fixtures/ground_truth/*.json`` (hunt; ``pe-*`` are one-finding
     profile_eval seeds with optional ``difficulty`` / ``tags``),
+    ``fixtures/hunt_extra/*.json`` (Juliet/CVE-shaped micro-fixture hunts),
     ``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev),
     ``fixtures/vulngym/slice.json`` (one hunt def per finding).
 
@@ -662,7 +671,8 @@ def seed_from_ground_truth(
             order.append(bid)
     coll["defs"] = [by_id[i] for i in order]
     coll["seeded_from"] = (
-        "fixtures/ground_truth+fixtures/benchmarks+fixtures/vulngym"
+        "fixtures/ground_truth+fixtures/hunt_extra+"
+        "fixtures/benchmarks+fixtures/vulngym"
     )
     _write_collection(coll, root=root)
     return {
