@@ -22,7 +22,8 @@ Not under `project/` (run projection). Package code: `vulnforge/benchmarks/`.
 | Source | Types |
 |--------|-------|
 | `fixtures/ground_truth/*.json` | `hunt` (id = stem) |
-| `fixtures/benchmarks/*.json` | `recon` / `finding_report` (id = stem; not `reports/` or `architecture/`) |
+| `fixtures/vulngym/slice.json` | `hunt` (id = finding `entry-*`; oracle is that finding only) |
+| `fixtures/benchmarks/*.json` | `recon` / `finding_report` / `poc_dev` (id = stem; not `reports/` or `architecture/`) |
 
 `target_ref` comes from the fixture `target` field; oracle body is snapshotted
 onto version 1 (type-specific — hunt keeps `findings[]`; recon keeps components /
@@ -56,7 +57,7 @@ See `fixtures/benchmarks/README.md` for oracle shapes.
 | DELETE | `/api/benchmarks/{id}` | hard-delete def + versions |
 | GET    | `/api/benchmarks/{id}/versions` | version summaries |
 | GET    | `/api/benchmarks/{id}/versions/{n}` | frozen snapshot (immutable) |
-| POST   | `/api/benchmarks/seed` | missing-only GT + bench fixture import |
+| POST   | `/api/benchmarks/seed` | missing-only GT + VulnGym slice + bench fixture import |
 | GET    | `/api/benchmarks/runs` | list runs (filters/sort) |
 | POST   | `/api/benchmarks/runs` | create + execute (mechanical) |
 | GET    | `/api/benchmarks/runs/series` | score-over-time points (`def_id`, optional `type`) |
