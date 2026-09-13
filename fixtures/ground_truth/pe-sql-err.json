@@ -1,0 +1,21 @@
+{
+  "target": "fixtures/profile_eval/tree",
+  "description": "profile_eval pe-sql-err (error-based SQLi)",
+  "difficulty": "medium",
+  "tags": [
+    "profile_eval",
+    "seed"
+  ],
+  "findings": [
+    {
+      "id": "sql-err",
+      "class": "injection",
+      "sink_path": "unit_07.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_07.php"
+      }
+    }
+  ]
+}

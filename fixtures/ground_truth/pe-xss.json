@@ -1,0 +1,21 @@
+{
+  "target": "fixtures/profile_eval/tree",
+  "description": "profile_eval pe-xss (attribute XSS via ENT_NOQUOTES)",
+  "difficulty": "medium",
+  "tags": [
+    "profile_eval",
+    "seed"
+  ],
+  "findings": [
+    {
+      "id": "xss",
+      "class": "client-side",
+      "sink_path": "unit_10.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_10.php"
+      }
+    }
+  ]
+}

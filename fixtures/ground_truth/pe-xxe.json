@@ -1,0 +1,21 @@
+{
+  "target": "fixtures/profile_eval/tree",
+  "description": "profile_eval pe-xxe (XXE with LIBXML_NOENT)",
+  "difficulty": "hard",
+  "tags": [
+    "profile_eval",
+    "seed"
+  ],
+  "findings": [
+    {
+      "id": "xxe",
+      "class": "injection",
+      "sink_path": "unit_13.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_13.php"
+      }
+    }
+  ]
+}

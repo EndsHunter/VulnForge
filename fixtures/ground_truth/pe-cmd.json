@@ -1,0 +1,21 @@
+{
+  "target": "fixtures/profile_eval/tree",
+  "description": "profile_eval pe-cmd (command injection after metachar strip)",
+  "difficulty": "medium",
+  "tags": [
+    "profile_eval",
+    "seed"
+  ],
+  "findings": [
+    {
+      "id": "cmd",
+      "class": "injection",
+      "sink_path": "unit_02.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_02.php"
+      }
+    }
+  ]
+}

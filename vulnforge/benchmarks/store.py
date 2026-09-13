@@ -455,6 +455,13 @@ def _rel_to_project(path: Path) -> str:
 
 
 def _seed_payload_from_gt(path: Path) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Hunt def from a GT catalog (id = file stem; pe-* are one-finding seeds).
+
+    ``types`` is always ``["hunt"]``. ``target_ref`` / oracle findings come from
+    the GT file. Overlay ``difficulty`` when the catalog has easy/medium/hard.
+    Tags always include ``seed`` plus any GT ``tags`` (toy_sqli / mono_synth
+    stay ``["seed"]`` with empty overlay when those fields are absent).
+    """
     bid = _validate_id(path.stem)
     gt = load_ground_truth(path)
     oracle_ref = _rel_to_project(path)
@@ -465,14 +472,26 @@ def _seed_payload_from_gt(path: Path) -> tuple[dict[str, Any], dict[str, Any], s
         name = desc
     oracle = _normalize_oracle({"type": "hunt", "findings": gt.get("findings")})
     notes = f"seed from {oracle_ref}"
+    overlay: dict[str, Any] = {}
+    diff = str(gt.get("difficulty") or "").strip().lower()
+    if diff in {"easy", "medium", "hard"}:
+        overlay["difficulty"] = diff
+    tags = ["seed"]
+    seen = {"seed"}
+    for t in _as_str_list(gt.get("tags")):
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        tags.append(t)
     defn = {
         "id": bid,
         "name": name,
         "types": ["hunt"],
         "target_ref": target_ref[:MAX_REF],
         "oracle_ref": oracle_ref[:MAX_REF],
-        "config_overlay": {},
-        "tags": ["seed"],
+        "config_overlay": overlay,
+        "tags": tags,
         "source": "seed",
     }
     return defn, oracle, notes
@@ -560,7 +579,8 @@ def seed_from_ground_truth(
 ) -> dict[str, Any]:
     """Import GT hunt, bench-fixture, and VulnGym slice hunt defs.
 
-    Sources: ``fixtures/ground_truth/*.json`` (hunt),
+    Sources: ``fixtures/ground_truth/*.json`` (hunt; ``pe-*`` are one-finding
+    profile_eval seeds with optional ``difficulty`` / ``tags``),
     ``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev),
     ``fixtures/vulngym/slice.json`` (one hunt def per finding).
 

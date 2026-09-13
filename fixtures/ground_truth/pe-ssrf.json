@@ -1,0 +1,21 @@
+{
+  "target": "fixtures/profile_eval/tree",
+  "description": "profile_eval pe-ssrf (SSRF after localhost string check)",
+  "difficulty": "hard",
+  "tags": [
+    "profile_eval",
+    "seed"
+  ],
+  "findings": [
+    {
+      "id": "ssrf",
+      "class": "feature-abuse",
+      "sink_path": "unit_16.js",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_16.js"
+      }
+    }
+  ]
+}
