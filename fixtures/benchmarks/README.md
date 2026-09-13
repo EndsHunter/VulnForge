@@ -1,9 +1,11 @@
 # Benchmark oracles (non-hunt types)
 
-Hunt benches seed from `fixtures/ground_truth/*.json` (toy_sqli / mono_synth)
-and from `fixtures/vulngym/slice.json` (one hunt def per frozen finding, with
-`config_overlay.difficulty` and `oracle.findings` length 1). Checkout trees
-live under `.audit/vulngym/trees/{id}` (gitignored; not vendored).
+Hunt benches seed from `fixtures/ground_truth/*.json` (toy_sqli / mono_synth,
+plus profile_eval `pe-*` one-finding hunt defs) and from
+`fixtures/vulngym/slice.json` (one hunt def per frozen finding, with
+`config_overlay.difficulty` and `oracle.findings` length 1). `pe-*` files
+live under `fixtures/ground_truth/` (target `fixtures/profile_eval/tree`).
+Checkout trees live under `.audit/vulngym/trees/{id}` (gitignored; not vendored).
 
 This tree holds **type-specific** oracles for mechanical bench desk runs:
 

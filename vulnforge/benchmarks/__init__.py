@@ -1,6 +1,7 @@
 """Benchmark library + runs (hunt / recon / finding_report / poc_dev).
 
-First ``ensure_library()`` seeds from ``fixtures/ground_truth/*.json`` (hunt),
+First ``ensure_library()`` seeds from ``fixtures/ground_truth/*.json`` (hunt,
+including profile_eval ``pe-*`` one-finding defs),
 ``fixtures/vulngym/slice.json`` (one hunt def per finding), and
 ``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev). Re-seed
 via ``seed_from_ground_truth(missing_only=True)`` / ``POST /api/benchmarks/seed``
