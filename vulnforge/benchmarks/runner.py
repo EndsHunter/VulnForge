@@ -4,8 +4,8 @@ Mechanical hunt reuses sink preindex → synthetic findings → ``score_findings
 Recon / finding_report use ``vulnforge.benchmarks.scorers`` (no live LLM).
 ``poc_dev`` is refused on the Run path.
 
-Live mode (``mode=live``) is opt-in and currently refused with a clear error
-until a harness-backed path lands in a later ticket.
+Live mode is async: call ``start_live_run`` / ``start_live_suite`` in
+``vulnforge.benchmarks.live``. Passing ``mode=live`` here raises.
 """
 
 from __future__ import annotations
@@ -278,6 +278,8 @@ def run_benchmark_suite(
     mode_n = str(mode or "mechanical").strip().lower()
     if mode_n not in ("mechanical", "live"):
         raise BenchmarkRunError("mode must be 'mechanical' or 'live'")
+    if mode_n == "live":
+        raise BenchmarkRunError("live mode is async; call start_live_run")
 
     members = defs_for_suite(types_n)
     if not members:
@@ -377,7 +379,7 @@ def run_benchmark(
         Subset of ``recon`` / ``hunt`` / ``finding_report`` (``poc_dev`` refused).
         Default: all runnable types declared on the snapshot.
     mode:
-        ``mechanical`` (default) or ``live`` (refused until later ticket).
+        ``mechanical`` (default). ``live`` raises; call ``start_live_run``.
     """
     bid = str(def_id or "").strip().lower()
     if not bid:
@@ -386,6 +388,8 @@ def run_benchmark(
     mode_n = str(mode or "mechanical").strip().lower()
     if mode_n not in ("mechanical", "live"):
         raise BenchmarkRunError("mode must be 'mechanical' or 'live'")
+    if mode_n == "live":
+        raise BenchmarkRunError("live mode is async; call start_live_run")
 
     try:
         head = get_def(bid, include_oracle=False)
@@ -419,17 +423,6 @@ def run_benchmark(
         status="running",
     )
     rid = run["id"]
-
-    if mode_n == "live":
-        return update_run(
-            rid,
-            status="error",
-            error=(
-                "live bench is not enabled (use mechanical L0; "
-                "pass mode=mechanical or omit mode)"
-            ),
-            metrics={},
-        )
 
     try:
         target = _resolve_target(target_ref)

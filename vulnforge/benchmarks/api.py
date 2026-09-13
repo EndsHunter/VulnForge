@@ -7,6 +7,13 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from vulnforge.benchmarks.live import (
+    cancel_live_run,
+    find_active_live_run,
+    reconcile_live_run,
+    start_live_run,
+    start_live_suite,
+)
 from vulnforge.benchmarks.poc_workshop import run_poc_workshop
 from vulnforge.benchmarks.runner import (
     SUITE_DEF_IDS,
@@ -54,6 +61,7 @@ class BenchmarkRunBody(BaseModel):
     types: Optional[list[str]] = None
     mode: Optional[str] = "mechanical"
     suite: bool = False
+    only: Optional[list[str]] = None
 
 
 class PocWorkshopRunBody(BaseModel):
@@ -137,19 +145,53 @@ def api_benchmark_runs_list(
 
 @router.post("/runs")
 def api_benchmark_runs_create(body: BenchmarkRunBody):
-    """Create + execute a bench run (recon|hunt|finding_report; sync mechanical).
+    """Create + execute a bench run (recon|hunt|finding_report).
+
+    Mechanical is sync create+score. Live (hunt only) returns immediately
+    with ``async: true`` and the GUI polls GET-by-id.
 
     ``poc_dev`` is refused. Default types = all runnable types on the snapshot.
 
     Suite: ``def_id`` of ``all-hunt`` / ``all-recon`` / ``all-finding_report`` /
-    ``all-runnable``, or ``suite=true`` with ``types``. Runs every matching
-    library def as one parent BenchmarkRun plus per-def children.
+    ``all-runnable``, or ``suite=true`` with ``types``. Live suites must be
+    all-hunt. Optional ``only`` subsets live suite member defs.
     """
     try:
         ensure_library()
+        mode_n = str(body.mode or "mechanical").strip().lower()
         suite_types = suite_types_for(body.def_id or "")
         if suite_types is None and body.suite:
             suite_types = tuple(body.types or []) or tuple(SUITE_DEF_IDS["all-runnable"])
+        if mode_n == "live":
+            active = find_active_live_run()
+            if active is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "ok": False,
+                        "error": "a live benchmark run is already queued or running",
+                        "run_id": active.get("id"),
+                        "run": active,
+                    },
+                )
+            if suite_types is not None:
+                run = start_live_suite(
+                    types=list(suite_types),
+                    only=body.only,
+                )
+                return {"ok": True, "async": True, "suite": True, "run": run}
+            if not (body.def_id or "").strip():
+                raise HTTPException(
+                    400,
+                    "def_id is required (or suite=true / all-hunt|all-recon|"
+                    "all-finding_report|all-runnable)",
+                )
+            run = start_live_run(
+                def_id=body.def_id or "",
+                version=body.version,
+                types=body.types,
+            )
+            return {"ok": True, "async": True, "run": run}
         if suite_types is not None:
             run = run_benchmark_suite(
                 types=list(suite_types),
@@ -229,10 +271,21 @@ def api_benchmark_runs_series(
         raise _http_run(e) from e
 
 
+@router.post("/runs/{run_id}/stop")
+def api_benchmark_run_stop(run_id: str):
+    try:
+        return {"ok": True, "run": cancel_live_run(run_id)}
+    except BenchmarkRunError as e:
+        raise _http_run(e) from e
+
+
 @router.get("/runs/{run_id}")
 def api_benchmark_run_get(run_id: str):
     try:
-        return {"ok": True, "run": get_run(run_id)}
+        run = get_run(run_id)
+        if run.get("mode") == "live" and run.get("status") in {"queued", "running"}:
+            run = reconcile_live_run(run_id)
+        return {"ok": True, "run": run}
     except BenchmarkRunError as e:
         raise _http_run(e) from e
 

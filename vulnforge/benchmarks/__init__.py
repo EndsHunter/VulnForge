@@ -9,13 +9,24 @@ via ``seed_from_ground_truth(missing_only=True)`` / ``POST /api/benchmarks/seed`
 adds missing ids only and never clobbers operator edits.
 
 Runs: ``run_benchmark`` / ``POST /api/benchmarks/runs`` — mechanical L0 by
-default; ``poc_dev`` refused on the Run path. Workshop:
+default; ``mode=live`` hunts go through ``start_live_run`` (async).
+``poc_dev`` refused on the Run path. Workshop:
 ``run_poc_workshop`` / ``POST /api/benchmarks/poc/runs`` (network:none).
 Results under ``benchmarks/runs/``.
 """
 
 from __future__ import annotations
 
+from vulnforge.benchmarks.live import (
+    HuntHint,
+    cancel_live_run,
+    eval_runs_root_for,
+    live_refusal,
+    reconcile_live_run,
+    require_live_llm,
+    start_live_run,
+    start_live_suite,
+)
 from vulnforge.benchmarks.poc_workshop import (
     generate_pack_stub,
     run_pack_subprocess,
@@ -89,12 +100,15 @@ __all__ = [
     "TERMINAL_STATUSES",
     "BenchmarkLibraryError",
     "BenchmarkRunError",
+    "HuntHint",
     "build_series",
+    "cancel_live_run",
     "compare_versions",
     "create_def",
     "create_run",
     "delete_def",
     "empty_side",
+    "eval_runs_root_for",
     "extract_score",
     "ensure_library",
     "get_def",
@@ -104,8 +118,11 @@ __all__ = [
     "list_defs",
     "list_runs",
     "list_versions",
+    "live_refusal",
     "mechanical_hunt_score",
     "oracle_snapshot_hash",
+    "reconcile_live_run",
+    "require_live_llm",
     "reset_library_root_override",
     "reset_runs_root_override",
     "generate_pack_stub",
@@ -117,6 +134,8 @@ __all__ = [
     "run_benchmark",
     "run_benchmark_suite",
     "run_hunt",
+    "start_live_run",
+    "start_live_suite",
     "suite_types_for",
     "runs_root",
     "score_finding_report",

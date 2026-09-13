@@ -39,14 +39,16 @@ See `fixtures/benchmarks/README.md` for oracle shapes.
 ## Runs
 
 `POST /api/benchmarks/runs` accepts types `recon` | `hunt` | `finding_report`
-(not `poc_dev`). Mechanical mode only for now. Suite ids `all-hunt` /
-`all-recon` / `all-finding_report` / `all-runnable` (or `suite: true` +
-`types`) run every matching library def as one parent BenchmarkRun plus a
-child per def. The Run dropdown lists those suites at the top.
+(not `poc_dev`). Mechanical mode is sync create+score. Live mode is hunt-only
+and async (`start_live_run`); the Run tab polls `GET /api/benchmarks/runs/{id}`.
+Suite ids `all-hunt` / `all-recon` / `all-finding_report` / `all-runnable`
+(or `suite: true` + `types`) run every matching library def as one parent
+BenchmarkRun plus a child per def. Live suites must be `all-hunt`. The Run
+dropdown lists those suites at the top.
 
 | Type | Scorer |
 |------|--------|
-| `hunt` | sink preindex → `score_findings` |
+| `hunt` | mechanical: sink preindex → `score_findings`. live: Ralph findings → `score_findings` (`confirmed` always false) |
 | `recon` | `score_recon` — architecture.json or FS/codemap heuristics vs expected components / path_hints; relations + trust_boundaries presence |
 | `finding_report` | `score_finding_report` — required fields, citation density, honesty labels (fixture report JSON) |
 
@@ -63,9 +65,10 @@ child per def. The Run dropdown lists those suites at the top.
 | GET    | `/api/benchmarks/{id}/versions/{n}` | frozen snapshot (immutable) |
 | POST   | `/api/benchmarks/seed` | missing-only GT + VulnGym slice + bench fixture import |
 | GET    | `/api/benchmarks/runs` | list runs (filters/sort) |
-| POST   | `/api/benchmarks/runs` | create + execute (mechanical; `all-*` / `suite` = type suite) |
+| POST   | `/api/benchmarks/runs` | create + execute (mechanical sync; live hunt async; `all-*` / `suite` = type suite; live `only` subsets) |
 | GET    | `/api/benchmarks/runs/series` | score-over-time points (`def_id`, optional `type`) |
-| GET    | `/api/benchmarks/runs/{id}` | run detail + type metrics |
+| POST   | `/api/benchmarks/runs/{id}/stop` | cancel a live run (stops Ralph; suite skips queued children) |
+| GET    | `/api/benchmarks/runs/{id}` | run detail + type metrics (live queued/running rows are reconciled) |
 | GET    | `/api/benchmarks/compare` | version A vs B (`def_id`, `version_a`, `version_b`, optional `type`) |
 
 Results UI (`/benchmarks/results`) charts score over time (inline SVG) and

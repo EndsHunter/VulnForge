@@ -170,6 +170,8 @@ vf dashboard --host 127.0.0.1 --port 8787
 
 Token usage (when the model returns `usage`, or estimated) appears on Home and Mission overview.
 
+The bench desk at `/benchmarks/run` has two hunt paths. Mechanical L0 needs no model. It scores sink preindex hits against the oracle and returns a terminal BenchmarkRun from one `POST /api/benchmarks/runs`. Live hunts use the Settings LLM (`llm.base_url` and `llm.model`). They init a throwaway harness under `.audit/benchmarks/eval_runs/<br-id>/`, never `runs/`, enqueue path and class only, and poll the same run id until Ralph is idle. `passed` means recall > 0. Automation never sets `confirmed`.
+
 ---
 
 ## Troubleshooting

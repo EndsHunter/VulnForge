@@ -35,7 +35,7 @@
         <h1>Benchmarks</h1>
         <p>
           Bench desk: run recon / hunt / finding_report suites (mechanical L0), review results,
-          and browse the library. Live LLM is optional and off by default. No poc_dev on Run.
+          and browse the library. Live hunts use the Settings LLM from the Run tab. No poc_dev on Run.
         </p>
       </div>
     </div>
@@ -62,7 +62,9 @@
         Mechanical benches: hunt (sink preindex → score_findings), recon (architecture signals),
         finding_report (required fields / citation density / honesty labels).
         Dropdown suites run every hunt, recon, or finding_report def as one request.
-        No live model required. poc_dev is not available here.
+        No live model required. Live hunts use the Settings endpoint and model, write throwaway
+        eval runs, and never auto-confirm. Live is hunt-only (or the all-hunt suite).
+        poc_dev is not available here.
       </p>
       <div class="controls" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0">
         <label for="bench-run-type-filter">Type</label>
@@ -79,6 +81,12 @@
         <button type="button" class="btn btn-primary" id="bench-run-mechanical">
           Run mechanical
         </button>
+        <button type="button" class="btn" id="bench-run-live">
+          Run live
+        </button>
+        <button type="button" class="btn" id="bench-run-stop" disabled>
+          Stop live
+        </button>
       </div>
       <pre id="bench-run-last" class="mono" style="white-space:pre-wrap;margin:0;min-height:4rem">No run yet.</pre>
     </section>
@@ -89,9 +97,15 @@
       var typeFilter = document.getElementById("bench-run-type-filter");
       var out = document.getElementById("bench-run-last");
       var btn = document.getElementById("bench-run-mechanical");
+      var liveBtn = document.getElementById("bench-run-live");
+      var stopBtn = document.getElementById("bench-run-stop");
       if (!sel || !out || !btn) return;
       var RUNNABLE = { hunt: 1, recon: 1, finding_report: 1 };
+      var TERMINAL = { passed: 1, failed: 1, error: 1, cancelled: 1 };
       var allRows = [];
+      var pollTimer = null;
+      var liveRunId = null;
+      var livePolling = false;
 
       function show(obj) {
         out.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
@@ -163,6 +177,7 @@
             empty.textContent = "No matching benches";
             sel.appendChild(empty);
           }
+          syncLiveEnabled();
           return;
         }
         var defGroup = document.createElement("optgroup");
@@ -178,6 +193,65 @@
           defGroup.appendChild(opt);
         });
         sel.appendChild(defGroup);
+        syncLiveEnabled();
+      }
+
+      function selectedTypes() {
+        var opt = sel.options[sel.selectedIndex];
+        if (!opt) return [];
+        var typeStr = (opt.getAttribute("data-types") || "");
+        var types = typeStr.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+        var isSuite = opt.getAttribute("data-suite") === "1";
+        var want = typeFilter ? typeFilter.value : "";
+        if (want && !isSuite) {
+          types = types.filter(function (t) { return t === want; });
+        }
+        return types;
+      }
+
+      function huntOnlySelected() {
+        var types = selectedTypes();
+        return types.length > 0 && types.every(function (t) { return t === "hunt"; });
+      }
+
+      function syncLiveEnabled() {
+        if (liveBtn) liveBtn.disabled = livePolling || !huntOnlySelected();
+        if (stopBtn) stopBtn.disabled = !livePolling;
+        btn.disabled = livePolling;
+      }
+
+      function stopPoll() {
+        if (pollTimer) {
+          clearTimeout(pollTimer);
+          pollTimer = null;
+        }
+      }
+
+      function pollLiveRun(id) {
+        liveRunId = id;
+        livePolling = true;
+        syncLiveEnabled();
+        function tick() {
+          fetch("/api/benchmarks/runs/" + id)
+            .then(function (r) { return r.json(); })
+            .then(function (body) {
+              show(body);
+              var run = body && body.run;
+              if (run && TERMINAL[run.status]) {
+                stopPoll();
+                liveRunId = null;
+                livePolling = false;
+                syncLiveEnabled();
+                return;
+              }
+              pollTimer = setTimeout(tick, 320);
+            })
+            .catch(function (e) {
+              show("Poll failed: " + e);
+              pollTimer = setTimeout(tick, 320);
+            });
+        }
+        tick();
       }
 
       fetch("/api/benchmarks")
@@ -199,6 +273,7 @@
       if (typeFilter) {
         typeFilter.addEventListener("change", fillDefs);
       }
+      sel.addEventListener("change", syncLiveEnabled);
 
       btn.addEventListener("click", function () {
         var defId = sel.value;
@@ -208,12 +283,7 @@
         }
         var opt = sel.options[sel.selectedIndex];
         var isSuite = opt && opt.getAttribute("data-suite") === "1";
-        var typeStr = (opt && opt.getAttribute("data-types")) || "";
-        var types = typeStr.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-        var want = typeFilter ? typeFilter.value : "";
-        if (want && !isSuite) {
-          types = types.filter(function (t) { return t === want; });
-        }
+        var types = selectedTypes();
         if (!types.length) {
           show("No runnable types for this def (poc_dev excluded).");
           return;
@@ -236,6 +306,69 @@
           })
           .finally(function () { btn.disabled = false; });
       });
+
+      if (liveBtn) {
+        liveBtn.addEventListener("click", function () {
+          var defId = sel.value;
+          if (!defId) {
+            show("Pick a benchmark first.");
+            return;
+          }
+          var opt = sel.options[sel.selectedIndex];
+          var isSuite = opt && opt.getAttribute("data-suite") === "1";
+          var types = selectedTypes();
+          if (!types.length) {
+            show("No runnable types for this def (poc_dev excluded).");
+            return;
+          }
+          if (!huntOnlySelected()) {
+            show("Live is hunt-only. Pick a hunt def or the all-hunt suite.");
+            return;
+          }
+          livePolling = true;
+          syncLiveEnabled();
+          var payload = { def_id: defId, types: types, mode: "live" };
+          if (isSuite) payload.suite = true;
+          show("Running live (" + types.join(",") + ") for " + defId + "…");
+          fetch("/api/benchmarks/runs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
+            .then(function (res) {
+              show(res.body);
+              var run = res.body && res.body.run;
+              if (run && (run.status === "queued" || run.status === "running")) {
+                pollLiveRun(run.id);
+                return;
+              }
+              livePolling = false;
+              liveRunId = null;
+              syncLiveEnabled();
+            })
+            .catch(function (e) {
+              show("Request failed: " + e);
+              livePolling = false;
+              liveRunId = null;
+              syncLiveEnabled();
+            });
+        });
+      }
+
+      if (stopBtn) {
+        stopBtn.addEventListener("click", function () {
+          if (!liveRunId) return;
+          fetch("/api/benchmarks/runs/" + liveRunId + "/stop", { method: "POST" })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
+            .then(function (res) {
+              show(res.body);
+            })
+            .catch(function (e) {
+              show("Stop failed: " + e);
+            });
+        });
+      }
     })();
     </script>
     {% elif active == 'poc' %}

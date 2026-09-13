@@ -64,7 +64,11 @@ def test_api_post_run_and_list_results():
         assert detail.json()["run"]["metrics"]["oracle_count"] >= 1
 
 
-def test_api_live_mode_errors_without_llm():
+def test_api_live_mode_errors_without_llm(monkeypatch):
+    monkeypatch.setattr(
+        "vulnforge.benchmarks.live.load_config",
+        lambda: {"llm": {"base_url": "", "model": ""}},
+    )
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
         r = client.post(
@@ -74,7 +78,11 @@ def test_api_live_mode_errors_without_llm():
         assert r.status_code == 200, r.text
         run = r.json()["run"]
         assert run["status"] == "error"
-        assert "live" in (run.get("error") or "").lower()
+        err = (run.get("error") or "").lower()
+        assert "live bench is not enabled" not in err
+        assert any(
+            token in err for token in ("settings", "endpoint", "model", "base_url", "llm")
+        )
 
 
 def test_api_unknown_def_400():
@@ -93,6 +101,8 @@ def test_run_and_results_page_hooks():
         run_page = client.get("/benchmarks/run")
         assert run_page.status_code == 200
         assert 'id="bench-run-mechanical"' in run_page.text
+        assert 'id="bench-run-live"' in run_page.text
+        assert 'mode: "live"' in run_page.text
         assert 'id="bench-run-def"' in run_page.text
         assert "/api/benchmarks/runs" in run_page.text
         assert "all-hunt" in run_page.text
