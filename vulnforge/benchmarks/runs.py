@@ -93,6 +93,18 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 RUNNABLE_TYPES = frozenset({"recon", "hunt", "finding_report"})
 # Types allowed on BenchmarkRun.types_run (includes workshop poc_dev).
 PERSISTED_TYPES = frozenset({"recon", "hunt", "finding_report", "poc_dev"})
+# Synthetic parent ids for all-hunt / all-recon / … suite runs (not library defs).
+SUITE_PARENT_IDS = frozenset(
+    {"all-hunt", "all-recon", "all-finding_report", "all-runnable"}
+)
+
+
+def is_suite_run(row: dict[str, Any]) -> bool:
+    """True for a suite parent (metrics.suite or synthetic all-* def_id)."""
+    metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    if metrics.get("suite"):
+        return True
+    return str(row.get("def_id") or "").strip().lower() in SUITE_PARENT_IDS
 
 
 def _normalize_types_run(raw: object) -> list[str]:
@@ -279,6 +291,7 @@ def list_runs(
     version: int | None = None,
     status: str | None = None,
     run_type: str | None = None,
+    suite: bool | None = None,
     sort: str = "started_at",
     order: str = "desc",
     limit: int = 200,
@@ -290,9 +303,11 @@ def list_runs(
       - version: exact int match
       - status: exact match
       - run_type: types_run contains (query param ``type``)
+      - suite: True = parent suite rows only; False = exclude parents
 
     Sort: started_at|finished_at|recall|status|def_id (default started_at).
     Order: asc|desc (default desc — newest first for started_at).
+    Equal timestamps put suite parents before their children.
     """
     root = runs_root()
     if not root.is_dir():
@@ -339,6 +354,18 @@ def list_runs(
             types = [str(t).lower() for t in (row.get("types_run") or [])]
             if want_type not in types:
                 continue
+        if suite is True and not is_suite_run(row):
+            continue
+        if suite is False and is_suite_run(row):
+            continue
         out.append(row)
-    out.sort(key=lambda r: _sort_key_for(r, sort_key), reverse=reverse)
+    # reverse=True on (ts, rank) would put children first when ts ties.
+    # Rank 0 = suite parent. Flip the rank with the time order.
+    out.sort(
+        key=lambda r: (
+            _sort_key_for(r, sort_key),
+            (0 if is_suite_run(r) else 1) * (-1 if reverse else 1),
+        ),
+        reverse=reverse,
+    )
     return out[: max(1, int(limit))]

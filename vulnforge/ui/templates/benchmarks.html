@@ -513,8 +513,9 @@
              data-detail-run-id="{{ detail_run_id or '' }}">
       <h2 style="margin-top:0">Results</h2>
       <p class="controls-hint">
-        BenchmarkRun history (recon / hunt / finding_report). Type metrics in Scores; findings never auto-confirmed.
-        Click a row for full run detail.
+        BenchmarkRun history. Individual defs and collective suite parents (All hunts, All recons, All finding_report).
+        Filter Kind to Suites to see only those aggregates. Click a suite row for the member table.
+        Findings never auto-confirmed.
       </p>
 
       {% if detail_run_id %}
@@ -524,12 +525,29 @@
           <a class="btn" href="/benchmarks/results" id="bench-results-back">← Back to history</a>
           <span class="mono" id="bench-detail-id">{{ detail_run_id }}</span>
         </div>
+        <div id="bench-detail-suite" hidden data-bench-detail-suite="1" style="margin-bottom:0.75rem">
+          <h3 class="bench-panel-title" id="bench-detail-suite-title">Suite members</h3>
+          <p class="controls-hint" id="bench-detail-suite-summary"></p>
+          <div class="table-wrap">
+            <table class="data" id="bench-detail-members" data-bench-detail-members="1">
+              <thead>
+                <tr>
+                  <th>Def</th>
+                  <th>Status</th>
+                  <th>Score</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody id="bench-detail-members-body"></tbody>
+            </table>
+          </div>
+        </div>
         <pre id="bench-detail-body" class="mono" style="white-space:pre-wrap;margin:0;min-height:6rem">Loading…</pre>
       </div>
       {% else %}
       <div id="bench-chart" class="card bench-chart-card" data-bench-chart="1">
         <h3 class="bench-panel-title">Score over time</h3>
-        <p class="controls-hint">Recall (or type score) for the selected def, oldest first.</p>
+        <p class="controls-hint">Recall (or type score) for the selected def or suite, oldest first.</p>
         <div class="controls bench-chart-controls" data-bench-chart-controls="1">
           <label for="bench-chart-def">Def</label>
           <select id="bench-chart-def" class="mono" data-bench-chart-def="1" aria-label="Chart benchmark def"></select>
@@ -587,8 +605,14 @@
       <div class="controls" id="bench-results-filters"
            data-bench-results-filters="1"
            style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0">
+        <label for="bench-filter-kind">Kind</label>
+        <select id="bench-filter-kind" class="mono" aria-label="Filter suites vs individual">
+          <option value="">All</option>
+          <option value="suite">Suites</option>
+          <option value="individual">Individual</option>
+        </select>
         <label for="bench-filter-def">Def</label>
-        <input id="bench-filter-def" class="mono" type="text" placeholder="def_id" style="width:8rem" />
+        <input id="bench-filter-def" class="mono" type="text" placeholder="all-hunt or def_id" style="width:10rem" />
         <label for="bench-filter-status">Status</label>
         <select id="bench-filter-status" class="mono" aria-label="Filter by status">
           <option value="">Any</option>
@@ -624,6 +648,7 @@
         <table class="data" id="bench-results-table" data-bench-results-table="1">
           <thead>
             <tr>
+              <th>Kind</th>
               <th>Def</th>
               <th>Ver</th>
               <th>Type</th>
@@ -634,7 +659,7 @@
             </tr>
           </thead>
           <tbody id="bench-results-body">
-            <tr><td colspan="7" class="empty">Loading…</td></tr>
+            <tr><td colspan="8" class="empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -646,6 +671,23 @@
       if (document.body.getAttribute("data-bench-page") !== "results") return;
       var panel = document.getElementById("bench-panel-results");
       var detailId = panel && panel.getAttribute("data-detail-run-id");
+      var SUITE_LABELS = {
+        "all-hunt": "All hunts",
+        "all-recon": "All recons",
+        "all-finding_report": "All finding_report",
+        "all-runnable": "All hunts, recons, finding_report"
+      };
+
+      function isSuiteRun(r) {
+        var m = (r && r.metrics) || {};
+        if (m.suite) return true;
+        return !!SUITE_LABELS[r && r.def_id];
+      }
+
+      function defLabel(id) {
+        var key = String(id || "");
+        return SUITE_LABELS[key] ? SUITE_LABELS[key] + " (" + key + ")" : key;
+      }
 
       function fmtRecall(m) {
         m = m || {};
@@ -715,6 +757,54 @@
               return;
             }
             var run = res.body.run;
+            var suiteBox = document.getElementById("bench-detail-suite");
+            var membersBody = document.getElementById("bench-detail-members-body");
+            var suiteTitle = document.getElementById("bench-detail-suite-title");
+            var suiteSum = document.getElementById("bench-detail-suite-summary");
+            if (suiteBox && membersBody && isSuiteRun(run)) {
+              suiteBox.hidden = false;
+              if (suiteTitle) suiteTitle.textContent = defLabel(run.def_id);
+              var m = run.metrics || {};
+              if (suiteSum) {
+                suiteSum.textContent = (run.status || "") + "  "
+                  + String(m.passed_count != null ? m.passed_count : "?") + "/"
+                  + String(m.count != null ? m.count : "?") + " passed"
+                  + (typeof m.score === "number" ? ("  score=" + m.score) : "");
+              }
+              membersBody.textContent = "";
+              var members = m.members || [];
+              if (!members.length) {
+                var emptyTr = document.createElement("tr");
+                var emptyTd = document.createElement("td");
+                emptyTd.colSpan = 4;
+                emptyTd.className = "empty";
+                emptyTd.textContent = "No members on this suite run.";
+                emptyTr.appendChild(emptyTd);
+                membersBody.appendChild(emptyTr);
+              } else {
+                members.forEach(function (mem) {
+                  var tr = document.createElement("tr");
+                  tr.style.cursor = mem.run_id ? "pointer" : "";
+                  function cell(text, mono) {
+                    var td = document.createElement("td");
+                    if (mono) td.className = "mono";
+                    td.textContent = text == null ? "" : String(text);
+                    tr.appendChild(td);
+                  }
+                  cell(mem.def_id || "", true);
+                  cell(mem.status || "", true);
+                  var sc = mem.recall != null ? mem.recall : mem.score;
+                  cell(sc == null ? "—" : String(sc), true);
+                  cell(mem.error || "", false);
+                  if (mem.run_id) {
+                    tr.addEventListener("click", function () {
+                      window.location.href = "/benchmarks/results/" + encodeURIComponent(mem.run_id);
+                    });
+                  }
+                  membersBody.appendChild(tr);
+                });
+              }
+            }
             body.textContent = JSON.stringify({
               id: run.id,
               def_id: run.def_id,
@@ -740,6 +830,7 @@
 
       var tbody = document.getElementById("bench-results-body");
       var defIn = document.getElementById("bench-filter-def");
+      var kindSel = document.getElementById("bench-filter-kind");
       var statusSel = document.getElementById("bench-filter-status");
       var typeSel = document.getElementById("bench-filter-type");
       var sortSel = document.getElementById("bench-sort");
@@ -750,11 +841,14 @@
       function queryUrl() {
         var q = new URLSearchParams();
         var d = defIn && defIn.value.trim();
+        var kind = kindSel && kindSel.value;
         var st = statusSel && statusSel.value;
         var ty = typeSel && typeSel.value;
         var sort = sortSel && sortSel.value;
         var order = orderSel && orderSel.value;
         if (d) q.set("def_id", d);
+        if (kind === "suite") q.set("suite", "true");
+        if (kind === "individual") q.set("suite", "false");
         if (st) q.set("status", st);
         if (ty) q.set("type", ty);
         if (sort) q.set("sort", sort);
@@ -767,7 +861,7 @@
         tbody.textContent = "";
         var loading = document.createElement("tr");
         var ltd = document.createElement("td");
-        ltd.colSpan = 7;
+        ltd.colSpan = 8;
         ltd.className = "empty";
         ltd.textContent = "Loading…";
         loading.appendChild(ltd);
@@ -781,7 +875,7 @@
             if (!rows.length) {
               var emptyTr = document.createElement("tr");
               var emptyTd = document.createElement("td");
-              emptyTd.colSpan = 7;
+              emptyTd.colSpan = 8;
               emptyTd.className = "empty";
               emptyTd.textContent = "No runs yet.";
               emptyTr.appendChild(emptyTd);
@@ -792,6 +886,8 @@
               var tr = document.createElement("tr");
               tr.style.cursor = "pointer";
               tr.setAttribute("data-run-id", r.id || "");
+              var suite = isSuiteRun(r);
+              if (suite) tr.setAttribute("data-suite", "1");
               tr.title = "Open run " + (r.id || "");
               function cell(text, mono) {
                 var td = document.createElement("td");
@@ -799,7 +895,8 @@
                 td.textContent = text == null ? "" : String(text);
                 tr.appendChild(td);
               }
-              cell(r.def_id || "", true);
+              cell(suite ? "suite" : "def", false);
+              cell(defLabel(r.def_id), true);
               cell(r.version != null ? r.version : "", true);
               cell((r.types_run || []).join(",") || "hunt", true);
               cell(r.status || "", true);
@@ -816,7 +913,7 @@
             tbody.textContent = "";
             var tr = document.createElement("tr");
             var td = document.createElement("td");
-            td.colSpan = 7;
+            td.colSpan = 8;
             td.className = "empty";
             td.textContent = "Failed to load runs.";
             tr.appendChild(td);
@@ -825,7 +922,7 @@
       }
 
       if (applyBtn) applyBtn.addEventListener("click", load);
-      [defIn, statusSel, typeSel, sortSel, orderSel].forEach(function (el) {
+      [defIn, kindSel, statusSel, typeSel, sortSel, orderSel].forEach(function (el) {
         if (!el) return;
         el.addEventListener("change", load);
         if (el.tagName === "INPUT") {
@@ -880,14 +977,18 @@
       }
 
       function fillDefSelects() {
-        var prefer = "toy_sqli";
-        var ids = allDefs.map(function (b) { return b; });
+        var prefer = "all-hunt";
+        var suiteRows = Object.keys(SUITE_LABELS).map(function (id) {
+          return { id: id, head_version: 1, suite: true };
+        });
+        var ids = suiteRows.concat(allDefs.map(function (b) { return b; }));
         fillSelect(chartDef, ids, function (b) { return b.id || ""; }, function (b) {
+          if (b.suite) return SUITE_LABELS[b.id] + " (" + b.id + ")";
           return (b.id || "") + " (v" + (b.head_version != null ? b.head_version : "?") + ")";
         }, prefer);
-        fillSelect(cmpDef, ids, function (b) { return b.id || ""; }, function (b) {
+        fillSelect(cmpDef, allDefs, function (b) { return b.id || ""; }, function (b) {
           return (b.id || "") + " (v" + (b.head_version != null ? b.head_version : "?") + ")";
-        }, prefer);
+        }, "toy_sqli");
       }
 
       function fillVersionSelects(versions) {

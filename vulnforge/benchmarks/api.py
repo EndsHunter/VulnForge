@@ -111,12 +111,24 @@ def api_benchmarks_seed():
 # --- Runs (static paths before /{bench_id}) ---------------------------------
 
 
+def _parse_suite_query(raw: Optional[str]) -> Optional[bool]:
+    if raw is None or str(raw).strip() == "":
+        return None
+    key = str(raw).strip().lower()
+    if key in ("1", "true", "yes", "suite"):
+        return True
+    if key in ("0", "false", "no", "individual"):
+        return False
+    return None
+
+
 @router.get("/runs")
 def api_benchmark_runs_list(
     def_id: Optional[str] = None,
     version: Optional[int] = None,
     status: Optional[str] = None,
     type: Optional[str] = None,
+    suite: Optional[str] = None,
     sort: Optional[str] = "started_at",
     order: Optional[str] = "desc",
 ):
@@ -124,6 +136,7 @@ def api_benchmark_runs_list(
 
     Query:
       def_id, version, status, type (types_run contains),
+      suite=true|false (parent collectives vs individual defs),
       sort=started_at|finished_at|recall|status|def_id,
       order=asc|desc
     """
@@ -135,6 +148,7 @@ def api_benchmark_runs_list(
                 version=version,
                 status=status,
                 run_type=type,
+                suite=_parse_suite_query(suite),
                 sort=sort or "started_at",
                 order=order or "desc",
             ),
@@ -254,7 +268,8 @@ def api_benchmark_runs_series(
         raise HTTPException(400, "def_id is required")
     try:
         ensure_library()
-        get_def(bid, include_oracle=False)
+        if bid not in SUITE_DEF_IDS:
+            get_def(bid, include_oracle=False)
     except BenchmarkLibraryError as e:
         raise _http_lib(e) from e
     try:
@@ -310,7 +325,8 @@ def api_benchmark_compare(
         raise HTTPException(400, "version_a and version_b are required")
     try:
         ensure_library()
-        get_def(bid, include_oracle=False)
+        if bid not in SUITE_DEF_IDS:
+            get_def(bid, include_oracle=False)
     except BenchmarkLibraryError as e:
         raise _http_lib(e) from e
     try:

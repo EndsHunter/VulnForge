@@ -115,9 +115,12 @@ def test_run_and_results_page_hooks():
         assert results.status_code == 200
         assert 'id="bench-results-table"' in results.text
         assert 'data-bench-results-filters="1"' in results.text
+        assert 'id="bench-filter-kind"' in results.text
         assert 'id="bench-filter-def"' in results.text
         assert 'id="bench-filter-status"' in results.text
         assert 'id="bench-filter-type"' in results.text
+        assert "All hunts" in results.text
+        assert "all-hunt" in results.text
         assert 'data-bench-sort="1"' in results.text
         assert 'data-bench-order="1"' in results.text
         assert 'id="bench-results-apply"' in results.text
@@ -221,6 +224,8 @@ def test_results_detail_route_and_list_prove():
         assert 'id="bench-detail-body"' in page.text
         assert f"/api/benchmarks/runs/{rid}" in page.text or "/api/benchmarks/runs/" in page.text
         assert 'id="bench-results-back"' in page.text
+        assert 'id="bench-detail-suite"' in page.text
+        assert 'id="bench-detail-members"' in page.text
 
 
 def test_defs_for_suite_excludes_poc_dev():
@@ -287,6 +292,32 @@ def test_api_suite_all_recon_one_parent_plus_children():
             child = detail.json()["run"]
             assert child["status"] == "passed"
             assert "recon" in child["types_run"]
+
+        parents = client.get("/api/benchmarks/runs", params={"suite": "true"})
+        assert parents.status_code == 200
+        parent_ids = [r["id"] for r in parents.json()["runs"]]
+        assert run["id"] in parent_ids
+        assert not any(cid in parent_ids for cid in child_ids)
+        kids = client.get("/api/benchmarks/runs", params={"suite": "false"})
+        kid_ids = [r["id"] for r in kids.json()["runs"]]
+        assert run["id"] not in kid_ids
+        assert all(cid in kid_ids for cid in child_ids)
+        mixed = client.get("/api/benchmarks/runs", params={"sort": "started_at", "order": "desc"})
+        mixed_ids = [r["id"] for r in mixed.json()["runs"]]
+        assert mixed_ids.index(run["id"]) < min(mixed_ids.index(cid) for cid in child_ids)
+
+        series = client.get(
+            "/api/benchmarks/runs/series",
+            params={"def_id": "all-recon", "type": "recon"},
+        )
+        assert series.status_code == 200, series.text
+        points = series.json()["points"]
+        assert any(p["run_id"] == run["id"] for p in points)
+
+        detail_page = client.get(f"/benchmarks/results/{run['id']}")
+        assert detail_page.status_code == 200
+        assert 'id="bench-detail-members"' in detail_page.text
+        assert 'data-bench-detail-suite="1"' in detail_page.text
 
 
 def test_api_suite_all_hunt_includes_toy_and_flag():
