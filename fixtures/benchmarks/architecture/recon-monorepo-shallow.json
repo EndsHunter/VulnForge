@@ -1,0 +1,58 @@
+{
+  "summary": "Mechanical recon: shallow monorepo services + shared lib.",
+  "components": [
+    {
+      "name": "svc_alpha",
+      "path_hints": [
+        "services/alpha/main.py"
+      ],
+      "role": "alpha service"
+    },
+    {
+      "name": "svc_beta",
+      "path_hints": [
+        "services/beta/main.py"
+      ],
+      "role": "beta service"
+    },
+    {
+      "name": "shared_lib",
+      "path_hints": [
+        "libs/shared/util.py"
+      ],
+      "role": "shared library"
+    }
+  ],
+  "trust_boundaries": [
+    {
+      "id": "ext-to-alpha",
+      "from": "untrusted_client",
+      "to": "svc_alpha",
+      "notes": "external entry to alpha"
+    },
+    {
+      "id": "ext-to-beta",
+      "from": "untrusted_client",
+      "to": "svc_beta",
+      "notes": "external entry to beta"
+    }
+  ],
+  "relations": [
+    {
+      "from": "svc_alpha",
+      "to": "shared_lib",
+      "kind": "uses"
+    },
+    {
+      "from": "svc_beta",
+      "to": "shared_lib",
+      "kind": "uses"
+    }
+  ],
+  "input_surfaces": [
+    "service HTTP"
+  ],
+  "hunt_focus": [
+    "authz"
+  ]
+}

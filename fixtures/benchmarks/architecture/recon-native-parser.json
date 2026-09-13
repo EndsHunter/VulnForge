@@ -1,0 +1,52 @@
+{
+  "summary": "Mechanical recon: native/C parser + Python bindings.",
+  "components": [
+    {
+      "name": "native_parser",
+      "path_hints": [
+        "native/parser.c"
+      ],
+      "role": "C parser"
+    },
+    {
+      "name": "parser_header",
+      "path_hints": [
+        "native/parser.h"
+      ],
+      "role": "C API header"
+    },
+    {
+      "name": "py_bindings",
+      "path_hints": [
+        "bindings/parser_py.py"
+      ],
+      "role": "Python bindings"
+    }
+  ],
+  "trust_boundaries": [
+    {
+      "id": "bytes-to-native",
+      "from": "untrusted_bytes",
+      "to": "native_parser",
+      "notes": "untrusted buffer into C parser"
+    }
+  ],
+  "relations": [
+    {
+      "from": "py_bindings",
+      "to": "native_parser",
+      "kind": "ffi"
+    },
+    {
+      "from": "native_parser",
+      "to": "parser_header",
+      "kind": "implements"
+    }
+  ],
+  "input_surfaces": [
+    "raw bytes"
+  ],
+  "hunt_focus": [
+    "memory_safety"
+  ]
+}

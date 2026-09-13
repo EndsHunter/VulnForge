@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "recon-auth-boundaries",
+  "target": "fixtures/recon_benches/recon-auth-boundaries",
+  "type": "recon",
+  "description": "Mechanical recon: auth middleware vs protected handlers.",
+  "components": [
+    {
+      "name": "auth_middleware",
+      "path_hints": [
+        "auth/middleware.py"
+      ]
+    },
+    {
+      "name": "session",
+      "path_hints": [
+        "auth/session.py"
+      ]
+    },
+    {
+      "name": "protected_handlers",
+      "path_hints": [
+        "app/handlers.py"
+      ]
+    }
+  ],
+  "require_relations": true,
+  "require_trust_boundaries": true,
+  "architecture_ref": "fixtures/benchmarks/architecture/recon-auth-boundaries.json"
+}

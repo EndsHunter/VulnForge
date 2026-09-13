@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "recon-multi-pkg",
+  "target": "fixtures/recon_benches/recon-multi-pkg",
+  "type": "recon",
+  "description": "Mechanical recon: multi-package layout (core + util + adapter).",
+  "components": [
+    {
+      "name": "core",
+      "path_hints": [
+        "pkg_core/service.py"
+      ]
+    },
+    {
+      "name": "util",
+      "path_hints": [
+        "pkg_util/helpers.py"
+      ]
+    },
+    {
+      "name": "adapter",
+      "path_hints": [
+        "pkg_adapter/http.py"
+      ]
+    }
+  ],
+  "require_relations": true,
+  "require_trust_boundaries": true,
+  "architecture_ref": "fixtures/benchmarks/architecture/recon-multi-pkg.json"
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "recon-monorepo-shallow",
+  "target": "fixtures/recon_benches/recon-monorepo-shallow",
+  "type": "recon",
+  "description": "Mechanical recon: shallow monorepo services + shared lib.",
+  "components": [
+    {
+      "name": "svc_alpha",
+      "path_hints": [
+        "services/alpha/main.py"
+      ]
+    },
+    {
+      "name": "svc_beta",
+      "path_hints": [
+        "services/beta/main.py"
+      ]
+    },
+    {
+      "name": "shared_lib",
+      "path_hints": [
+        "libs/shared/util.py"
+      ]
+    }
+  ],
+  "require_relations": true,
+  "require_trust_boundaries": true,
+  "architecture_ref": "fixtures/benchmarks/architecture/recon-monorepo-shallow.json"
+}

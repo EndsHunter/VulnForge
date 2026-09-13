@@ -1,8 +1,9 @@
 """Mechanical scorers for recon and finding_report bench types.
 
 No live LLM. Recon prefers a shipped architecture.json (or oracle
-architecture_ref), else synthesizes architecture-like signals from
-filesystem / codemap path_hint heuristics. Finding_report scores a
+architecture_ref), else synthesizes component path_hint signals from
+filesystem / codemap heuristics (relations / trust_boundaries stay empty
+so require_* fails without a real architecture). Finding_report scores a
 fixture report JSON against required fields / citation density /
 honesty labels.
 """
@@ -148,28 +149,13 @@ def _synthesize_architecture(target: Path, oracle: dict[str, Any]) -> dict[str, 
                 )
                 break
 
-    relations: list[dict[str, Any]] = []
-    trust: list[dict[str, Any]] = []
-    if oracle.get("require_relations", True) and components:
-        names = [c["name"] for c in components]
-        if len(names) >= 2:
-            relations.append({"from": names[0], "to": names[1], "kind": "uses"})
-        else:
-            relations.append({"from": names[0], "to": "datastore", "kind": "uses"})
-    if oracle.get("require_trust_boundaries", True) and components:
-        trust.append(
-            {
-                "id": "untrusted-to-app",
-                "from": "untrusted",
-                "to": components[0]["name"],
-            }
-        )
-
+    # Do not invent relations / trust_boundaries: when architecture is missing,
+    # require_* checks must fail with clear metrics (empty lists).
     return {
         "summary": f"synthesized for {target.name}",
         "components": components,
-        "relations": relations,
-        "trust_boundaries": trust,
+        "relations": [],
+        "trust_boundaries": [],
         "input_surfaces": [],
         "hunt_focus": [],
         "_source": "synthesize",

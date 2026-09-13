@@ -23,7 +23,7 @@ Not under `project/` (run projection). Package code: `vulnforge/benchmarks/`.
 |--------|-------|
 | `fixtures/ground_truth/*.json` | `hunt` (id = stem; `pe-*` are one-finding profile_eval hunt seeds) |
 | `fixtures/vulngym/slice.json` | `hunt` (id = finding `entry-*`; oracle is that finding only) |
-| `fixtures/benchmarks/*.json` | `recon` / `finding_report` / `poc_dev` (id = stem; not `reports/` or `architecture/`) |
+| `fixtures/benchmarks/*.json` | `recon` / `finding_report` / `poc_dev` (id = stem; includes recon×10 + toy_*; not `reports/` or `architecture/`) |
 
 `target_ref` comes from the fixture `target` field; oracle body is snapshotted
 onto version 1 (type-specific — hunt keeps `findings[]`; recon keeps components /

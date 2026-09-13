@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "recon-deps-surface",
+  "target": "fixtures/recon_benches/recon-deps-surface",
+  "type": "recon",
+  "description": "Mechanical recon: app entry + declared dependency surface.",
+  "components": [
+    {
+      "name": "app",
+      "path_hints": [
+        "app/main.py"
+      ]
+    },
+    {
+      "name": "requirements",
+      "path_hints": [
+        "requirements.txt"
+      ]
+    },
+    {
+      "name": "deps_manifest",
+      "path_hints": [
+        "deps/manifest.json"
+      ]
+    }
+  ],
+  "require_relations": true,
+  "require_trust_boundaries": true,
+  "architecture_ref": "fixtures/benchmarks/architecture/recon-deps-surface.json"
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "recon-native-parser",
+  "target": "fixtures/recon_benches/recon-native-parser",
+  "type": "recon",
+  "description": "Mechanical recon: native/C parser + Python bindings.",
+  "components": [
+    {
+      "name": "native_parser",
+      "path_hints": [
+        "native/parser.c"
+      ]
+    },
+    {
+      "name": "parser_header",
+      "path_hints": [
+        "native/parser.h"
+      ]
+    },
+    {
+      "name": "py_bindings",
+      "path_hints": [
+        "bindings/parser_py.py"
+      ]
+    }
+  ],
+  "require_relations": true,
+  "require_trust_boundaries": true,
+  "architecture_ref": "fixtures/benchmarks/architecture/recon-native-parser.json"
+}

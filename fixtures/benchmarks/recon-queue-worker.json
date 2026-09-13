@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "recon-queue-worker",
+  "target": "fixtures/recon_benches/recon-queue-worker",
+  "type": "recon",
+  "description": "Mechanical recon: queue producer + worker consumer.",
+  "components": [
+    {
+      "name": "producer",
+      "path_hints": [
+        "queue/producer.py"
+      ]
+    },
+    {
+      "name": "broker",
+      "path_hints": [
+        "queue/broker.py"
+      ]
+    },
+    {
+      "name": "worker",
+      "path_hints": [
+        "worker/consumer.py"
+      ]
+    }
+  ],
+  "require_relations": true,
+  "require_trust_boundaries": true,
+  "architecture_ref": "fixtures/benchmarks/architecture/recon-queue-worker.json"
+}
