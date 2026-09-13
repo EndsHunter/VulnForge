@@ -1,0 +1,25 @@
+{
+  "title": "JWT alg-from-header accepts none / weak HMAC verification",
+  "summary": "Token header alg is attacker-controlled; none algorithm and partial HMAC compare allow forged sessions.",
+  "weakness_class": "web-protocol-auth",
+  "threat_model": {
+    "attacker": "remote client supplying X-N / n JWT",
+    "boundary": "HTTP JWT header \u2192 _ok verification",
+    "impact": "authentication bypass via forged token and session spoof"
+  },
+  "citations": [
+    {
+      "path": "unit_01.py",
+      "start_line": 22,
+      "end_line": 32,
+      "symbol": "_ok"
+    }
+  ],
+  "severity_claim": "HIGH",
+  "honesty_labels": [
+    "severity_claim",
+    "needs_human"
+  ],
+  "evidence_id": "fixture-report-pe-jwt-gold",
+  "patch_sketch": "Pin allowed algorithms server-side; reject alg=none; verify full HMAC."
+}

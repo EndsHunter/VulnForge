@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "report-vg-00319-vacuous",
+  "target": "fixtures/report_benches/vg-00319",
+  "type": "finding_report",
+  "description": "Report pack vacuous_tm: VulnGym-paired entry-00319 with empty threat_model.",
+  "variant": "vacuous_tm",
+  "expect_pass": false,
+  "required_fields": [
+    "title",
+    "summary",
+    "weakness_class",
+    "threat_model",
+    "citations",
+    "severity_claim"
+  ],
+  "min_citation_density": 1.0,
+  "honesty_labels": [
+    "severity_claim",
+    "needs_human"
+  ],
+  "fixture_report_ref": "fixtures/benchmarks/reports/report-vg-00319-vacuous.json",
+  "tags": [
+    "seed",
+    "finding_report",
+    "report-pack",
+    "vacuous_tm",
+    "vulngym",
+    "vg-00319"
+  ]
+}

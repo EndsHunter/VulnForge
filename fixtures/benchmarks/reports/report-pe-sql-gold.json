@@ -1,0 +1,25 @@
+{
+  "title": "SQL injection after semicolon strip in /q handler",
+  "summary": "Form parameter n is semicolon-stripped then spliced into a LIKE query via string replace, defeating parameterization.",
+  "weakness_class": "injection",
+  "threat_model": {
+    "attacker": "authenticated or anonymous HTTP client posting to /q",
+    "boundary": "HTTP form n \u2192 SQLite text() execution",
+    "impact": "arbitrary SQL injection to read or modify items rows"
+  },
+  "citations": [
+    {
+      "path": "unit_06.py",
+      "start_line": 10,
+      "end_line": 16,
+      "symbol": "q"
+    }
+  ],
+  "severity_claim": "HIGH",
+  "honesty_labels": [
+    "severity_claim",
+    "needs_human"
+  ],
+  "evidence_id": "fixture-report-pe-sql-gold",
+  "patch_sketch": "Bind parameters with sqlalchemy text() bindparams instead of string replace."
+}

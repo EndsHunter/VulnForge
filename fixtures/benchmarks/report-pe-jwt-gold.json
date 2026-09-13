@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "report-pe-jwt-gold",
+  "target": "fixtures/profile_eval/tree",
+  "type": "finding_report",
+  "description": "Report pack gold: pe-jwt profile_eval-paired report.",
+  "variant": "gold",
+  "expect_pass": true,
+  "required_fields": [
+    "title",
+    "summary",
+    "weakness_class",
+    "threat_model",
+    "citations",
+    "severity_claim"
+  ],
+  "min_citation_density": 1.0,
+  "honesty_labels": [
+    "severity_claim",
+    "needs_human"
+  ],
+  "fixture_report_ref": "fixtures/benchmarks/reports/report-pe-jwt-gold.json",
+  "tags": [
+    "seed",
+    "finding_report",
+    "report-pack",
+    "gold",
+    "profile_eval",
+    "pe-jwt"
+  ]
+}
