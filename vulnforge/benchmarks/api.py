@@ -259,29 +259,28 @@ def api_benchmark_runs_series(
     def_id: Optional[str] = None,
     type: Optional[str] = None,
 ):
-    """Score-over-time points for a def (started_at + recall or type score).
+    """Live passed-run scatter: duration_s (speed) vs score (accuracy).
 
-    Query:
-      def_id (required), type (optional types_run filter; score from by_type)
+    Mechanical L0 is omitted. Query:
+      def_id (optional; omit for every live passed run), type (optional types_run filter)
     """
     bid = (def_id or "").strip()
-    if not bid:
-        raise HTTPException(400, "def_id is required")
     try:
         ensure_library()
-        if bid not in SUITE_DEF_IDS:
+        if bid and bid not in SUITE_DEF_IDS:
             get_def(bid, include_oracle=False)
     except BenchmarkLibraryError as e:
         raise _http_lib(e) from e
     try:
         runs = list_runs(
-            def_id=bid,
+            def_id=bid or None,
             run_type=type,
+            status="passed",
             sort="started_at",
             order="asc",
             limit=500,
         )
-        payload = build_series(runs, def_id=bid, run_type=type)
+        payload = build_series(runs, def_id=bid or None, run_type=type)
         return {"ok": True, **payload}
     except BenchmarkRunError as e:
         raise _http_run(e) from e

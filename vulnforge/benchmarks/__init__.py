@@ -66,6 +66,7 @@ from vulnforge.benchmarks.series import (
     compare_versions,
     empty_side,
     extract_score,
+    run_duration_s,
     summarize_version,
 )
 from vulnforge.benchmarks.store import (
@@ -114,6 +115,7 @@ __all__ = [
     "empty_side",
     "eval_runs_root_for",
     "extract_score",
+    "run_duration_s",
     "ensure_library",
     "get_def",
     "get_run",

@@ -314,7 +314,8 @@ def test_api_suite_all_recon_one_parent_plus_children():
         )
         assert series.status_code == 200, series.text
         points = series.json()["points"]
-        assert any(p["run_id"] == run["id"] for p in points)
+        assert all(p.get("mode") == "live" for p in points)
+        assert not any(p["run_id"] == run["id"] for p in points)
 
         detail_page = client.get(f"/benchmarks/results/{run['id']}")
         assert detail_page.status_code == 200

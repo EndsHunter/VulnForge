@@ -7,6 +7,7 @@ Score is recall when present, else type/top-level ``score``.
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 
@@ -76,6 +77,33 @@ def extract_score(run: dict[str, Any], *, run_type: Optional[str] = None) -> Opt
     return _as_float(metrics.get("score"))
 
 
+def run_duration_s(run: dict[str, Any]) -> Optional[float]:
+    """Wall time in seconds from started_at to finished_at, or None."""
+    start = _parse_iso(run.get("started_at"))
+    end = _parse_iso(run.get("finished_at"))
+    if start is None or end is None:
+        return None
+    delta = (end - start).total_seconds()
+    if delta < 0:
+        return None
+    return round(delta, 3)
+
+
+def _parse_iso(raw: Any) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def extract_hits(run: dict[str, Any], *, run_type: Optional[str] = None) -> tuple[Optional[int], Optional[int]]:
     """``(hit_count, oracle_count)`` preferring a type slice when asked."""
     metrics = _metrics(run)
@@ -128,21 +156,31 @@ def _match_run(
 def build_series(
     runs: list[dict[str, Any]],
     *,
-    def_id: str,
+    def_id: Optional[str] = None,
     run_type: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Score-over-time points, oldest ``started_at`` first."""
+    """Live passed hunts as scatter points: duration_s (speed) vs score (accuracy).
+
+    Mechanical L0 and workshop runs are omitted.
+    """
     want_def = str(def_id or "").strip().lower()
     want_type = str(run_type or "").strip().lower().replace(" ", "_") or None
     points: list[dict[str, Any]] = []
     for run in runs or []:
         if not isinstance(run, dict):
             continue
-        if not _match_run(run, def_id=want_def, run_type=want_type):
+        if str(run.get("mode") or "").strip().lower() != "live":
+            continue
+        if str(run.get("status") or "").strip().lower() != "passed":
+            continue
+        if not _match_run(run, def_id=want_def or None, run_type=want_type):
+            continue
+        duration = run_duration_s(run)
+        if duration is None:
             continue
         score = extract_score(run, run_type=want_type)
         if score is None:
-            score = 0.0
+            continue
         metrics = _metrics(run)
         rec = _as_float(metrics.get("recall"))
         if want_type:
@@ -152,16 +190,21 @@ def build_series(
         points.append(
             {
                 "run_id": str(run.get("id") or ""),
+                "def_id": str(run.get("def_id") or ""),
                 "started_at": str(run.get("started_at") or ""),
+                "finished_at": str(run.get("finished_at") or ""),
+                "duration_s": duration,
                 "score": round(float(score), 6),
+                "accuracy": round(float(score), 6),
                 "recall": rec,
                 "version": int(run.get("version") or 0),
-                "status": str(run.get("status") or ""),
+                "status": "passed",
+                "mode": str(run.get("mode") or ""),
                 "types_run": list(_types_of(run)),
             }
         )
-    points.sort(key=lambda p: (p["started_at"], p["run_id"]))
-    return {"def_id": want_def, "type": want_type, "points": points}
+    points.sort(key=lambda p: (p["duration_s"], p["run_id"]))
+    return {"def_id": want_def or None, "type": want_type, "points": points}
 
 
 def _flatten_latest(

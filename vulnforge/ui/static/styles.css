@@ -6270,14 +6270,7 @@ body[data-page="benchmarks"] .bench-chart-frame {
 body[data-page="benchmarks"] .bench-chart-svg {
   display: block;
   width: 100%;
-  height: 180px;
-}
-body[data-page="benchmarks"] .bench-chart-line {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 2;
-  stroke-linejoin: round;
-  stroke-linecap: round;
+  height: 280px;
 }
 body[data-page="benchmarks"] .bench-chart-gridline {
   stroke: var(--hairline-strong);
@@ -6288,10 +6281,16 @@ body[data-page="benchmarks"] .bench-chart-tick {
   font-size: 10px;
   font-family: var(--mono);
 }
+body[data-page="benchmarks"] .bench-chart-axis-label {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--sans, inherit);
+}
 body[data-page="benchmarks"] .bench-chart-dot {
   fill: var(--accent-bright);
   stroke: var(--bg-inset);
   stroke-width: 1;
+  cursor: pointer;
 }
 body[data-page="benchmarks"] .bench-chart-empty {
   position: absolute;

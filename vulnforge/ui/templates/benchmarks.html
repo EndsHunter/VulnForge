@@ -679,8 +679,8 @@
       </div>
       {% else %}
       <div id="bench-chart" class="card bench-chart-card" data-bench-chart="1">
-        <h3 class="bench-panel-title">Score over time</h3>
-        <p class="controls-hint">Recall (or type score) for the selected def or suite, oldest first.</p>
+        <h3 class="bench-panel-title">Speed vs accuracy</h3>
+        <p class="controls-hint">Live passed hunts only. Mechanical L0 is omitted. X is wall time (s). Y is recall or type score. Click a point to open the run.</p>
         <div class="controls bench-chart-controls" data-bench-chart-controls="1">
           <label for="bench-chart-def">Def</label>
           <select id="bench-chart-def" class="mono" data-bench-chart-def="1" aria-label="Chart benchmark def"></select>
@@ -695,14 +695,13 @@
         </div>
         <div id="bench-chart-frame" class="bench-chart-frame" data-bench-chart-frame="1">
           <svg id="bench-chart-svg" class="bench-chart-svg" data-bench-chart-svg="1"
-               viewBox="0 0 640 180" role="img" aria-label="Score over time">
+               viewBox="0 0 640 280" role="img" aria-label="Speed versus accuracy scatter">
             <g id="bench-chart-grid" data-bench-chart-grid="1"></g>
-            <polyline id="bench-chart-line" class="bench-chart-line" data-bench-chart-line="1"
-                      fill="none" points=""></polyline>
+            <g id="bench-chart-axes" data-bench-chart-axes="1"></g>
             <g id="bench-chart-dots" data-bench-chart-dots="1"></g>
           </svg>
           <p id="bench-chart-empty" class="controls-hint bench-chart-empty" data-bench-chart-empty="1">
-            Pick a def to chart.
+            No live passed hunts to plot.
           </p>
         </div>
       </div>
@@ -798,7 +797,7 @@
       </div>
       {% endif %}
     </section>
-    <script src="/static/bench_results_helpers.js"></script>
+    <script src="/static/bench_results_helpers.js?v=scatter-2"></script>
     <script>
     (function () {
       if (document.body.getAttribute("data-bench-page") !== "results") return;
@@ -1071,9 +1070,9 @@
       var chartType = document.getElementById("bench-chart-type");
       var chartApply = document.getElementById("bench-chart-apply");
       var chartSvg = document.getElementById("bench-chart-svg");
-      var chartLine = document.getElementById("bench-chart-line");
       var chartDots = document.getElementById("bench-chart-dots");
       var chartGrid = document.getElementById("bench-chart-grid");
+      var chartAxes = document.getElementById("bench-chart-axes");
       var chartEmpty = document.getElementById("bench-chart-empty");
       var cmpDef = document.getElementById("bench-compare-def");
       var cmpA = document.getElementById("bench-compare-a");
@@ -1110,15 +1109,17 @@
       }
 
       function fillDefSelects() {
-        var prefer = "all-hunt";
         var suiteRows = Object.keys(SUITE_LABELS).map(function (id) {
           return { id: id, head_version: 1, suite: true };
         });
-        var ids = suiteRows.concat(allDefs.map(function (b) { return b; }));
+        var ids = [{ id: "", label: "All live passed hunts" }]
+          .concat(suiteRows)
+          .concat(allDefs.map(function (b) { return b; }));
         fillSelect(chartDef, ids, function (b) { return b.id || ""; }, function (b) {
+          if (b.label) return b.label;
           if (b.suite) return SUITE_LABELS[b.id] + " (" + b.id + ")";
           return (b.id || "") + " (v" + (b.head_version != null ? b.head_version : "?") + ")";
-        }, prefer);
+        }, "");
         fillSelect(cmpDef, allDefs, function (b) { return b.id || ""; }, function (b) {
           return (b.id || "") + " (v" + (b.head_version != null ? b.head_version : "?") + ")";
         }, "toy_sqli");
@@ -1139,38 +1140,86 @@
         }
       }
 
+      function svgEl(name) {
+        return document.createElementNS("http://www.w3.org/2000/svg", name);
+      }
+
       function renderChart(points) {
-        if (!chartSvg || !chartLine || !chartDots || !chartGrid) return;
-        var layout = (H.seriesToPolyline || function () { return { points: "", dots: [], empty: true }; })(points, {
-          width: 640, height: 180, pad: 28
+        if (!chartSvg || !chartDots || !chartGrid) return;
+        var layout = (H.scatterToDots || function () { return { dots: [], empty: true }; })(points, {
+          width: 640, height: 280
         });
-        chartLine.setAttribute("points", layout.points || "");
         chartDots.textContent = "";
         chartGrid.textContent = "";
-        var grid = (H.gridYs || function () { return []; })(layout.height || 180, layout.pad || 28, 2);
-        grid.forEach(function (g) {
-          var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-          line.setAttribute("x1", String(layout.pad || 28));
-          line.setAttribute("x2", String((layout.width || 640) - (layout.pad || 28)));
+        if (chartAxes) chartAxes.textContent = "";
+        var padL = layout.padL || 48;
+        var padR = layout.padR || 16;
+        var padT = layout.padT || 16;
+        var padB = layout.padB || 36;
+        var width = layout.width || 640;
+        var height = layout.height || 280;
+        (layout.yTicks || []).forEach(function (g) {
+          var line = svgEl("line");
+          line.setAttribute("x1", String(padL));
+          line.setAttribute("x2", String(width - padR));
           line.setAttribute("y1", String(g.y));
           line.setAttribute("y2", String(g.y));
           line.setAttribute("class", "bench-chart-gridline");
           chartGrid.appendChild(line);
-          var lab = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          lab.setAttribute("x", "6");
+          var lab = svgEl("text");
+          lab.setAttribute("x", "8");
           lab.setAttribute("y", String(g.y + 3));
           lab.setAttribute("class", "bench-chart-tick");
           lab.textContent = g.label;
           chartGrid.appendChild(lab);
         });
+        (layout.xTicks || []).forEach(function (g) {
+          var line = svgEl("line");
+          line.setAttribute("x1", String(g.x));
+          line.setAttribute("x2", String(g.x));
+          line.setAttribute("y1", String(padT));
+          line.setAttribute("y2", String(height - padB));
+          line.setAttribute("class", "bench-chart-gridline");
+          chartGrid.appendChild(line);
+          var lab = svgEl("text");
+          lab.setAttribute("x", String(g.x));
+          lab.setAttribute("y", String(height - 14));
+          lab.setAttribute("text-anchor", "middle");
+          lab.setAttribute("class", "bench-chart-tick");
+          lab.textContent = g.label;
+          chartGrid.appendChild(lab);
+        });
+        if (chartAxes) {
+          var yLab = svgEl("text");
+          yLab.setAttribute("x", "8");
+          yLab.setAttribute("y", "12");
+          yLab.setAttribute("class", "bench-chart-axis-label");
+          yLab.textContent = "Accuracy";
+          chartAxes.appendChild(yLab);
+          var xLab = svgEl("text");
+          xLab.setAttribute("x", String(width / 2));
+          xLab.setAttribute("y", String(height - 2));
+          xLab.setAttribute("text-anchor", "middle");
+          xLab.setAttribute("class", "bench-chart-axis-label");
+          xLab.textContent = "Speed (s)";
+          chartAxes.appendChild(xLab);
+        }
         (layout.dots || []).forEach(function (d) {
-          var c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          var c = svgEl("circle");
           c.setAttribute("cx", String(d.x));
           c.setAttribute("cy", String(d.y));
-          c.setAttribute("r", "3.5");
+          c.setAttribute("r", "4.5");
           c.setAttribute("class", "bench-chart-dot");
-          var title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-          title.textContent = (d.started_at || "") + "  score=" + (H.formatScore ? H.formatScore(d.score) : d.score)
+          if (d.run_id) {
+            c.style.cursor = "pointer";
+            c.addEventListener("click", function () {
+              window.location.href = "/benchmarks/results/" + encodeURIComponent(d.run_id);
+            });
+          }
+          var title = svgEl("title");
+          title.textContent = (d.def_id ? d.def_id + "  " : "")
+            + (H.formatScore ? H.formatScore(d.duration_s, 1) : d.duration_s) + "s  "
+            + "acc=" + (H.formatScore ? H.formatScore(d.score) : d.score)
             + (d.version != null ? "  v" + d.version : "");
           c.appendChild(title);
           chartDots.appendChild(c);
@@ -1178,7 +1227,7 @@
         if (chartEmpty) {
           if (layout.empty) {
             chartEmpty.hidden = false;
-            chartEmpty.textContent = "No runs for this def.";
+            chartEmpty.textContent = "No live passed hunts to plot.";
           } else {
             chartEmpty.hidden = true;
           }
@@ -1187,17 +1236,11 @@
       }
 
       function loadChart() {
-        if (!chartDef) return;
-        var defId = chartDef.value;
-        if (!defId) {
-          renderChart([]);
-          if (chartEmpty) { chartEmpty.hidden = false; chartEmpty.textContent = "Pick a def to chart."; }
-          return;
-        }
         var q = new URLSearchParams();
-        q.set("def_id", defId);
+        var defId = chartDef && chartDef.value;
+        if (defId) q.set("def_id", defId);
         if (chartType && chartType.value) q.set("type", chartType.value);
-        fetch("/api/benchmarks/runs/series?" + q.toString())
+        fetch("/api/benchmarks/runs/series" + (q.toString() ? ("?" + q.toString()) : ""))
           .then(function (r) { return r.json(); })
           .then(function (data) {
             renderChart((data && data.points) || []);

@@ -67,7 +67,7 @@ dropdown lists those suites at the top.
 | GET    | `/api/benchmarks/runs` | list runs (filters/sort; `suite=true` = All hunts / All recons parents) |
 | GET    | `/api/benchmarks/runs/active` | queued/running (live reconciled; suite parents first) |
 | POST   | `/api/benchmarks/runs` | create + execute (mechanical sync; live hunt async; `all-*` / `suite` = type suite; live `only` subsets) |
-| GET    | `/api/benchmarks/runs/series` | score-over-time points (`def_id` including `all-hunt` / `all-recon`, optional `type`) |
+| GET    | `/api/benchmarks/runs/series` | live passed-run scatter (`duration_s` vs score; mechanical omitted) |
 | POST   | `/api/benchmarks/runs/{id}/stop` | cancel a live run (stops Ralph; suite skips queued children) |
 | GET    | `/api/benchmarks/runs/{id}` | run detail + type metrics (live queued/running rows are reconciled) |
 | GET    | `/api/benchmarks/compare` | version A vs B (`def_id`, `version_a`, `version_b`, optional `type`) |
