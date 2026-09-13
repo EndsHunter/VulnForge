@@ -1,0 +1,21 @@
+{
+  "target": "fixtures/profile_eval/tree",
+  "description": "profile_eval pe-crypto (static AES-CBC IV + MD5)",
+  "difficulty": "medium",
+  "tags": [
+    "profile_eval",
+    "seed"
+  ],
+  "findings": [
+    {
+      "id": "crypto",
+      "class": "cryptography",
+      "sink_path": "unit_03.py",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_03.py"
+      }
+    }
+  ]
+}

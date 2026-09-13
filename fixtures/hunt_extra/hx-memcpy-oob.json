@@ -1,0 +1,22 @@
+{
+  "target": "fixtures/hunt_extra/hx-memcpy-oob",
+  "description": "Juliet-shaped memcpy OOB micro-fixture (memory-safety)",
+  "difficulty": "easy",
+  "tags": [
+    "hunt_extra",
+    "seed",
+    "memory-safety"
+  ],
+  "findings": [
+    {
+      "id": "memcpy-oob",
+      "class": "memory-safety",
+      "sink_path": "vulnerable.c",
+      "sink_symbol": "copy_user",
+      "kinds": ["memory"],
+      "match": {
+        "path_suffix": "vulnerable.c"
+      }
+    }
+  ]
+}

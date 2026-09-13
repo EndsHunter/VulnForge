@@ -1,0 +1,28 @@
+{
+  "title": "CRITICAL unauthenticated RCE via pe-sql LIKE handler",
+  "summary": "Inflates a SQL concat fixture into claimed OS command execution without supporting citations.",
+  "weakness_class": "injection",
+  "threat_model": {
+    "attacker": "remote unauthenticated attacker",
+    "boundary": "HTTP form n \u2192 OS shell",
+    "impact": "remote code execution on the application host"
+  },
+  "citations": [
+    {
+      "path": "unit_06.py",
+      "start_line": 10,
+      "end_line": 16,
+      "symbol": "q"
+    },
+    {
+      "path": "imaginary_shell_bridge.py",
+      "start_line": 1,
+      "end_line": 40,
+      "symbol": "exec_shell"
+    }
+  ],
+  "severity_claim": "CRITICAL",
+  "honesty_labels": [],
+  "evidence_id": "fixture-report-pe-sql-overclaim",
+  "patch_sketch": "Remove nonexistent shell bridge."
+}

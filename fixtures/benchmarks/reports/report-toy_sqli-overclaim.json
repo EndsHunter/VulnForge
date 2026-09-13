@@ -1,0 +1,22 @@
+{
+  "title": "Critical remote code execution via search_users",
+  "summary": "Claimed RCE far beyond the demonstrated SQL concatenation sink in the fixture.",
+  "weakness_class": "injection",
+  "threat_model": {
+    "attacker": "unauthenticated remote client",
+    "boundary": "HTTP query q \u2192 SQL engine",
+    "impact": "full remote code execution and total host compromise"
+  },
+  "citations": [
+    {
+      "path": "does_not_exist_rce_gadget.py",
+      "start_line": 1,
+      "end_line": 99,
+      "symbol": "imaginary_rce"
+    }
+  ],
+  "severity_claim": "CRITICAL",
+  "honesty_labels": [],
+  "evidence_id": "fixture-report-toy-sqli-overclaim",
+  "patch_sketch": "Claimed fix for nonexistent RCE gadget."
+}

@@ -1,0 +1,24 @@
+{
+  "title": "NLTK WordNet issue",
+  "summary": "There is a potential security risk in the WordNet browser component that should be reviewed.",
+  "weakness_class": "access-control",
+  "threat_model": {
+    "attacker": "unknown",
+    "boundary": "n/a",
+    "impact": "potential security issue"
+  },
+  "citations": [
+    {
+      "path": "nltk/app/wordnet_app.py",
+      "start_line": 84,
+      "end_line": 93,
+      "symbol": "shutdown"
+    }
+  ],
+  "severity_claim": "MEDIUM",
+  "honesty_labels": [
+    "severity_claim",
+    "needs_human"
+  ],
+  "evidence_id": "fixture-report-vg-00319-vacuous"
+}

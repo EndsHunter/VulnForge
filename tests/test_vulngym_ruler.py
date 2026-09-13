@@ -6,7 +6,12 @@ import sys
 from pathlib import Path
 
 from vulnforge.eval.recall import load_ground_truth, parse_line_number, score_findings
-from vulnforge.eval.vulngym import SLICE_IDS, SLICE_PATH, map_hunt_class
+from vulnforge.eval.vulngym import (
+    SLICE_IDS,
+    SLICE_PATH,
+    difficulty_for_oracle,
+    map_hunt_class,
+)
 from vulnforge.paths import PROJECT_ROOT
 
 EVAL_SCRIPT = PROJECT_ROOT / "scripts" / "eval_vulngym.py"
@@ -17,6 +22,14 @@ def test_parse_line_ranges():
     assert parse_line_number("493-494") == 493
     assert parse_line_number("263-266") == 263
     assert parse_line_number(None) is None
+
+
+def test_difficulty_for_oracle_heuristic():
+    assert difficulty_for_oracle({"l2": "TOCTOU / path", "class": "injection", "trace_len": 3}) == "hard"
+    assert difficulty_for_oracle({"l2": "BL-RACE-LOGIC(竞争)", "class": "business-logic", "trace_len": 5}) == "hard"
+    assert difficulty_for_oracle({"l2": "stored xss", "class": "client-side", "trace_len": 8}) == "hard"
+    assert difficulty_for_oracle({"l2": "BL-AGENT", "class": "ai-llm", "trace_len": 3}) == "easy"
+    assert difficulty_for_oracle({"l2": "SSTI", "class": "injection", "trace_len": 6}) == "medium"
 
 
 def test_class_map_authz_and_cmdi():
@@ -31,7 +44,8 @@ def test_slice_file_frozen():
     gt = load_ground_truth(SLICE_PATH)
     ids = [str(o["id"]) for o in gt["findings"]]
     assert ids == list(SLICE_IDS)
-    assert len(gt["findings"]) == 6
+    assert len(gt["findings"]) == len(SLICE_IDS)
+    assert len(gt["findings"]) == 16
     for o in gt["findings"]:
         assert o["sink_path"]
         assert o["match"]["start_line"]
@@ -40,7 +54,13 @@ def test_slice_file_frozen():
             "injection",
             "web-protocol-auth",
             "business-logic",
+            "ai-llm",
+            "client-side",
+            "supply-chain",
+            "feature-abuse",
+            "wildcard",
         }
+        assert difficulty_for_oracle(o) in {"easy", "medium", "hard"}
 
 
 def _perfect(oracles):
@@ -55,6 +75,16 @@ def _perfect(oracles):
             }
         )
     return bodies
+
+
+def test_new_slice_ids_perfect_score_nonzero():
+    gt = load_ground_truth(SLICE_PATH)
+    by_id = {str(o["id"]): o for o in gt["findings"]}
+    for eid in ("entry-00097", "entry-00074", "entry-00332"):
+        o = by_id[eid]
+        sc = score_findings(_perfect([o]), [o])
+        assert sc["recall"] > 0
+        assert sc["hit_count"] >= 1
 
 
 def test_empty_is_zero():

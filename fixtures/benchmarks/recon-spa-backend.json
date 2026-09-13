@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "recon-spa-backend",
+  "target": "fixtures/recon_benches/recon-spa-backend",
+  "type": "recon",
+  "description": "Mechanical recon: SPA frontend + backend API pair.",
+  "components": [
+    {
+      "name": "spa",
+      "path_hints": [
+        "frontend/app.js"
+      ]
+    },
+    {
+      "name": "api_client",
+      "path_hints": [
+        "frontend/api_client.js"
+      ]
+    },
+    {
+      "name": "backend_api",
+      "path_hints": [
+        "backend/api.py"
+      ]
+    }
+  ],
+  "require_relations": true,
+  "require_trust_boundaries": true,
+  "architecture_ref": "fixtures/benchmarks/architecture/recon-spa-backend.json"
+}

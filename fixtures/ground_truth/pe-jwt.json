@@ -1,0 +1,21 @@
+{
+  "target": "fixtures/profile_eval/tree",
+  "description": "profile_eval pe-jwt (JWT alg-from-header)",
+  "difficulty": "easy",
+  "tags": [
+    "profile_eval",
+    "seed"
+  ],
+  "findings": [
+    {
+      "id": "jwt",
+      "class": "web-protocol-auth",
+      "sink_path": "unit_01.py",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_01.py"
+      }
+    }
+  ]
+}

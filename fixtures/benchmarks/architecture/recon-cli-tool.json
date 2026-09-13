@@ -1,0 +1,52 @@
+{
+  "summary": "Mechanical recon: CLI entry + arg parser surface.",
+  "components": [
+    {
+      "name": "cli_main",
+      "path_hints": [
+        "cli/main.py"
+      ],
+      "role": "CLI entry"
+    },
+    {
+      "name": "arg_parser",
+      "path_hints": [
+        "cli/args.py"
+      ],
+      "role": "argv parser"
+    },
+    {
+      "name": "commands",
+      "path_hints": [
+        "cli/commands.py"
+      ],
+      "role": "command runners"
+    }
+  ],
+  "trust_boundaries": [
+    {
+      "id": "argv-to-cli",
+      "from": "untrusted_argv",
+      "to": "cli_main",
+      "notes": "argv crosses into process"
+    }
+  ],
+  "relations": [
+    {
+      "from": "cli_main",
+      "to": "arg_parser",
+      "kind": "uses"
+    },
+    {
+      "from": "cli_main",
+      "to": "commands",
+      "kind": "calls"
+    }
+  ],
+  "input_surfaces": [
+    "argv"
+  ],
+  "hunt_focus": [
+    "command_injection"
+  ]
+}

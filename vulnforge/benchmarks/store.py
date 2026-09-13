@@ -1,8 +1,10 @@
 """Filesystem JSON library of BenchmarkDef heads + immutable versions.
 
 Durable store under ``<project>/benchmarks/library/`` (not ``project/``).
-Seeded from ``fixtures/ground_truth/*.json`` (hunt) and
-``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev).
+Seeded from ``fixtures/ground_truth/*.json`` (hunt),
+``fixtures/hunt_extra/*.json`` (hunt micro-fixtures),
+``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev), and
+``fixtures/vulngym/slice.json`` (one hunt def per frozen finding).
 """
 
 from __future__ import annotations
@@ -17,12 +19,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 from vulnforge.eval.recall import GROUND_TRUTH_ROOT, load_ground_truth
+from vulnforge.eval.vulngym import SLICE_PATH, difficulty_for_oracle
 from vulnforge.paths import PROJECT_ROOT
 from vulnforge.util import utc_now_iso
 
 COLLECTION_FORMAT = "vulnforge.benchmark_library/v1"
 DEFAULT_LIBRARY_ROOT = PROJECT_ROOT / "benchmarks" / "library"
 BENCHMARK_FIXTURES_ROOT = PROJECT_ROOT / "fixtures" / "benchmarks"
+HUNT_EXTRA_ROOT = PROJECT_ROOT / "fixtures" / "hunt_extra"
 BENCH_TYPES = frozenset({"recon", "hunt", "finding_report", "poc_dev"})
 # Underscore allowed so GT stems (toy_sqli, mono_synth) are valid ids.
 DEF_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -228,6 +232,8 @@ def _normalize_oracle(raw: object, *, default_type: str = "hunt") -> dict[str, A
             "fixture_report_ref",
             "report_ref",
             "fixture_report",
+            "variant",
+            "expect_pass",
         ):
             if key in raw:
                 out[key] = deepcopy(raw[key]) if isinstance(raw[key], (dict, list)) else raw[key]
@@ -433,9 +439,15 @@ def _build_version_snapshot(
 
 
 def _gt_seed_candidates() -> list[Path]:
-    if not GROUND_TRUTH_ROOT.is_dir():
-        return []
-    return sorted(p for p in GROUND_TRUTH_ROOT.glob("*.json") if p.is_file())
+    """Hunt GT catalogs: ``fixtures/ground_truth/*.json`` plus
+    ``fixtures/hunt_extra/*.json`` (micro-fixture oracles; id = stem).
+    """
+    out: list[Path] = []
+    if GROUND_TRUTH_ROOT.is_dir():
+        out.extend(p for p in GROUND_TRUTH_ROOT.glob("*.json") if p.is_file())
+    if HUNT_EXTRA_ROOT.is_dir():
+        out.extend(p for p in HUNT_EXTRA_ROOT.glob("*.json") if p.is_file())
+    return sorted(out)
 
 
 def _bench_fixture_seed_candidates() -> list[Path]:
@@ -453,6 +465,13 @@ def _rel_to_project(path: Path) -> str:
 
 
 def _seed_payload_from_gt(path: Path) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Hunt def from a GT catalog (id = file stem; pe-* are one-finding seeds).
+
+    ``types`` is always ``["hunt"]``. ``target_ref`` / oracle findings come from
+    the GT file. Overlay ``difficulty`` when the catalog has easy/medium/hard.
+    Tags always include ``seed`` plus any GT ``tags`` (toy_sqli / mono_synth
+    stay ``["seed"]`` with empty overlay when those fields are absent).
+    """
     bid = _validate_id(path.stem)
     gt = load_ground_truth(path)
     oracle_ref = _rel_to_project(path)
@@ -463,14 +482,66 @@ def _seed_payload_from_gt(path: Path) -> tuple[dict[str, Any], dict[str, Any], s
         name = desc
     oracle = _normalize_oracle({"type": "hunt", "findings": gt.get("findings")})
     notes = f"seed from {oracle_ref}"
+    overlay: dict[str, Any] = {}
+    diff = str(gt.get("difficulty") or "").strip().lower()
+    if diff in {"easy", "medium", "hard"}:
+        overlay["difficulty"] = diff
+    tags = ["seed"]
+    seen = {"seed"}
+    for t in _as_str_list(gt.get("tags")):
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        tags.append(t)
     defn = {
         "id": bid,
         "name": name,
         "types": ["hunt"],
         "target_ref": target_ref[:MAX_REF],
         "oracle_ref": oracle_ref[:MAX_REF],
-        "config_overlay": {},
-        "tags": ["seed"],
+        "config_overlay": overlay,
+        "tags": tags,
+        "source": "seed",
+    }
+    return defn, oracle, notes
+
+
+def _vulngym_slice_findings() -> list[dict[str, Any]]:
+    """Frozen VulnGym slice findings (empty if slice.json is missing)."""
+    if not SLICE_PATH.is_file():
+        return []
+    try:
+        gt = load_ground_truth(SLICE_PATH)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    findings = gt.get("findings") or []
+    return [f for f in findings if isinstance(f, dict) and f.get("id")]
+
+
+def _seed_payload_from_vulngym_finding(
+    finding: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """One hunt def per slice finding; oracle body is that finding only."""
+    bid = _validate_id(str(finding.get("id") or ""))
+    oracle_ref = "fixtures/vulngym/slice.json"
+    target_ref = f".audit/vulngym/trees/{bid}"
+    project = str(finding.get("project") or "").strip()
+    name = f"VulnGym {bid} {project}".strip()[:MAX_NAME] or bid
+    hunt_class = str(finding.get("class") or "").strip()
+    tags = ["seed", "vulngym"]
+    if hunt_class:
+        tags.append(hunt_class)
+    oracle = _normalize_oracle({"type": "hunt", "findings": [finding]})
+    notes = f"seed from {oracle_ref}#{bid}"
+    defn = {
+        "id": bid,
+        "name": name,
+        "types": ["hunt"],
+        "target_ref": target_ref[:MAX_REF],
+        "oracle_ref": oracle_ref[:MAX_REF],
+        "config_overlay": {"difficulty": difficulty_for_oracle(finding)},
+        "tags": tags,
         "source": "seed",
     }
     return defn, oracle, notes
@@ -498,6 +569,14 @@ def _seed_payload_from_bench_fixture(path: Path) -> tuple[dict[str, Any], dict[s
         name = desc
     oracle = _normalize_oracle(raw, default_type=otype)
     notes = f"seed from {oracle_ref}"
+    tags: list[str] = ["seed", otype]
+    variant = str(raw.get("variant") or "").strip().lower()
+    if variant and variant not in tags:
+        tags.append(variant)
+    for t in raw.get("tags") or []:
+        ts = str(t).strip().lower()
+        if ts and ts not in tags:
+            tags.append(ts)
     defn = {
         "id": bid,
         "name": name,
@@ -505,7 +584,7 @@ def _seed_payload_from_bench_fixture(path: Path) -> tuple[dict[str, Any], dict[s
         "target_ref": target_ref[:MAX_REF],
         "oracle_ref": oracle_ref[:MAX_REF],
         "config_overlay": {},
-        "tags": ["seed", otype],
+        "tags": tags,
         "source": "seed",
     }
     return defn, oracle, notes
@@ -516,7 +595,13 @@ def seed_from_ground_truth(
     missing_only: bool = True,
     root: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Import GT hunt benches + fixtures/benchmarks recon/finding_report/poc_dev defs.
+    """Import GT hunt, bench-fixture, and VulnGym slice hunt defs.
+
+    Sources: ``fixtures/ground_truth/*.json`` (hunt; ``pe-*`` are one-finding
+    profile_eval seeds with optional ``difficulty`` / ``tags``),
+    ``fixtures/hunt_extra/*.json`` (Juliet/CVE-shaped micro-fixture hunts),
+    ``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev),
+    ``fixtures/vulngym/slice.json`` (one hunt def per finding).
 
     Default is skip-if-exists (``missing_only=True``): never duplicates or
     overwrites operator edits. Pass ``missing_only=False`` only to fill an
@@ -533,17 +618,13 @@ def seed_from_ground_truth(
     skipped: list[str] = []
     now = utc_now_iso()
 
-    def _ingest(path: Path, payload_fn) -> None:
+    def _ingest(bid: str, payload_fn) -> None:
         nonlocal by_id, seeded, skipped
-        try:
-            bid = _validate_id(path.stem)
-        except BenchmarkLibraryError:
-            return
         if bid in by_id and missing_only:
             skipped.append(bid)
             return
         try:
-            defn, oracle, notes = payload_fn(path)
+            defn, oracle, notes = payload_fn()
         except BenchmarkLibraryError:
             return
         defn["created_at"] = now
@@ -565,10 +646,23 @@ def seed_from_ground_truth(
             raise
         seeded.append(bid)
 
+    def _ingest_path(path: Path, payload_fn) -> None:
+        try:
+            bid = _validate_id(path.stem)
+        except BenchmarkLibraryError:
+            return
+        _ingest(bid, lambda: payload_fn(path))
+
     for path in _gt_seed_candidates():
-        _ingest(path, _seed_payload_from_gt)
+        _ingest_path(path, _seed_payload_from_gt)
     for path in _bench_fixture_seed_candidates():
-        _ingest(path, _seed_payload_from_bench_fixture)
+        _ingest_path(path, _seed_payload_from_bench_fixture)
+    for finding in _vulngym_slice_findings():
+        try:
+            bid = _validate_id(str(finding.get("id") or ""))
+        except BenchmarkLibraryError:
+            continue
+        _ingest(bid, lambda f=finding: _seed_payload_from_vulngym_finding(f))
 
     # Preserve existing order; append new seed ids alpha.
     order = [d["id"] for d in coll["defs"] if d["id"] in by_id]
@@ -576,7 +670,10 @@ def seed_from_ground_truth(
         if bid not in order:
             order.append(bid)
     coll["defs"] = [by_id[i] for i in order]
-    coll["seeded_from"] = "fixtures/ground_truth+fixtures/benchmarks"
+    coll["seeded_from"] = (
+        "fixtures/ground_truth+fixtures/hunt_extra+"
+        "fixtures/benchmarks+fixtures/vulngym"
+    )
     _write_collection(coll, root=root)
     return {
         "ok": True,
@@ -588,9 +685,9 @@ def seed_from_ground_truth(
 
 
 def ensure_library(root: Optional[Path] = None) -> dict[str, Any]:
-    """Load the library, seeding from ground_truth + bench fixtures when missing.
+    """Load the library, seeding GT + bench fixtures + VulnGym slice when missing.
 
-    First init (no ``collection.json``) imports every GT file. Later
+    First init (no ``collection.json``) imports every seed source. Later
     ``ensure_library`` calls only load — use ``seed_from_ground_truth`` /
     ``POST /api/benchmarks/seed`` to add missing seed ids without clobbering.
     """

@@ -187,7 +187,7 @@ def _score_type(
     if bench_type == "recon":
         return score_recon(target, oracle)
     if bench_type == "finding_report":
-        return score_finding_report(None, oracle)
+        return score_finding_report(None, oracle, target=target)
     raise BenchmarkRunError(f"unsupported run type: {bench_type}")
 
 

@@ -1,0 +1,21 @@
+{
+  "target": "fixtures/profile_eval/tree",
+  "description": "profile_eval pe-xss-store (second-order stored XSS)",
+  "difficulty": "hard",
+  "tags": [
+    "profile_eval",
+    "seed"
+  ],
+  "findings": [
+    {
+      "id": "xss-store",
+      "class": "client-side",
+      "sink_path": "unit_11.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_11.php"
+      }
+    }
+  ]
+}

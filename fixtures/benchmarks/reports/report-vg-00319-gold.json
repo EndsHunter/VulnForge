@@ -1,0 +1,25 @@
+{
+  "title": "NLTK WordNet browser unauthorized shutdown endpoint DoS",
+  "summary": "WordNet HTTP server exposes a shutdown endpoint without authorization, allowing unauthenticated denial of service.",
+  "weakness_class": "access-control",
+  "threat_model": {
+    "attacker": "unauthenticated remote HTTP client",
+    "boundary": "WordNet browser HTTP API \u2192 shutdown handler",
+    "impact": "unauthorized denial of service by stopping the WordNet server"
+  },
+  "citations": [
+    {
+      "path": "nltk/app/wordnet_app.py",
+      "start_line": 84,
+      "end_line": 93,
+      "symbol": "shutdown"
+    }
+  ],
+  "severity_claim": "HIGH",
+  "honesty_labels": [
+    "severity_claim",
+    "needs_human"
+  ],
+  "evidence_id": "fixture-report-vg-00319-gold",
+  "patch_sketch": "Require auth on shutdown; bind to localhost-only admin channel."
+}

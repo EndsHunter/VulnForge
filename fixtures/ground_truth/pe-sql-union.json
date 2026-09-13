@@ -1,0 +1,21 @@
+{
+  "target": "fixtures/profile_eval/tree",
+  "description": "profile_eval pe-sql-union (UNION SQLi after keyword strip)",
+  "difficulty": "medium",
+  "tags": [
+    "profile_eval",
+    "seed"
+  ],
+  "findings": [
+    {
+      "id": "sql-union",
+      "class": "injection",
+      "sink_path": "unit_08.php",
+      "sink_symbol": "",
+      "kinds": [],
+      "match": {
+        "path_suffix": "unit_08.php"
+      }
+    }
+  ]
+}

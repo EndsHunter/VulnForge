@@ -1,0 +1,52 @@
+{
+  "summary": "Mechanical recon: queue producer + worker consumer.",
+  "components": [
+    {
+      "name": "producer",
+      "path_hints": [
+        "queue/producer.py"
+      ],
+      "role": "job enqueue"
+    },
+    {
+      "name": "broker",
+      "path_hints": [
+        "queue/broker.py"
+      ],
+      "role": "in-memory broker"
+    },
+    {
+      "name": "worker",
+      "path_hints": [
+        "worker/consumer.py"
+      ],
+      "role": "job consumer"
+    }
+  ],
+  "trust_boundaries": [
+    {
+      "id": "job-to-worker",
+      "from": "producer",
+      "to": "worker",
+      "notes": "job payload crosses process boundary"
+    }
+  ],
+  "relations": [
+    {
+      "from": "producer",
+      "to": "broker",
+      "kind": "writes"
+    },
+    {
+      "from": "worker",
+      "to": "broker",
+      "kind": "reads"
+    }
+  ],
+  "input_surfaces": [
+    "job payload"
+  ],
+  "hunt_focus": [
+    "deserialization"
+  ]
+}

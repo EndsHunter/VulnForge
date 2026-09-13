@@ -1,0 +1,52 @@
+{
+  "summary": "Mechanical recon: app entry + declared dependency surface.",
+  "components": [
+    {
+      "name": "app",
+      "path_hints": [
+        "app/main.py"
+      ],
+      "role": "application entry"
+    },
+    {
+      "name": "requirements",
+      "path_hints": [
+        "deps/pip-requirements.txt"
+      ],
+      "role": "pip requirements"
+    },
+    {
+      "name": "deps_manifest",
+      "path_hints": [
+        "deps/manifest.json"
+      ],
+      "role": "dependency manifest"
+    }
+  ],
+  "trust_boundaries": [
+    {
+      "id": "deps-to-app",
+      "from": "third_party_deps",
+      "to": "app",
+      "notes": "supply-chain into runtime"
+    }
+  ],
+  "relations": [
+    {
+      "from": "app",
+      "to": "requirements",
+      "kind": "depends_on"
+    },
+    {
+      "from": "app",
+      "to": "deps_manifest",
+      "kind": "depends_on"
+    }
+  ],
+  "input_surfaces": [
+    "dependency packages"
+  ],
+  "hunt_focus": [
+    "supply_chain"
+  ]
+}
