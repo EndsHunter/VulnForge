@@ -35,7 +35,7 @@
         <h1>Benchmarks</h1>
         <p>
           Bench desk: run recon / hunt / finding_report suites (mechanical L0), review results,
-          and browse the library. Live LLM is optional and off by default. No poc_dev on Run.
+          and browse the library. Live hunts use the Settings LLM from the Run tab. No poc_dev on Run.
         </p>
       </div>
     </div>
@@ -61,7 +61,10 @@
       <p class="controls-hint">
         Mechanical benches: hunt (sink preindex → score_findings), recon (architecture signals),
         finding_report (required fields / citation density / honesty labels).
-        No live model required. poc_dev is not available here.
+        Dropdown suites run every hunt, recon, or finding_report def as one request.
+        No live model required. Live hunts use the Settings endpoint and model, write throwaway
+        eval runs, and never auto-confirm. Live is hunt-only (or the all-hunt suite).
+        poc_dev is not available here.
       </p>
       <div class="controls" style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0">
         <label for="bench-run-type-filter">Type</label>
@@ -78,8 +81,39 @@
         <button type="button" class="btn btn-primary" id="bench-run-mechanical">
           Run mechanical
         </button>
+        <button type="button" class="btn" id="bench-run-live">
+          Run live
+        </button>
+        <button type="button" class="btn" id="bench-run-stop" disabled>
+          Stop live
+        </button>
       </div>
       <pre id="bench-run-last" class="mono" style="white-space:pre-wrap;margin:0;min-height:4rem">No run yet.</pre>
+    </section>
+    <section class="card" id="bench-active" data-bench-active="1">
+      <h2 style="margin-top:0">Active</h2>
+      <p class="controls-hint">
+        Live hunts that are queued or running. Survives a page refresh. Mechanical L0 finishes in the same request.
+        Stop cancels Ralph and marks the BenchmarkRun cancelled.
+      </p>
+      <div class="table-wrap">
+        <table class="data" id="bench-active-table">
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>Def</th>
+              <th>Phase</th>
+              <th>Progress</th>
+              <th>Status</th>
+              <th>Started</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="bench-active-body">
+            <tr><td colspan="7" class="empty">No live hunts running.</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
     <script>
     (function () {
@@ -88,9 +122,16 @@
       var typeFilter = document.getElementById("bench-run-type-filter");
       var out = document.getElementById("bench-run-last");
       var btn = document.getElementById("bench-run-mechanical");
+      var liveBtn = document.getElementById("bench-run-live");
+      var stopBtn = document.getElementById("bench-run-stop");
       if (!sel || !out || !btn) return;
       var RUNNABLE = { hunt: 1, recon: 1, finding_report: 1 };
+      var TERMINAL = { passed: 1, failed: 1, error: 1, cancelled: 1 };
       var allRows = [];
+      var pollTimer = null;
+      var liveRunId = null;
+      var firstActiveId = null;
+      var livePolling = false;
 
       function show(obj) {
         out.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
@@ -98,6 +139,21 @@
 
       function runnableTypes(b) {
         return (b.types || []).filter(function (t) { return RUNNABLE[t]; });
+      }
+
+      function countType(type) {
+        return allRows.filter(function (b) {
+          return runnableTypes(b).indexOf(type) >= 0;
+        }).length;
+      }
+
+      function addSuite(group, value, label, types) {
+        var opt = document.createElement("option");
+        opt.value = value;
+        opt.textContent = label;
+        opt.setAttribute("data-suite", "1");
+        opt.setAttribute("data-types", types);
+        group.appendChild(opt);
       }
 
       function fillDefs() {
@@ -109,13 +165,49 @@
           return rt.indexOf(want) >= 0;
         });
         sel.textContent = "";
+        var suiteGroup = document.createElement("optgroup");
+        suiteGroup.label = "Suites";
+        if (!want || want === "hunt") {
+          var nHunt = countType("hunt");
+          if (nHunt) addSuite(suiteGroup, "all-hunt", "All hunts (" + nHunt + ")", "hunt");
+        }
+        if (!want || want === "recon") {
+          var nRecon = countType("recon");
+          if (nRecon) addSuite(suiteGroup, "all-recon", "All recons (" + nRecon + ")", "recon");
+        }
+        if (!want || want === "finding_report") {
+          var nRep = countType("finding_report");
+          if (nRep) {
+            addSuite(
+              suiteGroup,
+              "all-finding_report",
+              "All finding_report (" + nRep + ")",
+              "finding_report"
+            );
+          }
+        }
+        if (!want && allRows.length) {
+          addSuite(
+            suiteGroup,
+            "all-runnable",
+            "All hunts, recons, finding_report (" + allRows.length + ")",
+            "hunt,recon,finding_report"
+          );
+        }
+        if (suiteGroup.childNodes.length) sel.appendChild(suiteGroup);
+
         if (!rows.length) {
-          var opt = document.createElement("option");
-          opt.value = "";
-          opt.textContent = "No matching benches";
-          sel.appendChild(opt);
+          if (!suiteGroup.childNodes.length) {
+            var empty = document.createElement("option");
+            empty.value = "";
+            empty.textContent = "No matching benches";
+            sel.appendChild(empty);
+          }
+          syncLiveEnabled();
           return;
         }
+        var defGroup = document.createElement("optgroup");
+        defGroup.label = "Benchmarks";
         rows.forEach(function (b) {
           var opt = document.createElement("option");
           opt.value = b.id || "";
@@ -124,8 +216,69 @@
             + (b.head_version != null ? b.head_version : "?") + ")";
           opt.setAttribute("data-types", types);
           if (b.id === "toy_sqli" || b.id === "toy_sqli_recon") opt.selected = true;
-          sel.appendChild(opt);
+          defGroup.appendChild(opt);
         });
+        sel.appendChild(defGroup);
+        syncLiveEnabled();
+      }
+
+      function selectedTypes() {
+        var opt = sel.options[sel.selectedIndex];
+        if (!opt) return [];
+        var typeStr = (opt.getAttribute("data-types") || "");
+        var types = typeStr.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+        var isSuite = opt.getAttribute("data-suite") === "1";
+        var want = typeFilter ? typeFilter.value : "";
+        if (want && !isSuite) {
+          types = types.filter(function (t) { return t === want; });
+        }
+        return types;
+      }
+
+      function huntOnlySelected() {
+        var types = selectedTypes();
+        return types.length > 0 && types.every(function (t) { return t === "hunt"; });
+      }
+
+      function syncLiveEnabled() {
+        if (liveBtn) liveBtn.disabled = livePolling || !huntOnlySelected();
+        if (stopBtn) stopBtn.disabled = !(livePolling || liveRunId || firstActiveId);
+        btn.disabled = livePolling;
+      }
+
+      function stopPoll() {
+        if (pollTimer) {
+          clearTimeout(pollTimer);
+          pollTimer = null;
+        }
+      }
+
+      function pollLiveRun(id) {
+        liveRunId = id;
+        livePolling = true;
+        syncLiveEnabled();
+        function tick() {
+          fetch("/api/benchmarks/runs/" + id)
+            .then(function (r) { return r.json(); })
+            .then(function (body) {
+              show(body);
+              var run = body && body.run;
+              if (run && TERMINAL[run.status]) {
+                stopPoll();
+                liveRunId = null;
+                livePolling = false;
+                syncLiveEnabled();
+                loadActive();
+                return;
+              }
+              pollTimer = setTimeout(tick, 320);
+            })
+            .catch(function (e) {
+              show("Poll failed: " + e);
+              pollTimer = setTimeout(tick, 320);
+            });
+        }
+        tick();
       }
 
       fetch("/api/benchmarks")
@@ -147,6 +300,7 @@
       if (typeFilter) {
         typeFilter.addEventListener("change", fillDefs);
       }
+      sel.addEventListener("change", syncLiveEnabled);
 
       btn.addEventListener("click", function () {
         var defId = sel.value;
@@ -155,22 +309,20 @@
           return;
         }
         var opt = sel.options[sel.selectedIndex];
-        var typeStr = (opt && opt.getAttribute("data-types")) || "";
-        var types = typeStr.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-        var want = typeFilter ? typeFilter.value : "";
-        if (want) {
-          types = types.filter(function (t) { return t === want; });
-        }
+        var isSuite = opt && opt.getAttribute("data-suite") === "1";
+        var types = selectedTypes();
         if (!types.length) {
           show("No runnable types for this def (poc_dev excluded).");
           return;
         }
         btn.disabled = true;
+        var payload = { def_id: defId, types: types, mode: "mechanical" };
+        if (isSuite) payload.suite = true;
         show("Running mechanical (" + types.join(",") + ") for " + defId + "…");
         fetch("/api/benchmarks/runs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ def_id: defId, types: types, mode: "mechanical" })
+          body: JSON.stringify(payload)
         })
           .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
           .then(function (res) {
@@ -181,6 +333,175 @@
           })
           .finally(function () { btn.disabled = false; });
       });
+
+      if (liveBtn) {
+        liveBtn.addEventListener("click", function () {
+          var defId = sel.value;
+          if (!defId) {
+            show("Pick a benchmark first.");
+            return;
+          }
+          var opt = sel.options[sel.selectedIndex];
+          var isSuite = opt && opt.getAttribute("data-suite") === "1";
+          var types = selectedTypes();
+          if (!types.length) {
+            show("No runnable types for this def (poc_dev excluded).");
+            return;
+          }
+          if (!huntOnlySelected()) {
+            show("Live is hunt-only. Pick a hunt def or the all-hunt suite.");
+            return;
+          }
+          livePolling = true;
+          syncLiveEnabled();
+          var payload = { def_id: defId, types: types, mode: "live" };
+          if (isSuite) payload.suite = true;
+          show("Running live (" + types.join(",") + ") for " + defId + "…");
+          fetch("/api/benchmarks/runs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          })
+            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
+            .then(function (res) {
+              show(res.body);
+              var run = res.body && res.body.run;
+              if (run && (run.status === "queued" || run.status === "running")) {
+                pollLiveRun(run.id);
+                return;
+              }
+              livePolling = false;
+              liveRunId = null;
+              syncLiveEnabled();
+            })
+            .catch(function (e) {
+              show("Request failed: " + e);
+              livePolling = false;
+              liveRunId = null;
+              syncLiveEnabled();
+            });
+        });
+      }
+
+      if (stopBtn) {
+        stopBtn.addEventListener("click", function () {
+          if (!liveRunId) return;
+          stopLive(liveRunId);
+        });
+      }
+
+      var SUITE_LABELS = {
+        "all-hunt": "All hunts",
+        "all-recon": "All recons",
+        "all-finding_report": "All finding_report",
+        "all-runnable": "All hunts, recons, finding_report"
+      };
+      var activeBody = document.getElementById("bench-active-body");
+      var activeTimer = null;
+
+      function defLabel(id) {
+        var key = String(id || "");
+        return SUITE_LABELS[key] ? SUITE_LABELS[key] + " (" + key + ")" : key;
+      }
+
+      function shortTs(s) {
+        if (!s) return "";
+        return String(s).replace("T", " ").slice(0, 19);
+      }
+
+      function stopLive(id) {
+        if (!id) return;
+        fetch("/api/benchmarks/runs/" + encodeURIComponent(id) + "/stop", { method: "POST" })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; }); })
+          .then(function (res) {
+            show(res.body);
+            loadActive();
+          })
+          .catch(function (e) {
+            show("Stop failed: " + e);
+          });
+      }
+
+      function renderActive(rows) {
+        if (!activeBody) return;
+        activeBody.textContent = "";
+        firstActiveId = null;
+        if (!rows.length) {
+          var emptyTr = document.createElement("tr");
+          var emptyTd = document.createElement("td");
+          emptyTd.colSpan = 7;
+          emptyTd.className = "empty";
+          emptyTd.textContent = "No live hunts running.";
+          emptyTr.appendChild(emptyTd);
+          activeBody.appendChild(emptyTr);
+          if (!livePolling) {
+            liveRunId = null;
+            syncLiveEnabled();
+          }
+          return;
+        }
+        var liveRows = rows.filter(function (r) { return r.mode === "live"; });
+        if (liveRows.length && !liveRunId) liveRunId = liveRows[0].id;
+        firstActiveId = (liveRows[0] && liveRows[0].id) || (rows[0] && rows[0].id) || null;
+        syncLiveEnabled();
+        rows.forEach(function (r) {
+          var tr = document.createElement("tr");
+          tr.setAttribute("data-run-id", r.id || "");
+          var m = r.metrics || {};
+          var suite = !!m.suite || !!SUITE_LABELS[r.def_id];
+          var live = m.live || {};
+          function cell(text, mono) {
+            var td = document.createElement("td");
+            if (mono) td.className = "mono";
+            td.textContent = text == null ? "" : String(text);
+            tr.appendChild(td);
+          }
+          cell(suite ? "suite" : "def", false);
+          cell(defLabel(r.def_id), true);
+          cell(live.phase || "—", true);
+          var prog = "—";
+          if (m.count != null) {
+            prog = String(m.passed_count != null ? m.passed_count : "?") + "/" + String(m.count);
+          }
+          cell(prog, true);
+          cell(r.status || "", true);
+          cell(shortTs(r.started_at), true);
+          var actions = document.createElement("td");
+          if (r.mode === "live") {
+            var stop = document.createElement("button");
+            stop.type = "button";
+            stop.className = "btn";
+            stop.textContent = "Stop";
+            stop.addEventListener("click", function (ev) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              stopLive(r.id);
+            });
+            actions.appendChild(stop);
+          }
+          var open = document.createElement("a");
+          open.className = "btn";
+          open.href = "/benchmarks/results/" + encodeURIComponent(r.id || "");
+          open.textContent = "Open";
+          actions.appendChild(open);
+          tr.appendChild(actions);
+          activeBody.appendChild(tr);
+        });
+      }
+
+      function loadActive() {
+        fetch("/api/benchmarks/runs/active")
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            renderActive((data && data.runs) || []);
+          })
+          .catch(function () {
+            renderActive([]);
+          });
+      }
+
+      loadActive();
+      activeTimer = setInterval(loadActive, 1000);
     })();
     </script>
     {% elif active == 'poc' %}
@@ -325,8 +646,9 @@
              data-detail-run-id="{{ detail_run_id or '' }}">
       <h2 style="margin-top:0">Results</h2>
       <p class="controls-hint">
-        BenchmarkRun history (recon / hunt / finding_report). Type metrics in Scores; findings never auto-confirmed.
-        Click a row for full run detail.
+        BenchmarkRun history. Individual defs and collective suite parents (All hunts, All recons, All finding_report).
+        Filter Kind to Suites to see only those aggregates. Click a suite row for the member table.
+        Findings never auto-confirmed.
       </p>
 
       {% if detail_run_id %}
@@ -336,12 +658,29 @@
           <a class="btn" href="/benchmarks/results" id="bench-results-back">← Back to history</a>
           <span class="mono" id="bench-detail-id">{{ detail_run_id }}</span>
         </div>
+        <div id="bench-detail-suite" hidden data-bench-detail-suite="1" style="margin-bottom:0.75rem">
+          <h3 class="bench-panel-title" id="bench-detail-suite-title">Suite members</h3>
+          <p class="controls-hint" id="bench-detail-suite-summary"></p>
+          <div class="table-wrap">
+            <table class="data" id="bench-detail-members" data-bench-detail-members="1">
+              <thead>
+                <tr>
+                  <th>Def</th>
+                  <th>Status</th>
+                  <th>Score</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody id="bench-detail-members-body"></tbody>
+            </table>
+          </div>
+        </div>
         <pre id="bench-detail-body" class="mono" style="white-space:pre-wrap;margin:0;min-height:6rem">Loading…</pre>
       </div>
       {% else %}
       <div id="bench-chart" class="card bench-chart-card" data-bench-chart="1">
-        <h3 class="bench-panel-title">Score over time</h3>
-        <p class="controls-hint">Recall (or type score) for the selected def, oldest first.</p>
+        <h3 class="bench-panel-title">Speed vs accuracy</h3>
+        <p class="controls-hint">Live passed hunts only. Mechanical L0 is omitted. X is wall time (s). Y is recall or type score. Click a point to open the run.</p>
         <div class="controls bench-chart-controls" data-bench-chart-controls="1">
           <label for="bench-chart-def">Def</label>
           <select id="bench-chart-def" class="mono" data-bench-chart-def="1" aria-label="Chart benchmark def"></select>
@@ -356,14 +695,13 @@
         </div>
         <div id="bench-chart-frame" class="bench-chart-frame" data-bench-chart-frame="1">
           <svg id="bench-chart-svg" class="bench-chart-svg" data-bench-chart-svg="1"
-               viewBox="0 0 640 180" role="img" aria-label="Score over time">
+               viewBox="0 0 640 280" role="img" aria-label="Speed versus accuracy scatter">
             <g id="bench-chart-grid" data-bench-chart-grid="1"></g>
-            <polyline id="bench-chart-line" class="bench-chart-line" data-bench-chart-line="1"
-                      fill="none" points=""></polyline>
+            <g id="bench-chart-axes" data-bench-chart-axes="1"></g>
             <g id="bench-chart-dots" data-bench-chart-dots="1"></g>
           </svg>
           <p id="bench-chart-empty" class="controls-hint bench-chart-empty" data-bench-chart-empty="1">
-            Pick a def to chart.
+            No live passed hunts to plot.
           </p>
         </div>
       </div>
@@ -399,8 +737,14 @@
       <div class="controls" id="bench-results-filters"
            data-bench-results-filters="1"
            style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin:0.75rem 0">
+        <label for="bench-filter-kind">Kind</label>
+        <select id="bench-filter-kind" class="mono" aria-label="Filter suites vs individual">
+          <option value="">All</option>
+          <option value="suite">Suites</option>
+          <option value="individual">Individual</option>
+        </select>
         <label for="bench-filter-def">Def</label>
-        <input id="bench-filter-def" class="mono" type="text" placeholder="def_id" style="width:8rem" />
+        <input id="bench-filter-def" class="mono" type="text" placeholder="all-hunt or def_id" style="width:10rem" />
         <label for="bench-filter-status">Status</label>
         <select id="bench-filter-status" class="mono" aria-label="Filter by status">
           <option value="">Any</option>
@@ -436,6 +780,7 @@
         <table class="data" id="bench-results-table" data-bench-results-table="1">
           <thead>
             <tr>
+              <th>Kind</th>
               <th>Def</th>
               <th>Ver</th>
               <th>Type</th>
@@ -446,24 +791,48 @@
             </tr>
           </thead>
           <tbody id="bench-results-body">
-            <tr><td colspan="7" class="empty">Loading…</td></tr>
+            <tr><td colspan="8" class="empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
       {% endif %}
     </section>
-    <script src="/static/bench_results_helpers.js"></script>
+    <script src="/static/bench_results_helpers.js?v=scatter-2"></script>
     <script>
     (function () {
       if (document.body.getAttribute("data-bench-page") !== "results") return;
       var panel = document.getElementById("bench-panel-results");
       var detailId = panel && panel.getAttribute("data-detail-run-id");
+      var SUITE_LABELS = {
+        "all-hunt": "All hunts",
+        "all-recon": "All recons",
+        "all-finding_report": "All finding_report",
+        "all-runnable": "All hunts, recons, finding_report"
+      };
+
+      function isSuiteRun(r) {
+        var m = (r && r.metrics) || {};
+        if (m.suite) return true;
+        return !!SUITE_LABELS[r && r.def_id];
+      }
+
+      function defLabel(id) {
+        var key = String(id || "");
+        return SUITE_LABELS[key] ? SUITE_LABELS[key] + " (" + key + ")" : key;
+      }
 
       function fmtRecall(m) {
         m = m || {};
         var parts = [];
         var bt = m.bench_type || "";
         if (bt) parts.push(bt);
+        if (m.suite) {
+          parts.push("suite");
+          if (m.count != null) {
+            parts.push(String(m.passed_count != null ? m.passed_count : "?") + "/"
+              + String(m.count));
+          }
+        }
         if (typeof m.recall === "number") {
           parts.push((Math.round(m.recall * 1000) / 10) + "%");
         }
@@ -520,6 +889,54 @@
               return;
             }
             var run = res.body.run;
+            var suiteBox = document.getElementById("bench-detail-suite");
+            var membersBody = document.getElementById("bench-detail-members-body");
+            var suiteTitle = document.getElementById("bench-detail-suite-title");
+            var suiteSum = document.getElementById("bench-detail-suite-summary");
+            if (suiteBox && membersBody && isSuiteRun(run)) {
+              suiteBox.hidden = false;
+              if (suiteTitle) suiteTitle.textContent = defLabel(run.def_id);
+              var m = run.metrics || {};
+              if (suiteSum) {
+                suiteSum.textContent = (run.status || "") + "  "
+                  + String(m.passed_count != null ? m.passed_count : "?") + "/"
+                  + String(m.count != null ? m.count : "?") + " passed"
+                  + (typeof m.score === "number" ? ("  score=" + m.score) : "");
+              }
+              membersBody.textContent = "";
+              var members = m.members || [];
+              if (!members.length) {
+                var emptyTr = document.createElement("tr");
+                var emptyTd = document.createElement("td");
+                emptyTd.colSpan = 4;
+                emptyTd.className = "empty";
+                emptyTd.textContent = "No members on this suite run.";
+                emptyTr.appendChild(emptyTd);
+                membersBody.appendChild(emptyTr);
+              } else {
+                members.forEach(function (mem) {
+                  var tr = document.createElement("tr");
+                  tr.style.cursor = mem.run_id ? "pointer" : "";
+                  function cell(text, mono) {
+                    var td = document.createElement("td");
+                    if (mono) td.className = "mono";
+                    td.textContent = text == null ? "" : String(text);
+                    tr.appendChild(td);
+                  }
+                  cell(mem.def_id || "", true);
+                  cell(mem.status || "", true);
+                  var sc = mem.recall != null ? mem.recall : mem.score;
+                  cell(sc == null ? "—" : String(sc), true);
+                  cell(mem.error || "", false);
+                  if (mem.run_id) {
+                    tr.addEventListener("click", function () {
+                      window.location.href = "/benchmarks/results/" + encodeURIComponent(mem.run_id);
+                    });
+                  }
+                  membersBody.appendChild(tr);
+                });
+              }
+            }
             body.textContent = JSON.stringify({
               id: run.id,
               def_id: run.def_id,
@@ -545,6 +962,7 @@
 
       var tbody = document.getElementById("bench-results-body");
       var defIn = document.getElementById("bench-filter-def");
+      var kindSel = document.getElementById("bench-filter-kind");
       var statusSel = document.getElementById("bench-filter-status");
       var typeSel = document.getElementById("bench-filter-type");
       var sortSel = document.getElementById("bench-sort");
@@ -555,11 +973,14 @@
       function queryUrl() {
         var q = new URLSearchParams();
         var d = defIn && defIn.value.trim();
+        var kind = kindSel && kindSel.value;
         var st = statusSel && statusSel.value;
         var ty = typeSel && typeSel.value;
         var sort = sortSel && sortSel.value;
         var order = orderSel && orderSel.value;
         if (d) q.set("def_id", d);
+        if (kind === "suite") q.set("suite", "true");
+        if (kind === "individual") q.set("suite", "false");
         if (st) q.set("status", st);
         if (ty) q.set("type", ty);
         if (sort) q.set("sort", sort);
@@ -572,7 +993,7 @@
         tbody.textContent = "";
         var loading = document.createElement("tr");
         var ltd = document.createElement("td");
-        ltd.colSpan = 7;
+        ltd.colSpan = 8;
         ltd.className = "empty";
         ltd.textContent = "Loading…";
         loading.appendChild(ltd);
@@ -586,7 +1007,7 @@
             if (!rows.length) {
               var emptyTr = document.createElement("tr");
               var emptyTd = document.createElement("td");
-              emptyTd.colSpan = 7;
+              emptyTd.colSpan = 8;
               emptyTd.className = "empty";
               emptyTd.textContent = "No runs yet.";
               emptyTr.appendChild(emptyTd);
@@ -597,6 +1018,8 @@
               var tr = document.createElement("tr");
               tr.style.cursor = "pointer";
               tr.setAttribute("data-run-id", r.id || "");
+              var suite = isSuiteRun(r);
+              if (suite) tr.setAttribute("data-suite", "1");
               tr.title = "Open run " + (r.id || "");
               function cell(text, mono) {
                 var td = document.createElement("td");
@@ -604,7 +1027,8 @@
                 td.textContent = text == null ? "" : String(text);
                 tr.appendChild(td);
               }
-              cell(r.def_id || "", true);
+              cell(suite ? "suite" : "def", false);
+              cell(defLabel(r.def_id), true);
               cell(r.version != null ? r.version : "", true);
               cell((r.types_run || []).join(",") || "hunt", true);
               cell(r.status || "", true);
@@ -621,7 +1045,7 @@
             tbody.textContent = "";
             var tr = document.createElement("tr");
             var td = document.createElement("td");
-            td.colSpan = 7;
+            td.colSpan = 8;
             td.className = "empty";
             td.textContent = "Failed to load runs.";
             tr.appendChild(td);
@@ -630,7 +1054,7 @@
       }
 
       if (applyBtn) applyBtn.addEventListener("click", load);
-      [defIn, statusSel, typeSel, sortSel, orderSel].forEach(function (el) {
+      [defIn, kindSel, statusSel, typeSel, sortSel, orderSel].forEach(function (el) {
         if (!el) return;
         el.addEventListener("change", load);
         if (el.tagName === "INPUT") {
@@ -646,9 +1070,9 @@
       var chartType = document.getElementById("bench-chart-type");
       var chartApply = document.getElementById("bench-chart-apply");
       var chartSvg = document.getElementById("bench-chart-svg");
-      var chartLine = document.getElementById("bench-chart-line");
       var chartDots = document.getElementById("bench-chart-dots");
       var chartGrid = document.getElementById("bench-chart-grid");
+      var chartAxes = document.getElementById("bench-chart-axes");
       var chartEmpty = document.getElementById("bench-chart-empty");
       var cmpDef = document.getElementById("bench-compare-def");
       var cmpA = document.getElementById("bench-compare-a");
@@ -685,14 +1109,20 @@
       }
 
       function fillDefSelects() {
-        var prefer = "toy_sqli";
-        var ids = allDefs.map(function (b) { return b; });
+        var suiteRows = Object.keys(SUITE_LABELS).map(function (id) {
+          return { id: id, head_version: 1, suite: true };
+        });
+        var ids = [{ id: "", label: "All live passed hunts" }]
+          .concat(suiteRows)
+          .concat(allDefs.map(function (b) { return b; }));
         fillSelect(chartDef, ids, function (b) { return b.id || ""; }, function (b) {
+          if (b.label) return b.label;
+          if (b.suite) return SUITE_LABELS[b.id] + " (" + b.id + ")";
           return (b.id || "") + " (v" + (b.head_version != null ? b.head_version : "?") + ")";
-        }, prefer);
-        fillSelect(cmpDef, ids, function (b) { return b.id || ""; }, function (b) {
+        }, "");
+        fillSelect(cmpDef, allDefs, function (b) { return b.id || ""; }, function (b) {
           return (b.id || "") + " (v" + (b.head_version != null ? b.head_version : "?") + ")";
-        }, prefer);
+        }, "toy_sqli");
       }
 
       function fillVersionSelects(versions) {
@@ -710,38 +1140,86 @@
         }
       }
 
+      function svgEl(name) {
+        return document.createElementNS("http://www.w3.org/2000/svg", name);
+      }
+
       function renderChart(points) {
-        if (!chartSvg || !chartLine || !chartDots || !chartGrid) return;
-        var layout = (H.seriesToPolyline || function () { return { points: "", dots: [], empty: true }; })(points, {
-          width: 640, height: 180, pad: 28
+        if (!chartSvg || !chartDots || !chartGrid) return;
+        var layout = (H.scatterToDots || function () { return { dots: [], empty: true }; })(points, {
+          width: 640, height: 280
         });
-        chartLine.setAttribute("points", layout.points || "");
         chartDots.textContent = "";
         chartGrid.textContent = "";
-        var grid = (H.gridYs || function () { return []; })(layout.height || 180, layout.pad || 28, 2);
-        grid.forEach(function (g) {
-          var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-          line.setAttribute("x1", String(layout.pad || 28));
-          line.setAttribute("x2", String((layout.width || 640) - (layout.pad || 28)));
+        if (chartAxes) chartAxes.textContent = "";
+        var padL = layout.padL || 48;
+        var padR = layout.padR || 16;
+        var padT = layout.padT || 16;
+        var padB = layout.padB || 36;
+        var width = layout.width || 640;
+        var height = layout.height || 280;
+        (layout.yTicks || []).forEach(function (g) {
+          var line = svgEl("line");
+          line.setAttribute("x1", String(padL));
+          line.setAttribute("x2", String(width - padR));
           line.setAttribute("y1", String(g.y));
           line.setAttribute("y2", String(g.y));
           line.setAttribute("class", "bench-chart-gridline");
           chartGrid.appendChild(line);
-          var lab = document.createElementNS("http://www.w3.org/2000/svg", "text");
-          lab.setAttribute("x", "6");
+          var lab = svgEl("text");
+          lab.setAttribute("x", "8");
           lab.setAttribute("y", String(g.y + 3));
           lab.setAttribute("class", "bench-chart-tick");
           lab.textContent = g.label;
           chartGrid.appendChild(lab);
         });
+        (layout.xTicks || []).forEach(function (g) {
+          var line = svgEl("line");
+          line.setAttribute("x1", String(g.x));
+          line.setAttribute("x2", String(g.x));
+          line.setAttribute("y1", String(padT));
+          line.setAttribute("y2", String(height - padB));
+          line.setAttribute("class", "bench-chart-gridline");
+          chartGrid.appendChild(line);
+          var lab = svgEl("text");
+          lab.setAttribute("x", String(g.x));
+          lab.setAttribute("y", String(height - 14));
+          lab.setAttribute("text-anchor", "middle");
+          lab.setAttribute("class", "bench-chart-tick");
+          lab.textContent = g.label;
+          chartGrid.appendChild(lab);
+        });
+        if (chartAxes) {
+          var yLab = svgEl("text");
+          yLab.setAttribute("x", "8");
+          yLab.setAttribute("y", "12");
+          yLab.setAttribute("class", "bench-chart-axis-label");
+          yLab.textContent = "Accuracy";
+          chartAxes.appendChild(yLab);
+          var xLab = svgEl("text");
+          xLab.setAttribute("x", String(width / 2));
+          xLab.setAttribute("y", String(height - 2));
+          xLab.setAttribute("text-anchor", "middle");
+          xLab.setAttribute("class", "bench-chart-axis-label");
+          xLab.textContent = "Speed (s)";
+          chartAxes.appendChild(xLab);
+        }
         (layout.dots || []).forEach(function (d) {
-          var c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          var c = svgEl("circle");
           c.setAttribute("cx", String(d.x));
           c.setAttribute("cy", String(d.y));
-          c.setAttribute("r", "3.5");
+          c.setAttribute("r", "4.5");
           c.setAttribute("class", "bench-chart-dot");
-          var title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-          title.textContent = (d.started_at || "") + "  score=" + (H.formatScore ? H.formatScore(d.score) : d.score)
+          if (d.run_id) {
+            c.style.cursor = "pointer";
+            c.addEventListener("click", function () {
+              window.location.href = "/benchmarks/results/" + encodeURIComponent(d.run_id);
+            });
+          }
+          var title = svgEl("title");
+          title.textContent = (d.def_id ? d.def_id + "  " : "")
+            + (H.formatScore ? H.formatScore(d.duration_s, 1) : d.duration_s) + "s  "
+            + "acc=" + (H.formatScore ? H.formatScore(d.score) : d.score)
             + (d.version != null ? "  v" + d.version : "");
           c.appendChild(title);
           chartDots.appendChild(c);
@@ -749,7 +1227,7 @@
         if (chartEmpty) {
           if (layout.empty) {
             chartEmpty.hidden = false;
-            chartEmpty.textContent = "No runs for this def.";
+            chartEmpty.textContent = "No live passed hunts to plot.";
           } else {
             chartEmpty.hidden = true;
           }
@@ -758,17 +1236,11 @@
       }
 
       function loadChart() {
-        if (!chartDef) return;
-        var defId = chartDef.value;
-        if (!defId) {
-          renderChart([]);
-          if (chartEmpty) { chartEmpty.hidden = false; chartEmpty.textContent = "Pick a def to chart."; }
-          return;
-        }
         var q = new URLSearchParams();
-        q.set("def_id", defId);
+        var defId = chartDef && chartDef.value;
+        if (defId) q.set("def_id", defId);
         if (chartType && chartType.value) q.set("type", chartType.value);
-        fetch("/api/benchmarks/runs/series?" + q.toString())
+        fetch("/api/benchmarks/runs/series" + (q.toString() ? ("?" + q.toString()) : ""))
           .then(function (r) { return r.json(); })
           .then(function (data) {
             renderChart((data && data.points) || []);

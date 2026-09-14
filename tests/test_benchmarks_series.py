@@ -33,9 +33,11 @@ def _run(
     def_id: str = "toy",
     version: int = 1,
     started_at: str = "2026-01-01T00:00:00Z",
+    finished_at: str | None = "2026-01-01T00:00:10Z",
     types_run: list[str] | None = None,
     metrics: dict | None = None,
     status: str = "passed",
+    mode: str = "live",
 ) -> dict:
     return {
         "id": rid,
@@ -43,7 +45,9 @@ def _run(
         "version": version,
         "types_run": types_run or ["hunt"],
         "status": status,
+        "mode": mode,
         "started_at": started_at,
+        "finished_at": finished_at,
         "metrics": metrics
         or {"recall": 0.5, "score": 0.5, "hit_count": 1, "oracle_count": 2},
     }
@@ -70,29 +74,62 @@ def test_extract_score_prefers_type_slice():
 
 def test_build_series_sorts_and_filters():
     runs = [
-        _run(rid="br-bbbbbbbbbbbb", started_at="2026-01-03T00:00:00Z", metrics={"recall": 1.0}),
-        _run(rid="br-aaaaaaaaaaaa", started_at="2026-01-01T00:00:00Z", metrics={"recall": 0.25}),
+        _run(
+            rid="br-bbbbbbbbbbbb",
+            started_at="2026-01-03T00:00:00Z",
+            finished_at="2026-01-03T00:00:10Z",
+            metrics={"recall": 1.0},
+        ),
+        _run(
+            rid="br-aaaaaaaaaaaa",
+            started_at="2026-01-01T00:00:00Z",
+            finished_at="2026-01-01T00:00:10Z",
+            metrics={"recall": 0.25},
+        ),
         _run(
             rid="br-cccccccccccc",
             def_id="other",
             started_at="2026-01-02T00:00:00Z",
+            finished_at="2026-01-02T00:00:10Z",
             metrics={"recall": 0.9},
         ),
         _run(
             rid="br-dddddddddddd",
             started_at="2026-01-04T00:00:00Z",
+            finished_at="2026-01-04T00:00:10Z",
             types_run=["recon"],
             metrics={"score": 0.6, "by_type": {"recon": {"score": 0.6}}},
         ),
     ]
+    failed = _run(
+        rid="br-eeeeeeeeeeee",
+        started_at="2026-01-05T00:00:00Z",
+        finished_at="2026-01-05T00:00:04Z",
+        status="failed",
+        metrics={"recall": 0.99, "score": 0.99},
+    )
+    runs.append(failed)
+    runs.append(
+        _run(
+            rid="br-ffffffffffff",
+            started_at="2026-01-06T00:00:00Z",
+            finished_at="2026-01-06T00:00:02Z",
+            mode="mechanical",
+            metrics={"recall": 1.0, "score": 1.0},
+        )
+    )
     series = build_series(runs, def_id="toy")
     assert series["def_id"] == "toy"
-    assert [p["run_id"] for p in series["points"]] == [
+    ids = [p["run_id"] for p in series["points"]]
+    assert ids == [
         "br-aaaaaaaaaaaa",
         "br-bbbbbbbbbbbb",
         "br-dddddddddddd",
     ]
+    assert "br-eeeeeeeeeeee" not in ids
+    assert "br-ffffffffffff" not in ids
     assert series["points"][0]["score"] == 0.25
+    assert series["points"][0]["duration_s"] == 10.0
     typed = build_series(runs, def_id="toy", run_type="recon")
     assert [p["run_id"] for p in typed["points"]] == ["br-dddddddddddd"]
     assert typed["points"][0]["score"] == 0.6
@@ -163,12 +200,19 @@ def test_compare_versions_latest_aggregate_and_empty_zeros():
     assert vs_missing["delta"]["recall"] == -1.0
 
 
-def _write_scored_run(*, def_id: str, version: int, recall: float, hit_count: int) -> dict:
+def _write_scored_run(
+    *,
+    def_id: str,
+    version: int,
+    recall: float,
+    hit_count: int,
+    mode: str = "mechanical",
+) -> dict:
     row = create_run(
         def_id=def_id,
         version=version,
         types_run=["hunt"],
-        mode="mechanical",
+        mode=mode,
         status="running",
     )
     return update_run(
@@ -195,8 +239,15 @@ def _write_scored_run(*, def_id: str, version: int, recall: float, hit_count: in
 
 def test_api_series_and_compare_two_versions_fixtures():
     """Prove: two versions of same def, compare API returns both sides + deltas."""
-    a = _write_scored_run(def_id="toy_sqli", version=1, recall=0.5, hit_count=1)
-    b = _write_scored_run(def_id="toy_sqli", version=2, recall=1.0, hit_count=2)
+    mech = _write_scored_run(
+        def_id="toy_sqli", version=1, recall=1.0, hit_count=2, mode="mechanical"
+    )
+    a = _write_scored_run(
+        def_id="toy_sqli", version=1, recall=0.5, hit_count=1, mode="live"
+    )
+    b = _write_scored_run(
+        def_id="toy_sqli", version=2, recall=1.0, hit_count=2, mode="live"
+    )
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
         series = client.get(
@@ -210,11 +261,13 @@ def test_api_series_and_compare_two_versions_fixtures():
         assert body["type"] == "hunt"
         ids = [p["run_id"] for p in body["points"]]
         assert a["id"] in ids and b["id"] in ids
-        started = [p["started_at"] for p in body["points"]]
-        assert started == sorted(started)
+        assert mech["id"] not in ids
+        assert all(p["status"] == "passed" for p in body["points"])
+        assert all(p.get("mode") == "live" for p in body["points"])
         scores = {p["run_id"]: p["score"] for p in body["points"]}
         assert scores[a["id"]] == 0.5
         assert scores[b["id"]] == 1.0
+        assert all("duration_s" in p for p in body["points"])
 
         cmp = client.get(
             "/api/benchmarks/compare",
@@ -282,14 +335,16 @@ def test_api_compare_two_mechanical_versions():
         )
         assert series.status_code == 200
         ids = {p["run_id"] for p in series.json()["points"]}
-        assert r1["id"] in ids
-        assert r2["id"] in ids
+        assert r1["id"] not in ids
+        assert r2["id"] not in ids
 
 
 def test_api_series_compare_validation():
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        assert client.get("/api/benchmarks/runs/series").status_code == 400
+        all_passed = client.get("/api/benchmarks/runs/series")
+        assert all_passed.status_code == 200, all_passed.text
+        assert all_passed.json()["ok"] is True
         assert client.get(
             "/api/benchmarks/runs/series", params={"def_id": "no_such_bench_xyz"}
         ).status_code == 404
@@ -314,7 +369,10 @@ def test_results_page_chart_and_compare_hooks():
         assert 'data-bench-chart="1"' in body
         assert 'id="bench-chart-svg"' in body
         assert 'data-bench-chart-svg="1"' in body
-        assert 'id="bench-chart-line"' in body
+        assert 'id="bench-chart-axes"' in body
+        assert "Speed vs accuracy" in body
+        assert "scatterToDots" in body
+        assert "bench_results_helpers.js?v=scatter-2" in body
         assert 'id="bench-chart-def"' in body
         assert 'id="bench-chart-type"' in body
         assert 'id="bench-compare"' in body

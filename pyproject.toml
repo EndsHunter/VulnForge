@@ -35,6 +35,8 @@ codemap = [
   "tree-sitter>=0.22",
   "tree-sitter-language-pack>=0.3",
 ]
+# Anthropic Messages API (Settings api_mode=messages / Strands AnthropicModel)
+messages = ["anthropic>=0.40"]
 
 [project.scripts]
 vf = "vulnforge.cli:main"

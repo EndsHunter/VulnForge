@@ -12,6 +12,7 @@ const {
   formatScore,
   formatDelta,
   deltaTone,
+  scatterToDots,
   seriesToPolyline,
   gridYs,
 } = helpers;
@@ -33,6 +34,32 @@ describe("deltaTone", () => {
     assert.equal(deltaTone(-0.1), "neg");
     assert.equal(deltaTone(0), "zero");
     assert.equal(deltaTone("x"), "zero");
+  });
+});
+
+describe("scatterToDots", () => {
+  it("returns empty layout for no points", () => {
+    const layout = scatterToDots([]);
+    assert.equal(layout.empty, true);
+    assert.deepEqual(layout.dots, []);
+  });
+
+  it("maps duration to x and accuracy to y", () => {
+    const layout = scatterToDots(
+      [
+        { duration_s: 0, score: 0, run_id: "br-a" },
+        { duration_s: 10, accuracy: 1, run_id: "br-b" },
+      ],
+      { width: 640, height: 280, padLeft: 48, padRight: 16, padTop: 16, padBottom: 36 }
+    );
+    assert.equal(layout.empty, false);
+    assert.equal(layout.dots.length, 2);
+    assert.ok(layout.dots[0].x < layout.dots[1].x);
+    assert.ok(layout.dots[0].y > layout.dots[1].y);
+    assert.equal(layout.dots[0].duration_s, 0);
+    assert.equal(layout.dots[1].score, 1);
+    assert.equal(layout.xTicks.length, 3);
+    assert.equal(layout.yTicks.length, 3);
   });
 });
 
