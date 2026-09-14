@@ -596,3 +596,46 @@ def test_recon_graph_scripted_two_agents():
             assert nr.get("architecture") and nr["architecture"].get("summary")
     finally:
         monkey.undo()
+
+
+def test_model_from_client_respects_api_mode():
+    from strands.models.openai import OpenAIModel
+    from strands.models.openai_responses import OpenAIResponsesModel
+
+    from vulnforge.agent_runtime.strands_loop import (
+        _anthropic_sdk_base_url,
+        _model_from_client,
+    )
+
+    class Client:
+        def __init__(self, api_mode: str):
+            self.api_mode = api_mode
+            self.base_url = "http://10.0.0.1:1234/v1"
+            self.model = "test-model"
+            self.api_key = "k"
+            self.timeout = 30
+            self.max_tokens = 128
+
+    chat = _model_from_client(Client("chat_completions"), 0.2)
+    assert isinstance(chat, OpenAIModel)
+    assert chat.config["params"]["max_tokens"] == 128
+
+    resp = _model_from_client(Client("responses"), 0.3)
+    assert isinstance(resp, OpenAIResponsesModel)
+    assert resp.config["params"]["max_output_tokens"] == 128
+    assert resp.client_args["base_url"] == "http://10.0.0.1:1234/v1"
+
+    assert _anthropic_sdk_base_url("http://host:9/v1") == "http://host:9"
+    assert _anthropic_sdk_base_url("http://host:9") == "http://host:9"
+
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        with pytest.raises(ImportError, match="anthropic"):
+            _model_from_client(Client("messages"), 0.1)
+    else:
+        from strands.models.anthropic import AnthropicModel
+
+        msg = _model_from_client(Client("messages"), 0.1)
+        assert isinstance(msg, AnthropicModel)
+        assert msg.client.base_url is not None

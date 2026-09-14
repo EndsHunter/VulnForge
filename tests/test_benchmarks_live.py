@@ -453,3 +453,34 @@ def test_cancel_live_run_via_stop(monkeypatch):
         run = stopped_resp.json()["run"]
         assert run["status"] == "cancelled"
         assert stopped
+
+
+def test_write_live_overlay_pins_settings_api_mode(tmp_path, monkeypatch):
+    from vulnforge.benchmarks.live import live_config_from_settings, write_live_overlay
+    from vulnforge.benchmarks import runs as runs_mod
+    import yaml
+
+    monkeypatch.setattr(runs_mod, "runs_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "vulnforge.benchmarks.live.runs_root", lambda: tmp_path
+    )
+    cfg = {
+        "llm": {
+            "base_url": "http://127.0.0.1:9/v1",
+            "model": "bench-model",
+            "api_mode": "Responses",
+            "api_key": "k",
+        },
+        "run": {},
+        "stages": {"validate_llm": True},
+        "packet": {},
+        "tools": {},
+    }
+    live = live_config_from_settings("br-testoverlay01", cfg)
+    assert live.api_mode == "responses"
+    path = write_live_overlay("br-testoverlay01", cfg)
+    assert path.is_file()
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert data["llm"]["api_mode"] == "responses"
+    assert data["llm"]["model"] == "bench-model"
+    assert data["stages"]["validate_llm"] is False

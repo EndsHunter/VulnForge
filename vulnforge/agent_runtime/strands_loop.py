@@ -203,8 +203,22 @@ def _attach_reasoning_strip_hook(agent: Any) -> None:
         pass
 
 
+def _anthropic_sdk_base_url(vf_base_url: str) -> str:
+    """Map VulnForge ``…/v1`` base_url to Anthropic SDK root (SDK appends ``/v1/messages``)."""
+    base = str(vf_base_url or "").rstrip("/")
+    if base.endswith("/v1"):
+        return base[:-3].rstrip("/") or base
+    return base
+
+
 def _model_from_client(client: Any, temperature: float) -> Any:
-    from strands.models.openai import OpenAIModel
+    """Build a Strands model that matches Settings ``llm.api_mode``.
+
+    - ``chat_completions`` → OpenAI chat completions (``/v1/chat/completions``)
+    - ``responses`` → OpenAI Responses API (``/v1/responses``)
+    - ``messages`` → Anthropic Messages API (``/v1/messages``; needs ``anthropic``)
+    """
+    from vulnforge.settings import normalize_api_mode
 
     base_url = getattr(client, "base_url", None) or "http://127.0.0.1:1234/v1"
     model_id = (
@@ -218,6 +232,7 @@ def _model_from_client(client: Any, temperature: float) -> Any:
         api_key = "lm-studio"
     timeout = float(getattr(client, "timeout", 600) or 600)
     max_tokens = int(getattr(client, "max_tokens", 4096) or 4096)
+    api_mode = normalize_api_mode(getattr(client, "api_mode", None))
 
     client_args: dict[str, Any] = {
         "base_url": str(base_url).rstrip("/"),
@@ -228,6 +243,40 @@ def _model_from_client(client: Any, temperature: float) -> Any:
         client_args["api_key"] = str(api_key)
     else:
         client_args["api_key"] = "no-key"
+
+    if api_mode == "responses":
+        from strands.models.openai_responses import OpenAIResponsesModel
+
+        return OpenAIResponsesModel(
+            client_args=client_args,
+            model_id=str(model_id),
+            params={
+                "temperature": float(temperature),
+                "max_output_tokens": max_tokens,
+            },
+        )
+
+    if api_mode == "messages":
+        try:
+            from strands.models.anthropic import AnthropicModel
+        except ImportError as e:
+            raise ImportError(
+                "api_mode=messages requires the anthropic package "
+                "(pip install anthropic)"
+            ) from e
+        anth_args = {
+            "base_url": _anthropic_sdk_base_url(client_args["base_url"]),
+            "timeout": timeout,
+            "api_key": client_args["api_key"],
+        }
+        return AnthropicModel(
+            client_args=anth_args,
+            model_id=str(model_id),
+            max_tokens=max_tokens,
+            params={"temperature": float(temperature)},
+        )
+
+    from strands.models.openai import OpenAIModel
 
     return OpenAIModel(
         client_args=client_args,

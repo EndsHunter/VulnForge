@@ -94,6 +94,7 @@ class LiveConfig:
     task_timeout: int = LIVE_TASK_TIMEOUT
     base_url: str = ""
     model: str = ""
+    api_mode: str = "chat_completions"
 
 
 def eval_runs_root_for(run_id: str) -> Path:
@@ -109,6 +110,8 @@ def overlay_path_for(run_id: str) -> Path:
 
 
 def live_config_from_settings(run_id: str, cfg: dict[str, Any] | None = None) -> LiveConfig:
+    from vulnforge.settings import normalize_api_mode
+
     data = cfg if isinstance(cfg, dict) else load_config()
     llm = data.get("llm") if isinstance(data.get("llm"), dict) else {}
     return LiveConfig(
@@ -118,6 +121,7 @@ def live_config_from_settings(run_id: str, cfg: dict[str, Any] | None = None) ->
         task_timeout=LIVE_TASK_TIMEOUT,
         base_url=str(llm.get("base_url") or "").strip(),
         model=str(llm.get("model") or "").strip(),
+        api_mode=normalize_api_mode(llm.get("api_mode")),
     )
 
 
@@ -591,8 +595,15 @@ def drive_live_suite(parent_id: str) -> dict[str, Any]:
 
 
 def write_live_overlay(run_id: str, cfg: dict[str, Any]) -> Path:
-    """Persist Settings snapshot + validate_llm false next to result.json."""
-    path = live_config_from_settings(run_id, cfg).overlay_path
+    """Persist Settings snapshot + validate_llm false next to result.json.
+
+    Snapshots ``llm`` (including ``api_mode``: chat_completions / responses /
+    messages) so Ralph + Strands use the same endpoint style as Settings.
+    """
+    from vulnforge.settings import normalize_api_mode
+
+    live = live_config_from_settings(run_id, cfg)
+    path = live.overlay_path
     path.parent.mkdir(parents=True, exist_ok=True)
     stages = dict(cfg.get("stages") or {}) if isinstance(cfg.get("stages"), dict) else {}
     stages["validate_llm"] = False
@@ -604,6 +615,10 @@ def write_live_overlay(run_id: str, cfg: dict[str, Any]) -> Path:
         "tools": dict(cfg.get("tools") or {}) if isinstance(cfg.get("tools"), dict) else {},
     }
     payload["llm"].pop("_config_path", None)
+    # Pin canonical api_mode so hunt Strands provider matches Settings.
+    payload["llm"]["api_mode"] = live.api_mode or normalize_api_mode(
+        payload["llm"].get("api_mode")
+    )
     text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
     path.write_text(text, encoding="utf-8")
     return path
