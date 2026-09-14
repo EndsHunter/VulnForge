@@ -36,7 +36,7 @@ describe("RUN_NAV", () => {
     );
     assert.deepEqual(
       primaryNav(RUN_NAV).map((item) => item.mode),
-      ["mission", "hunts", "explorer", "report"]
+      ["mission", "hunts", "explorer", "report", "audit"]
     );
     assert.deepEqual(
       workspaceModes(RUN_NAV).map((item) => item.mode),
@@ -77,7 +77,7 @@ describe("RUN_NAV", () => {
     );
     assert.equal(workspaceModes().find((item) => item.mode === "audit").label, "Tasks");
     assert.equal(workspaceModes().find((item) => item.mode === "ai").overlay, true);
-    assert.equal(primaryNav().some((item) => item.mode === "audit"), false);
+    assert.equal(primaryNav().some((item) => item.mode === "audit"), true);
     assert.equal(primaryNav().some((item) => item.mode === "ai"), false);
     assert.equal(primaryNav().some((item) => item.mode === "evidence"), false);
   });
