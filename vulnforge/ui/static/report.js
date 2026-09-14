@@ -7,6 +7,8 @@
   let cache = [];
   let filter = "all";
   let openId = null;
+  /** Exclusive Report book page. Invalid combo: not findings without openId. */
+  let reviewPage = "findings";
   /** Bumps on each context-pane render to ignore stale async fetches. */
   let contextToken = 0;
   /** Finding id open in the Develop POC workshop modal (not a mode tab). */
@@ -364,9 +366,12 @@
       }
     }
     renderTable();
-    if (openId != null) {
+    if (openId != null && reviewPage !== "findings") {
       const f = cache.find((x) => Number(x.id) === Number(openId));
-      if (f) showFindingDetail(f);
+      if (f) {
+        fillFindingPanes(f);
+        setReviewPage(reviewPage);
+      }
     }
     updateSearchCount();
     updateSortHeaders();
@@ -441,6 +446,72 @@
     return `<div class="report-pane-empty">Citation snippets and evidence pack preview appear here.</div>`;
   }
 
+  function setReviewPage(page) {
+    if (page !== "findings" && openId == null) page = "findings";
+    if (page !== "findings" && page !== "detail" && page !== "evidence") {
+      page = "findings";
+    }
+    reviewPage = page;
+    const book = $("#report-book");
+    const shell = $("#report-shell");
+    if (book) book.setAttribute("data-review-page", page);
+    if (shell) shell.setAttribute("data-review-page", page);
+    const tabs = $("#report-book-tabs");
+    if (tabs) {
+      tabs.hidden = page === "findings";
+      tabs.querySelectorAll("[data-book-page]").forEach((btn) => {
+        const target = btn.getAttribute("data-book-page");
+        const show =
+          page === "detail"
+            ? target === "findings"
+            : page === "evidence"
+              ? target === "findings" || target === "detail"
+              : false;
+        btn.hidden = !show;
+      });
+    }
+    const panes = $("#report-review-panes");
+    if (panes) panes.classList.toggle("has-selection", openId != null);
+  }
+
+  function goReviewPage(page) {
+    if (page === "findings") {
+      setReviewPage("findings");
+      renderTable();
+      return;
+    }
+    const f = cache.find((x) => Number(x.id) === Number(openId));
+    if (!f) {
+      openId = null;
+      setReviewPage("findings");
+      renderTable();
+      return;
+    }
+    fillFindingPanes(f);
+    setReviewPage(page);
+  }
+
+  function setupBookTabs() {
+    const tabs = $("#report-book-tabs");
+    if (!tabs || tabs.dataset.bound) return;
+    tabs.dataset.bound = "1";
+    tabs.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-book-page]");
+      if (!btn || !tabs.contains(btn)) return;
+      const page = btn.getAttribute("data-book-page");
+      if (page) goReviewPage(page);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (e.target && ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName)) return;
+      const panel = document.querySelector('[data-mode-panel="report"]');
+      if (!panel || !panel.classList.contains("active")) return;
+      if (window.VulnForgeReport?.isPocOpen?.()) return;
+      if (reviewPage === "evidence") goReviewPage("detail");
+      else if (reviewPage === "detail") goReviewPage("findings");
+    });
+  }
+
   function clearFindingPanes() {
     openId = null;
     contextToken += 1;
@@ -451,19 +522,23 @@
     }
     const c = $("#report-context");
     if (c) c.innerHTML = emptyContextHtml();
-    const panes = $("#report-review-panes");
-    if (panes) panes.classList.remove("has-selection");
+    setReviewPage("findings");
   }
 
-  function showFindingDetail(f) {
+  function fillFindingPanes(f) {
     const d = $("#report-detail");
     if (!d || !f) return;
     d.hidden = false;
     d.innerHTML = detailHtml(f);
     bindDetailActions(d);
-    const panes = $("#report-review-panes");
-    if (panes) panes.classList.add("has-selection");
     renderContext(f);
+  }
+
+  function showFindingDetail(f, opts) {
+    if (!f) return;
+    openId = Number(f.id);
+    fillFindingPanes(f);
+    setReviewPage((opts && opts.page) || "detail");
   }
 
   function contextShellHtml(f) {
@@ -489,6 +564,14 @@
     const primary = cites[0] || null;
     return `
       <div class="report-context-inner" data-fid="${f.id}">
+        <div class="report-detail-head">
+          <h3>${esc(b.title || f.stable_key || "Finding #" + f.id)}</h3>
+          <div class="report-detail-badges">
+            ${badge(f.state, f)}
+            ${sevBadge(f.severity || b.severity_claim || "unknown")}
+            <span class="mono">#${f.id}</span>
+          </div>
+        </div>
         <div class="report-context-block">
           <h4>Citations</h4>
           <div class="finding-paths">${citeChips || '<span class="controls-hint">None</span>'}</div>
@@ -848,14 +931,7 @@
           ${reviewHist}
         </div>
         <div class="report-detail-actions">
-          ${
-            eid
-              ? `<button type="button" class="btn report-open-ev" data-pack="${esc(String(eid))}" data-rel="${esc(evRel || "")}">Open Evidence</button>`
-              : b.no_poc
-                ? `<span class="controls-hint">No evidence pack (no_poc)</span>`
-                : `<span class="controls-hint">No evidence pack linked</span>`
-          }
-          <button type="button" class="btn report-close-detail">Close detail</button>
+          <button type="button" class="btn btn-primary report-open-book-evidence">Evidence and context</button>
           <button type="button" class="btn btn-primary report-develop-poc" data-fid="${f.id}" title="Open working PoC workshop for this finding">Develop POC</button>
         </div>
       </div>`;
@@ -1667,9 +1743,9 @@
         }
       });
     });
-    root.querySelector(".report-close-detail")?.addEventListener("click", () => {
-      clearFindingPanes();
-      renderTable();
+    root.querySelector(".report-open-book-evidence")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      goReviewPage("evidence");
     });
   }
 
@@ -1729,7 +1805,7 @@
           <td>${sevBadge(f.severity || b.severity_claim || "unknown")}</td>
           <td>${badge(f.state, f)}</td>
           <td class="mono report-path-cell" title="${esc(pathLabel(p))}">${esc(pathLabel(p))}</td>
-          <td class="report-row-action">${open ? "Hide" : "Details"}</td>
+          <td class="report-row-action">${open ? "Open" : "Details"}</td>
         </tr>`;
       })
       .join("");
@@ -1747,15 +1823,9 @@
     tbody.querySelectorAll(".report-row").forEach((tr) => {
       const openDetail = () => {
         const id = Number(tr.getAttribute("data-fid"));
-        if (Number(openId) === id) {
-          clearFindingPanes();
-          renderTable();
-          return;
-        }
-        openId = id;
         const f = cache.find((x) => Number(x.id) === id);
         if (f) showFindingDetail(f);
-        renderTable();
+        else renderTable();
       };
       tr.addEventListener("click", openDetail);
       tr.addEventListener("keydown", (e) => {
@@ -2225,9 +2295,12 @@
       // Refresh table badges if filter depends on clusters
       renderSummary();
       renderTable();
-      if (openId != null) {
+      if (openId != null && reviewPage !== "findings") {
         const f = cache.find((x) => Number(x.id) === Number(openId));
-        if (f) showFindingDetail(f);
+        if (f) {
+          fillFindingPanes(f);
+          setReviewPage(reviewPage);
+        }
       }
     } catch (e) {
       if (el) {
@@ -2598,6 +2671,7 @@
     // Idempotent — also called from renderReport after snap updates meta.
     setupExportModal();
     ensureExportMeta();
+    setupBookTabs();
     $$("[data-export-proj]").forEach((btn) => {
       if (btn.dataset.bound) return;
       btn.dataset.bound = "1";
@@ -2656,7 +2730,7 @@
     updateSearchCount();
     updateSortHeaders();
     const f = cache.find((x) => Number(x.id) === Number(openId));
-    if (f) showFindingDetail(f);
+    if (f) showFindingDetail(f, { page: "detail" });
     else clearFindingPanes();
   }
 
@@ -2692,7 +2766,9 @@
         ? cache.find((x) => Number(x.id) === Number(openId))
         : null;
       if (f) {
-        showFindingDetail(f);
+        fillFindingPanes(f);
+        setReviewPage(reviewPage === "findings" ? "findings" : reviewPage);
+        renderTable();
       } else {
         clearFindingPanes();
         renderTable();

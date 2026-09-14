@@ -5791,29 +5791,89 @@ button.llm-usage-task:focus-visible {
 }
 
 
-/* ========== Ticket 5: finding review three-pane + Monaco explorer ========== */
+/* ========== Finding review: one book page at a time ========== */
 .report-review-card {
   padding: 0.55rem 0.65rem 0.75rem;
 }
+.report-book {
+  display: flex;
+  align-items: stretch;
+  min-height: 420px;
+  gap: 0;
+}
+.report-book-tabs {
+  flex: 0 0 36px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 8px 4px 8px 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.report-book-tabs[hidden] {
+  display: none;
+}
+.report-book-tab {
+  appearance: none;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 28px;
+  height: auto;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  padding: 0.7rem 0.15rem;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.report-book-tab:hover {
+  color: var(--text);
+  background: var(--row-hover);
+}
+.report-book-tab[hidden] {
+  display: none;
+}
 .report-review-panes {
   display: grid;
-  grid-template-columns: minmax(240px, 1.1fr) minmax(280px, 1.2fr) minmax(240px, 1fr);
+  grid-template-columns: 1fr;
   gap: 0.55rem;
   min-height: 420px;
   align-items: stretch;
+  flex: 1 1 auto;
+  min-width: 0;
 }
-@media (max-width: 1200px) {
-  .report-review-panes {
-    grid-template-columns: 1fr 1fr;
-  }
-  .report-context-pane {
-    grid-column: 1 / -1;
-  }
+.report-book[data-review-page="findings"] .report-detail-pane,
+.report-book[data-review-page="findings"] .report-context-pane,
+.report-book[data-review-page="detail"] .report-list-pane,
+.report-book[data-review-page="detail"] .report-context-pane,
+.report-book[data-review-page="evidence"] .report-list-pane,
+.report-book[data-review-page="evidence"] .report-detail-pane {
+  display: none;
 }
-@media (max-width: 820px) {
-  .report-review-panes {
-    grid-template-columns: 1fr;
-  }
+.report-shell[data-review-page="detail"] .report-search-bar,
+.report-shell[data-review-page="evidence"] .report-search-bar,
+.report-shell[data-review-page="detail"] #report-summary,
+.report-shell[data-review-page="evidence"] #report-summary,
+.report-shell[data-review-page="detail"] .report-clusters-card,
+.report-shell[data-review-page="evidence"] .report-clusters-card,
+.report-shell[data-review-page="detail"] .report-chains-card,
+.report-shell[data-review-page="evidence"] .report-chains-card,
+.report-shell[data-review-page="detail"] .report-raw-card,
+.report-shell[data-review-page="evidence"] .report-raw-card {
+  display: none;
+}
+.report-shell[data-review-page="detail"] .report-review-card,
+.report-shell[data-review-page="evidence"] .report-review-card {
+  flex: 1 1 auto;
 }
 .report-pane {
   border: 1px solid var(--border);
@@ -5824,6 +5884,11 @@ button.llm-usage-task:focus-visible {
   min-height: 0;
   max-height: 72vh;
   overflow: hidden;
+}
+.report-book[data-review-page="detail"] .report-pane,
+.report-book[data-review-page="evidence"] .report-pane {
+  max-height: none;
+  min-height: 56vh;
 }
 .report-pane-head {
   flex: 0 0 auto;
@@ -5852,7 +5917,7 @@ button.llm-usage-task:focus-visible {
   padding: 0.65rem 0.75rem 0.85rem;
 }
 .report-detail[hidden] {
-  display: block !important; /* three-pane always shows empty state */
+  display: none;
 }
 .report-pane-empty {
   color: var(--muted);
