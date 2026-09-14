@@ -2,9 +2,9 @@
  * Run-page nav table. UMD for node --test and the browser (modes.js).
  *
  * One frozen table. `rail` is the only slot field (`"head"|"primary"|"footer"|null`).
- * `primaryNav` is the four rail modes. `workspaceModes` is all seven `kind === "mode"`
+ * `primaryNav` is the five rail modes. `workspaceModes` is all seven `kind === "mode"`
  * items. `isRunMode` / `defaultTabFor` read `workspaceModes`, never `primaryNav`.
- * AI is overlay (`overlay: true`), not a rail mode.
+ * Evidence stays off the rail (open from Report). AI is overlay (`overlay: true`).
  *
  * @typedef {{
  *   kind: "mode",
@@ -43,7 +43,7 @@
     { kind: "mode", id: "explorer", mode: "explorer", label: "Explorer", defaultTab: "explorer", rail: "primary" },
     { kind: "mode", id: "report", mode: "report", label: "Report", defaultTab: "report", rail: "primary" },
     { kind: "mode", id: "evidence", mode: "evidence", label: "Evidence", defaultTab: "evidence", rail: null },
-    { kind: "mode", id: "audit", mode: "audit", label: "Tasks", defaultTab: "tasks", rail: null },
+    { kind: "mode", id: "audit", mode: "audit", label: "Tasks", defaultTab: "tasks", rail: "primary" },
     { kind: "mode", id: "ai", mode: "ai", label: "AI", defaultTab: "ai", rail: null, overlay: true },
     { kind: "href", id: "settings", href: "/settings", label: "Settings", rail: "footer" },
     { kind: "href", id: "dev", href: "/dev", label: "Dev", rail: "footer" },

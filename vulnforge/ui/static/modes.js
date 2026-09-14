@@ -19,6 +19,7 @@
     hunts: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.6v2.4M8 12v2.4M1.6 8h2.4M12 8h2.4"/></svg>`,
     explorer: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2.5 4.5h4l1.2 1.5H13.5v6.5h-11z"/></svg>`,
     report: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3.5 2.5h9v11h-9z"/><path d="M5.5 6h5M5.5 8.5h5M5.5 11h3"/></svg>`,
+    audit: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4h7M6 8h7M6 12h5"/><rect x="2.4" y="3.2" width="1.8" height="1.8" rx="0.3"/><rect x="2.4" y="7.2" width="1.8" height="1.8" rx="0.3"/><rect x="2.4" y="11.2" width="1.8" height="1.8" rx="0.3"/></svg>`,
     settings: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 2.5v1.5M8 12v1.5M2.5 8h1.5M12 8h1.5M4.2 4.2l1.1 1.1M10.7 10.7l1.1 1.1M11.8 4.2l-1.1 1.1M5.3 10.7l-1.1 1.1"/></svg>`,
     dev: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 5 L2.5 8 L5 11M11 5 L13.5 8 L11 11M9.2 3.6 L6.8 12.4"/></svg>`,
     "tool-gaps": `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5"/><path d="M6 8h4M8 6v4"/></svg>`,
