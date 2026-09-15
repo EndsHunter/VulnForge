@@ -66,7 +66,7 @@ describe("RUN_NAV", () => {
     assert.deepEqual(
       workspaceModes().map((item) => [item.mode, item.defaultTab]),
       [
-        ["mission", "overview"],
+        ["mission", "arch"],
         ["hunts", "hunts"],
         ["explorer", "explorer"],
         ["report", "report"],
@@ -96,7 +96,7 @@ describe("isRunMode / defaultTabFor / isOverlayMode", () => {
   });
 
   it("returns default tabs or null", () => {
-    assert.equal(defaultTabFor("mission"), "overview");
+    assert.equal(defaultTabFor("mission"), "arch");
     assert.equal(defaultTabFor("audit"), "tasks");
     assert.equal(defaultTabFor("evidence"), "evidence");
     assert.equal(defaultTabFor("ai"), "ai");

@@ -343,7 +343,7 @@ def _target_inventory(
     arch: dict | None,
     tasks: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Campaign inventory facts for Mission overview (not a recon stop limit).
+    """Campaign inventory facts for Mission (not a recon stop limit).
 
     ``file_count`` is the full tree. ``planning_seed_*`` describes the capped
     path list injected into the recon packet / default hunt seeds only —
