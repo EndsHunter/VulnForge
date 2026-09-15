@@ -25,7 +25,7 @@
     "tool-gaps": `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5"/><path d="M6 8h4M8 6v4"/></svg>`,
   };
 
-  let exclusive = { mode: "mission", tab: "overview" };
+  let exclusive = { mode: "mission", tab: "arch" };
 
   /**
    * Parse hash segment. `#poc/<id>` is the current PoC workshop deep link
@@ -40,7 +40,10 @@
       return { mode: "hunts", tab: tab === "coverage" || !tab ? "hunts" : tab };
     }
     if (mode === "harness") {
-      return { mode: "mission", tab: "overview" };
+      return { mode: "mission", tab: "arch" };
+    }
+    if (mode === "mission" && (tab === "overview" || tab === "")) {
+      return { mode: "mission", tab: "arch" };
     }
     if (mode === "tasks") {
       return { mode: "audit", tab: tab || "tasks" };
@@ -116,7 +119,7 @@
       window.VulnForgeReport.closeDevelopPoc({ stayOnReport: false, skipHash: true });
     }
 
-    const tab = preferredTab || defaultTabFor(mode) || "overview";
+    const tab = preferredTab || defaultTabFor(mode) || mode;
 
     if (isOverlayMode(mode)) {
       if (window.VulnForgeChat?.openSheet) window.VulnForgeChat.openSheet();
@@ -286,7 +289,7 @@
 
     const fromHash = parseHash();
     if (fromHash && isOverlayMode(fromHash.mode)) {
-      setMode("mission", "overview");
+      setMode("mission", "arch");
       setMode(fromHash.mode, fromHash.tab);
     } else if (fromHash) {
       setMode(fromHash.mode, fromHash.tab);
@@ -297,7 +300,7 @@
           setTimeout(() => window.VulnForgeReport.openDevelopPoc(n), 0);
         }
       }
-    } else setMode("mission", "overview");
+    } else setMode("mission", "arch");
 
     document.addEventListener("keydown", (ev) => {
       if (ev.target && /^(INPUT|TEXTAREA|SELECT)$/i.test(ev.target.tagName)) return;

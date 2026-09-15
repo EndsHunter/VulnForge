@@ -124,7 +124,7 @@ vf dashboard
 | New audit | Dashboard **New audit**, or `vf init --target PATH` |
 | Drive queue | Dashboard **Start**, or `python scripts/ralph.py --run-dir DIR` |
 | One task only | `vf run-once --run-dir DIR` |
-| Status | `vf status --run-dir DIR` or Mission overview |
+| Status | `vf status --run-dir DIR` or Mission (campaign strip) |
 | Steer | Explorer (enqueue hunts), Hunts (residual cells), Report (accept/reject) |
 | Dev tools | Home → **Dev** — hunt skills + recon agents; generate custom skills |
 | Tool gaps | `vf tool-gaps --run-dir DIR` or Home **Tool gaps** |
@@ -159,7 +159,7 @@ vf dashboard --host 127.0.0.1 --port 8787
 | Surface | Purpose |
 |---------|---------|
 | **Home** | All runs, progress, LLM token rollups |
-| **Mission** | Overview, architecture, operator recon re-run, usage by stage |
+| **Mission** | Architecture map, compact campaign strip, operator recon re-run |
 | **Hunts** | Plan area×skill batches and the residual-risk matrix; re-queue cells |
 | **Explorer** | Browse target; enqueue class×path hunts |
 | **Report** | Findings review (accept / reject / develop PoC) |
@@ -168,7 +168,7 @@ vf dashboard --host 127.0.0.1 --port 8787
 | **AI** | Run-bound co-pilot (mutating tools need Confirm) |
 | **Dev** | Hunt skills, recon agents, generate custom hunt skills (Home → `/dev`) |
 
-Token usage (when the model returns `usage`, or estimated) appears on Home and Mission overview.
+Token usage (when the model returns `usage`, or estimated) appears on Home.
 
 The bench desk at `/benchmarks/run` has two hunt paths. Mechanical L0 needs no model. It scores sink preindex hits against the oracle and returns a terminal BenchmarkRun from one `POST /api/benchmarks/runs`. Live hunts use the Settings LLM (`llm.base_url` and `llm.model`). They init a throwaway harness under `.audit/benchmarks/eval_runs/<br-id>/`, never `runs/`, enqueue path and class only, and poll the same run id until Ralph is idle. `passed` means recall > 0. Automation never sets `confirmed`.
 

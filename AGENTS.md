@@ -36,7 +36,7 @@ The dashboard is the main operator surface:
 
 | Mode | Job |
 |------|-----|
-| **Mission** | Overview, architecture, campaign status |
+| **Mission** | Architecture map of the target; campaign health as a thin top strip |
 | **Hunts** | Plan hunts (areas × skills) + residual-risk matrix; re-queue shallow/aborted/none cells |
 | **Explorer** | Browse target, select code, enqueue hunts |
 | **Report** | Structured findings table + exports; detail links to Evidence |

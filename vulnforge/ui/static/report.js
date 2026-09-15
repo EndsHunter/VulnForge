@@ -1766,7 +1766,7 @@
         window.VulnForgeModes?.setMode?.("explorer")
       );
       $("#report-go-mission")?.addEventListener("click", () =>
-        window.VulnForgeModes?.setMode?.("mission", "overview")
+        window.VulnForgeModes?.setMode?.("mission", "arch")
       );
       updateSearchCount();
       updateSortHeaders();

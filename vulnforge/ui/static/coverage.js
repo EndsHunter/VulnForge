@@ -1825,7 +1825,7 @@
   }
 
   /**
-   * Mission overview mini matrix (non-interactive).
+   * Hunts strip mini matrix (non-interactive).
    */
   function renderPreviewHtml(cov) {
     return renderMatrixHtml(cov, { interactive: false, filter: "all" });

@@ -38,7 +38,7 @@
   /** @type {readonly RunNavItem[]} */
   const RUN_NAV = Object.freeze([
     { kind: "href", id: "home", href: "/", label: "Home", rail: "head" },
-    { kind: "mode", id: "mission", mode: "mission", label: "Mission", defaultTab: "overview", rail: "primary" },
+    { kind: "mode", id: "mission", mode: "mission", label: "Mission", defaultTab: "arch", rail: "primary" },
     { kind: "mode", id: "hunts", mode: "hunts", label: "Hunts", defaultTab: "hunts", rail: "primary" },
     { kind: "mode", id: "explorer", mode: "explorer", label: "Explorer", defaultTab: "explorer", rail: "primary" },
     { kind: "mode", id: "report", mode: "report", label: "Report", defaultTab: "report", rail: "primary" },

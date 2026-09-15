@@ -835,7 +835,7 @@ flowchart TB
 
 | Mode | Purpose |
 |------|---------|
-| **Mission** | Campaign overview, architecture, Ralph control |
+| **Mission** | Architecture map + campaign strip; Ralph control |
 | **Hunts** | Residual-risk matrix; re-queue cells with notes |
 | **Explorer** | Code browse; selection hunts (`POST …/hunts/from-selection`) |
 | **Report** | Findings + human gates + PoC workshop |

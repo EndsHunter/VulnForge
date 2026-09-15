@@ -1681,7 +1681,7 @@ function goStatLink(nav) {
   const report = window.VulnForgeReport;
   switch (nav) {
     case "progress":
-      modes?.setMode?.("mission", "overview");
+      modes?.setMode?.("mission", "arch");
       break;
     case "tasks":
       modes?.setMode?.("audit", "tasks");
@@ -1711,26 +1711,13 @@ function goStatLink(nav) {
   }
 }
 
-/** Mission Overview pure helpers — see mission_overview_helpers.js */
+/** Campaign KPI / pipeline helpers — see mission_overview_helpers.js */
 const {
   buildMissionCockpit,
   summarizeHuntQueue,
   listNeedsHumanFindings,
   summarizeCoverageResidual,
 } = globalThis.MissionOverviewHelpers;
-
-function pipelineStatusLabel(status) {
-  const map = {
-    idle: "Idle",
-    pending: "Pending",
-    queued: "Queued",
-    running: "Running",
-    done: "Done",
-    partial: "In progress",
-    failed: "Failed",
-  };
-  return map[status] || status || "—";
-}
 
 /** Compact Hunts strip: live hunt feed + needs_human above coverage matrix. */
 function renderHuntsStripHtml(snap, opts = {}) {
@@ -1960,14 +1947,6 @@ function applyKpiNav(nav) {
   modes?.setMode?.(nav.mode, nav.tab);
 }
 
-function paintCockpitBanner(on) {
-  const el = document.querySelector("[data-cockpit-banner]");
-  if (!el) return;
-  el.innerHTML = on
-    ? `<div class="disclaimer-banner"><span>!</span><div><strong>validate_llm is ON</strong>. Mech-pass is <code>needs_human</code>; disprove may <code>rejected_llm</code> only (never auto-confirm). Same-model signal is weak.</div></div>`
-    : "";
-}
-
 function missionFailReason(snap) {
   const last = snap?.last_event && typeof snap.last_event === "object" ? snap.last_event : {};
   const kind = String(last.event || last.kind || "").toLowerCase();
@@ -1979,164 +1958,198 @@ function missionFailReason(snap) {
   return "";
 }
 
-function paintMissionFailure(snap) {
-  const el = document.querySelector("[data-cockpit-banner]");
-  if (!el) return false;
-  const reason = missionFailReason(snap);
-  if (!reason) return false;
-  el.innerHTML = `<div class="mission-fail">
-    <p class="mission-fail-reason">${esc(reason)}</p>
-    <button type="button" class="btn btn-primary" id="mission-retry">Retry</button>
-  </div>`;
-  $("#mission-retry")?.addEventListener("click", () => control("start"));
-  return true;
+function missionTargetLabel() {
+  if (!currentKey) return "";
+  return String(currentKey.split("/")[0] || "");
 }
 
-function paintMissionKpis(kpis) {
-  const el = document.querySelector("[data-cockpit-kpis]");
-  if (!el) return;
-  el.innerHTML = (kpis || [])
-    .map((k) => {
-      const bar =
-        k.barPct == null
-          ? ""
-          : `<div class="cockpit-kpi-bar" style="--pct:${Number(k.barPct)}%"><i></i></div>`;
-      return `<button type="button" class="cockpit-kpi" data-kpi="${esc(k.id)}" title="${esc(k.hint)}">
-        <span class="cockpit-kpi-mark" aria-hidden="true"></span>
-        <span class="cockpit-kpi-body">
-          <span class="cockpit-kpi-label">${esc(k.label)}</span>
-          <span class="cockpit-kpi-value">${esc(k.value)}</span>
-          ${bar}
-        </span>
-      </button>`;
-    })
-    .join("");
-  el.querySelectorAll(".cockpit-kpi").forEach((btn, i) => {
-    btn.addEventListener("click", () => applyKpiNav(kpis[i] && kpis[i].nav));
+function missionCampaignVm(snap) {
+  const helpers = globalThis.MissionOverviewHelpers;
+  if (!helpers?.buildMissionCockpit) {
+    return { kpis: [], pipeline: [], events: [], validateLlmOn: false };
+  }
+  return helpers.buildMissionCockpit(snap, {
+    recentEvents: missionEventRing.snapshot(),
   });
 }
 
-function paintMissionPipeline(stages) {
-  const el = document.querySelector("[data-cockpit-pipeline]");
-  if (!el) return;
-  const nodes = (stages || [])
-    .map((s, i) => {
-      const countLabel =
-        s.total > 0 ? `${s.done}/${s.total}` : s.status === "done" ? "ready" : "—";
-      const connector =
-        i < stages.length - 1
-          ? `<div class="mission-pipeline-connector" data-from="${esc(s.status)}" aria-hidden="true"></div>`
-          : "";
-      return `
-        <div class="mission-pipeline-stage mission-pipeline-${esc(s.status)}" data-stage="${esc(s.id)}" title="${esc(s.hint)}">
-          <div class="mission-pipeline-dot" aria-hidden="true"></div>
-          <div class="mission-pipeline-body">
-            <div class="mission-pipeline-label">${esc(s.label)}</div>
-            <div class="mission-pipeline-meta">
-              <span class="mission-pipeline-status">${esc(pipelineStatusLabel(s.status))}</span>
-              <span class="mission-pipeline-count mono">${esc(countLabel)}</span>
-            </div>
-          </div>
-        </div>
-        ${connector}`;
-    })
-    .join("");
-  el.innerHTML = `
-    <div class="mission-pipeline card" role="list" aria-label="Campaign pipeline">
-      <div class="mission-pipeline-head">
-        <h2 class="mission-pipeline-title">Pipeline</h2>
-        <p class="controls-hint mission-pipeline-hint">
-          Recon → hunt → validate. Mech and LLM disprove fold into one stage. Never auto-confirms.
-        </p>
-      </div>
-      <div class="mission-pipeline-track">${nodes}</div>
-    </div>`;
+function goMissionEventsAll() {
+  window.VulnForgeModes?.setMode?.("audit", "timeline");
 }
 
-function paintMissionEvents(events) {
-  const el = document.querySelector("[data-cockpit-events]");
-  if (!el) return;
-  const rows = (events || [])
+function renderArchPageHeaderHtml(pageTitle, opts) {
+  const hasArch = !!(opts && opts.hasArch);
+  const target = missionTargetLabel();
+  const title = pageTitle || "Architecture";
+  const targetHtml = target
+    ? ` <span class="arch-page-target">· ${esc(target)}</span>`
+    : "";
+  const actions = [];
+  if (hasArch) {
+    actions.push(
+      `<button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit</button>`
+    );
+    actions.push(
+      `<button type="button" class="btn btn-sm" id="arch-history-toggle">History</button>`
+    );
+  }
+  actions.push(
+    `<button type="button" class="btn btn-sm" id="arch-recon-toggle">Recon</button>`
+  );
+  return `<header class="arch-page-header">
+    <h2 class="arch-page-title">${esc(title)}${targetHtml}</h2>
+    <div class="arch-page-actions">${actions.join("")}</div>
+  </header>`;
+}
+
+function renderArchMastheadHtml(pageTitle, opts, campaignHtml) {
+  return `<div class="arch-masthead">
+    ${renderArchPageHeaderHtml(pageTitle, opts)}
+    ${campaignHtml}
+  </div>`;
+}
+
+function renderCampaignStripHtml(vm, snap) {
+  const fail = missionFailReason(snap);
+  const banner = fail
+    ? `<div class="mission-fail arch-campaign-fail">
+      <p class="mission-fail-reason">${esc(fail)}</p>
+      <button type="button" class="btn btn-primary btn-sm" id="mission-retry">Retry</button>
+    </div>`
+    : "";
+
+  const kpis = (vm && vm.kpis) || [];
+  const kpiHtml = kpis
+    .map((k, i) => {
+      const sep =
+        i > 0 ? `<span class="arch-campaign-sep" aria-hidden="true">·</span>` : "";
+      return `${sep}<button type="button" class="arch-campaign-kpi" data-kpi-idx="${i}" title="${esc(k.hint || k.label)}">
+        <span class="arch-campaign-kpi-label">${esc(k.label)}</span>
+        <span class="arch-campaign-kpi-value mono">${esc(k.value)}</span>
+      </button>`;
+    })
+    .join("");
+
+  const stages = (vm && vm.pipeline) || [];
+  const pipeLead =
+    kpis.length && stages.length
+      ? `<span class="arch-campaign-sep" aria-hidden="true">·</span>`
+      : "";
+  const pipeHtml =
+    pipeLead +
+    stages
+      .map((s) => {
+        const countLabel =
+          s.total > 0 ? `${s.done}/${s.total}` : s.status === "done" ? "ready" : "—";
+        const hint = [s.hint || s.label, countLabel].filter(Boolean).join(" · ");
+        return `<span class="arch-campaign-pipe-stage arch-campaign-pipe-${esc(s.status)}" data-stage="${esc(s.id)}" title="${esc(hint)}" role="listitem">
+        <span class="arch-campaign-pipe-label">${esc(s.label)}</span>
+        <span class="arch-campaign-pipe-mark" aria-hidden="true"></span>
+      </span>`;
+      })
+      .join("");
+
+  const note =
+    !fail && vm && vm.validateLlmOn
+      ? `<span class="arch-campaign-note" title="validate_llm is on. Mech-pass is needs_human; disprove may rejected_llm only. Never auto-confirms.">disprove on</span>`
+      : "";
+
+  return `<div class="arch-campaign-strip${fail ? " is-failed" : ""}">
+    ${banner}
+    <div class="arch-campaign-row">
+      <div class="arch-campaign-kpis">${kpiHtml || `<span class="controls-hint">No campaign stats yet.</span>`}</div>
+      <div class="arch-campaign-pipeline" role="list" aria-label="Campaign pipeline">${pipeHtml}</div>
+      ${note}
+    </div>
+  </div>`;
+}
+
+function renderArchEventsFooterHtml(events) {
+  const recent = (events || []).slice(-5).reverse();
+  const rows = recent
     .map((ev) => {
       const name = ev.event || ev.type || "event";
-      return `<li class="cockpit-event">
+      return `<li class="arch-events-item">
         <span class="ts">${esc(ev.ts || "")}</span>
         <span class="name">${esc(name)}</span>
       </li>`;
     })
     .join("");
-  el.innerHTML = `
-    <section class="card cockpit-events-card">
-      <div class="toolbar cockpit-events-head">
-        <h2 class="cockpit-split-title">Recent events</h2>
-        <button type="button" class="btn btn-sm" data-cockpit-events-all>View all</button>
-      </div>
-      <ul class="cockpit-event-list">${rows || `<li class="controls-hint">No events yet.</li>`}</ul>
-    </section>`;
-  el.querySelector("[data-cockpit-events-all]")?.addEventListener("click", () => {
-    window.VulnForgeModes?.setMode?.("audit", "timeline");
-  });
+  return `<section class="arch-events-footer" data-arch-events>
+    <div class="arch-events-head">
+      <h3 class="arch-events-title">Recent events</h3>
+      <button type="button" class="btn btn-sm" data-arch-events-all>View all → Tasks</button>
+    </div>
+    <ul class="arch-events-list">${rows || `<li class="controls-hint">No events yet.</li>`}</ul>
+  </section>`;
 }
 
-function paintMissionArchitecture(arch) {
-  const el = document.querySelector("[data-cockpit-arch]");
+function renderArchRefineHtml(hasArch) {
+  const heading = hasArch ? "Refine recon" : "Run recon";
+  const hint = hasArch
+    ? "Re-run recon with guidance. Prior architecture is included so the model can correct and deepen the map."
+    : "Queue recon with optional operator guidance. Ralph must be Start/Resume to execute.";
+  const primary = hasArch ? "Re-run recon" : "Run recon + hunts";
+  const placeholder = hasArch
+    ? "What did recon miss? Which areas need better path_hints?"
+    : "What should recon map first? Auth, SQL entrypoints, trust boundaries…";
+  return `<section class="card arch-refine" id="arch-refine-section" hidden>
+    <header class="arch-section-head">
+      <h3>${esc(heading)}</h3>
+    </header>
+    <p class="controls-hint">${esc(hint)}</p>
+    <div class="field">
+      <label for="arch-recon-notes">Operator brief</label>
+      <textarea id="arch-recon-notes" class="op-notes" rows="3" placeholder="${esc(placeholder)}"></textarea>
+    </div>
+    <div class="toolbar arch-toolbar-actions">
+      <button type="button" class="btn btn-primary" id="arch-recon-rerun">${esc(primary)}</button>
+      <button type="button" class="btn" id="arch-recon-only">Architecture only</button>
+    </div>
+  </section>`;
+}
+
+function renderArchRawJsonHtml(arch, summary) {
+  return `<details class="card arch-footer-fold arch-raw-card">
+    <summary>Raw architecture JSON</summary>
+    <pre class="arch-box">${esc(JSON.stringify(arch || summary || {}, null, 2))}</pre>
+  </details>`;
+}
+
+function toggleArchRefine(forceShow) {
+  const box = $("#arch-refine-section");
+  if (!box) return;
+  const show =
+    forceShow === true ? true : forceShow === false ? false : box.hidden;
+  box.hidden = !show;
+  if (!show) return;
+  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  setTimeout(() => $("#arch-recon-notes")?.focus(), 50);
+}
+
+function bindArchCampaignHandlers(root, vm) {
+  const scope = root || document;
+  scope.querySelector("#mission-retry")?.addEventListener("click", () => control("start"));
+  const kpis = (vm && vm.kpis) || [];
+  scope.querySelectorAll(".arch-campaign-kpi").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.getAttribute("data-kpi-idx"));
+      applyKpiNav(kpis[i] && kpis[i].nav);
+    });
+  });
+  scope.querySelector("[data-arch-events-all]")?.addEventListener("click", goMissionEventsAll);
+  scope.querySelector("#arch-recon-toggle")?.addEventListener("click", () => toggleArchRefine());
+}
+
+function paintArchEventsLive(events) {
+  const el = document.querySelector("[data-arch-events]");
   if (!el) return;
-  const a = arch || {};
-  const counts = [];
-  if (a.fileCount != null) counts.push(["Files", String(a.fileCount)]);
-  if (a.entrypointCount) counts.push(["Entrypoints", String(a.entrypointCount)]);
-  if (a.componentCount) counts.push(["Components", String(a.componentCount)]);
-  if (a.relationCount) counts.push(["Relations", String(a.relationCount)]);
-  if (a.huntFocusCount) counts.push(["Hunt focus", String(a.huntFocusCount)]);
-  const countHtml = counts.length
-    ? `<ul class="cockpit-arch-counts">${counts
-        .map(([k, v]) => `<li><span class="k">${esc(k)}</span><span class="v mono">${esc(v)}</span></li>`)
-        .join("")}</ul>`
-    : "";
-  const err = a.lastReconError
-    ? `<p class="controls-hint cockpit-arch-error"><strong>Last recon:</strong> <span class="mono">${esc(a.lastReconError)}</span></p>`
-    : "";
-  const snippet = a.snippet
-    ? `<p class="overview-arch-snippet">${esc(a.snippet)}</p>`
-    : "";
-  const missing = !a.hasArchitecture
-    ? `<p class="controls-hint">No architecture yet. Run recon from the Architecture tab.</p>`
-    : "";
-  el.innerHTML = `
-    <section class="card cockpit-arch-card">
-      <div class="toolbar cockpit-arch-head">
-        <h2 class="cockpit-split-title">${esc(a.title || "Architecture")}</h2>
-        <button type="button" class="btn btn-sm" data-cockpit-go-arch>Architecture tab</button>
-      </div>
-      ${snippet}
-      ${countHtml}
-      ${err}
-      ${missing}
-    </section>`;
-  el.querySelector("[data-cockpit-go-arch]")?.addEventListener("click", () => {
-    window.VulnForgeModes?.setMode?.("mission", "arch");
-  });
-}
-
-function paintMissionCockpit(vm, snap) {
-  const failed = paintMissionFailure(snap);
-  if (!failed) paintCockpitBanner(vm.validateLlmOn);
-  paintMissionKpis(vm.kpis);
-  const kpis = document.querySelector("[data-cockpit-kpis]");
-  if (kpis) kpis.classList.toggle("is-muted", !!failed);
-  paintMissionPipeline(vm.pipeline);
-  paintMissionEvents(vm.events);
-  paintMissionArchitecture(vm.architecture);
-}
-
-function renderOverview(snap) {
-  if (!document.querySelector("#overview-panel")) return;
-  const helpers = globalThis.MissionOverviewHelpers;
-  if (!helpers?.buildMissionCockpit) return;
-  const vm = helpers.buildMissionCockpit(snap, {
-    recentEvents: missionEventRing.snapshot(),
-  });
-  paintMissionCockpit(vm, snap);
+  const tmp = document.createElement("div");
+  tmp.innerHTML = renderArchEventsFooterHtml(events);
+  const next = tmp.firstElementChild;
+  if (!next) return;
+  el.replaceWith(next);
+  next.querySelector("[data-arch-events-all]")?.addEventListener("click", goMissionEventsAll);
 }
 
 function reconFailureHint(snap) {
@@ -3138,8 +3151,8 @@ function appendEvents(events) {
     }
   }
   missionEventRing.push(list);
-  if (document.querySelector("[data-cockpit-events]")) {
-    paintMissionEvents(missionEventRing.snapshot());
+  if (document.querySelector("[data-arch-events]")) {
+    paintArchEventsLive(missionEventRing.snapshot());
   }
 }
 
@@ -3291,7 +3304,7 @@ function inlineMd(s) {
   return t;
 }
 
-/* ---------- Architecture (Mission → Architecture tab) ---------- */
+/* ---------- Architecture (Mission page) ---------- */
 
 function archEmptyItem(label) {
   return `<li class="arch-item arch-item-empty"><span class="controls-hint">${label || "None recorded"}</span></li>`;
@@ -3431,24 +3444,44 @@ function archSectionCard(title, count, bodyHtml, extraClass, tone) {
   </section>`;
 }
 
+function bindArchPage(el, vm, arch, summary) {
+  bindArchCampaignHandlers(el, vm);
+  $("#arch-focus-refine")?.addEventListener("click", () => toggleArchRefine(true));
+  $("#arch-go-explorer")?.addEventListener("click", () => {
+    window.VulnForgeModes?.setMode?.("explorer");
+  });
+  $("#arch-recon-rerun")?.addEventListener("click", () => submitArchRecon(true));
+  $("#arch-recon-only")?.addEventListener("click", () => submitArchRecon(false));
+  $("#arch-history-toggle")?.addEventListener("click", () => toggleArchHistory());
+  $("#arch-edit-toggle")?.addEventListener("click", () => toggleArchEdit(arch || summary));
+  $("#arch-edit-cancel")?.addEventListener("click", () => {
+    const p = $("#arch-edit-panel");
+    if (p) p.style.display = "none";
+  });
+  $("#arch-edit-save")?.addEventListener("click", () => saveArchEdit());
+  bindCodemapHandlers();
+}
+
 function renderArchitecture(arch, summary, snap) {
   const el = $("#arch-panel");
   if (!el) return;
   const s = summary || {};
   const pageTitle = s.title || "Architecture";
   const has = !!(s.has_architecture || arch);
+  const vm = missionCampaignVm(snap);
+  const campaignHtml = renderCampaignStripHtml(vm, snap);
+  const mastheadHtml = renderArchMastheadHtml(pageTitle, { hasArch: has }, campaignHtml);
+  const eventsHtml = renderArchEventsFooterHtml(vm.events);
+  const refineHtml = renderArchRefineHtml(has);
+  const rawHtml = renderArchRawJsonHtml(arch, s);
+
   if (!has) {
     el.innerHTML = `<div class="arch-page">
-      <header class="arch-page-header">
-        <div>
-          <h2 class="arch-page-title">${esc(pageTitle)}</h2>
-          <p class="controls-hint arch-page-sub">LLM recon map of the target — stored in the run DB only (not under project/).</p>
-        </div>
-      </header>
+      ${mastheadHtml}
       <div class="card">
         <div class="empty empty-cta">
           <p><strong>No architecture yet</strong></p>
-          <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored after submit_architecture (or free-text salvage). Use Refine recon below, then hunt from Explorer or Hunts.</p>
+          <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored after submit_architecture (or free-text salvage). Use Recon, then hunt from Explorer or Hunts.</p>
           ${reconFailureHint(snap)}
           <div class="empty-cta-actions">
             <button type="button" class="btn btn-primary" id="arch-focus-refine">Run recon with brief</button>
@@ -3456,33 +3489,12 @@ function renderArchitecture(arch, summary, snap) {
           </div>
         </div>
       </div>
-      <section class="card arch-refine" id="arch-refine-section">
-        <header class="arch-section-head">
-          <h3>Run recon</h3>
-        </header>
-        <p class="controls-hint">Queue recon with optional operator guidance. Ralph must be Start/Resume to execute.</p>
-        <div class="field">
-          <label for="arch-recon-notes">Operator brief</label>
-          <textarea id="arch-recon-notes" class="op-notes" rows="3" placeholder="What should recon map first? Auth, SQL entrypoints, trust boundaries…"></textarea>
-        </div>
-        <div class="toolbar arch-toolbar-actions">
-          <button type="button" class="btn btn-primary" id="arch-recon-rerun">Run recon + hunts</button>
-          <button type="button" class="btn" id="arch-recon-only">Architecture only</button>
-        </div>
-      </section>
+      ${refineHtml}
+      ${eventsHtml}
       ${renderCodemapCardHtml(snap)}
+      ${rawHtml}
     </div>`;
-    $("#arch-focus-refine")?.addEventListener("click", () => {
-      const box = $("#arch-refine-section");
-      box?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
-      setTimeout(() => $("#arch-recon-notes")?.focus(), 50);
-    });
-    $("#arch-go-explorer")?.addEventListener("click", () => {
-      window.VulnForgeModes?.setMode?.("explorer");
-    });
-    $("#arch-recon-rerun")?.addEventListener("click", () => submitArchRecon(true));
-    $("#arch-recon-only")?.addEventListener("click", () => submitArchRecon(false));
-    bindCodemapHandlers();
+    bindArchPage(el, vm, arch, s);
     return;
   }
 
@@ -3501,23 +3513,6 @@ function renderArchitecture(arch, summary, snap) {
   const agentsHtml = agentsRun.map(archFormatAgentItem).join("");
 
   const summaryHtml = renderMarkdown(s.summary || "(no summary)");
-
-  // Shared tones: top stats and section cards use the same arch-tone-* colors
-  const stats = [
-    { label: "Components", value: components.length, tone: "components" },
-    { label: "Surfaces", value: surfaces.length, tone: "surfaces" },
-    { label: "Boundaries", value: bounds.length, tone: "boundaries" },
-    { label: "Hunt focus", value: huntFocus.length, tone: "focus" },
-    { label: "Agents", value: agentsRun.length, tone: "agents" },
-  ]
-    .map(
-      (st) =>
-        `<div class="stat arch-tone-${st.tone}" data-arch-jump="${st.tone}" title="Jump to ${esc(st.label)}">
-          <div class="label">${esc(st.label)}</div>
-          <div class="value">${esc(String(st.value))}</div>
-        </div>`
-    )
-    .join("");
 
   const sideSections = [
     archSectionCard(
@@ -3553,7 +3548,6 @@ function renderArchitecture(arch, summary, snap) {
       )
     );
   }
-  // Always show Agents so the stat color maps to a box (empty state when none)
   sideSections.push(
     archSectionCard(
       "Recon agents",
@@ -3569,59 +3563,7 @@ function renderArchitecture(arch, summary, snap) {
 
   el.innerHTML = `
     <div class="arch-page">
-      <header class="arch-page-header">
-        <div>
-          <h2 class="arch-page-title">${esc(pageTitle)}</h2>
-          <p class="controls-hint arch-page-sub">LLM recon map — stored in the run DB only. Not exploit proof; use Hunts and Explorer to drive hunts.</p>
-        </div>
-        <div class="arch-page-actions">
-          <button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit</button>
-          <button type="button" class="btn btn-sm" id="arch-history-toggle">History</button>
-        </div>
-      </header>
-
-      <div class="stats arch-stats">${stats}</div>
-
-      <div class="arch-body">
-        <div class="arch-main">
-          <section class="card arch-summary-card">
-            <header class="arch-section-head">
-              <h3>Summary</h3>
-            </header>
-            <div class="arch-summary-text md-prose">${summaryHtml}</div>
-          </section>
-
-          <section class="card arch-section arch-components-section arch-tone-components" id="arch-section-components">
-            <header class="arch-section-head">
-              <h3>Components</h3>
-              <span class="arch-section-count">${esc(String(components.length))}</span>
-            </header>
-            ${
-              compsHtml
-                ? `<div class="arch-comp-grid">${compsHtml}</div>`
-                : `<p class="controls-hint arch-section-empty">No components recorded.</p>`
-            }
-          </section>
-
-          <details class="card arch-raw-card">
-            <summary>Raw architecture JSON</summary>
-            <pre class="arch-box">${esc(JSON.stringify(arch || s, null, 2))}</pre>
-          </details>
-        </div>
-
-        <aside class="arch-side">
-          ${sideSections.join("")}
-        </aside>
-      </div>
-
-      <div id="arch-history-panel" class="card arch-history-panel" style="display:none">
-        <header class="arch-section-head">
-          <h3>Architecture history</h3>
-        </header>
-        <p class="controls-hint">Prior maps (last 50). View a revision or restore it — restore archives the current map first.</p>
-        <div id="arch-history-list" class="arch-history-list controls-hint">Loading…</div>
-        <div id="arch-history-detail" class="arch-history-detail" style="display:none"></div>
-      </div>
+      ${mastheadHtml}
 
       <div id="arch-edit-panel" class="card arch-edit-panel" style="display:none">
         <header class="arch-section-head">
@@ -3646,62 +3588,49 @@ function renderArchitecture(arch, summary, snap) {
         </div>
       </div>
 
-      <section class="card arch-refine">
+      <div id="arch-history-panel" class="card arch-history-panel" style="display:none">
         <header class="arch-section-head">
-          <h3>Refine recon</h3>
+          <h3>Architecture history</h3>
         </header>
-        <p class="controls-hint">Re-run recon with guidance. Prior architecture is included so the model can correct and deepen the map.</p>
-        <div class="field">
-          <label for="arch-recon-notes">Operator brief</label>
-          <textarea id="arch-recon-notes" class="op-notes" rows="3" placeholder="What did recon miss? Which areas need better path_hints?"></textarea>
-        </div>
-        <div class="toolbar arch-toolbar-actions">
-          <button type="button" class="btn btn-primary" id="arch-recon-rerun">Re-run recon</button>
-          <button type="button" class="btn" id="arch-recon-only">Architecture only</button>
-        </div>
-      </section>
+        <p class="controls-hint">Prior maps (last 50). View a revision or restore it — restore archives the current map first.</p>
+        <div id="arch-history-list" class="arch-history-list controls-hint">Loading…</div>
+        <div id="arch-history-detail" class="arch-history-detail" style="display:none"></div>
+      </div>
 
+      ${refineHtml}
+
+      <div class="arch-body">
+        <div class="arch-main">
+          <section class="card arch-summary-card">
+            <header class="arch-section-head">
+              <h3>Summary</h3>
+            </header>
+            <div class="arch-summary-text md-prose">${summaryHtml}</div>
+          </section>
+
+          <section class="card arch-section arch-components-section arch-tone-components" id="arch-section-components">
+            <header class="arch-section-head">
+              <h3>Components</h3>
+              <span class="arch-section-count">${esc(String(components.length))}</span>
+            </header>
+            ${
+              compsHtml
+                ? `<div class="arch-comp-grid">${compsHtml}</div>`
+                : `<p class="controls-hint arch-section-empty">No components recorded.</p>`
+            }
+          </section>
+        </div>
+
+        <aside class="arch-side">
+          ${sideSections.join("")}
+        </aside>
+      </div>
+
+      ${eventsHtml}
       ${renderCodemapCardHtml(snap)}
+      ${rawHtml}
     </div>`;
-  // Click a colored stat to scroll to the matching section
-  el.querySelectorAll(".arch-stats .stat[data-arch-jump]").forEach((statEl) => {
-    statEl.classList.add("stat-link");
-    statEl.setAttribute("role", "button");
-    statEl.tabIndex = 0;
-    const jump = () => {
-      const key = statEl.getAttribute("data-arch-jump");
-      const target = key ? el.querySelector(`#arch-section-${key}`) : null;
-      if (!target) return;
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-      target.classList.add("arch-section-flash");
-      setTimeout(() => target.classList.remove("arch-section-flash"), 1200);
-    };
-    statEl.addEventListener("click", jump);
-    statEl.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" || ev.key === " ") {
-        ev.preventDefault();
-        jump();
-      }
-    });
-  });
-  $("#arch-recon-rerun")?.addEventListener("click", () =>
-    submitArchRecon(true)
-  );
-  $("#arch-recon-only")?.addEventListener("click", () =>
-    submitArchRecon(false)
-  );
-  $("#arch-history-toggle")?.addEventListener("click", () =>
-    toggleArchHistory()
-  );
-  $("#arch-edit-toggle")?.addEventListener("click", () =>
-    toggleArchEdit(arch || s)
-  );
-  $("#arch-edit-cancel")?.addEventListener("click", () => {
-    const p = $("#arch-edit-panel");
-    if (p) p.style.display = "none";
-  });
-  $("#arch-edit-save")?.addEventListener("click", () => saveArchEdit());
-  bindCodemapHandlers();
+  bindArchPage(el, vm, arch, s);
 }
 
 function renderCodemapCardHtml(snap) {
@@ -3711,16 +3640,16 @@ function renderCodemapCardHtml(snap) {
     !!(sum.has_codemap || (snap && snap.has_codemap) || (map && (map.modules || []).length));
   if (!has) {
     return `
-    <section class="card codemap-card" id="codemap-card">
-      <header class="arch-section-head">
-        <h3>Codemap</h3>
-        <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild</button>
-      </header>
+    <details class="card arch-footer-fold codemap-card" id="codemap-card">
+      <summary>Codemap</summary>
       <div class="empty empty-cta codemap-empty">
         <p><strong>No codemap yet</strong></p>
         <p class="controls-hint">Run recon or Rebuild after init. Mechanical structure is stored in the run DB (not under project/) and does not replace architecture.</p>
       </div>
-    </section>`;
+      <div class="arch-footer-fold-actions">
+        <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild</button>
+      </div>
+    </details>`;
   }
   const fileCount = sum.file_count != null ? sum.file_count : (map.summary && map.summary.file_count) || 0;
   const moduleCount =
@@ -3825,14 +3754,12 @@ function renderCodemapCardHtml(snap) {
     .filter(Boolean)
     .join("");
   return `
-    <section class="card codemap-card" id="codemap-card">
-      <header class="arch-section-head">
-        <div>
-          <h3>Codemap</h3>
-          <p class="controls-hint arch-page-sub">Mechanical modules + function-level symbols (full index in DB). Rebuild does not wipe architecture.</p>
-        </div>
+    <details class="card arch-footer-fold codemap-card" id="codemap-card">
+      <summary>Codemap</summary>
+      <p class="controls-hint arch-page-sub">Mechanical modules + function-level symbols (full index in DB). Rebuild does not wipe architecture.</p>
+      <div class="arch-footer-fold-actions">
         <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild</button>
-      </header>
+      </div>
       <div class="arch-chip-row">${chips}</div>
       ${
         langChips
@@ -3844,7 +3771,7 @@ function renderCodemapCardHtml(snap) {
           ? `<div class="codemap-meta-block"><div class="codemap-meta-label">Package roots</div><div class="arch-chip-row">${rootChips}</div></div>`
           : ""
       }
-      <details class="arch-raw" open>
+      <details class="arch-raw">
         <summary>Modules (${moduleCount})</summary>
         <ul class="arch-list arch-list-plain">${modItems || archEmptyItem()}${moreMods}</ul>
       </details>
@@ -3862,7 +3789,7 @@ function renderCodemapCardHtml(snap) {
         <summary>Raw codemap JSON</summary>
         <pre class="arch-box">${esc(JSON.stringify(map || sum, null, 2))}</pre>
       </details>
-    </section>`;
+    </details>`;
 }
 
 function bindCodemapHandlers() {
@@ -4681,7 +4608,6 @@ async function loadRunFull() {
   window.refreshSnapshot = loadRunFull;
   window.__VF_max_task_attempts = Number(snap.max_task_attempts) || 3;
   renderRunner(snap.runner || {}, snap);
-  renderOverview(snap);
   renderTasks(snap.tasks || []);
   renderArchitecture(snap.architecture, snap.architecture_summary, snap);
   renderExplorer();

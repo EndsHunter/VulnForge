@@ -70,3 +70,24 @@ def test_run_html_icon_rail_chrome():
     assert 'id="ai-fab"' in html
     assert 'id="ai-sheet"' in html
     assert html.index('id="ai-sheet"') < html.index('id="operator-chat-root"')
+
+
+def test_mission_is_architecture_page():
+    html = RUN_HTML.read_text(encoding="utf-8")
+    modes = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "modes.js").read_text(
+        encoding="utf-8"
+    )
+    app = HOME_JS.read_text(encoding="utf-8")
+    report = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "report.js").read_text(
+        encoding="utf-8"
+    )
+    assert 'data-tab="overview"' not in html
+    assert 'id="overview-panel"' not in html
+    assert 'id="arch-panel"' in html
+    assert "defaultTab: \"arch\"" in (
+        PROJECT_ROOT / "vulnforge" / "ui" / "static" / "run_nav.js"
+    ).read_text(encoding="utf-8")
+    assert 'tab === "overview"' in modes
+    assert 'setMode("mission", "overview")' not in modes
+    assert 'setMode?.("mission", "overview")' not in app
+    assert 'setMode?.("mission", "overview")' not in report

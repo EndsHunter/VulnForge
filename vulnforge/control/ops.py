@@ -1853,7 +1853,7 @@ def architecture_summary(
     *,
     profile: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Compact fields for Overview / Architecture tab (source analysis)."""
+    """Compact fields for the Mission architecture page (source analysis)."""
     del profile  # retained for call-site compatibility
     empty: dict[str, Any] = {
         "mode": "source",

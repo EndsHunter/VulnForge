@@ -16,8 +16,8 @@
 
 | Surface | Action |
 |---------|--------|
-| Architecture (Mission → Architecture) | Refine / run recon with brief (arch-only or + hunts) |
-| History | View/restore prior architecture revisions |
+| Mission (Recon) | Refine / run recon with brief (arch-only or + hunts) |
+| Mission (History) | View/restore prior architecture revisions |
 | Init | Strategy + recon agents + brief when creating a run |
 
 ## Priority
