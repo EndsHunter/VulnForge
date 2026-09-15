@@ -347,8 +347,6 @@ describe("buildMissionCockpit", () => {
     assert.equal(vm.architecture.fileCount, 12);
     assert.equal(vm.architecture.entrypointCount, 2);
     assert.equal(vm.architecture.huntFocusCount, 1);
-    assert.ok(vm.architecture.diagramSource);
-    assert.equal(vm.architecture.diagramSource.components.length, 1);
   });
 
   it("does not invent architecture inventory", () => {
@@ -357,7 +355,6 @@ describe("buildMissionCockpit", () => {
       target_inventory: {},
     });
     assert.equal(brief.hasArchitecture, false);
-    assert.equal(brief.diagramSource, null);
     assert.equal(brief.fileCount, null);
     assert.equal(brief.componentCount, 0);
     assert.equal(brief.snippet.includes("Cloudflare"), false);

@@ -2099,13 +2099,9 @@ function paintMissionArchitecture(arch) {
   const snippet = a.snippet
     ? `<p class="overview-arch-snippet">${esc(a.snippet)}</p>`
     : "";
-  let diagram = "";
-  const helpers = window.ArchitectureDiagramHelpers;
-  if (a.diagramSource && helpers?.renderDiagramCardHtml) {
-    diagram = helpers.renderDiagramCardHtml(a.diagramSource, { idPrefix: "overview-" });
-  } else if (!a.hasArchitecture) {
-    diagram = `<p class="controls-hint">No architecture yet. Run recon from the Architecture tab.</p>`;
-  }
+  const missing = !a.hasArchitecture
+    ? `<p class="controls-hint">No architecture yet. Run recon from the Architecture tab.</p>`
+    : "";
   el.innerHTML = `
     <section class="card cockpit-arch-card">
       <div class="toolbar cockpit-arch-head">
@@ -2115,12 +2111,11 @@ function paintMissionArchitecture(arch) {
       ${snippet}
       ${countHtml}
       ${err}
-      ${diagram}
+      ${missing}
     </section>`;
   el.querySelector("[data-cockpit-go-arch]")?.addEventListener("click", () => {
     window.VulnForgeModes?.setMode?.("mission", "arch");
   });
-  bindArchDiagramHandlers(el);
 }
 
 function paintMissionCockpit(vm, snap) {
@@ -3298,76 +3293,6 @@ function inlineMd(s) {
 
 /* ---------- Architecture (Mission → Architecture tab) ---------- */
 
-
-function archRevealPath(path) {
-  const p = String(path || "").trim();
-  if (!p) {
-    toast("No path_hints on this component", true);
-    return;
-  }
-  if (window.VulnForgeModes?.goExplorer) {
-    window.VulnForgeModes.goExplorer(p);
-    return;
-  }
-  window.VulnForgeModes?.setMode?.("explorer");
-  if (window.VulnForgeExplorer?.reveal) {
-    window.VulnForgeExplorer.reveal(p);
-  } else if (typeof window.loadExplorerFile === "function") {
-    window.loadExplorerFile(p);
-  }
-}
-
-function bindArchDiagramHandlers(root) {
-  const scope = root || document;
-  // Only nodes with path_hints are keyboard/click activatable (helpers set role/tabindex).
-  scope.querySelectorAll(".arch-diag-node-clickable").forEach((nodeEl) => {
-    const go = () => {
-      const path = nodeEl.getAttribute("data-path") || "";
-      if (!path) {
-        toast("No path_hints on this component — cannot reveal in Explorer", true);
-        return;
-      }
-      archRevealPath(path);
-    };
-    nodeEl.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      go();
-    });
-    nodeEl.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" || ev.key === " ") {
-        ev.preventDefault();
-        go();
-      }
-    });
-  });
-}
-
-function renderArchDiagramCard(arch, summary) {
-  const helpers = window.ArchitectureDiagramHelpers;
-  if (!helpers || typeof helpers.renderDiagramCardHtml !== "function") {
-    return `<section class="card arch-diagram-card" id="arch-diagram-card">
-      <header class="arch-section-head"><h3>Diagram</h3></header>
-      <p class="arch-diagram-disclaimer controls-hint">Inferred from architecture map — not a formal model.</p>
-      <p class="controls-hint">Diagram helpers unavailable.</p>
-    </section>`;
-  }
-  // Prefer summary (compact components + trust_boundaries); fall back to raw arch.
-  const src =
-    summary &&
-    (Array.isArray(summary.components) ||
-      Array.isArray(summary.trust_boundaries) ||
-      Array.isArray(summary.relations))
-      ? {
-          components: summary.components || [],
-          trust_boundaries: summary.trust_boundaries || [],
-          modules: summary.modules || [],
-          relations: summary.relations || [],
-        }
-      : arch || summary || {};
-  return helpers.renderDiagramCardHtml(src);
-}
-
-
 function archEmptyItem(label) {
   return `<li class="arch-item arch-item-empty"><span class="controls-hint">${label || "None recorded"}</span></li>`;
 }
@@ -3524,7 +3449,6 @@ function renderArchitecture(arch, summary, snap) {
         <div class="empty empty-cta">
           <p><strong>No architecture yet</strong></p>
           <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored after submit_architecture (or free-text salvage). Use Refine recon below, then hunt from Explorer or Hunts.</p>
-          <p class="arch-diagram-disclaimer controls-hint">Inferred from architecture map — not a formal model. Diagram appears here after recon.</p>
           ${reconFailureHint(snap)}
           <div class="empty-cta-actions">
             <button type="button" class="btn btn-primary" id="arch-focus-refine">Run recon with brief</button>
@@ -3658,8 +3582,6 @@ function renderArchitecture(arch, summary, snap) {
 
       <div class="stats arch-stats">${stats}</div>
 
-      ${renderArchDiagramCard(arch, s)}
-
       <div class="arch-body">
         <div class="arch-main">
           <section class="card arch-summary-card">
@@ -3779,7 +3701,6 @@ function renderArchitecture(arch, summary, snap) {
     if (p) p.style.display = "none";
   });
   $("#arch-edit-save")?.addEventListener("click", () => saveArchEdit());
-  bindArchDiagramHandlers(el);
   bindCodemapHandlers();
 }
 
