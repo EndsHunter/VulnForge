@@ -418,14 +418,6 @@
       lr && lr.state && lr.state !== "succeeded"
         ? String(lr.error || lr.state)
         : null;
-    const diagramSource = hasArchitecture
-      ? {
-          components: sum.components || [],
-          trust_boundaries: sum.trust_boundaries || [],
-          modules: sum.modules || [],
-          relations: sum.relations || [],
-        }
-      : null;
     const snippet =
       text.length > 420 ? text.slice(0, 420) + "…" : text;
     return {
@@ -438,7 +430,6 @@
       fileCount: Number.isFinite(fileCount) ? fileCount : null,
       entrypointCount: eps.length,
       lastReconError,
-      diagramSource,
     };
   }
 
