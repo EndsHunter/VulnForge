@@ -253,6 +253,14 @@ def summarize_version(
     if not matched:
         return empty_side(ver)
 
+    live = [
+        r
+        for r in matched
+        if str(r.get("mode") or "").strip().lower() == "live"
+    ]
+    if live:
+        matched = live
+
     matched.sort(key=lambda r: (str(r.get("started_at") or ""), str(r.get("id") or "")))
     latest = _flatten_latest(matched[-1], run_type=want_type)
 
