@@ -2285,6 +2285,22 @@ def review_finding(
         )
         db.conn.commit()
 
+        hitl_meta: dict[str, Any] = {"ok": False, "error": "hitl_not_recorded"}
+        try:
+            from vulnforge.hitl import record_human_review
+
+            hitl_meta = record_human_review(
+                db,
+                run_dir,
+                finding_id=finding.id,
+                action=act,
+                notes=notes_s,
+                operator=operator,
+                at=now,
+            )
+        except Exception as e:  # noqa: BLE001 — review state already committed
+            hitl_meta = {"ok": False, "error": f"hitl_record_failed:{e}"}
+
         append_event(
             run_dir,
             {
@@ -2306,6 +2322,7 @@ def review_finding(
             "action": act,
             "evidence_id": eid_col,
             "note_relpath": note_rel,
+            "hitl": hitl_meta,
             "finding": {
                 "id": finding.id,
                 "state": new_state,

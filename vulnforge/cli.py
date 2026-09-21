@@ -2,7 +2,7 @@
 CLI entrypoints for vulnforge.
 
 Commands: vf init | run-once | status | project | apply-candidate | delete-run |
-dashboard | tool-gaps | export-validation-job | validate-poc
+dashboard | tool-gaps | export-validation-job | validate-poc | hitl
 """
 
 from __future__ import annotations
@@ -65,6 +65,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_export_validation_job(args, cfg)
         if cmd == "validate-poc":
             return cmd_validate_poc(args, cfg)
+        if cmd == "hitl":
+            return cmd_hitl(args, cfg)
         print(f"unknown command: {cmd}", file=sys.stderr)
         return EXIT_CONFIG
     except SystemExit as e:
@@ -289,6 +291,37 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Shortcut for --mode hybrid",
     )
+
+    hitl = sub.add_parser(
+        "hitl",
+        help="Durable human-review inbox (report↔responses). Never auto-confirms.",
+    )
+    hitl_sub = hitl.add_subparsers(dest="hitl_cmd", required=True)
+    for name, help_text in (
+        ("inbox", "List awaiting-review packets for a run"),
+        ("responses", "Print the durable responses document"),
+    ):
+        p_cmd = hitl_sub.add_parser(name, help=help_text)
+        p_cmd.add_argument("--run-dir", type=Path, default=None)
+    show_p = hitl_sub.add_parser("show", help="Print one report packet and its responses")
+    show_p.add_argument("--run-dir", type=Path, default=None)
+    show_p.add_argument("--id", required=True, help="Report id (e.g. finding-1)")
+    respond_p = hitl_sub.add_parser(
+        "respond",
+        help="Record an explicit human answer (finding approval delegates to review)",
+    )
+    respond_p.add_argument("--run-dir", type=Path, default=None)
+    respond_p.add_argument("--id", required=True, help="Report id")
+    respond_p.add_argument("--block", required=True, help="Interactive block id")
+    respond_p.add_argument("--value", required=True, help="Answer value")
+    respond_p.add_argument("--note", default="", help="Optional note stored with the answer")
+    respond_p.add_argument("--operator", default="operator")
+    emit_p = hitl_sub.add_parser(
+        "emit",
+        help="Store an explicit HITL packet (gate). Does not touch findings.",
+    )
+    emit_p.add_argument("--run-dir", type=Path, default=None)
+    emit_p.add_argument("--file", type=Path, required=True, help="Report JSON file")
 
     return p
 
@@ -1475,6 +1508,78 @@ def cmd_delete_run(args, cfg: dict) -> int:
     print(f"deleted: {result.get('path')}")
     if result.get("removed_parent"):
         print(f"removed empty target dir: {target_id}")
+    return EXIT_PROGRESS
+
+
+def cmd_hitl(args, cfg: dict) -> int:
+    """Read or update the durable HITL inbox. Does not invent human answers."""
+    try:
+        run_dir = resolve_run_dir(args, cfg)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_CONFIG
+    db_path = run_dir / "harness.db"
+    if not db_path.is_file():
+        print(f"missing harness.db in {run_dir}", file=sys.stderr)
+        return EXIT_CONFIG
+    from vulnforge.hitl import (
+        emit_packet,
+        get_report,
+        list_inbox,
+        open_for_run,
+        respond,
+        write_projections,
+    )
+
+    action = str(getattr(args, "hitl_cmd", "") or "")
+    db = open_for_run(run_dir)
+    try:
+        if action == "inbox":
+            payload = list_inbox(db, run_dir)
+        elif action == "responses":
+            payload = write_projections(db, run_dir)
+        elif action == "show":
+            payload = get_report(db, run_dir, str(args.id))
+        elif action == "respond":
+            payload = respond(
+                db,
+                run_dir,
+                str(args.id),
+                block_id=str(args.block),
+                value=str(args.value),
+                note=str(args.note or ""),
+                operator=str(args.operator or "operator"),
+            )
+        elif action == "emit":
+            path = Path(args.file)
+            if not path.is_file():
+                print(f"file not found: {path}", file=sys.stderr)
+                return EXIT_CONFIG
+            try:
+                packet = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                print(f"invalid JSON: {e}", file=sys.stderr)
+                return EXIT_CONFIG
+            if not isinstance(packet, dict):
+                print("packet must be a JSON object", file=sys.stderr)
+                return EXIT_CONFIG
+            payload = emit_packet(db, run_dir, packet)
+        else:
+            print(f"unknown hitl command: {action}", file=sys.stderr)
+            return EXIT_CONFIG
+    finally:
+        db.close()
+    if not payload.get("ok", True) and payload.get("error"):
+        print(json.dumps(payload, indent=2), file=sys.stderr)
+        return EXIT_CONFIG
+    # responses document has no ok flag; inbox/show/respond/emit do.
+    if action == "responses":
+        print(json.dumps(payload, indent=2))
+        return EXIT_PROGRESS
+    if payload.get("ok") is False:
+        print(json.dumps(payload, indent=2), file=sys.stderr)
+        return EXIT_CONFIG
+    print(json.dumps(payload, indent=2))
     return EXIT_PROGRESS
 
 

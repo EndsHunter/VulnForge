@@ -38,7 +38,7 @@ Follow `seeds/system/PRINCIPLES.md` for the full exploitability bar, threat mode
 ## Labels (honesty)
 
 - **`needs_human`** = passed **mechanical gates** (shape, citations, evidence pack or justified `no_poc`, threat model non-vacuous, manifest check). **Not** exploit proof.
-- **`confirmed`** = a **human** accepted the finding after review. Automation never auto-confirms. Still **not** exploit proof.
+- **`confirmed`** = a **human** accepted the finding after review (`vf hitl respond` approval, Report Accept, or the Mission inbox). Automation never auto-confirms. Still **not** exploit proof. Re-read answers with `vf hitl responses` — missing keys are unanswered.
 - **`rejected_mech`** = failed mechanical gates.
 - `validate_llm` (default on) may demote to `rejected_llm` only — weak same-model signal, never auto-confirm. Opt out with `stages.validate_llm: false` for speed/debug.
 - Prefer honest `submit_none` over inventing findings.
@@ -70,6 +70,7 @@ Follow `seeds/system/PRINCIPLES.md` for the full exploitability bar, threat mode
 |------|---------|
 | needs_human | Mechanical pass only — not exploit proof |
 | confirmed | Human accept only — automation never auto-confirms |
+| hitl inbox | `vf hitl inbox` lists `awaiting-review`; `vf hitl responses` re-reads stored answers |
 | validate_llm | Default-on demote only; never auto-confirm; set false to skip |
 | submit_none | Required honesty when nothing solid after real work |
 

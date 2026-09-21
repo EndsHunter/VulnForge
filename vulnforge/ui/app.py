@@ -446,6 +446,21 @@ class FindingReviewBody(BaseModel):
     operator: str = "operator"
 
 
+class HitlRespondBody(BaseModel):
+    """Explicit human answer for one interactive HITL block."""
+
+    block_id: str
+    value: str
+    note: str = ""
+    operator: str = "operator"
+
+
+class HitlEmitBody(BaseModel):
+    """Explicit HITL packet (gate). Schema vulnforge/hitl-report@1."""
+
+    packet: dict[str, Any]
+
+
 class FindingPocBody(BaseModel):
     """Save PoC draft and optionally enqueue develop_poc agent task."""
 
@@ -1948,6 +1963,89 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         )
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "review failed")
+        return r
+
+    def _hitl_db(run):
+        from vulnforge.hitl import open_for_run
+
+        return open_for_run(run.path)
+
+    @app.get("/api/runs/{target_id}/{run_id}/hitl/inbox")
+    def api_hitl_inbox(target_id: str, run_id: str):
+        """Durable awaiting-review inbox for this run."""
+        from vulnforge.hitl import list_inbox
+
+        run = _get_run(target_id, run_id)
+        db = _hitl_db(run)
+        try:
+            return list_inbox(db, run.path)
+        finally:
+            db.close()
+
+    @app.get("/api/runs/{target_id}/{run_id}/hitl/responses")
+    def api_hitl_responses(target_id: str, run_id: str):
+        """Durable responses document. Missing keys are unanswered."""
+        from vulnforge.hitl import write_projections
+
+        run = _get_run(target_id, run_id)
+        db = _hitl_db(run)
+        try:
+            return write_projections(db, run.path)
+        finally:
+            db.close()
+
+    @app.get("/api/runs/{target_id}/{run_id}/hitl/reports/{report_id}")
+    def api_hitl_report(target_id: str, run_id: str, report_id: str):
+        from vulnforge.hitl import get_report
+
+        run = _get_run(target_id, run_id)
+        db = _hitl_db(run)
+        try:
+            r = get_report(db, run.path, report_id)
+        finally:
+            db.close()
+        if not r.get("ok"):
+            raise HTTPException(404, r.get("error") or "report not found")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/hitl/reports")
+    def api_hitl_emit(target_id: str, run_id: str, body: HitlEmitBody):
+        """Store an explicit HITL packet. Does not change finding state."""
+        from vulnforge.hitl import emit_packet
+
+        run = _get_run(target_id, run_id)
+        db = _hitl_db(run)
+        try:
+            r = emit_packet(db, run.path, body.packet)
+        finally:
+            db.close()
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "emit failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/hitl/reports/{report_id}/respond")
+    def api_hitl_respond(
+        target_id: str, run_id: str, report_id: str, body: HitlRespondBody
+    ):
+        """Record an explicit human answer. Finding approval goes through review_finding."""
+        from vulnforge.hitl import respond
+
+        run = _get_run(target_id, run_id)
+        db = _hitl_db(run)
+        try:
+            r = respond(
+                db,
+                run.path,
+                report_id,
+                block_id=body.block_id,
+                value=body.value,
+                note=body.note or "",
+                operator=body.operator or "operator",
+            )
+        finally:
+            db.close()
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "respond failed")
         return r
 
     @app.get("/api/runs/{target_id}/{run_id}/findings/{finding_id}/poc")

@@ -24,7 +24,7 @@ Related (not covered here as full folders): `develop_poc`, `validate_poc`, `gene
 - Target tree is **read-only** for agents.
 - Evidence only under `evidence/`.
 - `needs_human` = mechanical gates passed — **not** exploit proof.
-- `confirmed` is **only** set by human review (Report). Automation never auto-confirms.
+- `confirmed` is **only** set by human review (Report / HITL approval). Automation never auto-confirms. Durable inbox: [validate/HITL.md](validate/HITL.md).
 - Same-model `validate_llm` can only demote/reject; never raise severity or confirm.
 
 ## Task priority (lower int = sooner)

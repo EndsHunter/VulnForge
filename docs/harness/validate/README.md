@@ -17,6 +17,8 @@ submit_candidate
        reject → rejected_human
 ```
 
+Mech-pass also publishes a durable HITL packet (`vulnforge/hitl-report@1`, status `awaiting-review`). Human answers live in `hitl_responses` / `hitl/responses.json`. The harness re-reads that store. It does not invent approvals. See [HITL.md](HITL.md).
+
 ## validate_mech
 
 Pure-code checks in `stages/validate_mech.py` `CHECKS`:
@@ -29,7 +31,7 @@ Pure-code checks in `stages/validate_mech.py` `CHECKS`:
 - Non-vacuous body (title/summary length; threat_model tokens; impact hedges; HIGH/CRITICAL needs concrete impact hints)
 - Severity claim allowed (or soft-dropped earlier)
 
-Pass → `needs_human`. **Never** `confirmed`.
+Pass → `needs_human` and an awaiting-review HITL packet. **Never** `confirmed`.
 
 There is **no numeric score**. Report severity comes from optional `severity_claim`; impact quality lives in `threat_model.impact`.
 

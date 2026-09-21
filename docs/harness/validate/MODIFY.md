@@ -15,6 +15,7 @@
 | Change disprove packing | `vulnforge/packet.py` → `pack_disprove` |
 | Change dual-verifier list | `stages/validate_llm.py` / config `llm.disprove_verifiers` |
 | Change human review API | `control/ops.py` human review helpers + `ui/app.py` Report routes |
+| Change the HITL report↔responses contract or inbox | `vulnforge/hitl.py`, `db.py` `hitl_*` tables, `ui/static/hitl_inbox.js`; see [HITL.md](HITL.md) |
 | Change Report UI | `vulnforge/ui/static/report.js` |
 | PoC harness runner / timeouts / network | `config/default.yaml` → `poc_harness` (default `docker` + `network: none`); `vulnforge/poc_runner.py` `harness_config` |
 | validate_poc stage | `vulnforge/stages/validate_poc.py` |

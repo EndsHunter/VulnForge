@@ -11,7 +11,7 @@
 3. **hunt** (LLM) — one area × weakness class; candidate or `submit_none`
 4. **validate_mech** (no LLM) — mechanical gates → `needs_human` or `rejected_mech`
 5. **validate_llm** (default on) — dual adversarial disprove; both reject → `rejected_llm`, else stay `needs_human`. Never auto-confirms. Set `stages.validate_llm: false` to skip for speed/debug.
-6. **human review** (dashboard Report) — accept → `confirmed`, reject → `rejected_human`, optional notes/docs
+6. **human review** (Mission awaiting-review inbox + Report) — accept → `confirmed`, reject → `rejected_human`. Durable `vulnforge/hitl-report@1` packet and responses; the harness re-reads them and never invents an approval. Optional notes.
 7. **develop_poc / validate_poc** (operator) — write runnable PoC under `evidence/`; optional controlled harness run → `poc_run.json` (never auto-`confirmed`)
 8. **project projection** — regenerates `project/*` on idle `run-once` / `vf project`
 
@@ -36,10 +36,10 @@ The dashboard is the main operator surface:
 
 | Mode | Job |
 |------|-----|
-| **Mission** | Architecture map of the target; campaign health as a thin top strip |
+| **Mission** | Architecture map of the target; campaign health; durable awaiting-review inbox |
 | **Hunts** | Plan hunts (areas × skills) + residual-risk matrix; re-queue shallow/aborted/none cells |
 | **Explorer** | Browse target, select code, enqueue hunts |
-| **Report** | Structured findings table + exports; detail links to Evidence |
+| **Report** | Structured findings table, the same awaiting-review inbox, exports; detail links to Evidence |
 | **Evidence** | On-disk evidence packs (browse / open from Report) |
 | **Tasks** | Task queue / transcripts, event timeline (mode id `audit`) |
 | **AI** | Campaign co-pilot: start/query hunts, status, findings, runner control (confirm mutators) |
@@ -83,7 +83,8 @@ vulnforge/
   llm.py         # HTTP clients + FakeLLM (production tool loop is agent_runtime/)
   ui/            # FastAPI + research cockpit
   cli.py         # thin argparse → control plane
-  db.py          # SQLite + RunLock (architecture_json + codemap_json)
+  db.py          # SQLite + RunLock (architecture_json + codemap_json + HITL tables)
+  hitl.py        # report↔responses contract (needs_human inbox)
 ```
 
 Mechanical codemap is path-backed structure stored in `runs.codemap_json` (built at recon; v2 includes files + function/class symbols). Full map is stored; hunt packets get an **area slice** only. Optional `pip install 'vulnforge[codemap]'` enables tree-sitter; heuristic extraction works without it. It is not the architecture map.
@@ -185,3 +186,4 @@ VulnForge is **source-code analysis only** (`code_static`). PE / binary reverse-
 - `project/*` is projection, not authority.
 - Do not treat same-model `validate_llm` as strong proof (default on; demote-only).
 - Automation never sets `confirmed`; only human review does.
+- HITL responses are durable and re-readable. A missing answer is unanswered. See [`docs/harness/validate/HITL.md`](docs/harness/validate/HITL.md).
