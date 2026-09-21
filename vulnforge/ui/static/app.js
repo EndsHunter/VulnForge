@@ -4607,6 +4607,46 @@ function fillRunSwitch(snap) {
   }
 }
 
+async function refreshHitlInbox() {
+  const Hitl = window.VulnForgeHitl;
+  if (!Hitl || !currentKey) return;
+  const [target_id, run_id] = currentKey.split("/");
+  const base = `/api/runs/${encodeURIComponent(target_id)}/${encodeURIComponent(run_id)}`;
+  try {
+    const data = await api(`${base}/hitl/inbox`);
+    Hitl.mountAll(data, {
+      onRespond: async ({ reportId, blockId, value, note }) => {
+        await api(`${base}/hitl/reports/${encodeURIComponent(reportId)}/respond`, {
+          method: "POST",
+          body: JSON.stringify({
+            block_id: blockId,
+            value,
+            note: note || "",
+            operator: "operator",
+          }),
+        });
+        toast(
+          value === "approved"
+            ? "Accepted — confirmed by explicit human review"
+            : value === "changes-requested"
+              ? "Rejected by explicit human review"
+              : "Response saved"
+        );
+        if (typeof loadRunFull === "function") await loadRunFull();
+      },
+      onOpenFinding: (findingId) => {
+        window.VulnForgeModes?.goReport?.("needs_human");
+        if (findingId != null && window.VulnForgeReport?.openFinding) {
+          window.VulnForgeReport.openFinding(findingId);
+        }
+      },
+      onError: (message) => toast(message || "Response needs a value", true),
+    });
+  } catch (e) {
+    Hitl.mountError(e.message || String(e));
+  }
+}
+
 async function loadRunFull() {
   const [target_id, run_id] = currentKey.split("/");
   const snap = await api(
@@ -4643,6 +4683,7 @@ async function loadRunFull() {
   } else if (window.VulnForgeReport?.render) {
     window.VulnForgeReport.render(snap);
   }
+  await refreshHitlInbox();
   // Align live drift detector with the snap we just applied.
   noteLiveTaskSig(snap);
   return snap;

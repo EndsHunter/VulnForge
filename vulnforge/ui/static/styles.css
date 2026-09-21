@@ -6112,3 +6112,98 @@ body[data-page="benchmarks"] .bench-delta-zero .v { color: var(--text-muted); }
     grid-template-columns: 1fr;
   }
 }
+
+/* Durable HITL inbox (Mission + Report). Ralph loop state is separate. */
+.hitl-inbox {
+  margin: 0 0 0.75rem;
+  padding: 0.85rem 1rem 1rem;
+}
+.hitl-inbox-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.hitl-inbox-head .controls-hint {
+  margin: 0.25rem 0 0;
+  max-width: 46rem;
+}
+.hitl-empty,
+.hitl-error {
+  margin: 0.65rem 0 0;
+}
+.hitl-error { color: var(--bad); }
+.hitl-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  margin-top: 0.55rem;
+  background: var(--bg-inset);
+}
+.hitl-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.65rem;
+}
+.hitl-item-title {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--text-bright);
+}
+.hitl-schema {
+  color: var(--text-faint);
+  font-size: 0.75rem;
+}
+.hitl-meta {
+  margin: 0.35rem 0 0;
+}
+.hitl-prose {
+  margin: 0.45rem 0 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 0.82rem;
+  color: var(--text-soft);
+  max-height: 8.5rem;
+  overflow: auto;
+}
+.hitl-block {
+  margin-top: 0.55rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--hairline);
+}
+.hitl-prompt {
+  margin: 0;
+}
+.hitl-saved {
+  margin: 0.35rem 0 0;
+}
+.hitl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.4rem;
+}
+.hitl-note,
+.hitl-text {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+}
+.hitl-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+}
+@media (max-width: 720px) {
+  .hitl-inbox { padding: 0.75rem; }
+  .hitl-item-actions .btn { flex: 1 1 calc(50% - 0.4rem); }
+}

@@ -748,6 +748,7 @@ def _apply_dual_verdict(
         (new_state, json.dumps(body), utc_now_iso(), fid),
     )
     db.conn.commit()
+    _publish_hitl(db, run_dir, fid)
 
     _emit_event(
         run_dir,
@@ -960,6 +961,7 @@ def _flag_off_skip_or_confirm(
         ("needs_human", json.dumps(body), utc_now_iso(), fid),
     )
     db.conn.commit()
+    _publish_hitl(db, run_dir, fid)
     _emit_event(
         run_dir,
         {
@@ -1063,6 +1065,7 @@ def _safe_hold_incomplete(
         )
         db.conn.commit()
         finding_state = hold_state
+        _publish_hitl(db, run_dir, fid)
 
     _emit_event(
         run_dir,
@@ -1086,6 +1089,13 @@ def _safe_hold_incomplete(
         "finding_id": fid,
         "finding_state": finding_state,
     }
+
+
+def _publish_hitl(db, run_dir: Path, finding_id: int) -> None:
+    """Refresh the durable HITL packet after a non-confirming state write."""
+    from vulnforge.hitl import publish_finding
+
+    publish_finding(db, run_dir, int(finding_id))
 
 
 def _emit_event(run_dir: Path, payload: dict[str, Any]) -> None:

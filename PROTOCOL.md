@@ -12,7 +12,8 @@ Single control plane. CLI (`vf`), skill, Ralph, and the dashboard are clients of
 
 | Path | Authority |
 |------|-----------|
-| `harness.db` | Tasks, findings, leases, coverage, prompt_pin |
+| `harness.db` | Tasks, findings, leases, coverage, prompt_pin, HITL reports + responses |
+| `hitl/responses.json` | Projection of HITL responses (database wins on rewrite) |
 | `evidence/<id>/` | PoC / artifacts |
 | `target_manifest.json` | File hashes at init |
 | `events.jsonl` | Append-only infra log |
@@ -34,7 +35,14 @@ vf dashboard [--host HOST] [--port PORT]
 vf export-validation-job --finding-id N [--run-dir PATH]
 vf validate-poc --finding-id N [--run-dir PATH] [--execute]
 vf delete-run --run-dir PATH --yes
+vf hitl inbox [--run-dir PATH]
+vf hitl show --id REPORT_ID [--run-dir PATH]
+vf hitl responses [--run-dir PATH]
+vf hitl respond --id REPORT_ID --block BLOCK_ID --value VALUE [--note TEXT] [--run-dir PATH]
+vf hitl emit --file packet.json [--run-dir PATH]
 ```
+
+`vf hitl` is the durable report↔responses inbox (`vulnforge/hitl-report@1`). `inbox` lists `awaiting-review` items. `responses` prints stored answers keyed by block id (`value`, `note`, `at`). Missing keys are unanswered. `respond` records an explicit human answer; a finding approval delegates to human review and is the only HITL path that can set `confirmed`. `emit` stores an explicit gate packet and does not change findings. See `docs/harness/validate/HITL.md`.
 
 Outer loop: `python scripts/ralph.py` — thin client of `run-once` (not a `vf` subcommand).
 

@@ -70,6 +70,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                         },
                         priority=25,
                     )
+                    _publish_hitl(db, run_dir, finding.id)
                     return {
                         "status": "succeeded",
                         "verdict": "pending_llm",
@@ -83,6 +84,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     "finding_id": finding.id,
                     "finding_state": finding.state,
                 }
+            _publish_hitl(db, run_dir, finding.id)
             return {
                 "status": "succeeded",
                 "skipped": True,
@@ -152,6 +154,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             },
             priority=25,
         )
+        _publish_hitl(db, run_dir, finding.id)
         return {
             "status": "succeeded",
             "verdict": "pending_llm",
@@ -164,12 +167,20 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         ("needs_human", json.dumps(body), utc_now_iso(), finding.id),
     )
     db.conn.commit()
+    _publish_hitl(db, run_dir, finding.id)
     return {
         "status": "succeeded",
         "verdict": "needs_human",
         "finding_id": finding.id,
         "finding_state": "needs_human",
     }
+
+
+def _publish_hitl(db, run_dir: Path, finding_id: int) -> None:
+    """Emit/update the durable HITL packet. Does not change finding state."""
+    from vulnforge.hitl import publish_finding
+
+    publish_finding(db, run_dir, int(finding_id))
 
 
 def check_schema(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, str]:

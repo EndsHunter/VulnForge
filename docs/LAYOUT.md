@@ -28,6 +28,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Config load | `vulnforge/settings/load.py` (`cli.load_config` is a shim) |
 | Operator chat tools (control plane) | `vulnforge/operator_chat/tools_*.py` — **not** agent tools |
 | Control-plane ops | `vulnforge/control/` |
+| Durable HITL inbox (report↔responses) | `vulnforge/hitl.py` + `hitl_reports` / `hitl_responses` in `harness.db`; doc: [`harness/validate/HITL.md`](harness/validate/HITL.md) |
 | Dashboard routes / static | `vulnforge/ui/` |
 | Hunt profile store / reseed | `vulnforge/hunt_profiles/` |
 | Mechanical codemap (not architecture) | `vulnforge/tools/codemap.py` → `runs.codemap_json` (v2: modules + files + symbols; hunts get area slice) |

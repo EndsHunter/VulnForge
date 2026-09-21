@@ -117,6 +117,26 @@ def _iso_future(seconds: int) -> str:
     )
 
 
+def _hitl_report_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        packet = json.loads(row["packet_json"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        packet = {}
+    if not isinstance(packet, dict):
+        packet = {}
+    return {
+        "id": row["id"],
+        "schema": row["schema"],
+        "status": row["status"],
+        "source_kind": row["source_kind"],
+        "source_id": row["source_id"],
+        "title": row["title"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "packet": packet,
+    }
+
+
 class Database:
     """Thin wrapper over harness.db."""
 
@@ -137,6 +157,7 @@ class Database:
             self._ensure_architecture_revisions()
             self._ensure_codemap_column()
             self._ensure_sink_coverage_table()
+        self._ensure_hitl_tables()
 
     @classmethod
     def create(cls, path: Path) -> "Database":
@@ -255,6 +276,32 @@ class Database:
               recon_generation INTEGER,
               snapshot_json TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS hitl_reports (
+              id TEXT PRIMARY KEY,
+              schema TEXT NOT NULL,
+              status TEXT NOT NULL,
+              source_kind TEXT NOT NULL DEFAULT '',
+              source_id TEXT NOT NULL DEFAULT '',
+              title TEXT NOT NULL DEFAULT '',
+              packet_json TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_hitl_reports_status
+              ON hitl_reports(status);
+            CREATE INDEX IF NOT EXISTS idx_hitl_reports_source
+              ON hitl_reports(source_kind, source_id);
+
+            CREATE TABLE IF NOT EXISTS hitl_responses (
+              report_id TEXT NOT NULL,
+              block_id TEXT NOT NULL,
+              value TEXT NOT NULL,
+              note TEXT NOT NULL DEFAULT '',
+              at TEXT NOT NULL,
+              operator TEXT NOT NULL DEFAULT '',
+              PRIMARY KEY (report_id, block_id)
+            );
             """
         )
         c.execute(
@@ -312,6 +359,43 @@ class Database:
             """
             CREATE INDEX IF NOT EXISTS idx_sink_coverage_cell
               ON sink_coverage_facts(area, attack_class)
+            """
+        )
+        self.conn.commit()
+
+    def _ensure_hitl_tables(self) -> None:
+        """Durable HITL report packets + responses (open path for older DBs).
+
+        Schema id lives on each packet (`vulnforge/hitl-report@1`). Additive:
+        does not bump ``schema_version`` (see docs/harness/validate/HITL.md).
+        """
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS hitl_reports (
+              id TEXT PRIMARY KEY,
+              schema TEXT NOT NULL,
+              status TEXT NOT NULL,
+              source_kind TEXT NOT NULL DEFAULT '',
+              source_id TEXT NOT NULL DEFAULT '',
+              title TEXT NOT NULL DEFAULT '',
+              packet_json TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_hitl_reports_status
+              ON hitl_reports(status);
+            CREATE INDEX IF NOT EXISTS idx_hitl_reports_source
+              ON hitl_reports(source_kind, source_id);
+
+            CREATE TABLE IF NOT EXISTS hitl_responses (
+              report_id TEXT NOT NULL,
+              block_id TEXT NOT NULL,
+              value TEXT NOT NULL,
+              note TEXT NOT NULL DEFAULT '',
+              at TEXT NOT NULL,
+              operator TEXT NOT NULL DEFAULT '',
+              PRIMARY KEY (report_id, block_id)
+            );
             """
         )
         self.conn.commit()
@@ -1269,6 +1353,151 @@ class Database:
                 body=json.loads(r["body_json"]),
                 evidence_id=r["evidence_id"],
             )
+            for r in rows
+        ]
+
+    def upsert_hitl_report(self, packet: dict) -> None:
+        """Insert or replace a HITL report packet. Preserves created_at on update."""
+        self._ensure_hitl_tables()
+        if not isinstance(packet, dict) or not packet.get("id"):
+            raise ValueError("hitl packet requires id")
+        source = packet.get("source") if isinstance(packet.get("source"), dict) else {}
+        now = str(packet.get("updated") or utc_now_iso())
+        created = str(packet.get("created") or now)
+        self.conn.execute(
+            """
+            INSERT INTO hitl_reports(
+              id, schema, status, source_kind, source_id, title,
+              packet_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              schema=excluded.schema,
+              status=excluded.status,
+              source_kind=excluded.source_kind,
+              source_id=excluded.source_id,
+              title=excluded.title,
+              packet_json=excluded.packet_json,
+              updated_at=excluded.updated_at
+            """,
+            (
+                str(packet["id"]),
+                str(packet.get("schema") or ""),
+                str(packet.get("status") or ""),
+                str(source.get("kind") or ""),
+                str(source.get("id") or ""),
+                str(packet.get("title") or ""),
+                json.dumps(packet, ensure_ascii=False),
+                created,
+                now,
+            ),
+        )
+        self.conn.commit()
+
+    def get_hitl_report(self, report_id: str) -> Optional[dict]:
+        self._ensure_hitl_tables()
+        row = self.conn.execute(
+            "SELECT * FROM hitl_reports WHERE id=?", (str(report_id),)
+        ).fetchone()
+        if not row:
+            return None
+        return _hitl_report_from_row(row)
+
+    def list_hitl_reports(self, status: Optional[str] = None) -> list[dict]:
+        self._ensure_hitl_tables()
+        if status:
+            rows = self.conn.execute(
+                """
+                SELECT * FROM hitl_reports
+                WHERE status=?
+                ORDER BY updated_at, id
+                """,
+                (status,),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM hitl_reports ORDER BY updated_at, id"
+            ).fetchall()
+        return [_hitl_report_from_row(r) for r in rows]
+
+    def upsert_hitl_response(
+        self,
+        report_id: str,
+        block_id: str,
+        *,
+        value: str,
+        note: str = "",
+        at: str,
+        operator: str = "",
+    ) -> dict[str, str]:
+        """Store one human answer. Does not change finding state."""
+        self._ensure_hitl_tables()
+        self.conn.execute(
+            """
+            INSERT INTO hitl_responses(report_id, block_id, value, note, at, operator)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(report_id, block_id) DO UPDATE SET
+              value=excluded.value,
+              note=excluded.note,
+              at=excluded.at,
+              operator=excluded.operator
+            """,
+            (
+                str(report_id),
+                str(block_id),
+                str(value),
+                note or "",
+                at,
+                operator or "",
+            ),
+        )
+        self.conn.commit()
+        return {
+            "report_id": str(report_id),
+            "block": str(block_id),
+            "value": str(value),
+            "note": note or "",
+            "at": at,
+            "operator": operator or "",
+        }
+
+    def delete_hitl_response(self, report_id: str, block_id: str) -> None:
+        self._ensure_hitl_tables()
+        self.conn.execute(
+            "DELETE FROM hitl_responses WHERE report_id=? AND block_id=?",
+            (str(report_id), str(block_id)),
+        )
+        self.conn.commit()
+
+    def list_hitl_responses(self, report_id: Optional[str] = None) -> list[dict]:
+        self._ensure_hitl_tables()
+        if report_id is None:
+            rows = self.conn.execute(
+                """
+                SELECT report_id, block_id, value, note, at, operator
+                FROM hitl_responses
+                ORDER BY report_id, block_id
+                """
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT report_id, block_id, value, note, at, operator
+                FROM hitl_responses
+                WHERE report_id=?
+                ORDER BY block_id
+                """,
+                (str(report_id),),
+            ).fetchall()
+        return [
+            {
+                "report_id": r["report_id"],
+                "block_id": r["block_id"],
+                "block": r["block_id"],
+                "value": r["value"],
+                "note": r["note"] or "",
+                "at": r["at"],
+                "operator": r["operator"] or "",
+            }
             for r in rows
         ]
 
