@@ -1206,8 +1206,8 @@ button.cov-plan-action.is-current {
 .arch-campaign-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.15rem 0.35rem;
+  align-items: center;
+  gap: 0.45rem 0.85rem;
 }
 .arch-campaign-kpis {
   display: flex;
@@ -1252,50 +1252,100 @@ button.cov-plan-action.is-current {
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
-.arch-campaign-pipeline {
+/* Concurrent Recon / Hunt / Validate lanes. Not a left-to-right finished-step pipe. */
+.arch-campaign-lanes {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.15rem 0.45rem;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
 }
-.arch-campaign-pipe-stage {
+.arch-campaign-lane {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.12rem;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.16rem 0.55rem 0.16rem 0.4rem;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
   font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.arch-campaign-lane-light {
+  width: 0.48rem;
+  height: 0.48rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1.5px solid var(--text-faint);
+  box-sizing: border-box;
+}
+.arch-campaign-lane-label {
+  font-weight: 650;
+  color: var(--text-soft);
+}
+.arch-campaign-lane-counts {
+  font-variant-numeric: tabular-nums;
   color: var(--muted);
 }
-.arch-campaign-pipe-mark {
-  min-width: 1.05em;
-  text-align: left;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+.arch-campaign-lane-idle {
+  color: var(--muted);
 }
-.arch-campaign-pipe-mark::after {
-  content: "–";
+.arch-campaign-lane-running {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
 }
-.arch-campaign-pipe-done .arch-campaign-pipe-mark::after {
-  content: "✓";
-  color: var(--good);
+.arch-campaign-lane-running .arch-campaign-lane-light {
+  border-color: var(--accent);
+  background: var(--accent);
+  animation: arch-lane-pulse 1.6s ease-out infinite;
 }
-.arch-campaign-pipe-running .arch-campaign-pipe-mark::after,
-.arch-campaign-pipe-partial .arch-campaign-pipe-mark::after {
-  content: "…";
-  color: var(--accent);
+.arch-campaign-lane-running .arch-campaign-lane-label {
+  color: var(--accent-bright);
 }
-.arch-campaign-pipe-queued .arch-campaign-pipe-mark::after {
-  content: "○";
-  color: var(--warn);
+.arch-campaign-lane-running .arch-campaign-lane-counts {
+  color: var(--text);
 }
-.arch-campaign-pipe-failed .arch-campaign-pipe-mark::after {
-  content: "!";
+.arch-campaign-lane-idle-with-results {
+  border-color: var(--hairline-strong);
+  background: var(--bg-inset);
+}
+.arch-campaign-lane-idle-with-results .arch-campaign-lane-light {
+  border-color: var(--text-cool);
+  background: var(--text-cool);
+}
+.arch-campaign-lane-idle-with-results .arch-campaign-lane-label {
+  color: var(--text);
+}
+.arch-campaign-lane-idle-with-results .arch-campaign-lane-counts {
+  color: var(--text-soft);
+}
+.arch-campaign-lane-failed {
+  border-color: color-mix(in srgb, var(--bad) 55%, var(--border));
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+}
+.arch-campaign-lane-failed .arch-campaign-lane-light {
+  border-color: var(--bad);
+  background: var(--bad);
+}
+.arch-campaign-lane-failed .arch-campaign-lane-label,
+.arch-campaign-lane-failed .arch-campaign-lane-counts {
   color: var(--bad);
 }
-.arch-campaign-pipe-done .arch-campaign-pipe-label { color: var(--good); }
-.arch-campaign-pipe-running .arch-campaign-pipe-label,
-.arch-campaign-pipe-partial .arch-campaign-pipe-label { color: var(--accent); }
-.arch-campaign-pipe-queued .arch-campaign-pipe-label { color: var(--warn); }
-.arch-campaign-pipe-failed .arch-campaign-pipe-label { color: var(--bad); }
+@keyframes arch-lane-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent); }
+  100% { box-shadow: 0 0 0 6px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .arch-campaign-lane-running .arch-campaign-lane-light {
+    animation: none;
+  }
+}
 .arch-campaign-note {
   font-size: 11px;
   color: var(--muted);

@@ -1711,7 +1711,7 @@ function goStatLink(nav) {
   }
 }
 
-/** Campaign KPI / pipeline helpers — see mission_overview_helpers.js */
+/** Campaign KPI / work-lane helpers — see mission_overview_helpers.js */
 const {
   buildMissionCockpit,
   summarizeHuntQueue,
@@ -2009,6 +2009,22 @@ function renderArchMastheadHtml(pageTitle, opts, campaignHtml) {
   </div>`;
 }
 
+const CAMPAIGN_LANE_STATES = new Set(["idle", "running", "idle-with-results", "failed"]);
+
+function campaignLaneState(stage) {
+  const status = stage && stage.status;
+  return CAMPAIGN_LANE_STATES.has(status) ? status : "idle";
+}
+
+function campaignLaneAria(stage, state, counts) {
+  const name = (stage && stage.label) || "Lane";
+  const word = state === "idle-with-results" ? "idle with results" : state;
+  return [name, word, counts].filter(Boolean).join(", ");
+}
+
+/**
+ * Recon / Hunt / Validate are concurrent lanes. Ralph stays on #runner-status.
+ */
 function renderCampaignStripHtml(vm, snap) {
   const fail = missionFailReason(snap);
   const banner = fail
@@ -2031,23 +2047,25 @@ function renderCampaignStripHtml(vm, snap) {
     .join("");
 
   const stages = (vm && vm.pipeline) || [];
-  const pipeLead =
-    kpis.length && stages.length
-      ? `<span class="arch-campaign-sep" aria-hidden="true">·</span>`
-      : "";
-  const pipeHtml =
-    pipeLead +
-    stages
-      .map((s) => {
-        const countLabel =
-          s.total > 0 ? `${s.done}/${s.total}` : s.status === "done" ? "ready" : "—";
-        const hint = [s.hint || s.label, countLabel].filter(Boolean).join(" · ");
-        return `<span class="arch-campaign-pipe-stage arch-campaign-pipe-${esc(s.status)}" data-stage="${esc(s.id)}" title="${esc(hint)}" role="listitem">
-        <span class="arch-campaign-pipe-label">${esc(s.label)}</span>
-        <span class="arch-campaign-pipe-mark" aria-hidden="true"></span>
+  const laneHtml = stages
+    .map((s) => {
+      const state = campaignLaneState(s);
+      const counts = String((s && s.counts) || "");
+      const hint = [s.hint || s.label, counts].filter(Boolean).join(" · ");
+      const aria = campaignLaneAria(s, state, counts);
+      const countsHtml = counts
+        ? `<span class="arch-campaign-lane-counts">${esc(counts)}</span>`
+        : "";
+      return `<span class="arch-campaign-lane arch-campaign-lane-${esc(state)}" data-stage="${esc(s.id)}" data-lane-status="${esc(state)}" title="${esc(hint)}" role="listitem" aria-label="${esc(aria)}">
+        <span class="arch-campaign-lane-light" aria-hidden="true"></span>
+        <span class="arch-campaign-lane-label">${esc(s.label)}</span>
+        ${countsHtml}
       </span>`;
-      })
-      .join("");
+    })
+    .join("");
+  const lanes = stages.length
+    ? `<div class="arch-campaign-lanes" role="list" aria-label="Work lanes">${laneHtml}</div>`
+    : "";
 
   const note =
     !fail && vm && vm.validateLlmOn
@@ -2058,7 +2076,7 @@ function renderCampaignStripHtml(vm, snap) {
     ${banner}
     <div class="arch-campaign-row">
       <div class="arch-campaign-kpis">${kpiHtml || `<span class="controls-hint">No campaign stats yet.</span>`}</div>
-      <div class="arch-campaign-pipeline" role="list" aria-label="Campaign pipeline">${pipeHtml}</div>
+      ${lanes}
       ${note}
     </div>
   </div>`;

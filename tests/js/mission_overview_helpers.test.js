@@ -12,6 +12,8 @@ const {
   pipelineStageOfKind,
   summarizePipelineStage,
   buildPipelineStages,
+  laneStatusOf,
+  formatLaneCounts,
   buildVisualPipeline,
   buildMissionKpis,
   buildArchitectureBrief,
@@ -222,8 +224,52 @@ describe("summarizeCoverageResidual", () => {
   });
 });
 
+describe("laneStatusOf / formatLaneCounts", () => {
+  it("maps helper statuses onto concurrent lane lights", () => {
+    assert.equal(laneStatusOf({ status: "running", active: 1, done: 2, total: 3 }), "running");
+    assert.equal(laneStatusOf({ status: "queued", queued: 2, total: 2 }), "running");
+    assert.equal(
+      laneStatusOf({ status: "partial", active: 2, done: 3, total: 5 }),
+      "running"
+    );
+    assert.equal(
+      laneStatusOf({ status: "partial", active: 0, queued: 1, done: 4, total: 5 }),
+      "running"
+    );
+    assert.equal(laneStatusOf({ status: "done", done: 4, total: 4 }), "idle-with-results");
+    assert.equal(laneStatusOf({ status: "done", done: 0, total: 0 }), "idle-with-results");
+    assert.equal(laneStatusOf({ status: "idle", done: 2, total: 2 }), "idle-with-results");
+    assert.equal(laneStatusOf({ status: "pending", done: 1, total: 1 }), "idle-with-results");
+    assert.equal(laneStatusOf({ status: "idle", done: 0, total: 0 }), "idle");
+    assert.equal(laneStatusOf({ status: "pending", done: 0, total: 0 }), "idle");
+    assert.equal(
+      laneStatusOf({ status: "partial", active: 0, queued: 0, done: 3, failed: 1, total: 3 }),
+      "idle-with-results"
+    );
+    assert.equal(
+      laneStatusOf({ status: "failed", failed: 2, done: 2, total: 2 }),
+      "failed"
+    );
+  });
+
+  it("formats live counts from active, queued, and done", () => {
+    assert.equal(formatLaneCounts({ active: 3, done: 12, total: 15 }), "3 running · 12 done");
+    assert.equal(formatLaneCounts({ running: 3, done: 12 }), "3 running · 12 done");
+    assert.equal(
+      formatLaneCounts({ active: 1, queued: 2, done: 4 }),
+      "1 running · 2 queued · 4 done"
+    );
+    assert.equal(formatLaneCounts({ queued: 2, total: 2 }), "2 queued");
+    assert.equal(formatLaneCounts({ done: 0, total: 0 }), "");
+    assert.equal(
+      formatLaneCounts({ failed: 2, done: 2, total: 2 }),
+      "2 failed"
+    );
+  });
+});
+
 describe("buildVisualPipeline", () => {
-  it("returns three stages and leaves mechanical pipeline at four", () => {
+  it("returns three lanes and leaves mechanical pipeline at four", () => {
     const snap = { tasks: [] };
     const visual = buildVisualPipeline(snap);
     assert.equal(visual.length, 3);
@@ -231,10 +277,14 @@ describe("buildVisualPipeline", () => {
       visual.map((s) => s.id),
       ["recon", "hunt", "validate"]
     );
+    assert.deepEqual(
+      visual.map((s) => s.status),
+      ["idle", "idle", "idle"]
+    );
     assert.equal(buildPipelineStages(snap).length, 4);
   });
 
-  it("folds running from either validate kind", () => {
+  it("folds running from either validate kind and keeps done counts", () => {
     const visual = buildVisualPipeline({
       tasks: [
         { kind: "validate_mech", state: "succeeded" },
@@ -242,18 +292,78 @@ describe("buildVisualPipeline", () => {
       ],
     });
     assert.equal(visual[2].status, "running");
+    assert.equal(visual[2].running, 1);
+    assert.equal(visual[2].active, 1);
     assert.equal(visual[2].done, 1);
     assert.equal(visual[2].total, 2);
+    assert.equal(visual[2].counts, "1 running · 1 done");
     assert.equal(visual[2].mech.status, "done");
     assert.equal(visual[2].llm.status, "running");
   });
 
-  it("treats empty llm as vacuous so mech-done is validate done", () => {
+  it("treats empty llm as vacuous so mech-done is idle with results", () => {
     const visual = buildVisualPipeline({
       tasks: [{ kind: "validate_mech", state: "succeeded" }],
     });
-    assert.equal(visual[2].status, "done");
+    assert.equal(visual[2].status, "idle-with-results");
+    assert.equal(visual[2].counts, "1 done");
+    assert.equal(visual[2].running, 0);
     assert.equal(visual[2].llm.total, 0);
+    assert.equal(visual[2].mech.status, "done");
+  });
+
+  it("shows Validate results while Hunt is still running", () => {
+    const hunts = [
+      { kind: "hunt:a", state: "leased" },
+      { kind: "hunt:b", state: "running" },
+      { kind: "hunt:c", state: "running" },
+    ];
+    for (let i = 0; i < 12; i += 1) {
+      hunts.push({ kind: "hunt:done-" + i, state: "succeeded" });
+    }
+    const visual = buildVisualPipeline({
+      has_architecture: true,
+      tasks: hunts.concat([
+        { kind: "recon", state: "succeeded" },
+        { kind: "validate_mech", state: "succeeded" },
+        { kind: "validate_mech", state: "succeeded" },
+        { kind: "validate_llm", state: "succeeded" },
+        { kind: "validate_llm", state: "succeeded" },
+      ]),
+    });
+    assert.equal(visual[0].status, "idle-with-results");
+    assert.equal(visual[0].counts, "1 done");
+    assert.equal(visual[1].status, "running");
+    assert.equal(visual[1].running, 3);
+    assert.equal(visual[1].done, 12);
+    assert.equal(visual[1].counts, "3 running · 12 done");
+    assert.equal(visual[2].status, "idle-with-results");
+    assert.equal(visual[2].counts, "4 done");
+    assert.equal(visual[2].running, 0);
+  });
+
+  it("keeps an all-failed lane failed", () => {
+    const visual = buildVisualPipeline({
+      tasks: [
+        { kind: "validate_mech", state: "failed_task" },
+        { kind: "validate_mech", state: "deadletter" },
+      ],
+    });
+    assert.equal(visual[2].status, "failed");
+    assert.equal(visual[2].counts, "2 failed");
+    assert.equal(visual[1].status, "idle");
+  });
+
+  it("marks architecture-only recon as idle with results and no fake counts", () => {
+    const visual = buildVisualPipeline({
+      tasks: [],
+      has_architecture: true,
+    });
+    assert.equal(visual[0].status, "idle-with-results");
+    assert.equal(visual[0].total, 0);
+    assert.equal(visual[0].counts, "");
+    assert.equal(visual[1].status, "idle");
+    assert.equal(visual[2].status, "idle");
   });
 });
 
@@ -302,7 +412,7 @@ describe("buildMissionKpis", () => {
 });
 
 describe("buildMissionCockpit", () => {
-  it("assembles kpis, 3-stage pipeline, events, architecture from snap", () => {
+  it("assembles kpis, 3 work lanes, events, architecture from snap", () => {
     const snap = {
       done_tasks: 1,
       total_tasks: 2,
