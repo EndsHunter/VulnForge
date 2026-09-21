@@ -1,5 +1,5 @@
 /**
- * Pure helpers for Mission Overview KPI strip + pipeline timeline.
+ * Pure helpers for Mission Overview KPI strip + concurrent work lanes.
  * UMD/CommonJS — usable from the browser (script tag) and node --test.
  */
 (function (root, factory) {
@@ -308,40 +308,104 @@
     return "pending";
   }
 
+  /**
+   * Map a helper stage onto a concurrent lane light.
+   * idle | running | idle-with-results | failed.
+   * Ralph is not a lane — the runner strip owns that state.
+   *
+   * running / queued / partial-with-active (and any queued remainder) → running
+   * done, or idle/pending/partial with done>0 and nothing in flight → idle-with-results
+   * idle/pending with no results → idle
+   * failed stays failed
+   */
+  function laneStatusOf(stage) {
+    const s = stage || {};
+    const status = String(s.status || "idle");
+    const active = Number(s.active || s.running) || 0;
+    const queued = Number(s.queued) || 0;
+    const done = Number(s.done) || 0;
+    const total = Number(s.total) || 0;
+
+    if (status === "failed") return "failed";
+
+    if (
+      status === "running" ||
+      status === "queued" ||
+      (status === "partial" && active > 0) ||
+      active > 0 ||
+      queued > 0
+    ) {
+      return "running";
+    }
+
+    if (status === "done" && total > 0) return "idle-with-results";
+    if ((status === "idle" || status === "pending") && done > 0) return "idle-with-results";
+    // Architecture-only recon: extraDone sets status done with no task rows.
+    if (status === "done") return "idle-with-results";
+    // Mixed finish (some failures, queue empty) still has results.
+    if (status === "partial" && done > 0) return "idle-with-results";
+
+    return "idle";
+  }
+
+  /** Visible lane counts, e.g. "3 running · 12 done". Empty when nothing to show. */
+  function formatLaneCounts(stage) {
+    const s = stage || {};
+    const active = Number(s.active || s.running) || 0;
+    const queued = Number(s.queued) || 0;
+    const done = Number(s.done) || 0;
+    const failed = Number(s.failed) || 0;
+    const parts = [];
+    if (active > 0) parts.push(active + " running");
+    if (queued > 0) parts.push(queued + " queued");
+    if (done > 0) {
+      if (failed > 0 && failed === done && active === 0 && queued === 0) {
+        parts.push(failed + " failed");
+      } else {
+        parts.push(done + " done");
+      }
+    }
+    return parts.join(" · ");
+  }
+
+  function decorateVisualLane(stage) {
+    const active = Number(stage && stage.active) || 0;
+    const base = {
+      ...(stage || {}),
+      active,
+      queued: Number(stage && stage.queued) || 0,
+      done: Number(stage && stage.done) || 0,
+      total: Number(stage && stage.total) || 0,
+      failed: Number(stage && stage.failed) || 0,
+      running: active,
+    };
+    return {
+      ...base,
+      status: laneStatusOf(base),
+      counts: formatLaneCounts(base),
+    };
+  }
+
   function buildVisualPipeline(snap) {
     const stages = buildPipelineStages(snap);
     const recon = stages[0];
     const hunt = stages[1];
     const mech = stages[2];
     const llm = stages[3];
-    return [
-      {
-        id: "recon",
-        label: recon.label,
-        hint: recon.hint,
-        status: recon.status,
-        done: recon.done,
-        total: recon.total,
-      },
-      {
-        id: "hunt",
-        label: hunt.label,
-        hint: hunt.hint,
-        status: hunt.status,
-        done: hunt.done,
-        total: hunt.total,
-      },
-      {
-        id: "validate",
-        label: "Validate",
-        hint: "Mechanical gates, then LLM disprove (never auto-confirms)",
-        status: foldValidateStatus(mech, llm),
-        done: (mech.done || 0) + (llm.done || 0),
-        total: (mech.total || 0) + (llm.total || 0),
-        mech,
-        llm,
-      },
-    ];
+    const validate = {
+      id: "validate",
+      label: "Validate",
+      hint: "Mechanical gates, then LLM disprove (never auto-confirms)",
+      status: foldValidateStatus(mech, llm),
+      done: (mech.done || 0) + (llm.done || 0),
+      total: (mech.total || 0) + (llm.total || 0),
+      active: (mech.active || 0) + (llm.active || 0),
+      queued: (mech.queued || 0) + (llm.queued || 0),
+      failed: (mech.failed || 0) + (llm.failed || 0),
+      mech,
+      llm,
+    };
+    return [recon, hunt, validate].map(decorateVisualLane);
   }
 
   function countFindingState(snap, state) {
@@ -449,6 +513,8 @@
     pipelineStageOfKind,
     summarizePipelineStage,
     buildPipelineStages,
+    laneStatusOf,
+    formatLaneCounts,
     buildVisualPipeline,
     buildMissionKpis,
     buildArchitectureBrief,
