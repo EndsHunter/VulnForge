@@ -20,6 +20,21 @@ from vulnforge.util import append_event, normalize_relpath
 # Abort errors that free the queue and may trigger auto-split (not infra).
 ABORT_ERRORS = frozenset({"max_tool_rounds", "no_submit", "aborted_scope"})
 
+
+def shallow_none_should_requeue(session: dict, payload: dict, shallow: bool) -> bool:
+    """Shallow submit_none requeues once, unless the operator forced submit_none.
+
+    Operator force finishes the hunt as none. It does not confirm a finding
+    and it does not spawn a deeper child.
+    """
+    if session.get("operator_forced_submit_none"):
+        return False
+    return bool(
+        shallow
+        and not payload.get("force_depth")
+        and not payload.get("shallow_requeued")
+    )
+
 MAX_SPLIT_DEPTH = 2
 MAX_SPLIT_CHILDREN = 4
 MIN_SPLIT_CHILDREN = 2
@@ -125,6 +140,10 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         if not reason or not str(reason).strip():
             return {"ok": False, "error": "reason required"}
         session["none_reason"] = str(reason).strip()
+        from vulnforge.live_task import operator_force_active
+
+        if operator_force_active():
+            session["operator_forced_submit_none"] = True
         return {"ok": True, "stored": "none"}
 
     path_hints = list(payload.get("path_hints") or [])
@@ -376,10 +395,9 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         spawned_hunts = list(session.get("spawned_hunts") or [])
 
         if session.get("none_reason") is not None:
-            # P1.3: shallow none â†’ requeue once with force_depth; do not close cell as done
-            if shallow and not payload.get("force_depth") and not payload.get(
-                "shallow_requeued"
-            ):
+            # P1.3: shallow none → requeue once with force_depth; do not close cell as done.
+            # Operator-forced submit_none finishes this task instead of spawning a child.
+            if shallow_none_should_requeue(session, payload, shallow):
                 db.upsert_coverage_fact(area, cls, visit_delta=1, last_depth="shallow")
                 _mark_sink_coverage(
                     db,

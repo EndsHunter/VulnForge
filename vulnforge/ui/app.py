@@ -416,6 +416,18 @@ class TaskHaltBody(BaseModel):
     reason: str = "operator_halt"
 
 
+class TaskSteerNoteBody(BaseModel):
+    """Operator note injected at the next tool-round boundary. Not a finding edit."""
+
+    note: str = ""
+
+
+class TaskSteerSubmitNoneBody(BaseModel):
+    """Force submit_none at the next round boundary. Never confirms a finding."""
+
+    reason: str = ""
+
+
 class SelectionHuntBody(BaseModel):
     path: str
     start_line: Optional[int] = None
@@ -1396,6 +1408,81 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         r = dashops.halt_task(run.path, task_id, reason=body.reason or "operator_halt")
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "halt failed")
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/tasks/{task_id}/live")
+    def api_task_live(target_id: str, run_id: str, task_id: int):
+        """Live tool-round snapshot for a leased (or recently leased) task."""
+        from vulnforge.db import Database
+        from vulnforge.live_task import read_live_view
+
+        run = _get_run(target_id, run_id)
+        db = Database(run.path / "harness.db")
+        try:
+            task = db.get_task(int(task_id))
+        finally:
+            db.close()
+        if not task:
+            raise HTTPException(404, f"task #{task_id} not found")
+        view = read_live_view(run.path, int(task_id))
+        max_rounds = int(view.get("max_rounds") or 0)
+        if max_rounds <= 0:
+            try:
+                llm = (app.state.config or {}).get("llm") or {}
+                max_rounds = int(llm.get("max_tool_rounds") or 12)
+            except (TypeError, ValueError):
+                max_rounds = 12
+        view["kind"] = task.kind
+        view["state"] = task.state
+        view["max_rounds"] = max_rounds
+        return view
+
+    @app.post("/api/runs/{target_id}/{run_id}/tasks/{task_id}/steer/note")
+    def api_task_steer_note(
+        target_id: str,
+        run_id: str,
+        task_id: int,
+        body: TaskSteerNoteBody = Body(default_factory=TaskSteerNoteBody),
+    ):
+        """Queue an operator note for the next round. Does not confirm findings."""
+        run = _get_run(target_id, run_id)
+        r = dashops.steer_operator_note(run.path, task_id, body.note or "")
+        if not r.get("ok"):
+            status = 404 if "not found" in str(r.get("error") or "") else 400
+            raise HTTPException(status, r.get("error") or "note failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/tasks/{task_id}/steer/submit_none")
+    def api_task_steer_submit_none(
+        target_id: str,
+        run_id: str,
+        task_id: int,
+        body: TaskSteerSubmitNoneBody = Body(default_factory=TaskSteerSubmitNoneBody),
+    ):
+        """Force submit_none at the next round boundary. Never auto-confirms."""
+        run = _get_run(target_id, run_id)
+        r = dashops.steer_force_submit_none(run.path, task_id, body.reason or "")
+        if not r.get("ok"):
+            status = 404 if "not found" in str(r.get("error") or "") else 400
+            raise HTTPException(status, r.get("error") or "submit_none steer failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/tasks/{task_id}/steer/abort")
+    def api_task_steer_abort(
+        target_id: str,
+        run_id: str,
+        task_id: int,
+        body: TaskHaltBody = Body(default_factory=TaskHaltBody),
+    ):
+        """Abort this leased task (halt). Does not confirm or reject findings."""
+        run = _get_run(target_id, run_id)
+        reason = body.reason or "operator_abort"
+        if reason == "operator_halt":
+            reason = "operator_abort"
+        r = dashops.steer_abort_task(run.path, task_id, reason=reason)
+        if not r.get("ok"):
+            status = 404 if "not found" in str(r.get("error") or "") else 400
+            raise HTTPException(status, r.get("error") or "abort failed")
         return r
 
     @app.get("/api/runs/{target_id}/{run_id}/transcripts")

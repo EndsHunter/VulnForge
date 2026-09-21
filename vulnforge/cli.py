@@ -1164,7 +1164,28 @@ def dispatch_task(task, db: Database, run_dir: Path, cfg: dict) -> dict[str, Any
 
     Unknown kinds raise ``NotImplementedError``; ``cmd_run_once`` maps them to
     ``EXIT_CONFIG`` + event ``unknown_task_kind``.
+
+    Binds a live-task snapshot so tool rounds can stream while the lease is held.
     """
+    from vulnforge.live_task import bind_task, unbind_task
+
+    try:
+        max_rounds = int(((cfg or {}).get("llm") or {}).get("max_tool_rounds", 12) or 12)
+    except (TypeError, ValueError):
+        max_rounds = 12
+    token = bind_task(
+        Path(run_dir),
+        int(task.id),
+        str(getattr(task, "kind", "") or ""),
+        max_rounds,
+    )
+    try:
+        return _dispatch_task_kind(task, db, run_dir, cfg)
+    finally:
+        unbind_task(token)
+
+
+def _dispatch_task_kind(task, db: Database, run_dir: Path, cfg: dict) -> dict[str, Any]:
     kind = task.kind
     if kind == "recon":
         from vulnforge.stages import recon

@@ -244,7 +244,8 @@
               <p class="controls-hint" style="margin:0.35rem 0 0">
                 <strong>Active</strong> shows running tasks first, then the queue (lower priority number runs sooner).
                 Use <strong>Run next</strong> / priority buttons on <strong>queued</strong> rows.
-                Click a row with <strong>LLM log</strong> for the transcript.
+                Click a <strong>running</strong> row for the live pane (tool rounds and steer).
+                Click a finished row with <strong>LLM log</strong> for the transcript.
               </p>
             </div>
           </div>
@@ -307,6 +308,30 @@
       <button type="button" id="ai-close" aria-label="Close">Close</button>
     </header>
     <div id="operator-chat-root" class="operator-chat-root" data-chat-scope="run"></div>
+  </div>
+
+  <div class="modal-backdrop" id="live-task-modal" role="dialog" aria-modal="true" aria-labelledby="live-task-title">
+    <div class="modal modal-wide live-task-modal">
+      <div class="toolbar">
+        <h2 style="margin:0;flex:1" id="live-task-title">Live task</h2>
+        <button type="button" class="btn" id="live-task-close">Close</button>
+      </div>
+      <p class="controls-hint" id="live-task-meta"></p>
+      <div class="live-task-now" id="live-task-now" aria-live="polite"></div>
+      <ol class="live-task-steps" id="live-task-steps"></ol>
+      <form class="live-task-steer" id="live-task-steer">
+        <label class="field-label" for="live-task-note">Operator note</label>
+        <textarea id="live-task-note" rows="3" maxlength="2000" placeholder="Note for the next round. Does not confirm findings."></textarea>
+        <div class="task-prio-actions live-task-steer-actions">
+          <button type="button" class="btn btn-sm" id="live-steer-note">Send note</button>
+          <button type="button" class="btn btn-sm" id="live-steer-none" title="Call submit_none at the next round. Does not confirm a finding.">Force submit_none</button>
+          <button type="button" class="btn btn-sm btn-bad" id="live-steer-abort" title="Halt this task. Does not confirm findings.">Abort this task</button>
+        </div>
+        <p class="controls-hint" id="live-task-steer-hint">
+          Confirm required. Note, force submit_none, and abort never auto-confirm findings.
+        </p>
+      </form>
+    </div>
   </div>
 
   <div class="modal-backdrop" id="transcript-modal">

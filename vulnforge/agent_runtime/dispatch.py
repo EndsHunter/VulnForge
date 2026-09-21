@@ -10,6 +10,29 @@ from typing import Any, Callable, Optional
 from vulnforge.llm import LLMResult
 
 
+def _recording_handler(
+    tool_handler: Callable[[str, dict], dict],
+) -> Callable[[str, dict], dict]:
+    """Record each tool call on the live task pane when a task is bound."""
+    from vulnforge.live_task import record_tool_call
+
+    def wrapped(name: str, args: dict) -> dict:
+        payload = args if isinstance(args, dict) else {}
+        try:
+            out = tool_handler(name, payload)
+        except Exception as e:
+            record_tool_call(name, payload, {"ok": False, "error": str(e)})
+            raise
+        record_tool_call(
+            name,
+            payload,
+            out if isinstance(out, dict) else {"ok": True, "result": out},
+        )
+        return out
+
+    return wrapped
+
+
 def run_tool_loop(
     client: Any,
     packet: Any,
@@ -26,6 +49,8 @@ def run_tool_loop(
     """
     from vulnforge.agent_runtime.round_limit import apply_round_limit_fallback
     from vulnforge.llm import FakeLLMClient
+
+    tool_handler = _recording_handler(tool_handler)
 
     if isinstance(client, FakeLLMClient):
         result = client.run_tool_loop(

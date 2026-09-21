@@ -184,6 +184,89 @@ def _attach_context_watch_hook(
         pass
 
 
+def apply_steer_before_model(
+    agent: Any,
+    session: dict[str, Any],
+    tool_handler: Callable[[str, dict], dict],
+    tools_schema: list | None,
+) -> None:
+    """Round-boundary steer: abort, force submit_none, or inject an operator note.
+
+    Does not replace a tool call already chosen by the model. Force submit_none
+    calls the hunt terminal tool and does not confirm findings.
+    """
+    from vulnforge.live_task import apply_round_boundary, note_round_start
+
+    if session.get("terminal_ok") or session.get("operator_abort"):
+        _cancel_agent(agent)
+        return
+    try:
+        decision = apply_round_boundary(tool_handler, tools_schema)
+    except Exception as e:
+        logger.warning("live steer check failed: %s", e)
+        note_round_start()
+        return
+    action = decision.get("action")
+    if action == "abort":
+        session["operator_abort"] = True
+        session["operator_abort_reason"] = decision.get("reason") or "operator_abort"
+        _cancel_agent(agent)
+        return
+    if action == "submit_none":
+        out = decision.get("result") if isinstance(decision.get("result"), dict) else {}
+        session["operator_forced_submit_none"] = True
+        session["terminal_result"] = out
+        if out.get("ok") is True:
+            session["terminal_ok"] = True
+            session["terminal_tool"] = "submit_none"
+            _cancel_agent(agent)
+            return
+        text = (
+            "OPERATOR STEER: submit_none was forced but rejected: "
+            f"{out.get('error') or 'unknown'}. Do not confirm a finding."
+        )
+        _append_user_text(agent, text)
+        note_round_start()
+        return
+    if decision.get("note_text"):
+        _append_user_text(agent, str(decision["note_text"]))
+    note_round_start()
+
+
+def _cancel_agent(agent: Any) -> None:
+    try:
+        agent.cancel()
+    except Exception as e:
+        logger.warning("strands cancel failed: %s", e)
+
+
+def _append_user_text(agent: Any, text: str) -> None:
+    try:
+        agent.messages.append({"role": "user", "content": [{"text": text}]})
+    except Exception as e:
+        logger.warning("steer message append failed: %s", e)
+
+
+def _attach_live_steer_hook(
+    agent: Any,
+    session: dict[str, Any],
+    tool_handler: Callable[[str, dict], dict],
+    tools_schema: list | None,
+) -> None:
+    try:
+        from strands.hooks import BeforeModelCallEvent
+    except ImportError:
+        return
+
+    def before_model(_event: Any) -> None:
+        apply_steer_before_model(agent, session, tool_handler, tools_schema)
+
+    try:
+        agent.hooks.add_callback(BeforeModelCallEvent, before_model)
+    except Exception:
+        pass
+
+
 def _attach_reasoning_strip_hook(agent: Any) -> None:
     """Strip reasoning blocks after each message add to protect multi-turn."""
     try:
@@ -407,33 +490,36 @@ def run_strands_tool_loop(
     _attach_submit_stop_hook(agent, session)
     _attach_reasoning_strip_hook(agent)
     _attach_context_watch_hook(agent, session, packet, cfg)
+    _attach_live_steer_hook(agent, session, tool_handler, tools_schema)
 
     # Also strip before invoke in case of prior state (fresh agent, no-op)
     strip_reasoning_from_strands_messages(list(agent.messages))
 
+    result = None
     try:
         result = agent(
             user,
             limits={"turns": turns},
         )
     except Exception as e:
-        err = str(e)
-        low = err.lower()
-        # Map transport-ish failures to infra-style classification
-        classification = ResponseClass.TRANSPORT
-        if "context" in low and ("length" in low or "window" in low or "token" in low):
-            classification = ResponseClass.CONTEXT_LENGTH
-        return LLMResult(
-            ok=False,
-            classification=classification,
-            content=None,
-            tool_calls=[],
-            raw=None,
-            model_id=getattr(client, "model", None)
-            or getattr(client, "model_id", None),
-            error=err,
-            transcript=messages_from_packet(packet),
-        )
+        if not (session.get("terminal_ok") or session.get("operator_abort")):
+            err = str(e)
+            low = err.lower()
+            # Map transport-ish failures to infra-style classification
+            classification = ResponseClass.TRANSPORT
+            if "context" in low and ("length" in low or "window" in low or "token" in low):
+                classification = ResponseClass.CONTEXT_LENGTH
+            return LLMResult(
+                ok=False,
+                classification=classification,
+                content=None,
+                tool_calls=[],
+                raw=None,
+                model_id=getattr(client, "model", None)
+                or getattr(client, "model_id", None),
+                error=err,
+                transcript=messages_from_packet(packet),
+            )
 
     openaiish = strands_messages_to_openaiish(list(agent.messages))
     # Prepend system for dashboard / tool-gaps transcript consumers
@@ -451,6 +537,44 @@ def run_strands_tool_loop(
         or getattr(client, "model", None)
         or getattr(client, "model_id", None)
     )
+
+    if session.get("operator_forced_submit_none"):
+        forced_out = session.get("terminal_result") if isinstance(session.get("terminal_result"), dict) else {}
+        transcript.append(
+            {
+                "role": "tool",
+                "name": "submit_none",
+                "content": json.dumps(forced_out),
+            }
+        )
+        transcript.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "[harness] Operator forced submit_none at the round boundary. "
+                    "No finding was confirmed."
+                ),
+            }
+        )
+        tool_calls = list(tool_calls) + [
+            {
+                "name": "submit_none",
+                "arguments": {"reason": str(forced_out.get("reason") or "operator forced submit_none")},
+            }
+        ]
+
+    if session.get("operator_abort") and not session.get("terminal_ok"):
+        return LLMResult(
+            ok=False,
+            classification=ResponseClass.TRUNCATED,
+            content=content,
+            tool_calls=tool_calls,
+            raw={"stop_reason": stop, "strands": True, "operator_abort": True},
+            model_id=model_id,
+            error="operator_abort",
+            transcript=transcript,
+            usage=usage,
+        )
 
     terminal_ok = bool(session.get("terminal_ok"))
     # Domain success: cancelled after submit_* or any successful terminal
