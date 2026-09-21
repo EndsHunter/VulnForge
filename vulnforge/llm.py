@@ -506,6 +506,82 @@ class FakeLLMClient:
             return res
 
         for round_i in range(max_rounds):
+            from vulnforge.live_task import apply_round_boundary, note_round_start
+
+            decision = apply_round_boundary(
+                tool_handler, getattr(packet, "tools_schema", None)
+            )
+            action = decision.get("action")
+            if action == "abort":
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "OPERATOR ABORT: stop this task now. "
+                            "Do not submit a candidate and do not confirm findings."
+                        ),
+                    }
+                )
+                last = LLMResult(
+                    ok=False,
+                    classification=ResponseClass.TRUNCATED,
+                    content=None,
+                    tool_calls=[],
+                    raw={"operator_abort": True},
+                    model_id=self.model_id,
+                    error="operator_abort",
+                    transcript=list(messages),
+                )
+                return _with_acc(last)
+            if action == "submit_none":
+                out = decision.get("result") if isinstance(decision.get("result"), dict) else {}
+                messages.append(
+                    {
+                        "role": "tool",
+                        "name": "submit_none",
+                        "content": json.dumps(out),
+                    }
+                )
+                if out.get("ok") is True:
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "[harness] Operator forced submit_none at the round "
+                                "boundary. No finding was confirmed."
+                            ),
+                        }
+                    )
+                    last = LLMResult(
+                        ok=True,
+                        classification=ResponseClass.OK,
+                        content="[harness] Operator forced submit_none.",
+                        tool_calls=[
+                            {
+                                "name": "submit_none",
+                                "arguments": {"reason": decision.get("reason") or ""},
+                            }
+                        ],
+                        raw={"operator_forced_submit_none": True},
+                        model_id=self.model_id,
+                        error=None,
+                        transcript=list(messages),
+                    )
+                    return _with_acc(last)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "OPERATOR STEER: submit_none was forced but rejected: "
+                            f"{out.get('error') or 'unknown'}. "
+                            "Do not confirm a finding."
+                        ),
+                    }
+                )
+            elif decision.get("note_text"):
+                messages.append({"role": "user", "content": str(decision["note_text"])})
+
+            note_round_start()
             # Nudge on the last round so scripted + live models finish cleanly.
             if round_i == max_rounds - 1 and max_rounds >= 2:
                 messages.append(

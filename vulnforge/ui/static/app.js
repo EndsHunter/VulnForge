@@ -2573,6 +2573,225 @@ async function haltTask(taskId, opts = {}) {
 }
 window.haltTask = haltTask;
 
+/** @type {{ taskId: number } | null} */
+let livePane = null;
+let livePaneTimer = null;
+let liveQueryOpened = false;
+
+function maybeOpenLiveFromQuery() {
+  if (liveQueryOpened || livePane) return;
+  let id = "";
+  try {
+    id = new URLSearchParams(window.location.search).get("live") || "";
+  } catch {
+    id = "";
+  }
+  if (!id) return;
+  liveQueryOpened = true;
+  openLiveTask(id);
+}
+
+async function openLiveTask(taskId) {
+  const id = Number(taskId);
+  if (!Number.isFinite(id) || id <= 0) {
+    toast("Invalid task id", true);
+    return;
+  }
+  livePane = { taskId: id };
+  $("#live-task-modal")?.classList.add("open");
+  const title = $("#live-task-title");
+  if (title) title.textContent = `Live task #${id}`;
+  await refreshLivePane();
+  if (livePaneTimer) clearInterval(livePaneTimer);
+  livePaneTimer = setInterval(() => {
+    if (livePane) refreshLivePane();
+  }, 1500);
+}
+window.openLiveTask = openLiveTask;
+
+function closeLiveTask() {
+  livePane = null;
+  if (livePaneTimer) {
+    clearInterval(livePaneTimer);
+    livePaneTimer = null;
+  }
+  $("#live-task-modal")?.classList.remove("open");
+}
+window.closeLiveTask = closeLiveTask;
+
+async function refreshLivePane() {
+  if (!livePane || !currentKey) return;
+  const id = livePane.taskId;
+  try {
+    const data = await api(`${runApiBase()}/tasks/${encodeURIComponent(id)}/live`);
+    if (!livePane || livePane.taskId !== id) return;
+    renderLivePane(data);
+  } catch (e) {
+    if (!livePane || livePane.taskId !== id) return;
+    const meta = $("#live-task-meta");
+    if (meta) meta.textContent = e.message || String(e);
+  }
+}
+
+function renderLivePane(data) {
+  const id = data.task_id;
+  const kind = data.kind || "task";
+  const state = data.state || "";
+  const round = Number(data.round) || 0;
+  const maxRounds = Number(data.max_rounds) || 0;
+  const leased = String(state).toLowerCase() === "leased";
+  const title = $("#live-task-title");
+  if (title) title.textContent = `Live task #${id}`;
+  const meta = $("#live-task-meta");
+  if (meta) {
+    meta.textContent = `${kind} · ${state || "unknown"}${leased ? "" : " · steer is only available while running"}`;
+  }
+  const tool = data.tool ? String(data.tool) : "";
+  const args = data.args_summary ? String(data.args_summary) : "";
+  const now = $("#live-task-now");
+  if (now) {
+    const roundLabel = maxRounds > 0 ? `${round || 0}/${maxRounds}` : String(round || 0);
+    now.innerHTML = tool
+      ? `<div class="live-task-round mono">Round ${esc(roundLabel)}</div>
+         <div><strong class="live-tool">${esc(tool)}</strong></div>
+         <div class="mono">${esc(args || "—")}</div>`
+      : `<div class="live-task-round mono">Round ${esc(roundLabel)}</div>
+         <div>Waiting for the next tool round.</div>`;
+  }
+  const list = $("#live-task-steps");
+  const steps = Array.isArray(data.steps) ? data.steps : [];
+  if (list) {
+    list.innerHTML = steps.length
+      ? steps
+          .map((step) => {
+            const n = Number(step.round) || 0;
+            const m = Number(step.max_rounds) || maxRounds;
+            const label = m > 0 ? `${n}/${m}` : String(n);
+            const mark = step.ok === false ? " · failed" : "";
+            return `<li>
+              <span class="mono">round ${esc(label)}</span>
+              <span class="live-tool">${esc(step.tool || "tool")}${esc(mark)}</span>
+              <span class="mono">${esc(step.args_summary || "")}</span>
+            </li>`;
+          })
+          .join("")
+      : `<li><span class="controls-hint">No tool rounds yet.</span></li>`;
+    list.scrollTop = list.scrollHeight;
+  }
+  const steer = data.steer || {};
+  const pending = Array.isArray(steer.pending_notes) ? steer.pending_notes : [];
+  const force = steer.force_submit_none || null;
+  const abort = steer.abort || null;
+  const hint = $("#live-task-steer-hint");
+  if (hint) {
+    const bits = ["Confirm required. These actions never auto-confirm findings."];
+    if (pending.length) {
+      const preview = pending
+        .map((n) => String(n.text || "").trim())
+        .filter(Boolean)
+        .join(" · ");
+      bits.push(
+        `${pending.length} note${pending.length === 1 ? "" : "s"} waiting for the next round${
+          preview ? `: ${preview}` : ""
+        }.`
+      );
+    }
+    if (force && force.requested && !force.applied) bits.push("submit_none is queued for the next round.");
+    if (force && force.applied) {
+      bits.push(force.ok === false ? "submit_none was rejected." : "submit_none was applied.");
+    }
+    if (abort && abort.requested) bits.push("Abort requested.");
+    hint.textContent = bits.join(" ");
+  }
+  const hunt = String(kind) === "hunt";
+  const noteBtn = $("#live-steer-note");
+  const noneBtn = $("#live-steer-none");
+  const abortBtn = $("#live-steer-abort");
+  if (noteBtn) noteBtn.disabled = !leased;
+  if (abortBtn) abortBtn.disabled = !leased;
+  if (noneBtn) {
+    noneBtn.disabled = !leased || !hunt;
+    noneBtn.title = hunt
+      ? "Call submit_none at the next round. Does not confirm a finding."
+      : "submit_none is hunt-only. Abort to stop this task.";
+  }
+}
+
+async function sendLiveNote() {
+  if (!livePane) return;
+  const id = livePane.taskId;
+  const note = ($("#live-task-note")?.value || "").trim();
+  if (!note) {
+    toast("Write a note first", true);
+    return;
+  }
+  const ok = window.confirm(
+    `Send this note into task #${id} on the next tool round?\n\n` +
+      `It is injected as an operator note. It does not confirm, reject, or edit findings.\n\n` +
+      note.slice(0, 500)
+  );
+  if (!ok) return;
+  try {
+    await api(`${runApiBase()}/tasks/${encodeURIComponent(id)}/steer/note`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    });
+    const box = $("#live-task-note");
+    if (box) box.value = "";
+    toast(`Note queued for task #${id}`);
+    await refreshLivePane();
+  } catch (e) {
+    toast(e.message || String(e), true);
+  }
+}
+
+async function forceLiveSubmitNone() {
+  if (!livePane) return;
+  const id = livePane.taskId;
+  const typed = ($("#live-task-note")?.value || "").trim();
+  const reason = typed || "operator forced submit_none";
+  const ok = window.confirm(
+    `Force task #${id} to call submit_none at the next round boundary?\n\n` +
+      `The hunt ends with no candidate. This does not confirm any finding.\n\n` +
+      `Reason: ${reason.slice(0, 500)}`
+  );
+  if (!ok) return;
+  try {
+    await api(`${runApiBase()}/tasks/${encodeURIComponent(id)}/steer/submit_none`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+    const box = $("#live-task-note");
+    if (box && typed) box.value = "";
+    toast(`submit_none queued for task #${id}`);
+    await refreshLivePane();
+  } catch (e) {
+    toast(e.message || String(e), true);
+  }
+}
+
+async function abortLiveTask() {
+  if (!livePane) return;
+  const id = livePane.taskId;
+  const ok = window.confirm(
+    `Abort task #${id}?\n\n` +
+      `This permanently stops the running agent (halt). ` +
+      `It does not confirm or reject findings. The task will not resume.`
+  );
+  if (!ok) return;
+  try {
+    await api(`${runApiBase()}/tasks/${encodeURIComponent(id)}/steer/abort`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "operator_abort" }),
+    });
+    toast(`Aborted task #${id}`);
+    await refreshLivePane();
+    if (typeof loadRunFull === "function") await loadRunFull();
+  } catch (e) {
+    toast(e.message || String(e), true);
+  }
+}
+
 function renderTasks(tasks) {
   const tb = $("#tasks-body");
   if (!tb) return;
@@ -2657,6 +2876,7 @@ function renderTasks(tasks) {
           </div>`;
     } else if (running) {
       actions = `<div class="task-prio-actions">
+            <button type="button" class="btn btn-sm btn-primary task-live-btn" data-tid="${t.id}" title="Live tool rounds and mid-task steer">Live</button>
             <button type="button" class="btn btn-sm task-pause-btn" data-tid="${t.id}" title="Stop this agent; next queued starts. Runs again when resumed or last left.">Pause</button>
             <button type="button" class="btn btn-sm btn-bad task-halt-btn" data-tid="${t.id}" title="Stop and permanently cancel this lease">Halt</button>
           </div>`;
@@ -2725,9 +2945,20 @@ function renderTasks(tasks) {
       if (tid) haltTask(tid);
     });
   });
+  tb.querySelectorAll(".task-live-btn").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const tid = btn.getAttribute("data-tid");
+      if (tid) openLiveTask(tid);
+    });
+  });
   tb.querySelectorAll("tr.task-row").forEach((row) => {
     row.addEventListener("click", () => {
       const id = row.getAttribute("data-task-id");
+      if (row.classList.contains("is-running")) {
+        openLiveTask(id);
+        return;
+      }
       const has = row.getAttribute("data-has-t") === "1";
       if (!has) {
         toast("No LLM transcript for this task (mech-only or pre-logging run)");
@@ -2736,6 +2967,7 @@ function renderTasks(tasks) {
       openTranscript(id);
     });
   });
+  maybeOpenLiveFromQuery();
 }
 
 /** @type {{ taskId: number|string, data: object, tab: string, passKey: string|null } | null} */
@@ -4722,6 +4954,7 @@ function connectStream() {
       if (data.type === "snapshot") {
         const card = data.card || {};
         renderRunner(data.runner || card.runner || {}, card);
+        if (livePane) refreshLivePane();
         // Lightweight card includes task state counters (leased/queued/done).
         // When they drift from the last full snap, pull tasks/report/coverage.
         const sig = liveTaskSig(card);
@@ -4733,11 +4966,23 @@ function connectStream() {
       } else if (data.type === "events") {
         appendEvents(data.events || []);
         if (typeof data.next === "number") eventOffset = data.next;
-        if (
-          (data.events || []).some((e) => LIVE_REFRESH_EVENTS.has(e.event))
-        ) {
+        const events = data.events || [];
+        if (events.some((e) => LIVE_REFRESH_EVENTS.has(e.event))) {
           // Debounced full refresh; do not tear down SSE (connectStream sticky).
           scheduleLoadRunFull("event");
+        }
+        if (
+          livePane &&
+          events.some(
+            (e) =>
+              (e.event === "task_step" ||
+                e.event === "operator_task_note" ||
+                e.event === "operator_force_submit_none" ||
+                e.event === "operator_abort_task") &&
+              Number(e.task_id) === livePane.taskId
+          )
+        ) {
+          refreshLivePane();
         }
       } else if (data.type === "error") {
         // Server-sent application error over a live channel — stay Live.
@@ -5044,6 +5289,19 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   // Settings / New-run modals stay open until Cancel or Save/Create -
   // do not dismiss on backdrop click (unstable form entry).
+  $("#live-task-close")?.addEventListener("click", closeLiveTask);
+  $("#live-steer-note")?.addEventListener("click", () => sendLiveNote());
+  $("#live-steer-none")?.addEventListener("click", () => forceLiveSubmitNone());
+  $("#live-steer-abort")?.addEventListener("click", () => abortLiveTask());
+  $("#live-task-steer")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    sendLiveNote();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $("#live-task-modal")?.classList.contains("open")) {
+      closeLiveTask();
+    }
+  });
   $("#transcript-close")?.addEventListener("click", closeTranscript);
   $("#transcript-modal")?.addEventListener("click", (e) => {
     if (e.target.id === "transcript-modal") closeTranscript();

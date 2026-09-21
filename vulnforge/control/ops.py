@@ -703,6 +703,100 @@ def halt_task(
         db.close()
 
 
+def _leased_task_or_error(run_dir: Path, task_id: int) -> tuple[Any, Optional[dict[str, Any]]]:
+    """Return (task, None) when leased, else (None, error body)."""
+    db = _open_db(run_dir)
+    try:
+        task = db.get_task(int(task_id))
+    finally:
+        db.close()
+    if not task:
+        return None, {"ok": False, "error": f"task #{task_id} not found"}
+    if task.state != "leased":
+        return None, {
+            "ok": False,
+            "error": (
+                f"task #{task_id} is {task.state}; mid-task steer applies only "
+                "while the task is leased"
+            ),
+        }
+    return task, None
+
+
+def steer_operator_note(run_dir: Path, task_id: int, note: str) -> dict[str, Any]:
+    """Inject an operator note into the leased task's next round.
+
+    Does not mutate finding or confirm state.
+    """
+    task, err = _leased_task_or_error(run_dir, task_id)
+    if err:
+        return err
+    from vulnforge.live_task import add_operator_note
+
+    result = add_operator_note(run_dir, int(task_id), note)
+    if result.get("ok"):
+        result["kind"] = task.kind
+        result["state"] = task.state
+    return result
+
+
+def steer_force_submit_none(
+    run_dir: Path,
+    task_id: int,
+    reason: str = "",
+) -> dict[str, Any]:
+    """Queue force submit_none for the next round boundary.
+
+    Hunt only. Does not confirm findings and does not call the tool in-process;
+    the leased worker applies it before the next model call.
+    """
+    task, err = _leased_task_or_error(run_dir, task_id)
+    if err:
+        return err
+    if str(task.kind or "") != "hunt":
+        return {
+            "ok": False,
+            "error": (
+                f"task #{task_id} is {task.kind}; force submit_none is hunt-only. "
+                "Abort the task to stop it."
+            ),
+        }
+    from vulnforge.live_task import request_force_submit_none
+
+    result = request_force_submit_none(run_dir, int(task_id), reason)
+    if result.get("ok"):
+        result["kind"] = task.kind
+        result["state"] = task.state
+        result["confirms_findings"] = False
+    return result
+
+
+def steer_abort_task(
+    run_dir: Path,
+    task_id: int,
+    *,
+    reason: str = "operator_abort",
+) -> dict[str, Any]:
+    """Abort the leased task: steer flag, then halt (kill the worker).
+
+    Halt is the stop. The flag lets a round boundary exit without submitting
+    a candidate if the process is still inside the tool loop. Does not confirm
+    findings.
+    """
+    task, err = _leased_task_or_error(run_dir, task_id)
+    if err:
+        return err
+    from vulnforge.live_task import request_abort
+
+    why = (reason or "operator_abort").strip() or "operator_abort"
+    request_abort(run_dir, int(task_id), why)
+    halted = halt_task(run_dir, int(task_id), reason=why)
+    if halted.get("ok"):
+        halted["abort"] = True
+        halted["confirms_findings"] = False
+    return halted
+
+
 def requeue_hunt(
     run_dir: Path,
     *,
