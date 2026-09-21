@@ -1351,6 +1351,63 @@ button.cov-plan-action.is-current {
   color: var(--muted);
   letter-spacing: 0.02em;
 }
+/* Finding counts. Arrows are the funnel, not a finished-step lane pipe. */
+.arch-campaign-funnel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.1rem 0.15rem;
+  min-width: 0;
+}
+.arch-campaign-funnel-arrow {
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 0 0.15rem;
+  user-select: none;
+}
+.arch-campaign-funnel-step {
+  appearance: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.1rem 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  border-radius: 4px;
+}
+button.arch-campaign-funnel-step {
+  cursor: pointer;
+}
+button.arch-campaign-funnel-step:hover .arch-campaign-funnel-value {
+  color: var(--accent);
+}
+button.arch-campaign-funnel-step:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.arch-campaign-funnel-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.arch-campaign-funnel-value {
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.arch-campaign-presence {
+  margin: 0;
+  max-width: 100%;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+.arch-campaign-presence[data-paused="1"] {
+  color: var(--text);
+}
 .arch-campaign-strip.is-failed .arch-campaign-row {
   opacity: 0.7;
 }

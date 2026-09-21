@@ -2023,7 +2023,47 @@ function campaignLaneAria(stage, state, counts) {
 }
 
 /**
+ * Finding counts: ingested → screened → needs_human → confirmed.
+ * Arrows are the funnel, not work-lane progress. Lanes stay concurrent.
+ */
+function renderFindingFunnelHtml(funnel) {
+  const steps = funnel || [];
+  if (!steps.length) return "";
+  const body = steps
+    .map((step, i) => {
+      const arrow =
+        i > 0
+          ? `<span class="arch-campaign-funnel-arrow" aria-hidden="true">→</span>`
+          : "";
+      const label = step.label || step.id || "";
+      const value = String(step.value ?? 0);
+      const hint = step.hint || label;
+      const aria = label + " " + value;
+      const inner = `<span class="arch-campaign-funnel-label">${esc(label)}</span><span class="arch-campaign-funnel-value mono">${esc(value)}</span>`;
+      if (step.nav) {
+        return `${arrow}<button type="button" class="arch-campaign-funnel-step" data-funnel-idx="${i}" title="${esc(hint)}" aria-label="${esc(aria)}">${inner}</button>`;
+      }
+      return `${arrow}<span class="arch-campaign-funnel-step" title="${esc(hint)}" aria-label="${esc(aria)}">${inner}</span>`;
+    })
+    .join("");
+  return `<div class="arch-campaign-funnel" role="group" aria-label="Finding funnel">${body}</div>`;
+}
+
+function renderPresenceHtml(presence) {
+  const line = presence && presence.line ? String(presence.line) : "";
+  if (!line) return "";
+  const paused =
+    (presence.pauses && presence.pauses.length) ||
+    presence.pausedCount ||
+    presence.runnerState === "paused" ||
+    presence.runnerState === "pausing";
+  const mark = paused ? ' data-paused="1"' : "";
+  return `<p class="arch-campaign-presence" role="status"${mark}>${esc(line)}</p>`;
+}
+
+/**
  * Recon / Hunt / Validate are concurrent lanes. Ralph stays on #runner-status.
+ * The funnel and who/why line sit on this strip; they are not lane lights.
  */
 function renderCampaignStripHtml(vm, snap) {
   const fail = missionFailReason(snap);
@@ -2072,6 +2112,9 @@ function renderCampaignStripHtml(vm, snap) {
       ? `<span class="arch-campaign-note" title="validate_llm is on. Mech-pass is needs_human; disprove may rejected_llm only. Never auto-confirms.">disprove on</span>`
       : "";
 
+  const funnelHtml = renderFindingFunnelHtml((vm && vm.funnel) || []);
+  const presenceHtml = renderPresenceHtml(vm && vm.presence);
+
   return `<div class="arch-campaign-strip${fail ? " is-failed" : ""}">
     ${banner}
     <div class="arch-campaign-row">
@@ -2079,6 +2122,8 @@ function renderCampaignStripHtml(vm, snap) {
       ${lanes}
       ${note}
     </div>
+    ${funnelHtml}
+    ${presenceHtml}
   </div>`;
 }
 
@@ -2153,6 +2198,13 @@ function bindArchCampaignHandlers(root, vm) {
     btn.addEventListener("click", () => {
       const i = Number(btn.getAttribute("data-kpi-idx"));
       applyKpiNav(kpis[i] && kpis[i].nav);
+    });
+  });
+  const funnel = (vm && vm.funnel) || [];
+  scope.querySelectorAll(".arch-campaign-funnel-step[data-funnel-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.getAttribute("data-funnel-idx"));
+      applyKpiNav(funnel[i] && funnel[i].nav);
     });
   });
   scope.querySelector("[data-arch-events-all]")?.addEventListener("click", goMissionEventsAll);

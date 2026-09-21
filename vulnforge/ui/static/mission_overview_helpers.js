@@ -1,5 +1,6 @@
 /**
- * Pure helpers for Mission Overview KPI strip + concurrent work lanes.
+ * Pure helpers for Mission Overview KPI strip, finding funnel,
+ * who/why-paused, and concurrent work lanes.
  * UMD/CommonJS — usable from the browser (script tag) and node --test.
  */
 (function (root, factory) {
@@ -419,6 +420,233 @@
     return Number(counts[state] || 0) || 0;
   }
 
+  /**
+   * State counts from snap.findings — either a finding list or the
+   * count_findings_by_state map. No new lifecycle states.
+   */
+  function findingStateCounts(snap) {
+    const findings = snap && snap.findings;
+    const counts = {};
+    if (Array.isArray(findings)) {
+      for (const f of findings) {
+        const st = String((f && f.state) || "").toLowerCase() || "unknown";
+        counts[st] = (counts[st] || 0) + 1;
+      }
+      return counts;
+    }
+    if (findings && typeof findings === "object") {
+      for (const [k, v] of Object.entries(findings)) {
+        const n = Number(v) || 0;
+        if (n > 0) counts[String(k).toLowerCase()] = n;
+      }
+    }
+    return counts;
+  }
+
+  /**
+   * Finding funnel counts. Ingested is every recorded finding.
+   * Screened is everything that has left `candidate` (mech, disprove, or
+   * review wrote a later state). needs_human and confirmed are those states.
+   * Not a work-lane pipeline.
+   */
+  function buildFindingFunnel(snap) {
+    const counts = findingStateCounts(snap);
+    let ingested = 0;
+    for (const n of Object.values(counts)) ingested += n;
+    const candidate = counts.candidate || 0;
+    const screened = Math.max(0, ingested - candidate);
+    const needs = counts.needs_human || 0;
+    const confirmed = counts.confirmed || 0;
+    return [
+      {
+        id: "ingested",
+        label: "Ingested",
+        value: ingested,
+        hint: "Findings recorded in this run, every state.",
+        nav: { mode: "report", tab: "report", filter: "all" },
+      },
+      {
+        id: "screened",
+        label: "Screened",
+        value: screened,
+        hint: "Left candidate. Mech, disprove, or review wrote a later state. Not a separate stored state.",
+        nav: { mode: "report", tab: "report", filter: "all" },
+      },
+      {
+        id: "needs_human",
+        label: "Needs human",
+        value: needs,
+        hint: "State needs_human. Mechanical gates passed. Not confirmed.",
+        nav: { mode: "report", tab: "report", filter: "needs_human" },
+      },
+      {
+        id: "confirmed",
+        label: "Confirmed",
+        value: confirmed,
+        hint: "State confirmed. Human accepted. Never automatic.",
+        nav: { mode: "report", tab: "report", filter: "confirmed" },
+      },
+    ];
+  }
+
+  function taskRows(snap) {
+    const tasks = snap && snap.tasks;
+    return Array.isArray(tasks) ? tasks : null;
+  }
+
+  function taskCountMap(snap) {
+    const tasks = snap && snap.tasks;
+    if (tasks && typeof tasks === "object" && !Array.isArray(tasks)) return tasks;
+    const summary = snap && snap.tasks_summary;
+    if (
+      !Array.isArray(tasks) &&
+      summary &&
+      typeof summary === "object" &&
+      !Array.isArray(summary)
+    ) {
+      return summary;
+    }
+    return null;
+  }
+
+  function pauseReasonOf(task) {
+    const result = task && task.result;
+    let raw = "";
+    if (result && typeof result === "object") {
+      if (result.error) raw = String(result.error);
+      else if (result.reason) raw = String(result.reason);
+      else if (result.operator_paused) raw = "operator_pause";
+    } else if (typeof result === "string") {
+      raw = result;
+    }
+    raw = String(raw || "").trim();
+    return raw || "paused";
+  }
+
+  function displayPauseReason(reason) {
+    const key = String(reason || "").trim();
+    if (key === "operator_pause" || key === "ui_pause") return "operator pause";
+    if (!key) return "paused";
+    return key.replace(/_/g, " ");
+  }
+
+  function runnerPauseWhy(runner, state) {
+    const custom = runner && (runner.reason || runner.pause_reason);
+    if (custom) return String(custom).trim();
+    if (state === "pausing") return "STOP set; workers still finishing";
+    if (state === "paused") return "STOP set";
+    if (runner && runner.stop && state !== "running") return "STOP set";
+    return "";
+  }
+
+  const PRESENCE_CAP = 3;
+
+  function formatWorkerBit(w) {
+    const who = w.leaseOwner ? w.leaseOwner : "leased worker";
+    const kind = w.kind ? String(w.kind) : "task";
+    const id =
+      w.taskId != null && w.taskId !== "" && Number.isFinite(Number(w.taskId))
+        ? " #" + Number(w.taskId)
+        : "";
+    return who + " on " + kind + id;
+  }
+
+  function formatPauseBit(p) {
+    const kind = p.kind ? String(p.kind) + " " : "";
+    const id =
+      p.taskId != null && p.taskId !== "" && Number.isFinite(Number(p.taskId))
+        ? "#" + Number(p.taskId)
+        : "task";
+    const reason = displayPauseReason(p.reason);
+    const shown = reason.length > 80 ? reason.slice(0, 77) + "..." : reason;
+    return kind + id + " — " + shown;
+  }
+
+  function joinCapped(prefix, bits) {
+    const shown = bits.slice(0, PRESENCE_CAP);
+    const extra = bits.length - shown.length;
+    let text = prefix + shown.join(", ");
+    if (extra > 0) text += " +" + extra;
+    return text;
+  }
+
+  function ralphClause(state, why) {
+    if (state === "running") return "Ralph running";
+    if (state === "pausing") {
+      return "Ralph pausing — " + (why || "STOP set; workers still finishing");
+    }
+    if (state === "paused") return "Ralph paused — " + (why || "STOP set");
+    if (state === "busy") return "Ralph busy — run lock held";
+    if (state === "idle") return "Ralph idle";
+    return "";
+  }
+
+  /**
+   * Who is leased, and why Ralph or a task is paused.
+   * Reads runner state plus task lease_owner / pause result already on the snap.
+   */
+  function buildMissionPresence(snap) {
+    const s = snap || {};
+    const runner = s.runner && typeof s.runner === "object" ? s.runner : {};
+    const runnerState = String(runner.state || "").toLowerCase();
+    const runnerWhy = runnerPauseWhy(runner, runnerState);
+    const rows = taskRows(s);
+    const workers = [];
+    const pauses = [];
+    if (rows) {
+      for (const t of rows) {
+        const st = String((t && t.state) || "").toLowerCase();
+        if (st === "leased" || st === "running") {
+          const owner = String((t && (t.lease_owner || t.leaseOwner)) || "").trim();
+          workers.push({
+            taskId: t.id,
+            kind: (t && t.kind) || "",
+            leaseOwner: owner,
+          });
+        } else if (st === "paused") {
+          pauses.push({
+            taskId: t.id,
+            kind: (t && t.kind) || "",
+            reason: pauseReasonOf(t),
+          });
+        }
+      }
+    }
+    let leasedCount = workers.length;
+    let pausedCount = pauses.length;
+    if (!rows) {
+      const summary = taskCountMap(s) || {};
+      leasedCount = (Number(summary.leased) || 0) + (Number(summary.running) || 0);
+      pausedCount = Number(summary.paused) || 0;
+    }
+    const parts = [];
+    const ralph = ralphClause(runnerState, runnerWhy);
+    if (ralph) parts.push(ralph);
+    if (workers.length) {
+      parts.push(joinCapped("Working: ", workers.map(formatWorkerBit)));
+    } else if (leasedCount > 0) {
+      parts.push("Working: " + leasedCount + " leased");
+    } else {
+      parts.push("No worker leased");
+    }
+    if (pauses.length) {
+      parts.push(joinCapped("Paused: ", pauses.map(formatPauseBit)));
+    } else if (pausedCount > 0) {
+      parts.push(
+        "Paused: " + pausedCount + (pausedCount === 1 ? " task" : " tasks")
+      );
+    }
+    return {
+      runnerState,
+      runnerWhy,
+      workers,
+      pauses,
+      leasedCount,
+      pausedCount,
+      line: parts.filter(Boolean).join(" · "),
+    };
+  }
+
   function buildMissionKpis(snap) {
     const s = snap || {};
     const done = Number(s.done_tasks || 0);
@@ -502,6 +730,8 @@
     const events = opts && Array.isArray(opts.recentEvents) ? opts.recentEvents.slice() : [];
     return {
       kpis: buildMissionKpis(s),
+      funnel: buildFindingFunnel(s),
+      presence: buildMissionPresence(s),
       pipeline: buildVisualPipeline(s),
       events,
       architecture: buildArchitectureBrief(s),
@@ -516,6 +746,8 @@
     laneStatusOf,
     formatLaneCounts,
     buildVisualPipeline,
+    buildFindingFunnel,
+    buildMissionPresence,
     buildMissionKpis,
     buildArchitectureBrief,
     buildMissionCockpit,

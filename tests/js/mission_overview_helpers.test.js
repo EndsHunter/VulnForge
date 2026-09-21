@@ -16,6 +16,8 @@ const {
   formatLaneCounts,
   buildVisualPipeline,
   buildMissionKpis,
+  buildFindingFunnel,
+  buildMissionPresence,
   buildArchitectureBrief,
   buildMissionCockpit,
   countMissionTaskActivity,
@@ -411,6 +413,144 @@ describe("buildMissionKpis", () => {
   });
 });
 
+describe("buildFindingFunnel", () => {
+  it("maps existing states onto ingested → screened → needs_human → confirmed", () => {
+    const funnel = buildFindingFunnel({
+      findings: [
+        { state: "candidate" },
+        { state: "candidate" },
+        { state: "rejected_mech" },
+        { state: "rejected_llm" },
+        { state: "needs_human" },
+        { state: "needs_human" },
+        { state: "confirmed" },
+        { state: "superseded" },
+      ],
+    });
+    assert.deepEqual(
+      funnel.map((s) => s.id),
+      ["ingested", "screened", "needs_human", "confirmed"]
+    );
+    assert.deepEqual(
+      funnel.map((s) => s.value),
+      [8, 6, 2, 1]
+    );
+    assert.equal(funnel[2].nav.filter, "needs_human");
+    assert.equal(funnel[3].nav.filter, "confirmed");
+    assert.equal(funnel[3].hint.includes("Never automatic"), true);
+  });
+
+  it("counts a state map the same way as a finding list", () => {
+    const funnel = buildFindingFunnel({
+      findings: { candidate: 3, needs_human: 2, confirmed: 1, rejected_mech: 1 },
+    });
+    assert.deepEqual(
+      funnel.map((s) => s.value),
+      [7, 4, 2, 1]
+    );
+  });
+
+  it("is zero when nothing has been recorded", () => {
+    const funnel = buildFindingFunnel({});
+    assert.deepEqual(
+      funnel.map((s) => s.value),
+      [0, 0, 0, 0]
+    );
+  });
+
+  it("does not treat candidate as screened", () => {
+    const funnel = buildFindingFunnel({
+      findings: [{ state: "candidate" }, { state: "Candidate" }],
+    });
+    assert.equal(funnel[0].value, 2);
+    assert.equal(funnel[1].value, 0);
+    assert.equal(funnel[2].value, 0);
+  });
+});
+
+describe("buildMissionPresence", () => {
+  it("names the leased worker and the operator pause reason", () => {
+    const presence = buildMissionPresence({
+      runner: { state: "running", pid: 4242, alive: true },
+      tasks: [
+        { id: 7, kind: "hunt", state: "leased", lease_owner: "vf-4242-ab12cd34" },
+        {
+          id: 8,
+          kind: "hunt",
+          state: "paused",
+          result: { error: "operator_pause", operator_paused: true },
+        },
+        { id: 3, kind: "recon", state: "succeeded" },
+      ],
+    });
+    assert.equal(presence.runnerState, "running");
+    assert.equal(presence.workers.length, 1);
+    assert.equal(presence.workers[0].leaseOwner, "vf-4242-ab12cd34");
+    assert.equal(presence.pauses[0].reason, "operator_pause");
+    assert.equal(
+      presence.line,
+      "Ralph running · Working: vf-4242-ab12cd34 on hunt #7 · Paused: hunt #8 — operator pause"
+    );
+  });
+
+  it("says why Ralph is paused when STOP is set", () => {
+    const presence = buildMissionPresence({
+      runner: { state: "paused", stop: true, alive: false },
+      tasks: [],
+    });
+    assert.equal(presence.runnerWhy, "STOP set");
+    assert.equal(presence.line, "Ralph paused — STOP set · No worker leased");
+  });
+
+  it("explains pausing while workers are still finishing", () => {
+    const presence = buildMissionPresence({
+      runner: { state: "pausing", stop: true, alive: true },
+      tasks: [{ id: 2, kind: "recon", state: "leased", lease_owner: "vf-9-aa" }],
+    });
+    assert.equal(
+      presence.line,
+      "Ralph pausing — STOP set; workers still finishing · Working: vf-9-aa on recon #2"
+    );
+  });
+
+  it("falls back to leased and paused counts when the snap has no task rows", () => {
+    const presence = buildMissionPresence({
+      runner: { state: "idle" },
+      tasks: { leased: 2, paused: 1, queued: 4 },
+    });
+    assert.equal(presence.workers.length, 0);
+    assert.equal(presence.leasedCount, 2);
+    assert.equal(presence.pausedCount, 1);
+    assert.equal(
+      presence.line,
+      "Ralph idle · Working: 2 leased · Paused: 1 task"
+    );
+  });
+
+  it("uses a leased-worker label when the lease owner is missing", () => {
+    const presence = buildMissionPresence({
+      tasks: [{ id: 4, kind: "validate_mech", state: "leased" }],
+    });
+    assert.equal(presence.line, "Working: leased worker on validate_mech #4");
+  });
+
+  it("reads result.reason when error is absent", () => {
+    const presence = buildMissionPresence({
+      runner: { state: "running" },
+      tasks: [
+        {
+          id: 1,
+          kind: "hunt",
+          state: "paused",
+          result: { reason: "waiting_on_operator" },
+        },
+      ],
+    });
+    assert.equal(presence.pauses[0].reason, "waiting_on_operator");
+    assert.match(presence.line, /Paused: hunt #1 — waiting on operator/);
+  });
+});
+
 describe("buildMissionCockpit", () => {
   it("assembles kpis, 3 work lanes, events, architecture from snap", () => {
     const snap = {
@@ -447,6 +587,19 @@ describe("buildMissionCockpit", () => {
     assert.deepEqual(
       vm.pipeline.map((s) => s.id),
       ["recon", "hunt", "validate"]
+    );
+    assert.equal(vm.funnel.length, 4);
+    assert.deepEqual(
+      vm.funnel.map((s) => s.id),
+      ["ingested", "screened", "needs_human", "confirmed"]
+    );
+    assert.equal(vm.funnel[0].value, 2);
+    assert.equal(vm.funnel[1].value, 1);
+    assert.equal(vm.funnel[2].value, 1);
+    assert.equal(vm.presence.line.includes("No worker leased"), true);
+    assert.equal(
+      vm.pipeline.some((s) => s.id === "ralph"),
+      false
     );
     assert.equal(buildPipelineStages(snap).length, 4);
     assert.equal(vm.events.length, 2);
