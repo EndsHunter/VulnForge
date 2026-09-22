@@ -3130,7 +3130,11 @@ function renderTasks(tasks) {
         <td class="mono task-loop" title="${esc(loop.title)}">${esc(loop.label)}</td>
         <td class="mono" title="${esc(payload)}">${esc(payload.slice(0, 80))}${payload.length > 80 ? "..." : ""}</td>
         <td><div class="task-result" title="${esc(res)}">${esc(res.slice(0, 200))}</div></td>
-        <td>${hasT ? `<span class="llm-pill">LLM log ></span>` : `<span class="llm-pill none"> - </span>`}</td>
+        <td>${
+          hasT
+            ? `<button type="button" class="llm-pill llm-log-btn" data-tid="${t.id}" title="Open the LLM transcript">LLM log</button>`
+            : `<span class="llm-pill none"> - </span>`
+        }</td>
         <td class="task-actions-cell">${actions}</td>
       </tr>`);
   }
@@ -3179,6 +3183,15 @@ function renderTasks(tasks) {
       if (tid) openLiveTask(tid);
     });
   });
+  tb.querySelectorAll(".llm-log-btn").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const tid = btn.getAttribute("data-tid");
+      if (!tid) return;
+      closeLiveTask();
+      openTranscript(tid);
+    });
+  });
   tb.querySelectorAll("tr.task-row").forEach((row) => {
     row.addEventListener("click", () => {
       const id = row.getAttribute("data-task-id");
@@ -3191,6 +3204,14 @@ function renderTasks(tasks) {
         toast("No LLM transcript for this task (mech-only or pre-logging run)");
         return;
       }
+      openTranscript(id);
+    });
+    row.addEventListener("dblclick", (ev) => {
+      const id = row.getAttribute("data-task-id");
+      const has = row.getAttribute("data-has-t") === "1";
+      if (!id || !has) return;
+      ev.preventDefault();
+      closeLiveTask();
       openTranscript(id);
     });
   });
@@ -3210,10 +3231,13 @@ async function openStepIO(taskId, passKey) {
     let url = `/api/runs/${encodeURIComponent(target_id)}/${encodeURIComponent(run_id)}/tasks/${taskId}/io`;
     if (passKey) url += `?pass_key=${encodeURIComponent(passKey)}`;
     const data = await api(url);
+    const keepTab =
+      _stepIoState && String(_stepIoState.taskId) === String(taskId) ? _stepIoState.tab : "";
+    const preferTurns = globalThis.TranscriptTurns?.prefersTurnsTab?.(data);
     _stepIoState = {
       taskId,
       data,
-      tab: (_stepIoState && String(_stepIoState.taskId) === String(taskId) && _stepIoState.tab) || "input",
+      tab: keepTab || (preferTurns ? "turns" : "input"),
       passKey: passKey || null,
     };
     renderStepIOModal();
@@ -3239,20 +3263,14 @@ async function openStepIO(taskId, passKey) {
 }
 
 function renderTurnHtml(m) {
-  const role = m.role || "unknown";
-  let content = m.content;
-  if (m.tool_calls) {
-    content = (content || "") + "\n" + JSON.stringify(m.tool_calls, null, 2);
-  }
-  if (m.reasoning_content) {
-    content =
-      `[reasoning]\n${m.reasoning_content}\n\n[content]\n` + (content || "");
-  }
-  if (m.name) content = `[tool ${m.name}]\n` + (content || "");
-  return `<div class="transcript-turn role-${esc(role)}">
-    <div class="role">${esc(role)}</div>
-    <pre>${esc(content || "")}</pre>
-  </div>`;
+  const api = globalThis.TranscriptTurns;
+  if (api && typeof api.renderTurnHtml === "function") return api.renderTurnHtml(m);
+  const role = (m && m.role) || "unknown";
+  const content = m && m.content != null ? m.content : "";
+  const text = typeof content === "string" ? content : JSON.stringify(content);
+  return `<div class="transcript-turn role-${esc(role)}"><div class="role">${esc(role)}</div><pre>${esc(
+    text || ""
+  )}</pre></div>`;
 }
 
 function renderStepIOModal() {
