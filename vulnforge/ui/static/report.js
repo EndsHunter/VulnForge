@@ -232,6 +232,19 @@
     </div>`;
   }
 
+
+  function huntMoaBadgeHtml(f) {
+    const H = window.ReportHuntMoa;
+    if (H && typeof H.huntMoaBadgeHtml === "function") return H.huntMoaBadgeHtml(f);
+    return "";
+  }
+
+  function huntMoaDetailHtml(f) {
+    const H = window.ReportHuntMoa;
+    if (H && typeof H.huntMoaDetailHtml === "function") return H.huntMoaDetailHtml(f);
+    return "";
+  }
+
   function matchesFilter(f) {
     const st = (f.state || "").toLowerCase();
     const ftr = (filter || "all").toLowerCase();
@@ -873,11 +886,13 @@
             <span class="badge info">${esc(b.weakness_class || "-")}</span>
             ${nearBadge}
             ${llmBadge}
+            ${huntMoaBadgeHtml(f)}
           </div>
         </div>
         <p class="report-detail-summary">${esc(b.summary || "No summary.")}</p>
         ${rejectBox}
         ${llmDetail}
+        ${huntMoaDetailHtml(f)}
         <div class="report-detail-grid">
           <div>
             <h4>Threat model</h4>
@@ -1781,6 +1796,7 @@
               }</span>`
             : "";
         const llmBadge = llmVerifyBadge(f);
+        const moaBadge = huntMoaBadgeHtml(f);
         const group = grouping ? nearDupGroupKey(f) : "";
         const groupStart = grouping && group !== prevGroup;
         prevGroup = group;
@@ -1788,7 +1804,7 @@
         const groupAttr = grouping ? ` data-near-group="${esc(group)}"` : "";
         return `<tr class="report-row${open ? " open" : ""}${f.near_dup || cm ? " near-dup-row" : ""}${groupClass}" data-fid="${f.id}"${groupAttr} tabindex="0">
           <td class="mono">${f.id}</td>
-          <td class="report-title-cell">${esc(b.title || f.stable_key || "-")} ${near} ${llmBadge}</td>
+          <td class="report-title-cell">${esc(b.title || f.stable_key || "-")} ${near} ${llmBadge} ${moaBadge}</td>
           <td><span class="mono">${esc(b.weakness_class || "-")}</span></td>
           <td>${sevBadge(f.severity || b.severity_claim || "unknown")}</td>
           <td class="report-state-cell">${badge(f.state, f)}</td>
@@ -2399,7 +2415,7 @@
     const anchorOf = (target) => {
       const el = target && target.closest?.("[data-tip]");
       if (!el || !root.contains(el)) return null;
-      if (!el.classList.contains("report-state-step") && !el.classList.contains("llm-verify")) {
+      if (!el.classList.contains("report-state-step") && !el.classList.contains("llm-verify") && !el.classList.contains("hunt-moa-agree")) {
         return null;
       }
       return el;
