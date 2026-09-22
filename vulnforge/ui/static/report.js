@@ -20,6 +20,8 @@
   /** Map finding_id -> cluster member meta */
   let clusterByFinding = {};
   let reportPanelsBound = false;
+  /** Basename list from snap.project_files (project/* on disk). */
+  let projectFiles = [];
   /** Client-side search (case-insensitive substring) */
   let searchQuery = "";
   let searchDebounceTimer = null;
@@ -1946,6 +1948,51 @@
     return meta;
   }
 
+  async function exportRawProjection(name) {
+    if (!name) return;
+    ensureExportMeta();
+    if (!meta.target_id || !meta.run_id) {
+      toast("No run loaded", true);
+      return;
+    }
+    try {
+      const data = await (typeof window.api === "function"
+        ? window.api(
+            `/api/runs/${encodeURIComponent(meta.target_id)}/${encodeURIComponent(meta.run_id)}/project/${encodeURIComponent(name)}`
+          )
+        : fetch(
+            `/api/runs/${encodeURIComponent(meta.target_id)}/${encodeURIComponent(meta.run_id)}/project/${encodeURIComponent(name)}`
+          ).then((r) => r.json()));
+      downloadBlob(name, data.content ?? "", "text/plain;charset=utf-8");
+      toast(`Downloaded ${name}`);
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  function renderExportProjections() {
+    const host = $("#report-export-projections");
+    if (!host) return;
+    const files = (Array.isArray(projectFiles) ? projectFiles : []).filter(
+      (f) => f && f.name
+    );
+    if (!files.length) {
+      host.innerHTML = `<span class="controls-hint">No project files on disk yet.</span>`;
+      return;
+    }
+    host.innerHTML = files
+      .map(
+        (f) =>
+          `<button type="button" class="btn btn-ghost btn-sm" data-export-proj="${esc(f.name)}" title="Download project/${esc(f.name)}">${esc(f.name)}</button>`
+      )
+      .join("");
+    host.querySelectorAll("[data-export-proj]").forEach((btn) => {
+      btn.addEventListener("click", () =>
+        exportRawProjection(btn.getAttribute("data-export-proj"))
+      );
+    });
+  }
+
   function openExportModal(ev) {
     if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
     if (ev && typeof ev.stopPropagation === "function") ev.stopPropagation();
@@ -1961,6 +2008,7 @@
     modal.hidden = false;
     modal.classList.add("open");
     modal.setAttribute("aria-hidden", "false");
+    renderExportProjections();
     updateExportHint();
     // Defer focus so the modal is painted first
     setTimeout(() => {
@@ -2449,6 +2497,8 @@
       run_id: snap.run_id || meta.run_id,
       target_path: snap.target_path || meta.target_path,
     };
+    projectFiles = Array.isArray(snap.project_files) ? snap.project_files : [];
+    renderExportProjections();
     window.__VF_report_findings = cache;
     // Keep filter if it still matches something; otherwise reset to all
     if (filter !== "all" && !cache.some(matchesFilter)) {

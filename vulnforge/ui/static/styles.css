@@ -2554,6 +2554,15 @@ button.arch-campaign-funnel-step:focus-visible {
   padding-top: 0.45rem;
   border-top: 1px solid var(--border);
 }
+.export-disk-projections {
+  margin-top: 0.85rem;
+}
+.report-export-projections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
 .report-table th.th-sortable {
   cursor: pointer;
   user-select: none;
