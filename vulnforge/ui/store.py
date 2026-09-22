@@ -636,6 +636,18 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         except (TypeError, ValueError):
             max_tasks = 50
 
+    # Lease cap is the harness setting (Settings: max concurrent agents).
+    max_leases_parallel = 1
+    try:
+        max_leases_parallel = max(
+            1, int((run_cfg.get("run") or {}).get("max_leases_parallel", 1))
+        )
+    except (TypeError, ValueError):
+        try:
+            max_leases_parallel = max(1, int(run_cfg.get("max_leases_parallel", 1)))
+        except (TypeError, ValueError):
+            max_leases_parallel = 1
+
     target_inv = _target_inventory(run, arch, tasks)
     # Sink catalog truncation honesty (from recon inventory meta)
     seed_sinks_meta: dict[str, Any] = {}
@@ -690,6 +702,7 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         "run": {
             "max_tasks": max_tasks,
             "max_task_attempts": max_task_attempts,
+            "max_leases_parallel": max_leases_parallel,
         },
         "strategy": run_cfg.get("strategy"),
         "docs_path": run_cfg.get("docs_path"),

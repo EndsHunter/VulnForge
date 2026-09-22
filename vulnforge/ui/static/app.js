@@ -3019,6 +3019,211 @@ async function abortLiveTask() {
   }
 }
 
+/** @type {Map<string, string>} */
+const agentTeamNoteDrafts = new Map();
+let agentTeamBound = false;
+let agentTeamLiveTimer = null;
+/** @type {Array<string|number>} */
+let agentTeamLiveIds = [];
+let agentTeamClassesFilled = false;
+
+function classOptionId(item) {
+  if (typeof item === "string") return item.trim();
+  if (item && typeof item === "object") return String(item.id || item.class || "").trim();
+  return "";
+}
+
+function fillAgentTeamClasses(snap) {
+  const sel = document.getElementById("agent-team-class");
+  if (!sel || agentTeamClassesFilled) return;
+  const cat = (snap && snap.hunt_classes) || window.__VF_hunt_classes || {};
+  const ids = [];
+  for (const item of [...(cat.active || []), ...(cat.all || [])]) {
+    const id = classOptionId(item);
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  if (!ids.length) return;
+  if (!ids.includes("wildcard")) ids.unshift("wildcard");
+  const current = sel.value || "wildcard";
+  sel.innerHTML = ids
+    .map((id) => `<option value="${esc(id)}">${esc(id)}</option>`)
+    .join("");
+  if (ids.includes(current)) sel.value = current;
+  agentTeamClassesFilled = true;
+}
+
+function bindAgentTeamOnce() {
+  if (agentTeamBound) return;
+  const root = document.getElementById("agent-team");
+  if (!root) return;
+  agentTeamBound = true;
+  root.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("[data-agent-team-action]");
+    if (!btn || !root.contains(btn)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const action = btn.getAttribute("data-agent-team-action");
+    const id = btn.getAttribute("data-tid");
+    if (!id) return;
+    if (action === "pause") pauseTask(id);
+    else if (action === "halt") haltTask(id);
+    else if (action === "resume") resumePausedTask(id);
+    else if (action === "live") openLiveTask(id);
+    else if (action === "note") sendAgentTeamNote(id);
+  });
+  document.getElementById("agent-team-enqueue")?.addEventListener("submit", submitAgentTeamEnqueue);
+}
+
+function renderAgentTeam(snap) {
+  const helpers = globalThis.AgentTeamMap;
+  const root = document.getElementById("agent-team-body");
+  if (!root) return;
+  bindAgentTeamOnce();
+  if (!helpers || typeof helpers.buildAgentTeamMap !== "function") {
+    root.textContent = "Agent team map failed to load.";
+    return;
+  }
+  root.querySelectorAll("[data-agent-team-note]").forEach((el) => {
+    agentTeamNoteDrafts.set(String(el.getAttribute("data-agent-team-note")), el.value);
+  });
+  const focusId =
+    document.activeElement && document.activeElement.getAttribute
+      ? document.activeElement.getAttribute("data-agent-team-note")
+      : null;
+  const model = helpers.buildAgentTeamMap(snap || {});
+  root.innerHTML = helpers.renderAgentTeamHtml(model);
+  root.querySelectorAll("[data-agent-team-note]").forEach((el) => {
+    const id = String(el.getAttribute("data-agent-team-note"));
+    if (agentTeamNoteDrafts.has(id)) el.value = agentTeamNoteDrafts.get(id);
+  });
+  if (focusId) {
+    const again = root.querySelector(`[data-agent-team-note="${focusId}"]`);
+    if (again) {
+      const pos = again.value.length;
+      again.focus();
+      try {
+        again.setSelectionRange(pos, pos);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  const cap = document.getElementById("agent-team-cap");
+  if (cap) {
+    const n = model.cap === 1 ? "lease" : "leases";
+    cap.textContent = `${model.leasedCount} leased · ${model.cap} ${n}`;
+  }
+  fillAgentTeamClasses(snap);
+  scheduleAgentTeamLive(model);
+}
+
+function scheduleAgentTeamLive(model) {
+  const ids = []
+    .concat((model.slots || []).map((slot) => slot.task && slot.task.id))
+    .concat((model.overflow || []).map((task) => task.id))
+    .filter((id) => id != null);
+  agentTeamLiveIds = ids;
+  if (agentTeamLiveTimer) {
+    clearInterval(agentTeamLiveTimer);
+    agentTeamLiveTimer = null;
+  }
+  if (!ids.length) return;
+  const tick = () => pollAgentTeamLive(agentTeamLiveIds.slice());
+  tick();
+  agentTeamLiveTimer = setInterval(tick, 1500);
+}
+
+async function pollAgentTeamLive(ids) {
+  if (!currentKey || !ids.length) return;
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const data = await api(`${runApiBase()}/tasks/${encodeURIComponent(id)}/live`);
+        const el = document.querySelector(`[data-agent-team-live="${id}"]`);
+        if (!el || !agentTeamLiveIds.map(String).includes(String(id))) return;
+        const round = Number(data.round) || 0;
+        const maxRounds = Number(data.max_rounds) || 0;
+        const roundLabel = maxRounds > 0 ? `${round}/${maxRounds}` : String(round);
+        const tool = data.tool ? String(data.tool) : "";
+        const args = data.args_summary ? String(data.args_summary) : "";
+        el.textContent = tool
+          ? `Round ${roundLabel} · ${tool}${args ? " · " + args : ""}`
+          : `Round ${roundLabel} · waiting for the next tool`;
+      } catch {
+        /* leave the placeholder; the next full snapshot will refresh the slot */
+      }
+    })
+  );
+}
+
+async function sendAgentTeamNote(taskId) {
+  const id = Number(taskId);
+  if (!Number.isFinite(id) || id <= 0) {
+    toast("Invalid task id", true);
+    return;
+  }
+  const box = document.querySelector(`[data-agent-team-note="${id}"]`);
+  const note = (box && box.value ? box.value : "").trim();
+  if (!note) {
+    toast("Write a note first", true);
+    return;
+  }
+  const ok = window.confirm(
+    `Send this note into task #${id} on the next tool round?\n\n` +
+      `It is injected as an operator note. It does not confirm, reject, or edit findings.\n\n` +
+      note.slice(0, 500)
+  );
+  if (!ok) return;
+  try {
+    await api(`${runApiBase()}/tasks/${encodeURIComponent(id)}/steer/note`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    });
+    if (box) box.value = "";
+    agentTeamNoteDrafts.delete(String(id));
+    toast(`Note queued for task #${id}`);
+    pollAgentTeamLive([id]);
+  } catch (e) {
+    toast(e.message || String(e), true);
+  }
+}
+
+async function submitAgentTeamEnqueue(ev) {
+  ev.preventDefault();
+  const path = (document.getElementById("agent-team-path")?.value || "").trim();
+  const cls = document.getElementById("agent-team-class")?.value || "wildcard";
+  const notes = (document.getElementById("agent-team-enqueue-note")?.value || "").trim();
+  if (!path) {
+    toast("Path is required", true);
+    return;
+  }
+  const ok = window.confirm(
+    `Enqueue a ${cls} hunt on ${path}?\n\n` +
+      `This uses the same queue as Explorer. The note is stored on the task. It does not confirm a finding.` +
+      (notes ? `\n\n${notes.slice(0, 500)}` : "")
+  );
+  if (!ok) return;
+  try {
+    const r = await api(`${runApiBase()}/hunts/from-selection`, {
+      method: "POST",
+      body: JSON.stringify({
+        path,
+        attack_class: cls,
+        note: notes,
+        operator_notes: notes,
+      }),
+    });
+    toast(`Enqueued hunt #${r.task_id} on ${path}`);
+    const hint = document.getElementById("agent-team-enqueue-hint");
+    if (hint) hint.textContent = `Last enqueue: task #${r.task_id}`;
+    const noteBox = document.getElementById("agent-team-enqueue-note");
+    if (noteBox) noteBox.value = "";
+    if (typeof loadRunFull === "function") await loadRunFull();
+  } catch (e) {
+    toast(e.message || String(e), true);
+  }
+}
+
 function renderTasks(tasks) {
   const tb = $("#tasks-body");
   if (!tb) return;
@@ -5126,6 +5331,7 @@ async function loadRunFull() {
   window.refreshSnapshot = loadRunFull;
   window.__VF_max_task_attempts = Number(snap.max_task_attempts) || 3;
   renderRunner(snap.runner || {}, snap);
+  renderAgentTeam(snap);
   renderTasks(snap.tasks || []);
   renderArchitecture(snap.architecture, snap.architecture_summary, snap);
   renderExplorer();
@@ -5602,10 +5808,15 @@ document.addEventListener("DOMContentLoaded", () => {
     $("#btn-refresh")?.addEventListener("click", () =>
       loadRunFull().catch((e) => toast(e.message, true))
     );
+    bindAgentTeamOnce();
   }
 });
 
 window.addEventListener("beforeunload", () => {
+  if (agentTeamLiveTimer) {
+    clearInterval(agentTeamLiveTimer);
+    agentTeamLiveTimer = null;
+  }
   if (liveOfflineTimer) {
     clearTimeout(liveOfflineTimer);
     liveOfflineTimer = null;

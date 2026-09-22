@@ -53,4 +53,5 @@ Stage LLM packets load markdown from `seeds/system/` (with optional `config/prom
 | Enqueue / requeue ops | `vulnforge/control/ops.py` |
 | Packet builders | `vulnforge/packet.py` |
 | Package layout map | [docs/LAYOUT.md](../LAYOUT.md) |
+| Agent team map (lease holders + steer) | `vulnforge/ui/static/agent_team_map.js` on Tasks. Before / after: [validate/agent-team-map-before.png](validate/agent-team-map-before.png), [validate/agent-team-map-after.png](validate/agent-team-map-after.png) |
 | Topology / flow | [docs/AGENTS_MAP.md](../AGENTS_MAP.md) |

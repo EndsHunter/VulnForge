@@ -95,6 +95,12 @@ tasks may be `leased` at once. Dashboard Start spawns that many Ralph workers.
 
 LM Studio / the local server must accept concurrent chat completions for N>1 to help.
 
+The dashboard **Tasks** page shows an **Agent team** map: one slot per lease,
+who holds it (`lease_owner`, `vf-{pid}-{token}`), and the queued and paused
+tasks beside those slots. Pause, halt, resume, operator notes, and hunt
+enqueue on that map call the existing task and hunt routes. Ralph start/pause
+stays on the run bar. Recon / Hunt / Validate stay on Mission.
+
 ## Finding states
 
 ```

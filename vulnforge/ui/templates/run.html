@@ -251,6 +251,46 @@
         <button class="tab" data-tab="timeline" type="button" role="tab">Timeline</button>
       </div>
       <div class="tab-panel active" id="panel-tasks">
+        <section class="card agent-team" id="agent-team" aria-label="Agent team">
+          <div class="agent-team-head">
+            <div>
+              <h2 class="agent-team-title">Agent team</h2>
+              <p class="controls-hint">
+                Who holds each lease, plus queued and paused work.
+                Pause, halt, and operator notes ask before they change a task.
+                This is the worker map — separate from Ralph on the top bar and from Recon / Hunt / Validate on Mission.
+              </p>
+            </div>
+            <p class="agent-team-cap mono" id="agent-team-cap" aria-live="polite"></p>
+          </div>
+          <div id="agent-team-body">Loading leases…</div>
+          <form class="agent-team-enqueue" id="agent-team-enqueue">
+            <h3 class="agent-team-enqueue-title">Enqueue a hunt</h3>
+            <p class="controls-hint">
+              Same queue as Explorer and Hunts. The note is stored on the new task. It does not confirm a finding.
+            </p>
+            <div class="agent-team-enqueue-grid">
+              <label class="field">
+                <span class="field-label">Path</span>
+                <input id="agent-team-path" name="path" autocomplete="off" placeholder="app.py" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Class</span>
+                <select id="agent-team-class" name="attack_class">
+                  <option value="wildcard">wildcard</option>
+                </select>
+              </label>
+              <label class="field agent-team-enqueue-note">
+                <span class="field-label">Operator note</span>
+                <textarea id="agent-team-enqueue-note" name="operator_notes" rows="2" maxlength="4000" placeholder="What should this hunt look at?"></textarea>
+              </label>
+            </div>
+            <div class="task-prio-actions">
+              <button type="submit" class="btn btn-sm btn-primary" id="agent-team-enqueue-btn" data-confirm="1">Enqueue hunt</button>
+            </div>
+            <p class="controls-hint" id="agent-team-enqueue-hint" aria-live="polite"></p>
+          </form>
+        </section>
         <div class="card">
           <div class="toolbar" style="margin-bottom:0.5rem;align-items:flex-start">
             <div style="flex:1">
@@ -639,6 +679,7 @@
   <script src="/static/monaco_loader.js"></script>
   <script src="/static/run_nav.js"></script>
   <script src="/static/mission_overview_helpers.js"></script>
+  <script src="/static/agent_team_map.js"></script>
   <script src="/static/hitl_inbox.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/explorer.js"></script>

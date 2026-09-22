@@ -164,7 +164,7 @@ vf dashboard --host 127.0.0.1 --port 8787
 | **Explorer** | Browse target; enqueue class×path hunts |
 | **Report** | Findings review (accept / reject / develop PoC) |
 | **Evidence** | On-disk evidence packs |
-| **Tasks** | Queue, transcripts, event timeline |
+| **Tasks** | Agent-team lease map, queue, transcripts, event timeline |
 | **AI** | Run-bound co-pilot (mutating tools need Confirm) |
 | **Dev** | Hunt skills, recon agents, generate custom hunt skills (Home → `/dev`) |
 

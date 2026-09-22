@@ -30,6 +30,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Control-plane ops | `vulnforge/control/` |
 | Durable HITL inbox (report↔responses) | `vulnforge/hitl.py` + `hitl_reports` / `hitl_responses` in `harness.db`; doc: [`harness/validate/HITL.md`](harness/validate/HITL.md) |
 | Dashboard routes / static | `vulnforge/ui/` |
+| Live agent-team map (who holds each lease; pause / halt / note / enqueue) | `vulnforge/ui/static/agent_team_map.js` on the Tasks page. Not the Ralph bar. Not Mission lanes. |
 | Hunt profile store / reseed | `vulnforge/hunt_profiles/` |
 | Mechanical codemap (not architecture) | `vulnforge/tools/codemap.py` → `runs.codemap_json` (v2: modules + files + symbols; hunts get area slice) |
 | Sink residual coverage (per path:line:kind) | `db.sink_coverage_facts` + `tools/sink_preindex.record_sink_coverage`; Hunts cell detail |

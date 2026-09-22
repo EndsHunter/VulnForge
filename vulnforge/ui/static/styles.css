@@ -3523,6 +3523,192 @@ tr.task-row .task-actions-cell .btn {
 .live-task-steer-actions {
   flex-wrap: wrap;
 }
+
+/* Agent team: lease slots. Not Mission lane pills, not the Ralph bar. */
+.agent-team {
+  margin-bottom: 0.75rem;
+}
+.agent-team-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  align-items: flex-start;
+  margin-bottom: 0.75rem;
+}
+.agent-team-title {
+  margin: 0;
+}
+.agent-team-head .controls-hint {
+  margin: 0.35rem 0 0;
+  max-width: 68ch;
+}
+.agent-team-cap {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+.agent-team-slots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.65rem;
+  align-items: start;
+}
+.agent-team-slot {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.7rem 0.8rem;
+  background: var(--bg-inset);
+  min-width: 0;
+}
+.agent-team-slot.is-held {
+  border-color: var(--tone-leased-border);
+  background: color-mix(in srgb, var(--leased) 8%, var(--bg-inset));
+}
+.agent-team-slot.is-open {
+  border-style: dashed;
+  color: var(--muted);
+}
+.agent-team-slot-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.6rem;
+}
+.agent-team-slot-index {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+.agent-team-holder {
+  font-weight: 650;
+}
+.agent-team-presence {
+  font-size: 12px;
+  color: var(--text-cool);
+}
+.agent-team-owner,
+.agent-team-work,
+.agent-team-now,
+.agent-team-open {
+  margin: 0.35rem 0 0;
+  font-size: 13px;
+}
+.agent-team-owner {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-team-work,
+.agent-team-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.5rem;
+}
+.agent-team-label {
+  color: var(--text-soft);
+  min-width: 0;
+}
+.agent-team-now {
+  color: var(--text-cool-soft);
+  font-variant-numeric: tabular-nums;
+}
+.agent-team-note {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: flex-end;
+  margin-top: 0.55rem;
+}
+.agent-team-note textarea,
+.agent-team-enqueue textarea,
+.agent-team-enqueue input,
+.agent-team-enqueue select {
+  width: 100%;
+  box-sizing: border-box;
+}
+.agent-team-note textarea {
+  flex: 1 1 12rem;
+  min-height: 2.6rem;
+  margin: 0;
+}
+.agent-team-lists {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+}
+.agent-team-list,
+.agent-team-overflow {
+  min-width: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem 0.65rem;
+}
+.agent-team-overflow {
+  margin-top: 0.75rem;
+}
+.agent-team-list-title,
+.agent-team-enqueue-title {
+  margin: 0 0 0.45rem;
+  font-size: 13px;
+  font-weight: 650;
+}
+.agent-team-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.35rem 0.6rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--hairline);
+}
+.agent-team-row:first-of-type {
+  border-top: 0;
+}
+.agent-team-empty {
+  margin: 0;
+}
+.agent-team-enqueue {
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--hairline);
+}
+.agent-team-enqueue-grid {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1.1fr) minmax(8rem, 0.8fr) minmax(12rem, 1.8fr);
+  gap: 0.6rem;
+  align-items: end;
+}
+.agent-team-enqueue .field {
+  margin: 0;
+}
+.agent-team-enqueue textarea {
+  min-height: 2.6rem;
+}
+@media (max-width: 720px) {
+  .agent-team-lists,
+  .agent-team-enqueue-grid {
+    grid-template-columns: 1fr;
+  }
+  .agent-team-note {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .agent-team-note textarea {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+  .agent-team-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .agent-team-slot .task-prio-actions,
+  .agent-team-row .task-prio-actions {
+    width: 100%;
+  }
+}
 @media (max-width: 720px) {
   .live-task-steps li {
     grid-template-columns: 1fr;
