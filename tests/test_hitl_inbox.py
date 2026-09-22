@@ -425,8 +425,8 @@ def test_api_inbox_page_and_respond(tmp_path: Path, toy_sqli: Path):
     with TestClient(app) as client:
         page = client.get("/runs/toy/run-001")
         assert page.status_code == 200
-        assert 'id="hitl-inbox"' in page.text
-        assert 'id="hitl-inbox-report"' in page.text
+        assert 'id="hitl-inbox"' not in page.text
+        assert 'id="hitl-inbox-report"' not in page.text
         assert "/static/hitl_inbox.js" in page.text
 
         base = "/api/runs/toy/run-001"

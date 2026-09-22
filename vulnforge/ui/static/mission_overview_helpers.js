@@ -806,6 +806,7 @@
     huntTaskLabel,
     summarizeHuntQueue,
     listNeedsHumanFindings,
+    countFindingState,
     summarizeCoverageResidual,
     PIPELINE_DONE_STATES,
     PIPELINE_ACTIVE_STATES,

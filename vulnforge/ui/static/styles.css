@@ -1213,6 +1213,30 @@ button.cov-plan-action.is-current {
   justify-content: flex-start;
   gap: 0.5rem 1rem;
 }
+.mission-needs-review {
+  appearance: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--tone-human-border);
+  background: var(--tone-human-bg);
+  color: var(--warn);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mission-needs-review:hover {
+  border-color: var(--warn);
+}
+.mission-needs-review:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .arch-page-title {
   margin: 0;
   font-size: 1.15rem;

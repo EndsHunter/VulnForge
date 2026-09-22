@@ -43,7 +43,8 @@ The next read rewrites the projections from the database. A missing response key
 
 ## Surfaces
 
-- Mission and Report: **Awaiting review** inbox (survives reload).
+- Mission: light **needs review** indicator (jumps to Report with the Needs review filter).
+- Report: **Needs review** filter plus finding-row Accept / Reject. That is the human review UI; there is no second inbox section on Report.
 - Report Accept / Reject still calls human review and records the same response.
 - `vf hitl inbox|show|responses|respond|emit`
 

@@ -952,7 +952,7 @@
         <div class="finding-paths">${cites || '<span class="controls-hint">None</span>'}</div>
         <div class="report-review-panel">
           <h4>Human review</h4>
-          <p class="controls-hint">Mech can auto-reject; otherwise findings wait here and in the awaiting-review inbox. Accept, reject, or reclassify confirmed/rejected items. Notes are saved on the finding, under the evidence pack, and in the durable HITL responses store. Accept is the explicit human review that sets confirmed.</p>
+          <p class="controls-hint">Mech can auto-reject; otherwise findings wait here under Needs review. Accept, reject, or reclassify confirmed/rejected items. Notes are saved on the finding, under the evidence pack, and in the durable HITL responses store. Accept is the explicit human review that sets confirmed.</p>
           <label class="field-label" for="report-review-notes-${f.id}"><span class="label-text">Notes / supporting commentary</span></label>
           <textarea id="report-review-notes-${f.id}" class="op-notes report-review-notes" rows="3" placeholder="Why accept or reject? Links, residual risk, extra context…"></textarea>
           <label class="controls-hint report-review-ev-opt">
