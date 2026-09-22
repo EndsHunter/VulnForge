@@ -1108,6 +1108,49 @@ button.cov-plan-action.is-current {
   font-size: 13px;
   line-height: 1.45;
 }
+.cov-why {
+  margin: 0.15rem 0 0.75rem;
+  padding: 0.6rem 0.7rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 8%, var(--bg-elev));
+}
+.cov-why-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.cov-why h3 { margin: 0 !important; }
+.cov-why-abort {
+  margin: 0.45rem 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.cov-why-k {
+  display: inline-block;
+  margin-right: 0.4rem;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.cov-why-snippet {
+  margin: 0.45rem 0 0;
+  padding: 0.5rem 0.6rem;
+  max-height: 12rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.4;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.cov-why-empty { margin: 0.4rem 0 0; }
 .coverage-detail ul {
   margin: 0;
   padding-left: 1.15rem;

@@ -1398,7 +1398,7 @@
     return `${classCaption}
       <div class="coverage-wrap"><table class="coverage-grid">${head}${rows}</table></div>
       <p class="controls-hint" style="margin-top:0.5rem">
-        Click a cell for reasons and re-queue. Dimmed cells are outside the active filter.
+        Click a residual cell for why it is residual (abort reason or transcript snippet) and to re-queue. Dimmed cells are outside the active filter.
         Scroll horizontally when many hunt skills are in play.
       </p>`;
   }
@@ -1418,6 +1418,36 @@
         openCell(btn.getAttribute("data-area"), btn.getAttribute("data-class"));
       });
     });
+  }
+
+  function renderWhyResidual(data) {
+    const d = normDepth(data.last_depth);
+    const why = data.why || {};
+    if (!isResidual(d) && !why.residual) return "";
+    const abort = String(why.abort_reason || "").trim();
+    const snippet = String(why.snippet || "").trim();
+    const tid = why.task_id;
+    const hasT = !!why.has_transcript && tid != null;
+    const fullBtn = hasT
+      ? `<button type="button" class="btn btn-ghost btn-sm" id="cov-why-transcript" data-tid="${esc(String(tid))}">Full transcript</button>`
+      : "";
+    let body = "";
+    if (abort) {
+      body += `<p class="cov-why-abort"><span class="cov-why-k">Abort / outcome</span> ${esc(abort)}</p>`;
+    }
+    if (snippet) {
+      body += `<pre class="cov-why-snippet">${esc(snippet)}</pre>`;
+    }
+    if (!abort && !snippet) {
+      body += `<p class="controls-hint cov-why-empty">No abort reason or transcript yet. Re-queue with notes to send a hunter; the next residual visit shows why here.</p>`;
+    }
+    return `<section class="cov-why" aria-label="Why this cell is residual">
+      <div class="cov-why-head">
+        <h3>Why residual</h3>
+        ${fullBtn}
+      </div>
+      ${body}
+    </section>`;
   }
 
   function taskResultSummary(t) {
@@ -1555,10 +1585,8 @@
             <span class="controls-hint">${esc(sum)}</span>
             ${
               hasT
-                ? ""
-                : t.id
-                  ? `<button type="button" class="btn btn-ghost btn-sm cov-open-task" data-tid="${t.id}">Tasks</button>`
-                  : ""
+                ? `<button type="button" class="btn btn-ghost btn-sm cov-why-task" data-tid="${t.id}" title="Open the transcript here, without leaving Hunts">Transcript</button>`
+                : `<span class="controls-hint">no transcript</span>`
             }
             ${opBtns}
           </li>`;
@@ -1607,6 +1635,7 @@
           </div>
         </div>
         <p class="depth-blurb">${esc(data.depth_blurb || "")}</p>
+        ${renderWhyResidual(data)}
         <div class="field" style="margin:0.65rem 0">
           <label for="cov-op-notes"><span class="label-text">Notes for re-queue (optional)</span></label>
           <textarea id="cov-op-notes" class="op-notes" rows="3" placeholder="e.g. Focus on auth middleware; prior hunt missed rate limits."></textarea>
@@ -1761,17 +1790,11 @@
           window.VulnForgeModes?.goEvidence?.(pack);
         });
       });
-      detail.querySelectorAll(".cov-open-task").forEach((btn) => {
+      detail.querySelectorAll("#cov-why-transcript, .cov-why-task").forEach((btn) => {
         btn.addEventListener("click", () => {
-          window.VulnForgeModes?.setMode?.("audit", "tasks");
-          // Best-effort: highlight task if UI supports it later
           const tid = btn.getAttribute("data-tid");
           if (tid && typeof window.openTranscript === "function") {
-            try {
-              window.openTranscript(Number(tid));
-            } catch {
-              /* ignore */
-            }
+            window.openTranscript(Number(tid));
           }
         });
       });

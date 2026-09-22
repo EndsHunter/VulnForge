@@ -32,6 +32,7 @@ from vulnforge.task_priority import (
     recon_front_priority,
 )
 from vulnforge.tools.fs_read import list_dir as tool_list_dir, read_file as tool_read_file, resolve_target_path
+from vulnforge.transcript import list_transcript_ids, load_transcript
 from vulnforge.util import append_event, normalize_relpath
 
 # Mirrors vh/tools/grep_index.build_file_index sample window.
@@ -130,6 +131,169 @@ def depth_reason_text(depth: str) -> str:
     return DEPTH_BLURBS.get(d, DEPTH_BLURBS.get("", ""))
 
 
+# Residual matrix depths. Empty string is an unvisited cell.
+_RESIDUAL_DEPTHS = frozenset({"", "planned", "shallow", "none", "aborted"})
+_ABORT_ERRORS = frozenset({"max_tool_rounds", "no_submit", "aborted_scope"})
+_WHY_SNIPPET_CHARS = 520
+
+
+def _clip_text(text: str, limit: int) -> str:
+    t = str(text or "").strip()
+    if len(t) <= limit:
+        return t
+    return t[: limit - 1].rstrip() + "…"
+
+
+def _message_plain(message: dict) -> str:
+    """Flatten one transcript turn to plain text (content and/or tool names)."""
+    content = message.get("content")
+    parts: list[str] = []
+    if isinstance(content, str):
+        parts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                bit = block.get("text") or block.get("content") or ""
+                if bit:
+                    parts.append(str(bit))
+    names: list[str] = []
+    for tc in message.get("tool_calls") or []:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        name = fn.get("name") or tc.get("name")
+        if name:
+            names.append(str(name))
+    text = "\n".join(p.strip() for p in parts if str(p).strip())
+    if names and not text:
+        text = "tools: " + ", ".join(names)
+    if not text and message.get("name"):
+        text = f"tool {message.get('name')}"
+    return text
+
+
+def task_abort_reason(result: Optional[dict]) -> str:
+    """Operator-facing abort / none outcome for one hunt task result.
+
+    Empty when the task did not explain a residual (queued, filed a finding, …).
+    """
+    res = result if isinstance(result, dict) else {}
+    err = str(res.get("error") or "").strip()
+    aborted = (
+        bool(res.get("aborted_scope"))
+        or err in _ABORT_ERRORS
+        or "max_tool_rounds" in err
+    )
+    if aborted:
+        label = "max_tool_rounds" if "max_tool_rounds" in err else (err or "aborted_scope")
+        diag = res.get("diagnostics") if isinstance(res.get("diagnostics"), dict) else {}
+        cause = str(diag.get("likely_cause") or "").replace("_", " ").strip()
+        parts = [label]
+        if cause and cause.lower().replace(" ", "") not in label.lower().replace("_", ""):
+            parts.append(cause)
+        note = str(res.get("reason") or "").strip()
+        if note and note.lower() not in label.lower():
+            parts.append(_clip_text(note, 220))
+        return " — ".join(parts)
+    if res.get("none_found"):
+        reason = str(res.get("reason") or "submit_none").strip() or "submit_none"
+        tag = "shallow submit_none" if res.get("shallow") else "submit_none"
+        if res.get("shallow_requeued"):
+            tag += " (auto re-queued once)"
+        return f"{tag}: {reason}"
+    if err:
+        return err
+    return ""
+
+
+def transcript_why_snippet(
+    run_dir: Path, task_id: int, *, max_chars: int = _WHY_SNIPPET_CHARS
+) -> str:
+    """Short last-turn excerpt for a residual cell. Empty when no transcript."""
+    try:
+        data = load_transcript(Path(run_dir), int(task_id))
+    except (OSError, TypeError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    msgs = data.get("messages") or data.get("transcript") or []
+    if not isinstance(msgs, list):
+        return ""
+    # Prefer the hunter's last turns. The user packet is the assignment, not the why.
+    preferred: list[str] = []
+    fallback: list[str] = []
+    for message in reversed(msgs):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "msg")
+        if role == "system":
+            continue
+        text = _message_plain(message)
+        if not text:
+            continue
+        line = f"{role}: {_clip_text(text, 240)}"
+        if role in ("assistant", "tool"):
+            preferred.append(line)
+            if len(preferred) >= 2:
+                break
+        elif not fallback:
+            fallback.append(line)
+    lines = preferred or fallback
+    if not lines:
+        return ""
+    lines.reverse()
+    return _clip_text("\n".join(lines), max_chars)
+
+
+def _mark_task_transcripts(run_dir: Path, tasks: list[dict[str, Any]]) -> None:
+    if not tasks:
+        return
+    try:
+        have = set(list_transcript_ids(run_dir))
+    except OSError:
+        have = set()
+    for task in tasks:
+        try:
+            task["has_transcript"] = int(task["id"]) in have
+        except (TypeError, ValueError):
+            task["has_transcript"] = False
+
+
+def _pick_why_task(tasks: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Newest task that explains residual; else newest transcript; else newest."""
+    for task in reversed(tasks):
+        if task_abort_reason(task.get("result")):
+            return task
+    for task in reversed(tasks):
+        if task.get("has_transcript"):
+            return task
+    return tasks[-1] if tasks else None
+
+
+def cell_why(run_dir: Path, last_depth: str, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Abort reason and/or transcript snippet for one coverage cell."""
+    task = _pick_why_task(tasks)
+    abort = task_abort_reason(task.get("result") if task else None)
+    tid = task.get("id") if task else None
+    has_t = bool(task and task.get("has_transcript"))
+    snippet = ""
+    if has_t and tid is not None:
+        try:
+            snippet = transcript_why_snippet(run_dir, int(tid))
+        except (TypeError, ValueError):
+            snippet = ""
+    depth = str(last_depth or "").lower().strip()
+    return {
+        "residual": depth in _RESIDUAL_DEPTHS,
+        "task_id": tid,
+        "abort_reason": abort,
+        "snippet": snippet,
+        "has_transcript": has_t,
+    }
+
+
 def _tasks_for_cell(db: Database, area: str, attack_class: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for t in db.list_tasks(limit=2000):
@@ -148,7 +312,7 @@ def _tasks_for_cell(db: Database, area: str, attack_class: str) -> list[dict[str
                 "attempt": t.attempt,
                 "payload": p,
                 "result": res,
-                "has_transcript": False,  # filled by caller if needed
+                "has_transcript": False,  # filled in cell_detail from transcripts/
             }
         )
     return out
@@ -201,7 +365,9 @@ def cell_detail(run_dir: Path, area: str, attack_class: str) -> dict[str, Any]:
             int(f.get("visit_count") or 0) for f in facts
         )
         tasks = _tasks_for_cell(db, area, attack_class)
+        _mark_task_transcripts(run_dir, tasks)
         findings = _findings_for_cell(db, area, attack_class)
+        why = cell_why(run_dir, str(last_depth or ""), tasks)
 
         # Build human reasons from latest task outcomes
         reasons: list[str] = [depth_reason_text(str(last_depth or ""))]
@@ -271,6 +437,7 @@ def cell_detail(run_dir: Path, area: str, attack_class: str) -> dict[str, Any]:
             "visit_count": visit_count,
             "depth_blurb": depth_reason_text(str(last_depth or "")),
             "reasons": uniq_reasons,
+            "why": why,
             "facts": facts,
             "path_hints": path_hints[:40],
             "tasks": tasks[-20:],  # recent-ish by id order
