@@ -38,6 +38,8 @@ Campaign hunt/recon models do **not** read these files. They see `seeds/system/`
 - [`superpowers/`](superpowers/)
 - [`vulnforge/docs/plans/`](../vulnforge/docs/plans/)
 
+Harness spikes (decision records, not product truth until wired): [`harness/spikes/`](harness/spikes/).
+
 ## Authority
 
 | Authoritative | Not authoritative |
