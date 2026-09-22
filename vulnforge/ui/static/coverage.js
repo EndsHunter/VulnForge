@@ -1388,7 +1388,7 @@
             if (!interactive) {
               return `<td class="${dim}"><span class="cov-cell ${cls}" title="${tip}"><span class="cov-main">${esc(lab.main)}</span><span class="cov-sub">${esc(lab.sub)}</span></span></td>`;
             }
-            return `<td class="${dim}"><button type="button" class="cov-cell ${cls} cov-click${sel}" data-area="${esc(a)}" data-class="${esc(cl)}" title="${tip}"><span class="cov-main">${esc(lab.main)}</span><span class="cov-sub">${esc(lab.sub)}</span></button></td>`;
+            const moaChip = moaChipForCell(a, cl, opts.snap); return `<td class="${dim}"><button type="button" class="cov-cell ${cls} cov-click${sel}" data-area="${esc(a)}" data-class="${esc(cl)}" title="${tip}"><span class="cov-main">${esc(lab.main)}</span><span class="cov-sub">${esc(lab.sub)}</span>${moaChip}</button></td>`;
           })
           .join("");
         return `<tr><td class="row-head mono" title="${esc(a)}">${esc(a)}</td>${cells}</tr>`;
@@ -1420,9 +1420,63 @@
     });
   }
 
+
+  function moaChipForCell(area, cls, snap) {
+    const H = window.ReportHuntMoa;
+    if (!H || typeof H.normalizeRequeueNote !== "function") return "";
+    const findings = (snap && snap.findings) || [];
+    for (const f of findings) {
+      const b = f.body || {};
+      if (String(b.area || "") !== String(area)) continue;
+      if (b.weakness_class && String(b.weakness_class) !== String(cls)) continue;
+      const m = H.huntMoaMeta(f);
+      if (m && m.requeue_note) {
+        const short =
+          m.requeue_note === "all_perspectives_none"
+            ? "all perspectives none"
+            : m.requeue_note === "partial_none"
+              ? "partial none"
+              : m.requeue_note;
+        return `<span class="cov-moa-chip" title="${esc(
+          H.REQUEUE_LABELS[m.requeue_note] || short
+        )}">${esc(short)}</span>`;
+      }
+    }
+    // Task results may carry hunt_moa when there is no finding (all none)
+    const tasks = (snap && snap.tasks) || [];
+    for (const t of tasks) {
+      const p = t.payload || {};
+      if (String(p.area || "") !== String(area)) continue;
+      if (String(p.class || p.attack_class || "") !== String(cls)) continue;
+      const res = t.result || {};
+      const raw =
+        res.requeue_note ||
+        (res.hunt_moa && res.hunt_moa.requeue_note) ||
+        "";
+      const key = H.normalizeRequeueNote(raw);
+      if (!key) continue;
+      const short =
+        key === "all_perspectives_none"
+          ? "all perspectives none"
+          : key === "partial_none"
+            ? "partial none"
+            : key;
+      return `<span class="cov-moa-chip" title="${esc(
+        H.REQUEUE_LABELS[key] || short
+      )}">${esc(short)}</span>`;
+    }
+    return "";
+  }
+
   function renderWhyResidual(data) {
     const d = normDepth(data.last_depth);
     const why = data.why || {};
+    const moaNote =
+      (isResidual(d) || why.residual) &&
+      window.ReportHuntMoa &&
+      typeof window.ReportHuntMoa.cellRequeueNoteHtml === "function"
+        ? window.ReportHuntMoa.cellRequeueNoteHtml(data.findings || [], data.tasks || [])
+        : "";
     if (!isResidual(d) && !why.residual) return "";
     const abort = String(why.abort_reason || "").trim();
     const snippet = String(why.snippet || "").trim();
@@ -1438,7 +1492,10 @@
     if (snippet) {
       body += `<pre class="cov-why-snippet">${esc(snippet)}</pre>`;
     }
-    if (!abort && !snippet) {
+    if (moaNote) {
+      body += moaNote;
+    }
+    if (!abort && !snippet && !moaNote) {
       body += `<p class="controls-hint cov-why-empty">No abort reason or transcript yet. Re-queue with notes to send a hunter; the next residual visit shows why here.</p>`;
     }
     return `<section class="cov-why" aria-label="Why this cell is residual">
@@ -1635,6 +1692,12 @@
           </div>
         </div>
         <p class="depth-blurb">${esc(data.depth_blurb || "")}</p>
+        ${
+          window.ReportHuntMoa && typeof window.ReportHuntMoa.cellRequeueNoteHtml === "function"
+            && !isResidual(d)
+            ? window.ReportHuntMoa.cellRequeueNoteHtml(data.findings || [], data.tasks || [])
+            : ""
+        }
         ${renderWhyResidual(data)}
         <div class="field" style="margin:0.65rem 0">
           <label for="cov-op-notes"><span class="label-text">Notes for re-queue (optional)</span></label>

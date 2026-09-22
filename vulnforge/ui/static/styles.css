@@ -5517,6 +5517,51 @@ button.llm-usage-task:focus-visible {
   border-color: rgba(122, 162, 247, 0.35);
   background: rgba(122, 162, 247, 0.1);
 }
+
+/* Hunt MoA provenance — muted agree label (agreement ≠ confirm) */
+.badge.hunt-moa-agree {
+  color: var(--muted);
+  border-color: var(--tone-muted-border);
+  background: var(--tone-muted-bg);
+  font-weight: 500;
+}
+.report-hunt-moa {
+  margin: 0.75rem 0 1rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--tone-muted-border);
+  border-radius: 8px;
+  background: var(--tone-muted-bg);
+}
+.report-hunt-moa h4 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+}
+.report-hunt-moa-list {
+  margin: 0.4rem 0 0.2rem;
+  padding-left: 1.1rem;
+}
+.report-hunt-moa-slot {
+  margin: 0.2rem 0;
+}
+.report-hunt-moa-slot .controls-hint {
+  display: inline;
+  margin-left: 0.25rem;
+}
+.cov-moa-requeue {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.cov-cell .cov-moa-chip,
+button.cov-click .cov-moa-chip {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
 .report-llm-verify {
   margin: 0.75rem 0 1rem;
   padding: 0.65rem 0.75rem;
