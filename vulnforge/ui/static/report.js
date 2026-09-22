@@ -307,7 +307,50 @@
     }
   }
 
+  function nearDupFilterActive() {
+    const ftr = (filter || "all").toLowerCase();
+    return ftr === "near_dup" || ftr === "overlaps";
+  }
+
+  function clusterMetaForId(id) {
+    if (id == null || id === "") return null;
+    return (
+      clusterByFinding[id] ||
+      clusterByFinding[Number(id)] ||
+      clusterByFinding[String(id)] ||
+      null
+    );
+  }
+
+  /** Group key so near-dup filter rows from one overlap sit together. */
+  function nearDupGroupKey(f) {
+    const cm = clusterMetaForId(f && f.id);
+    if (cm && cm.cluster_id) return "c:" + cm.cluster_id;
+    const keeper = bodyOf(f).superseded_by;
+    if (keeper != null && keeper !== "") {
+      const km = clusterMetaForId(keeper);
+      if (km && km.cluster_id) return "c:" + km.cluster_id;
+      return "k:" + keeper;
+    }
+    const b = bodyOf(f);
+    const sink = primaryPath(f);
+    let symbol = String(b.sink_symbol || "").trim();
+    if (!symbol) {
+      const cites = b.citations || [];
+      if (cites[0] && cites[0].symbol) symbol = String(cites[0].symbol).trim();
+    }
+    if (sink && sink.path && symbol) {
+      return "s:" + String(sink.path) + "|" + symbol.toLowerCase();
+    }
+    return "id:" + (f && f.id);
+  }
+
   function compareFindings(a, b) {
+    if (nearDupFilterActive()) {
+      const ga = nearDupGroupKey(a);
+      const gb = nearDupGroupKey(b);
+      if (ga !== gb) return ga < gb ? -1 : 1;
+    }
     const dir = sortDir === "desc" ? -1 : 1;
     const key = sortKey || "state";
     let cmp = 0;
@@ -457,15 +500,7 @@
         <button type="button" class="stat warn stat-link${active("near_dup")}" data-rfilter="near_dup" title="Filter: near-dup / overlaps" aria-pressed="${ftr === "near_dup"}">
           <div class="label">Near-dup</div><div class="value">${c.near_dup}</div>
         </button>
-      </div>
-      <p class="controls-hint report-disclaimer">
-        Click a count to filter the table.
-        <strong>Needs review</strong> = mechanical gates passed (optional LLM disprove did not kill).
-        <strong>Accepted</strong> = human accepted — still not exploit proof.
-        Row badges follow proposed → mech → disprove stood or rejected → needs human / human accepted or rejected.
-        <strong>Human accepted</strong> is the only confirmed state — never an LLM self-grade, never auto.
-        Use checkboxes to build <strong>attack chains</strong>.
-      </p>`;
+      </div>`;
     el.querySelectorAll("[data-rfilter]").forEach((btn) => {
       btn.addEventListener("click", () => {
         setFilter(btn.getAttribute("data-rfilter") || "all");
@@ -818,89 +853,7 @@
             .join("")}</ul></details>`
         : "";
     const cm = clusterByFinding[f.id];
-    const cluster = cm
-      ? clustersCache.find((c) => c.cluster_id === cm.cluster_id)
-      : null;
-    const mergedClasses = b.merged_classes || [];
-    const nearTitles = b.near_dup_titles || [];
-    const supersededBy = b.superseded_by;
-    const relatedHtml = cluster
-      ? `<div class="report-related-panel">
-          <h4>Related variants <span class="badge near-dup">${esc(cluster.strength || "overlap")}</span>
-            <span class="controls-hint mono">cluster ${esc(cluster.cluster_id)} · primary #${cluster.primary_id}</span>
-          </h4>
-          <ul class="report-related-list">${(cluster.members || [])
-            .map((m) => {
-              const isSelf = Number(m.id) === Number(f.id);
-              const isPrimary = Number(m.id) === Number(cluster.primary_id);
-              return `<li class="report-related-item${isSelf ? " self" : ""}">
-                <span class="badge info mono">${esc(m.label)}</span>
-                <button type="button" class="btn btn-ghost btn-sm report-open-related" data-fid="${m.id}" ${
-                  isSelf ? "disabled" : ""
-                }>#${m.id}</button>
-                <span class="mono">${esc(m.class || "-")}</span>
-                ${badge(m.state, m)}
-                <span class="report-related-title">${esc(m.title || "")}</span>
-                ${
-                  !isSelf && !isPrimary && f.state !== "superseded"
-                    ? `<button type="button" class="btn btn-sm report-merge-into" data-keep="${cluster.primary_id}" data-drop="${m.id}" title="Supersede this variant into primary">Merge into primary</button>`
-                    : ""
-                }
-                ${
-                  isSelf && !isPrimary && f.state !== "superseded"
-                    ? `<button type="button" class="btn btn-sm btn-primary report-merge-into" data-keep="${cluster.primary_id}" data-drop="${f.id}" title="Supersede this finding into cluster primary">Merge this into primary</button>`
-                    : ""
-                }
-              </li>`;
-            })
-            .join("")}</ul>
-          <div class="report-related-actions">
-          ${
-            Number(f.id) === Number(cluster.primary_id) &&
-            (cluster.members || []).some((m) => Number(m.id) !== Number(f.id) && m.state !== "superseded")
-              ? `<button type="button" class="btn btn-sm report-merge-all" data-keep="${cluster.primary_id}" data-drops="${(cluster.members || [])
-                  .filter((m) => Number(m.id) !== Number(cluster.primary_id))
-                  .map((m) => m.id)
-                  .join(",")}" title="Supersede all other variants into primary">Merge all variants into primary</button>`
-              : ""
-          }
-          <button type="button" class="btn btn-sm report-ask-ai-cluster" data-cluster="${esc(
-            cluster.cluster_id || ""
-          )}" title="Open AI chat with a compare prompt for this near-dup cluster">Ask AI</button>
-          </div>
-          <p class="controls-hint">Merge marks drop as <span class="mono">superseded</span> and annotates keeper — does not change keeper state / never auto-confirms. Ask AI opens the AI tab with a compare draft (not sent until you press Send).</p>
-        </div>`
-      : "";
-    const mergeMeta =
-      mergedClasses.length || nearTitles.length || supersededBy != null
-        ? `<div class="report-merge-meta">
-            <h4>Merge metadata</h4>
-            <div class="kv">
-              ${
-                supersededBy != null
-                  ? `<div class="k">superseded_by</div><div class="v"><button type="button" class="btn btn-ghost btn-sm report-open-related" data-fid="${esc(
-                      String(supersededBy)
-                    )}">#${esc(String(supersededBy))}</button></div>`
-                  : ""
-              }
-              ${
-                mergedClasses.length
-                  ? `<div class="k">merged_classes</div><div class="v mono">${esc(
-                      mergedClasses.join(", ")
-                    )}</div>`
-                  : ""
-              }
-              ${
-                nearTitles.length
-                  ? `<div class="k">near_dup_titles</div><div class="v">${nearTitles
-                      .map((t) => `<div class="controls-hint">${esc(t)}</div>`)
-                      .join("")}</div>`
-                  : ""
-              }
-            </div>
-          </div>`
-        : "";
-    const nearBadge = f.near_dup || cluster
+    const nearBadge = f.near_dup || cm
       ? `<span class="badge near-dup" title="Near-duplicate / overlap">near-dup${
           cm && cm.label ? " " + esc(cm.label) : ""
         }</span>`
@@ -927,8 +880,6 @@
         <p class="report-detail-summary">${esc(b.summary || "No summary.")}</p>
         ${rejectBox}
         ${llmDetail}
-        ${relatedHtml}
-        ${mergeMeta}
         <div class="report-detail-grid">
           <div>
             <h4>Threat model</h4>
@@ -1817,6 +1768,8 @@
       updateSortHeaders();
       return;
     }
+    const grouping = nearDupFilterActive();
+    let prevGroup = "";
     tbody.innerHTML = rows
       .map((f) => {
         const b = bodyOf(f);
@@ -1831,7 +1784,12 @@
             : "";
         const llmBadge = llmVerifyBadge(f);
         const checked = selectedIds.has(Number(f.id)) ? " checked" : "";
-        return `<tr class="report-row${open ? " open" : ""}${f.near_dup || cm ? " near-dup-row" : ""}" data-fid="${f.id}" tabindex="0">
+        const group = grouping ? nearDupGroupKey(f) : "";
+        const groupStart = grouping && group !== prevGroup;
+        prevGroup = group;
+        const groupClass = groupStart ? " near-dup-cluster-start" : "";
+        const groupAttr = grouping ? ` data-near-group="${esc(group)}"` : "";
+        return `<tr class="report-row${open ? " open" : ""}${f.near_dup || cm ? " near-dup-row" : ""}${groupClass}" data-fid="${f.id}"${groupAttr} tabindex="0">
           <td class="report-check-cell" onclick="event.stopPropagation()">
             <input type="checkbox" class="report-select-cb" data-fid="${f.id}" aria-label="Select finding ${f.id}"${checked} />
           </td>
@@ -1839,7 +1797,7 @@
           <td class="report-title-cell">${esc(b.title || f.stable_key || "-")} ${near} ${llmBadge}</td>
           <td><span class="mono">${esc(b.weakness_class || "-")}</span></td>
           <td>${sevBadge(f.severity || b.severity_claim || "unknown")}</td>
-          <td class="report-state-cell">${stateTrailHtml(f)}</td>
+          <td class="report-state-cell">${badge(f.state, f)}</td>
           <td class="mono report-path-cell" title="${esc(pathLabel(p))}">${esc(pathLabel(p))}</td>
           <td class="report-row-action">${open ? "Open" : "Details"}</td>
         </tr>`;

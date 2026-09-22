@@ -2613,7 +2613,6 @@ button.arch-campaign-funnel-step:focus-visible {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
 }
-.report-disclaimer { margin: 0.25rem 0 0; }
 .report-table-card { padding: 0.75rem 0.85rem 1rem; }
 .report-table { width: 100%; }
 .report-table th:last-child,
@@ -5574,6 +5573,12 @@ button.llm-usage-task:focus-visible {
 .report-row.near-dup-row {
   box-shadow: inset 3px 0 0 rgba(240, 180, 41, 0.55);
 }
+#report-tbody > tr.report-row.near-dup-cluster-start > td {
+  border-top: 2px solid rgba(240, 180, 41, 0.55);
+}
+#report-tbody > tr.report-row.near-dup-cluster-start:first-child > td {
+  border-top: 0;
+}
 .report-panel-head {
   display: flex;
   flex-wrap: wrap;
@@ -6132,8 +6137,6 @@ button.llm-usage-task:focus-visible {
 .report-shell[data-review-page="evidence"] .report-search-bar,
 .report-shell[data-review-page="detail"] #report-summary,
 .report-shell[data-review-page="evidence"] #report-summary,
-.report-shell[data-review-page="detail"] .report-clusters-card,
-.report-shell[data-review-page="evidence"] .report-clusters-card,
 .report-shell[data-review-page="detail"] .report-chains-card,
 .report-shell[data-review-page="evidence"] .report-chains-card,
 .report-shell[data-review-page="detail"] .report-raw-card,

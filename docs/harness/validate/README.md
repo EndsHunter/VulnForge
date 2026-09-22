@@ -95,7 +95,7 @@ Report → Develop POC: **Run in harness** / **Export validation job**. Workshop
 
 | Surface | Action |
 |---------|--------|
-| Report | Accept / Reject / Needs review; notes; Open Evidence; Ask AI on near-dups |
+| Report | Accept / Reject / Needs review; notes; Open Evidence |
 | Report → Develop POC | Hub + develop_poc; harness run; export validation job |
 | Evidence | Browse packs (`poc_run.json` after validate_poc) |
 
