@@ -72,10 +72,38 @@ function stateLabel(state, finding) {
   return STATE_LABELS[s] || state || "idle";
 }
 
+/** Hover copy for finding-state badges. Confirmed stays human-only. */
+const STATE_TIPS = {
+  needs_human:
+    "Mechanical gates passed. Waiting for a human. Not confirmed.",
+  candidate:
+    "Proposed candidate. Mechanical gates have not passed. Not confirmed.",
+  confirmed:
+    "Confirmed is human-only. An operator accepted this finding. The harness never auto-confirms. An LLM stand or self-grade is not confirmed.",
+  rejected_mech:
+    "Mechanical gates rejected this finding. Not a human decision.",
+  rejected_llm:
+    "LLM disprove rejected this finding. Not a human confirm. The harness never auto-confirms.",
+  rejected_human: "A human rejected this finding. Not an LLM self-grade.",
+  superseded: "Superseded by another finding. Not confirmed.",
+};
+
+function stateTip(state, finding) {
+  const s = (state || "idle").toLowerCase();
+  if (s === "needs_human" && finding) {
+    const b = finding.body || {};
+    if (b.validation_mech?.pending_llm) {
+      return "Dual LLM disprove is still running. Pending is not confirmed. The harness never auto-confirms.";
+    }
+  }
+  return STATE_TIPS[s] || STATE_LABELS[s] || s;
+}
+
 function badge(state, finding) {
   const s = (state || "idle").toLowerCase();
   const label = stateLabel(s, finding);
-  return `<span class="badge ${esc(s)}" title="${esc(s)}">${esc(label)}</span>`;
+  const tip = stateTip(s, finding);
+  return `<span class="badge ${esc(s)}" title="${esc(tip)}">${esc(label)}</span>`;
 }
 
 /** Humanize validate_mech / validate_llm reason codes for operator UI. */
@@ -155,7 +183,9 @@ function formatValidationReasonsHtml(finding, { heading } = {}) {
 }
 
 window.STATE_LABELS = STATE_LABELS;
+window.STATE_TIPS = STATE_TIPS;
 window.stateLabel = stateLabel;
+window.stateTip = stateTip;
 window.humanizeValidationReason = humanizeValidationReason;
 window.validationReasonsOf = validationReasonsOf;
 window.formatValidationReasonsHtml = formatValidationReasonsHtml;
@@ -906,6 +936,10 @@ function wireInitHelpTips() {
 }
 
 /** Immediate hover tips for Mission funnel stages and who/why-paused bits. */
+window.showInitFloatingTip = showInitFloatingTip;
+window.hideInitFloatingTip = hideInitFloatingTip;
+window.wireFloatingTipViewport = wireFloatingTipViewport;
+
 function wireMissionHoverTips() {
   const root = $("#arch-panel");
   if (!root || root.dataset.tipsWired === "1") return;

@@ -2577,6 +2577,51 @@ button.arch-campaign-funnel-step:focus-visible {
   font-size: 12px;
   font-weight: 600;
 }
+.report-state-cell { min-width: 14rem; }
+.report-state-trail {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.16rem 0.1rem;
+  max-width: 38rem;
+}
+.report-state-arrow {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  user-select: none;
+}
+.report-state-step {
+  padding: 0.12rem 0.42rem;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  cursor: help;
+}
+.report-state-step.is-current {
+  box-shadow: 0 0 0 1px currentColor;
+}
+/* Mech pass and disprove-stood stay off the green confirmed tone. */
+.badge.step-pass {
+  color: var(--info);
+  border-color: var(--tone-info-border);
+  background: var(--tone-info-bg);
+}
+.badge.step-stood {
+  color: #9db7f5;
+  border-color: rgba(122, 162, 247, 0.45);
+  background: rgba(122, 162, 247, 0.12);
+}
+.badge.step-done {
+  color: var(--text-soft);
+  border-color: var(--border);
+  background: transparent;
+}
+.badge.step-wait,
+.badge.step-off {
+  color: var(--muted);
+  border-style: dashed;
+  background: transparent;
+}
 .report-detail {
   margin-top: 0.85rem;
   padding: 0.85rem 1rem;

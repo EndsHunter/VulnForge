@@ -69,7 +69,18 @@
     const s = String(state || "").toLowerCase();
     let label = s;
     if (typeof window.stateLabel === "function") label = window.stateLabel(s, finding);
-    return `<span class="badge ${esc(s)}" title="${esc(s)}">${esc(label)}</span>`;
+    const tip =
+      typeof window.stateTip === "function" ? window.stateTip(s, finding) : s;
+    return `<span class="badge ${esc(s)}" title="${esc(tip)}">${esc(label)}</span>`;
+  }
+
+  /** Progression trail for a finding row. Falls back to the single state badge. */
+  function stateTrailHtml(f) {
+    const H = window.ReportStateBadges;
+    if (H && typeof H.findingStateTrailHtml === "function") {
+      return H.findingStateTrailHtml(f);
+    }
+    return badge(f && f.state, f);
   }
 
   function sevBadge(sev) {
@@ -158,19 +169,34 @@
   function llmVerifyBadge(f) {
     const m = llmVerifyMeta(f);
     if (!m) return "";
+    const llm = bodyOf(f).validation_llm;
+    const signal =
+      window.ReportStateBadges && typeof window.ReportStateBadges.llmSignal === "function"
+        ? window.ReportStateBadges.llmSignal(llm)
+        : null;
     let tone = "llm-verify-mid";
-    if (m.stood <= 0) tone = "llm-verify-none";
-    else if (m.stood >= m.total) tone = "llm-verify-all";
+    let word = m.stood <= 0 ? "disprove rejected" : "disprove stood";
+    let title =
+      "LLM disprove signal — not exploit proof and not confirmed. Confirmed is human-only. The harness never auto-confirms.";
+    if (signal) {
+      tone = signal.tone || tone;
+      word = signal.word || word;
+      title = signal.title || title;
+    } else if (m.stood <= 0) {
+      tone = "llm-verify-none";
+    } else if (m.stood >= m.total) {
+      tone = "llm-verify-all";
+    }
     const multi =
       f?.body?.validation_llm?.multi_model_label ||
       f?.body?.validation_llm?.multi_model?.label ||
       "";
-    const title =
-      "LLM verifiers that could not disprove (stand) / total — not exploit proof" +
-      (multi ? ` · ${multi}` : "");
-    return `<span class="badge llm-verify ${tone}" title="${esc(title)}">${esc(
-      m.label
-    )} llm survived${multi ? " · " + esc(String(multi)) : ""}</span>`;
+    if (multi) title += ` · ${multi}`;
+    return `<span class="badge llm-verify ${tone}" title="${esc(title)}" data-tip="${esc(
+      title
+    )}" tabindex="0">${esc(m.label)} ${esc(word)}${
+      multi ? " · " + esc(String(multi)) : ""
+    }</span>`;
   }
 
   function llmVerifyDetailHtml(f) {
@@ -192,9 +218,18 @@
         </details>`;
       })
       .join("");
+    const signal =
+      window.ReportStateBadges && typeof window.ReportStateBadges.llmSignal === "function"
+        ? window.ReportStateBadges.llmSignal(bodyOf(f).validation_llm)
+        : null;
+    const word = signal
+      ? signal.word
+      : m.stood <= 0
+        ? "disprove rejected"
+        : "disprove stood";
     return `<div class="report-llm-verify">
-      <h4>LLM disprove <span class="badge llm-verify">${esc(m.label)} llm survived</span></h4>
-      <p class="controls-hint">Each verifier tries to <strong>disprove</strong> the finding. Score = how many returned <span class="mono">stand</span> (could not kill). All slots must <span class="mono">reject</span> for auto <span class="mono">rejected_llm</span>. Not exploit proof.</p>
+      <h4>LLM disprove <span class="badge llm-verify">${esc(m.label)} ${esc(word)}</span></h4>
+      <p class="controls-hint">Each verifier tries to <strong>disprove</strong> the finding. Score = how many returned <span class="mono">stand</span> (could not kill). All slots must <span class="mono">reject</span> for auto <span class="mono">rejected_llm</span>. Not exploit proof. Stand is not confirmed — confirmed is human-only.</p>
       ${rows}
     </div>`;
   }
@@ -427,7 +462,8 @@
         Click a count to filter the table.
         <strong>Needs review</strong> = mechanical gates passed (optional LLM disprove did not kill).
         <strong>Accepted</strong> = human accepted — still not exploit proof.
-        Badges: <span class="mono">Rejected (mechanical)</span> / <span class="mono">Rejected (disprove)</span> / <span class="mono">Pending disprove</span>.
+        Row badges follow proposed → mech → disprove stood or rejected → needs human / human accepted or rejected.
+        <strong>Human accepted</strong> is the only confirmed state — never an LLM self-grade, never auto.
         Use checkboxes to build <strong>attack chains</strong>.
       </p>`;
     el.querySelectorAll("[data-rfilter]").forEach((btn) => {
@@ -567,7 +603,7 @@
         <div class="report-detail-head">
           <h3>${esc(b.title || f.stable_key || "Finding #" + f.id)}</h3>
           <div class="report-detail-badges">
-            ${badge(f.state, f)}
+            ${stateTrailHtml(f)}
             ${sevBadge(f.severity || b.severity_claim || "unknown")}
             <span class="mono">#${f.id}</span>
           </div>
@@ -881,7 +917,7 @@
         <div class="report-detail-head">
           <h3>${esc(b.title || f.stable_key || "Finding #" + f.id)}</h3>
           <div class="report-detail-badges">
-            ${badge(f.state, f)}
+            ${stateTrailHtml(f)}
             ${sevBadge(f.severity || b.severity_claim || "unknown")}
             <span class="badge info">${esc(b.weakness_class || "-")}</span>
             ${nearBadge}
@@ -1803,7 +1839,7 @@
           <td class="report-title-cell">${esc(b.title || f.stable_key || "-")} ${near} ${llmBadge}</td>
           <td><span class="mono">${esc(b.weakness_class || "-")}</span></td>
           <td>${sevBadge(f.severity || b.severity_claim || "unknown")}</td>
-          <td>${badge(f.state, f)}</td>
+          <td class="report-state-cell">${stateTrailHtml(f)}</td>
           <td class="mono report-path-cell" title="${esc(pathLabel(p))}">${esc(pathLabel(p))}</td>
           <td class="report-row-action">${open ? "Open" : "Details"}</td>
         </tr>`;
@@ -2667,8 +2703,49 @@
     );
   }
 
+  function wireReportStateTips() {
+    const root = $("#panel-report");
+    if (!root || root.dataset.stateTipsWired === "1") return;
+    if (typeof window.showInitFloatingTip !== "function") return;
+    root.dataset.stateTipsWired = "1";
+    if (typeof window.wireFloatingTipViewport === "function") {
+      window.wireFloatingTipViewport();
+    }
+    const anchorOf = (target) => {
+      const el = target && target.closest?.("[data-tip]");
+      if (!el || !root.contains(el)) return null;
+      if (!el.classList.contains("report-state-step") && !el.classList.contains("llm-verify")) {
+        return null;
+      }
+      return el;
+    };
+    root.addEventListener("mouseover", (e) => {
+      const el = anchorOf(e.target);
+      if (el) window.showInitFloatingTip(el);
+    });
+    root.addEventListener("mouseout", (e) => {
+      const el = anchorOf(e.target);
+      if (!el) return;
+      const next = e.relatedTarget;
+      if (next && (next === el || el.contains(next))) return;
+      window.hideInitFloatingTip?.(el);
+    });
+    root.addEventListener("focusin", (e) => {
+      const el = anchorOf(e.target);
+      if (el) window.showInitFloatingTip(el);
+    });
+    root.addEventListener("focusout", (e) => {
+      const el = anchorOf(e.target);
+      if (!el) return;
+      const next = e.relatedTarget;
+      if (next && (next === el || el.contains(next))) return;
+      window.hideInitFloatingTip?.(el);
+    });
+  }
+
   function setupChrome() {
     // Idempotent — also called from renderReport after snap updates meta.
+    wireReportStateTips();
     setupExportModal();
     ensureExportMeta();
     setupBookTabs();
