@@ -6,7 +6,13 @@ import json
 import logging
 from typing import Any, Callable, Optional
 
-from vulnforge.llm import LLMResult, ResponseClass, TokenUsage, messages_from_packet
+from vulnforge.llm import (
+    LLMResult,
+    ResponseClass,
+    TokenUsage,
+    messages_from_packet,
+    prompt_cache_enabled,
+)
 from vulnforge.agent_runtime.transcript import (
     strands_messages_to_openaiish,
     strip_reasoning_from_strands_messages,
@@ -286,6 +292,24 @@ def _attach_reasoning_strip_hook(agent: Any) -> None:
         pass
 
 
+def strands_anthropic_cache_config(cfg: Any) -> Any:
+    """Strands ``CacheConfig`` that pins the system prompt, or ``None`` when off.
+
+    ``tools_ttl=False`` leaves tool schemas uncached. Hunt allowlists change the
+    tool list, so a tool breakpoint would miss more often than it hits. The
+    system string (PRINCIPLES / preamble) is the stable prefix.
+    """
+    if not prompt_cache_enabled(cfg if isinstance(cfg, dict) else None):
+        return None
+    from strands.models.model import CacheConfig
+
+    return CacheConfig(
+        strategy="anthropic",
+        system_prompt_ttl=True,
+        tools_ttl=False,
+    )
+
+
 def _anthropic_sdk_base_url(vf_base_url: str) -> str:
     """Map VulnForge ``…/v1`` base_url to Anthropic SDK root (SDK appends ``/v1/messages``)."""
     base = str(vf_base_url or "").rstrip("/")
@@ -352,12 +376,16 @@ def _model_from_client(client: Any, temperature: float) -> Any:
             "timeout": timeout,
             "api_key": client_args["api_key"],
         }
-        return AnthropicModel(
-            client_args=anth_args,
-            model_id=str(model_id),
-            max_tokens=max_tokens,
-            params={"temperature": float(temperature)},
-        )
+        model_kwargs: dict[str, Any] = {
+            "client_args": anth_args,
+            "model_id": str(model_id),
+            "max_tokens": max_tokens,
+            "params": {"temperature": float(temperature)},
+        }
+        cache_cfg = strands_anthropic_cache_config(getattr(client, "_cfg", None))
+        if cache_cfg is not None:
+            model_kwargs["cache_config"] = cache_cfg
+        return AnthropicModel(**model_kwargs)
 
     from strands.models.openai import OpenAIModel
 
@@ -371,6 +399,69 @@ def _model_from_client(client: Any, temperature: float) -> Any:
     )
 
 
+def _usage_int(mapping: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        if key not in mapping or mapping[key] is None:
+            continue
+        try:
+            return max(0, int(mapping[key]))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _cache_from_accumulated(acc: dict[str, Any]) -> tuple[int, int, str]:
+    """Strands usage cache counters. Absent keys → ``cache_source=none``.
+
+    Strands only copies ``cacheReadInputTokens`` when the provider sent a
+    non-zero count, so a missing key is "not reported", not a measured zero.
+    """
+    read_keys = (
+        "cacheReadInputTokens",
+        "cache_read_input_tokens",
+        "cache_read_tokens",
+    )
+    write_keys = (
+        "cacheWriteInputTokens",
+        "cache_creation_input_tokens",
+        "cache_creation_tokens",
+        "cache_write_input_tokens",
+    )
+    seen = False
+    cache_read = 0
+    cache_create = 0
+    for key in read_keys:
+        if key in acc and acc[key] is not None:
+            try:
+                cache_read = max(0, int(acc[key]))
+            except (TypeError, ValueError):
+                continue
+            seen = True
+            break
+    for key in write_keys:
+        if key in acc and acc[key] is not None:
+            try:
+                cache_create = max(0, int(acc[key]))
+            except (TypeError, ValueError):
+                continue
+            seen = True
+            break
+    details = acc.get("prompt_tokens_details") or acc.get("input_tokens_details")
+    if isinstance(details, dict) and "cached_tokens" in details and details.get("cached_tokens") is not None:
+        try:
+            cache_read = max(0, int(details.get("cached_tokens")))
+            seen = True
+        except (TypeError, ValueError):
+            pass
+    elif "cached_tokens" in acc and acc.get("cached_tokens") is not None and not seen:
+        try:
+            cache_read = max(0, int(acc.get("cached_tokens")))
+            seen = True
+        except (TypeError, ValueError):
+            pass
+    return cache_read, cache_create, ("provider" if seen else "none")
+
+
 def _usage_from_result(result: Any) -> Optional[TokenUsage]:
     try:
         metrics = getattr(result, "metrics", None)
@@ -382,19 +473,23 @@ def _usage_from_result(result: Any) -> Optional[TokenUsage]:
         acc = summary.get("accumulated_usage") or summary.get("usage") or {}
         if not isinstance(acc, dict):
             return None
-        prompt = int(acc.get("inputTokens") or acc.get("prompt_tokens") or 0)
-        completion = int(acc.get("outputTokens") or acc.get("completion_tokens") or 0)
-        total = int(acc.get("totalTokens") or acc.get("total_tokens") or 0)
+        prompt = _usage_int(acc, "inputTokens", "prompt_tokens")
+        completion = _usage_int(acc, "outputTokens", "completion_tokens")
+        total = _usage_int(acc, "totalTokens", "total_tokens")
         if total <= 0:
             total = prompt + completion
         cycles = int(summary.get("total_cycles") or 0)
-        if prompt or completion or total:
+        cache_read, cache_create, cache_source = _cache_from_accumulated(acc)
+        if prompt or completion or total or cache_read or cache_create or cache_source == "provider":
             return TokenUsage(
                 prompt_tokens=prompt,
                 completion_tokens=completion,
                 total_tokens=total,
                 source="provider",
                 llm_calls=max(1, cycles),
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_create,
+                cache_source=cache_source,
             )
     except Exception:
         return None

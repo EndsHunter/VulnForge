@@ -17,6 +17,11 @@ llm:
   # responses        → POST /v1/responses (OpenAI Responses API)
   # messages         → POST /v1/messages (Anthropic-style Messages API)
   api_mode: chat_completions
+  # Anthropic system-prompt cache pin. Default off. Only api_mode: messages
+  # sends cache_control; chat_completions / responses payloads stay unchanged
+  # even when this is true. Local LM Studio omits cache usage fields.
+  # docs/harness/spikes/2026-09-22-context-cache.md
+  prompt_cache: false
   max_context_fraction: 0.25
   max_tool_rounds: 12
   # When the agent hits max_tool_rounds / no_submit, auto-call submit_none
