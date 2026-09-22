@@ -155,6 +155,22 @@ Schemas live on tool `SPEC` objects under `vulnforge/tools/agent/`. `packet.tool
 - **develop_poc** — read tools + `write_evidence` only (no `submit_*`).
 - **Scope:** source-code analysis only. PE / reverse-engineering profiles and `ghidra_*` tools are not part of the product.
 
+## Campaign control grammar
+
+Seven verbs drive one campaign. They call the existing Ralph runner and `harness.db` (same functions as dashboard Start/Pause/Resume/Stop and operator chat). Full table: [`docs/harness/CAMPAIGN.md`](docs/harness/CAMPAIGN.md). Static map: `GET /api/campaign/grammar` (`vulnforge.campaign@1`).
+
+| Verb | HTTP | Existing semantic |
+|------|------|-------------------|
+| `start` | POST `/api/runs/{target_id}/{run_id}/campaign/start` | `start_run` — clear `STOP`, spawn Ralph (`scripts/ralph.py` → `vf run-once`) |
+| `stop` | POST `.../campaign/stop` | `stop_run_hard` — `STOP`, kill workers, reclaim leases (`hard_stop_run`) |
+| `pause` | POST `.../campaign/pause` | `pause_run` — `STOP`, kill workers, reclaim leases |
+| `resume` | POST `.../campaign/resume` | `resume_run` — clear `STOP`, spawn Ralph if not alive |
+| `status` | GET `.../campaign/status` | `get_status` plus task/finding/lease counts from `harness.db` |
+| `findings` | GET `.../campaign/findings` | `list_findings` (`state`, `class`, `q`, `limit`) |
+| `gate` | GET `.../campaign/gate` | HITL inbox (`list_inbox`). Read-only. Never sets `confirmed` |
+
+Legacy `/api/runs/.../start|pause|resume|stop` routes stay. `gate` reports `needs_human` and `awaiting-review` packets. Accept or reject is still Report review or `vf hitl respond`.
+
 ## Operator guidance
 
 Dashboard Explorer and Hunts modes (plus Mission operator brief) can enqueue focused hunts and requeue coverage cells without editing the DB by hand. Selection hunts use `POST .../hunts/from-selection`. Report **Develop POC** opens a workshop modal (not a mode tab) and may enqueue `develop_poc`.

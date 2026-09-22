@@ -88,6 +88,7 @@ Need durable hunt state?
 Driving a run?
 ├─ New target → vf init --target <path>
 ├─ Drain queue → vf run-once | ralph | dashboard Start
+├─ Campaign verbs (start/stop/pause/resume/status/findings/gate) → `/api/runs/.../campaign/{verb}` (same Ralph runner; PROTOCOL + docs/harness/CAMPAIGN.md). `gate` is a read of the HITL inbox
 ├─ Operator hunt focus → Hunts planner / requeue with class + path_hints
 ├─ Custom hunt skill → Dev dashboard / generate skill (collection, not free-form essay)
 └─ Stuck → vf status + events.jsonl (failed_task thrash vs failed_infra / deadletter)
