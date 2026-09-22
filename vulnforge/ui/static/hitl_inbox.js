@@ -213,7 +213,7 @@
   }
 
   var handlers = {};
-  var roots = ["hitl-inbox", "hitl-inbox-report"];
+  var roots = [];
 
   function noteFor(button) {
     var block = button.closest("[data-hitl-block]");

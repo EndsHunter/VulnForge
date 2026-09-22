@@ -25,6 +25,7 @@ const {
   huntTaskLabel,
   summarizeHuntQueue,
   listNeedsHumanFindings,
+  countFindingState,
   summarizeCoverageResidual,
 } = helpers;
 
@@ -196,6 +197,29 @@ describe("summarizeHuntQueue", () => {
     const q = summarizeHuntQueue([{ id: 1, kind: "recon", state: "queued" }]);
     assert.equal(q.total, 0);
     assert.equal(q.feed.length, 0);
+  });
+});
+
+describe("countFindingState", () => {
+  it("counts a list and a state map", () => {
+    assert.equal(
+      countFindingState(
+        {
+          findings: [
+            { state: "needs_human" },
+            { state: "confirmed" },
+            { state: "needs_human" },
+          ],
+        },
+        "needs_human"
+      ),
+      2
+    );
+    assert.equal(
+      countFindingState({ findings: { needs_human: 4, candidate: 1 } }, "needs_human"),
+      4
+    );
+    assert.equal(countFindingState({}, "needs_human"), 0);
   });
 });
 

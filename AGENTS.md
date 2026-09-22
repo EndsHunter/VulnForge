@@ -11,7 +11,7 @@
 3. **hunt** (LLM) — one area × weakness class; candidate or `submit_none`
 4. **validate_mech** (no LLM) — mechanical gates → `needs_human` or `rejected_mech`
 5. **validate_llm** (default on) — dual adversarial disprove; both reject → `rejected_llm`, else stay `needs_human`. Never auto-confirms. Set `stages.validate_llm: false` to skip for speed/debug.
-6. **human review** (Mission awaiting-review inbox + Report) — accept → `confirmed`, reject → `rejected_human`. Durable `vulnforge/hitl-report@1` packet and responses; the harness re-reads them and never invents an approval. Optional notes.
+6. **human review** (Mission needs-review indicator + Report) — accept → `confirmed`, reject → `rejected_human`. Durable `vulnforge/hitl-report@1` packet and responses; the harness re-reads them and never invents an approval. Optional notes.
 7. **develop_poc / validate_poc** (operator) — write runnable PoC under `evidence/`; optional controlled harness run → `poc_run.json` (never auto-`confirmed`)
 8. **project projection** — regenerates `project/*` on idle `run-once` / `vf project`
 
@@ -36,10 +36,10 @@ The dashboard is the main operator surface:
 
 | Mode | Job |
 |------|-----|
-| **Mission** | Architecture map of the target; campaign health; durable awaiting-review inbox |
+| **Mission** | Architecture map of the target; campaign health; light needs-review indicator |
 | **Hunts** | Plan hunts (areas × skills) + residual-risk matrix; re-queue shallow/aborted/none cells |
 | **Explorer** | Browse target, select code, enqueue hunts |
-| **Report** | Structured findings table, the same awaiting-review inbox, exports; detail links to Evidence |
+| **Report** | Structured findings table, Needs review filter, human accept/reject, exports; detail links to Evidence |
 | **Evidence** | On-disk evidence packs (browse / open from Report) |
 | **Tasks** | Task queue / transcripts, event timeline (mode id `audit`) |
 | **AI** | Campaign co-pilot: start/query hunts, status, findings, runner control (confirm mutators) |

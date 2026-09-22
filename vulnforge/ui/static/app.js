@@ -2112,6 +2112,30 @@ function goMissionEventsAll() {
   window.VulnForgeModes?.setMode?.("audit", "timeline");
 }
 
+function needsReviewCount(snap) {
+  const helpers = globalThis.MissionOverviewHelpers;
+  if (helpers?.countFindingState) {
+    return Number(helpers.countFindingState(snap, "needs_human")) || 0;
+  }
+  const findings = snap && snap.findings;
+  if (Array.isArray(findings)) {
+    return findings.filter(
+      (f) => String((f && f.state) || "").toLowerCase() === "needs_human"
+    ).length;
+  }
+  if (findings && typeof findings === "object") {
+    return Number(findings.needs_human || 0) || 0;
+  }
+  return 0;
+}
+
+function renderNeedsReviewIndicatorHtml(count) {
+  const n = Number(count) || 0;
+  if (n <= 0) return "";
+  const label = n === 1 ? "1 needs review" : n + " need review";
+  return `<button type="button" class="mission-needs-review" id="mission-needs-review" title="Open Report filtered to findings that need review" aria-label="${esc(label)}">${esc(label)}</button>`;
+}
+
 function renderArchPageHeaderHtml(pageTitle, opts) {
   const hasArch = !!(opts && opts.hasArch);
   const target = missionTargetLabel();
@@ -2131,9 +2155,11 @@ function renderArchPageHeaderHtml(pageTitle, opts) {
   actions.push(
     `<button type="button" class="btn btn-sm" id="arch-recon-toggle">Recon</button>`
   );
+  const indicator = renderNeedsReviewIndicatorHtml(opts && opts.needsReview);
   return `<header class="arch-page-header">
     <h2 class="arch-page-title">${esc(title)}${targetHtml}</h2>
     <div class="arch-page-actions">${actions.join("")}</div>
+    ${indicator}
   </header>`;
 }
 
@@ -3950,6 +3976,9 @@ function bindArchPage(el, vm, arch, summary) {
   $("#arch-recon-only")?.addEventListener("click", () => submitArchRecon(false));
   $("#arch-history-toggle")?.addEventListener("click", () => toggleArchHistory());
   $("#arch-edit-toggle")?.addEventListener("click", () => toggleArchEdit(arch || summary));
+  el.querySelector("#mission-needs-review")?.addEventListener("click", () => {
+    window.VulnForgeModes?.goReport?.("needs_human");
+  });
   $("#arch-edit-cancel")?.addEventListener("click", () => {
     const p = $("#arch-edit-panel");
     if (p) p.style.display = "none";
@@ -3966,7 +3995,11 @@ function renderArchitecture(arch, summary, snap) {
   const has = !!(s.has_architecture || arch);
   const vm = missionCampaignVm(snap);
   const campaignHtml = renderCampaignStripHtml(vm, snap);
-  const mastheadHtml = renderArchMastheadHtml(pageTitle, { hasArch: has }, campaignHtml);
+  const mastheadHtml = renderArchMastheadHtml(
+    pageTitle,
+    { hasArch: has, needsReview: needsReviewCount(snap) },
+    campaignHtml
+  );
   const eventsHtml = renderArchEventsFooterHtml(vm.events);
   const refineHtml = renderArchRefineHtml(has);
   const rawHtml = renderArchRawJsonHtml(arch, s);
