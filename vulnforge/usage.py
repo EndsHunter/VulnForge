@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from vulnforge.llm import cache_hit_rate, merge_cache_source
 from vulnforge.util import utc_now_iso
 
 _lock = threading.Lock()
@@ -21,53 +22,61 @@ SUMMARY_NAME = "llm_usage_summary.json"
 JSONL_NAME = "llm_usage.jsonl"
 
 
+_COUNT_KEYS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+)
+
+
+def _empty_counts() -> dict[str, Any]:
+    row: dict[str, Any] = {k: 0 for k in _COUNT_KEYS}
+    row["llm_calls"] = 0
+    row["source"] = "none"
+    row["cache_source"] = "none"
+    row["cache_hit_rate"] = None
+    return row
+
+
+def _apply_cache_hit_rate(row: dict[str, Any]) -> None:
+    row["cache_hit_rate"] = cache_hit_rate(
+        int(row.get("prompt_tokens") or 0),
+        int(row.get("cache_read_tokens") or 0),
+        int(row.get("cache_creation_tokens") or 0),
+        cache_source=str(row.get("cache_source") or "none"),
+    )
+
+
 def _empty_summary() -> dict[str, Any]:
-    return {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "reasoning_tokens": 0,
-        "llm_calls": 0,
-        "source": "none",
-        "by_kind": {},
-        "by_model": {},
-        # task_id → bucket + optional kind label (for UI “per hunt” rows)
-        "by_task": {},
-        "updated_at": None,
-    }
+    summary = _empty_counts()
+    summary["by_kind"] = {}
+    summary["by_model"] = {}
+    # task_id → bucket + optional kind label (for UI “per hunt” rows)
+    summary["by_task"] = {}
+    summary["updated_at"] = None
+    return summary
 
 
 def _usage_to_parts(usage: Any) -> dict[str, Any]:
     if usage is None:
-        return {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "reasoning_tokens": 0,
-            "source": "none",
-            "llm_calls": 0,
-        }
+        return _empty_counts()
     if hasattr(usage, "to_dict"):
         d = usage.to_dict()
     elif isinstance(usage, dict):
         d = dict(usage)
     else:
-        return {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "reasoning_tokens": 0,
-            "source": "none",
-            "llm_calls": 0,
-        }
-    return {
-        "prompt_tokens": int(d.get("prompt_tokens") or 0),
-        "completion_tokens": int(d.get("completion_tokens") or 0),
-        "total_tokens": int(d.get("total_tokens") or 0),
-        "reasoning_tokens": int(d.get("reasoning_tokens") or 0),
-        "source": str(d.get("source") or "none"),
-        "llm_calls": int(d.get("llm_calls") or 1),
-    }
+        return _empty_counts()
+    parts = _empty_counts()
+    for key in _COUNT_KEYS:
+        parts[key] = int(d.get(key) or 0)
+    parts["source"] = str(d.get("source") or "none")
+    parts["cache_source"] = str(d.get("cache_source") or "none")
+    parts["llm_calls"] = int(d.get("llm_calls") or 1)
+    _apply_cache_hit_rate(parts)
+    return parts
 
 
 def _merge_source(a: str, b: str) -> str:
@@ -80,21 +89,29 @@ def _merge_source(a: str, b: str) -> str:
     return "mixed"
 
 
+def _fold_cache_source(prior_calls: int, current: str, incoming: str) -> str:
+    """First observation replaces the empty ``none``. Later omissions stay visible."""
+    if prior_calls <= 0:
+        return incoming or "none"
+    return merge_cache_source(current or "none", incoming or "none")
+
+
 def _bump_bucket(bucket: dict[str, Any], key: str, parts: dict[str, Any]) -> None:
-    row = bucket.get(key) or {
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "reasoning_tokens": 0,
-        "llm_calls": 0,
-        "source": "none",
-    }
-    row["prompt_tokens"] = int(row["prompt_tokens"]) + parts["prompt_tokens"]
-    row["completion_tokens"] = int(row["completion_tokens"]) + parts["completion_tokens"]
-    row["total_tokens"] = int(row["total_tokens"]) + parts["total_tokens"]
-    row["reasoning_tokens"] = int(row["reasoning_tokens"]) + parts["reasoning_tokens"]
-    row["llm_calls"] = int(row["llm_calls"]) + parts["llm_calls"]
-    row["source"] = _merge_source(str(row.get("source") or "none"), parts["source"])
+    existing = bucket.get(key)
+    row = dict(existing) if isinstance(existing, dict) else {}
+    prior_calls = int(row.get("llm_calls") or 0)
+    for count_key in _COUNT_KEYS:
+        row[count_key] = int(row.get(count_key) or 0) + int(parts.get(count_key) or 0)
+    row["llm_calls"] = prior_calls + int(parts.get("llm_calls") or 0)
+    row["source"] = _merge_source(
+        str(row.get("source") or "none"), str(parts.get("source") or "none")
+    )
+    row["cache_source"] = _fold_cache_source(
+        prior_calls,
+        str(row.get("cache_source") or "none"),
+        str(parts.get("cache_source") or "none"),
+    )
+    _apply_cache_hit_rate(row)
     bucket[key] = row
 
 
@@ -168,18 +185,21 @@ def record_usage(
             pass
 
         summary = load_usage_summary(run_dir)
-        summary["prompt_tokens"] = int(summary["prompt_tokens"]) + parts["prompt_tokens"]
-        summary["completion_tokens"] = (
-            int(summary["completion_tokens"]) + parts["completion_tokens"]
-        )
-        summary["total_tokens"] = int(summary["total_tokens"]) + parts["total_tokens"]
-        summary["reasoning_tokens"] = (
-            int(summary["reasoning_tokens"]) + parts["reasoning_tokens"]
-        )
-        summary["llm_calls"] = int(summary["llm_calls"]) + parts["llm_calls"]
+        prior_calls = int(summary.get("llm_calls") or 0)
+        for count_key in _COUNT_KEYS:
+            summary[count_key] = int(summary.get(count_key) or 0) + int(
+                parts.get(count_key) or 0
+            )
+        summary["llm_calls"] = prior_calls + int(parts.get("llm_calls") or 0)
         summary["source"] = _merge_source(
-            str(summary.get("source") or "none"), parts["source"]
+            str(summary.get("source") or "none"), str(parts.get("source") or "none")
         )
+        summary["cache_source"] = _fold_cache_source(
+            prior_calls,
+            str(summary.get("cache_source") or "none"),
+            str(parts.get("cache_source") or "none"),
+        )
+        _apply_cache_hit_rate(summary)
         kind_s = str(kind or "unknown")
         _bump_bucket(summary["by_kind"], kind_s, parts)
         if model_id:
@@ -220,6 +240,10 @@ def usage_fields_for_result(usage: Any) -> dict[str, Any]:
         "reasoning_tokens": parts["reasoning_tokens"],
         "llm_calls": parts["llm_calls"],
         "usage_source": parts["source"],
+        "cache_read_tokens": parts["cache_read_tokens"],
+        "cache_creation_tokens": parts["cache_creation_tokens"],
+        "cache_source": parts["cache_source"],
+        "cache_hit_rate": parts["cache_hit_rate"],
     }
 
 
@@ -268,6 +292,10 @@ def llm_usage_for_card(run_dir: Union[str, Path]) -> dict[str, Any]:
         "reasoning_tokens": int(s.get("reasoning_tokens") or 0),
         "llm_calls": int(s.get("llm_calls") or 0),
         "source": s.get("source") or "none",
+        "cache_read_tokens": int(s.get("cache_read_tokens") or 0),
+        "cache_creation_tokens": int(s.get("cache_creation_tokens") or 0),
+        "cache_source": s.get("cache_source") or "none",
+        "cache_hit_rate": s.get("cache_hit_rate"),
     }
 
 
@@ -317,7 +345,10 @@ def rebuild_by_task_from_jsonl(run_dir: Union[str, Path]) -> dict[str, Any]:
                     "completion_tokens": int(row.get("completion_tokens") or 0),
                     "total_tokens": int(row.get("total_tokens") or 0),
                     "reasoning_tokens": int(row.get("reasoning_tokens") or 0),
+                    "cache_read_tokens": int(row.get("cache_read_tokens") or 0),
+                    "cache_creation_tokens": int(row.get("cache_creation_tokens") or 0),
                     "source": str(row.get("source") or "none"),
+                    "cache_source": str(row.get("cache_source") or "none"),
                     "llm_calls": int(row.get("llm_calls") or 1),
                 }
                 _bump_bucket(by_task, tid_key, parts)

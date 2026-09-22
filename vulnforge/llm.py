@@ -23,6 +23,80 @@ class ResponseClass(str, Enum):
     UNKNOWN = "unknown"
 
 
+def merge_cache_source(a: str, b: str) -> str:
+    """Combine per-call cache observations. ``none`` is not "empty" — it means omitted."""
+    left = str(a or "none")
+    right = str(b or "none")
+    if left == right:
+        return left
+    return "mixed"
+
+
+def cache_hit_rate(
+    prompt_tokens: int,
+    cache_read_tokens: int,
+    cache_creation_tokens: int = 0,
+    *,
+    cache_source: str = "provider",
+) -> Optional[float]:
+    """Cache-read share of the prompt-side total.
+
+    Returns ``None`` when the provider omitted cache fields (``cache_source=none``)
+    or the basis is 0. A reported zero is ``0.0``, not null.
+
+    OpenAI ``cached_tokens`` is a subset of ``prompt_tokens``, so the basis is
+    ``prompt_tokens``. Anthropic ``input_tokens`` excludes
+    ``cache_read_input_tokens`` and ``cache_creation_input_tokens``; when those
+    sit outside the prompt count the basis is their sum. Rate is
+    ``cache_read / basis``.
+    """
+    if str(cache_source or "none") == "none":
+        return None
+    try:
+        prompt = max(0, int(prompt_tokens or 0))
+        read = max(0, int(cache_read_tokens or 0))
+        create = max(0, int(cache_creation_tokens or 0))
+    except (TypeError, ValueError):
+        return None
+    if read + create > prompt:
+        basis = prompt + read + create
+    else:
+        basis = prompt
+    if basis <= 0:
+        return None
+    return round(read / basis, 6)
+
+
+def prompt_cache_enabled(cfg: Any) -> bool:
+    """True only when ``llm.prompt_cache`` is explicitly on. Default off."""
+    if not isinstance(cfg, dict):
+        return False
+    llm = cfg.get("llm")
+    if not isinstance(llm, dict) or "prompt_cache" not in llm:
+        return False
+    val = llm.get("prompt_cache")
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return bool(val)
+
+
+def anthropic_system_payload(system: str, *, cache: bool) -> str | list[dict[str, Any]]:
+    """Anthropic ``system`` value. Cache pin is a single ephemeral breakpoint.
+
+    Off (default) returns the plain string so request bytes match today's client.
+    """
+    text = system or ""
+    if not cache or not text:
+        return text
+    return [
+        {
+            "type": "text",
+            "text": text,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
 @dataclass
 class TokenUsage:
     """Normalized token accounting for one LLM HTTP call (or a summed loop)."""
@@ -31,9 +105,12 @@ class TokenUsage:
     completion_tokens: int = 0
     total_tokens: int = 0
     reasoning_tokens: int = 0
-    source: str = "none"  # provider | estimate | none
+    source: str = "none"  # provider | estimate | none | mixed
     raw: Optional[dict] = None
     llm_calls: int = 1
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_source: str = "none"  # provider | none | mixed
 
     def add(self, other: Optional["TokenUsage"]) -> "TokenUsage":
         if other is None:
@@ -54,6 +131,7 @@ class TokenUsage:
             src = "provider"
         if self.source == "mixed" or other.source == "mixed":
             src = "mixed"
+        cache_source = merge_cache_source(self.cache_source, other.cache_source)
         return TokenUsage(
             prompt_tokens=int(self.prompt_tokens) + int(other.prompt_tokens),
             completion_tokens=int(self.completion_tokens) + int(other.completion_tokens),
@@ -62,9 +140,14 @@ class TokenUsage:
             source=src if src != "none" else other.source,
             raw=None,
             llm_calls=int(self.llm_calls) + int(other.llm_calls),
+            cache_read_tokens=int(self.cache_read_tokens) + int(other.cache_read_tokens),
+            cache_creation_tokens=int(self.cache_creation_tokens)
+            + int(other.cache_creation_tokens),
+            cache_source=cache_source,
         )
 
     def to_dict(self) -> dict[str, Any]:
+        cache_source = str(self.cache_source or "none")
         return {
             "prompt_tokens": int(self.prompt_tokens),
             "completion_tokens": int(self.completion_tokens),
@@ -72,6 +155,15 @@ class TokenUsage:
             "reasoning_tokens": int(self.reasoning_tokens),
             "source": self.source,
             "llm_calls": int(self.llm_calls),
+            "cache_read_tokens": int(self.cache_read_tokens),
+            "cache_creation_tokens": int(self.cache_creation_tokens),
+            "cache_source": cache_source,
+            "cache_hit_rate": cache_hit_rate(
+                self.prompt_tokens,
+                self.cache_read_tokens,
+                self.cache_creation_tokens,
+                cache_source=cache_source,
+            ),
         }
 
     @classmethod
@@ -86,11 +178,42 @@ class TokenUsage:
             source=str(data.get("source") or "none"),
             raw=data.get("raw") if isinstance(data.get("raw"), dict) else None,
             llm_calls=int(data.get("llm_calls") or 1),
+            cache_read_tokens=int(data.get("cache_read_tokens") or 0),
+            cache_creation_tokens=int(data.get("cache_creation_tokens") or 0),
+            cache_source=str(data.get("cache_source") or "none"),
         )
 
 
+def _nonneg_int(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_present(mapping: Any, keys: tuple[str, ...]) -> tuple[int, bool]:
+    """First parseable key. ``(0, True)`` when the key is present and the value is 0."""
+    if not isinstance(mapping, dict):
+        return 0, False
+    for key in keys:
+        if key not in mapping:
+            continue
+        parsed = _nonneg_int(mapping.get(key))
+        if parsed is None:
+            continue
+        return parsed, True
+    return 0, False
+
+
 def parse_usage_from_body(body: Any) -> TokenUsage:
-    """Extract usage from OpenAI chat, Responses API, or Anthropic Messages bodies."""
+    """Extract usage from OpenAI chat, Responses API, or Anthropic Messages bodies.
+
+    Cache fields are optional. Missing keys → ``cache_source=none`` and zeros.
+    An explicit ``0`` is ``cache_source=provider`` (the server reported no hit).
+    Never raises on odd shapes.
+    """
     if not isinstance(body, dict):
         return TokenUsage(source="none", llm_calls=1)
     usage = body.get("usage")
@@ -103,13 +226,8 @@ def parse_usage_from_body(body: Any) -> TokenUsage:
             return TokenUsage(source="none", llm_calls=1, raw=None)
 
     def _i(*keys: str) -> int:
-        for k in keys:
-            if k in usage and usage[k] is not None:
-                try:
-                    return max(0, int(usage[k]))
-                except (TypeError, ValueError):
-                    continue
-        return 0
+        val, _seen = _first_present(usage, keys)
+        return val
 
     prompt = _i("prompt_tokens", "input_tokens", "prompt_token_count")
     completion = _i("completion_tokens", "output_tokens", "completion_token_count")
@@ -119,15 +237,63 @@ def parse_usage_from_body(body: Any) -> TokenUsage:
         "output_tokens_details"
     )
     if isinstance(details, dict):
-        try:
-            reasoning = max(0, int(details.get("reasoning_tokens") or 0))
-        except (TypeError, ValueError):
-            reasoning = 0
+        reasoning, _ = _first_present(details, ("reasoning_tokens",))
     if reasoning == 0:
         reasoning = _i("reasoning_tokens")
+
+    cache_read = 0
+    cache_create = 0
+    cache_seen = False
+    # OpenAI: prompt_tokens_details.cached_tokens (subset of prompt_tokens).
+    # Responses API: input_tokens_details.cached_tokens.
+    for details_key in ("prompt_tokens_details", "input_tokens_details"):
+        block = usage.get(details_key)
+        if not isinstance(block, dict):
+            continue
+        read, seen_read = _first_present(
+            block, ("cached_tokens", "cache_read_input_tokens", "cache_read_tokens")
+        )
+        create, seen_create = _first_present(
+            block,
+            (
+                "cache_creation_input_tokens",
+                "cache_creation_tokens",
+                "cache_write_tokens",
+            ),
+        )
+        if seen_read:
+            cache_read = read
+            cache_seen = True
+        if seen_create:
+            cache_create = create
+            cache_seen = True
+    # Anthropic Messages: top-level cache_* (not included in input_tokens).
+    read, seen_read = _first_present(
+        usage, ("cache_read_input_tokens", "cache_read_tokens")
+    )
+    create, seen_create = _first_present(
+        usage,
+        (
+            "cache_creation_input_tokens",
+            "cache_creation_tokens",
+            "cache_write_input_tokens",
+        ),
+    )
+    if seen_read:
+        cache_read = read
+        cache_seen = True
+    if seen_create:
+        cache_create = create
+        cache_seen = True
+    if not cache_seen:
+        read, seen_read = _first_present(usage, ("cached_tokens",))
+        if seen_read:
+            cache_read = read
+            cache_seen = True
+
     if total <= 0:
         total = prompt + completion
-    if prompt == 0 and completion == 0 and total == 0:
+    if prompt == 0 and completion == 0 and total == 0 and not cache_seen:
         return TokenUsage(source="none", llm_calls=1, raw=dict(usage))
     return TokenUsage(
         prompt_tokens=prompt,
@@ -137,6 +303,9 @@ def parse_usage_from_body(body: Any) -> TokenUsage:
         source="provider",
         raw=dict(usage),
         llm_calls=1,
+        cache_read_tokens=cache_read,
+        cache_creation_tokens=cache_create,
+        cache_source="provider" if cache_seen else "none",
     )
 
 
@@ -415,7 +584,10 @@ class LLMClient:
             "temperature": temperature,
         }
         if system:
-            payload["system"] = system
+            payload["system"] = anthropic_system_payload(
+                system,
+                cache=prompt_cache_enabled(self._cfg),
+            )
         if tools:
             payload["tools"] = openai_tools_to_anthropic(tools)
         out = self._post_json("/messages", payload, model, timeout=timeout)
