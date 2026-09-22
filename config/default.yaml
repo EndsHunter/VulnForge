@@ -51,6 +51,16 @@ llm:
       prompt: disprove_threat.md
     - id: code_mitigation
       prompt: disprove_code.md
+  # Sequential hunt MoA perspectives (issue #68). resolve_hunt_perspectives reads
+  # this list. hunt.py does not loop them until stages.hunt_moa is true (default
+  # off). Prompt files land in the wiring PR; per-slot model is optional.
+  hunt_perspectives:
+    - id: sink_driven
+      prompt: hunt_sink.md
+    - id: dataflow
+      prompt: hunt_dataflow.md
+    - id: authz
+      prompt: hunt_authz.md
   # Per-stage model overrides (blank → llm.model). Owned by Settings UI when present.
   model_recon: ""
   model_hunt: ""
@@ -108,6 +118,10 @@ stages:
   #        (use for speed, debug, or when same-model disprove adds noise).
   # See docs/harness/validate/README.md and seeds/system/disprove.md.
   validate_llm: true
+  # Sequential multi-perspective hunt (docs/harness/spikes/2026-09-22-hunt-moa.md).
+  # Default off: one investigation per leased hunt. Enabling is a no-op until
+  # the wiring PR. Merge never sets confirmed.
+  hunt_moa: false
   # Multi-model PoC referee after harness run (default on; never auto-confirm)
   validate_poc_referee: true
 

@@ -45,3 +45,5 @@ Typical operator/residual hunts: **35–50**. Recon at 1–8 always leases first
 ## Honesty
 
 A submitted candidate is **not** confirmed. Mechanical validation and human review follow.
+
+Hunt mixture-of-agents (sequential perspectives in one lease) is designed in [spikes/2026-09-22-hunt-moa.md](../spikes/2026-09-22-hunt-moa.md). Flag `stages.hunt_moa` defaults **off**; merge still never emits `confirmed`.
