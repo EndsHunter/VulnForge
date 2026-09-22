@@ -34,7 +34,7 @@
       <div>
         <h1>Settings</h1>
         <p>
-          Endpoint, per-stage models, multi-model validation, and agent budgets.
+          Endpoint, per-stage models, multi-model validation, hunt perspectives, and agent budgets.
           Saved to <code>config/ui_settings.json</code> and applied on the next task lease.
         </p>
       </div>
@@ -42,7 +42,7 @@
 
     <form id="settings-form" class="settings-page-form">
       <div class="settings-page-grid">
-        <section class="card settings-card">
+        <section class="card settings-card settings-card-endpoint">
           <h2>Endpoint</h2>
           <div class="grid-2">
             <div class="field">
@@ -74,7 +74,7 @@
           </div>
         </section>
 
-        <section class="card settings-card">
+        <section class="card settings-card settings-card-stages">
           <h2>Stage models</h2>
           <p class="controls-hint" style="margin-top:0">
             Optional overrides. Leave blank to use the default model.
@@ -95,7 +95,7 @@
           </div>
         </section>
 
-        <section class="card settings-card">
+        <section class="card settings-card settings-card-validate">
           <h2>Multi-model validation</h2>
           <p class="controls-hint" style="margin-top:0">
             One or more model ids that independently argue whether a finding holds.
@@ -138,7 +138,27 @@
           </div>
         </section>
 
-        <section class="card settings-card">
+        <section class="card settings-card settings-card-hunt" id="settings-hunt-moa">
+          <h2>Hunt perspectives</h2>
+          <p class="controls-hint" style="margin-top:0">
+            Off by default. Each row is a hunt perspective with an optional model — not validation models.
+            An empty list keeps the built-in perspectives. Never confirms a finding.
+          </p>
+          <label class="settings-check">
+            <input type="checkbox" id="set-hunt-moa" />
+            Enable hunt MoA
+          </label>
+          <div class="hunt-perspective-head" aria-hidden="true">
+            <span>Perspective id</span>
+            <span>Model (optional)</span>
+            <span></span>
+          </div>
+          <div id="set-hunt-perspectives" class="hunt-perspective-list"></div>
+          <p id="set-hunt-perspectives-warn" class="controls-hint warn-text" hidden style="color:var(--warn,#c9a227)"></p>
+          <button type="button" class="btn" id="set-hunt-perspective-add">Add perspective</button>
+        </section>
+
+        <section class="card settings-card settings-card-budget">
           <h2>Agent budget</h2>
           <div class="grid-2">
             <div class="field">
@@ -147,7 +167,7 @@
             </div>
             <div class="field">
               <label class="field-label" for="set-ctx"><span class="label-text">Context window (tokens)</span></label>
-              <input id="set-ctx" type="number" min="1" step="1024" />
+              <input id="set-ctx" type="number" min="1024" step="1024" />
             </div>
             <div class="field">
               <label class="field-label" for="set-frac"><span class="label-text">Max context fraction</span></label>
@@ -155,7 +175,7 @@
             </div>
             <div class="field">
               <label class="field-label" for="set-maxtok"><span class="label-text">Max completion tokens</span></label>
-              <input id="set-maxtok" type="number" min="1" step="256" />
+              <input id="set-maxtok" type="number" min="256" step="256" />
             </div>
             <div class="field">
               <label class="field-label" for="set-rounds"><span class="label-text">Max tool rounds</span></label>

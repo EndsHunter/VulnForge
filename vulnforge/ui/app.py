@@ -218,6 +218,14 @@ def control_start_kwargs(body: ControlBody, ui: Optional[dict[str, Any]] = None)
     }
 
 
+class HuntPerspectiveSlot(BaseModel):
+    """One hunt MoA slot. Model is optional and is not a validate_models entry."""
+
+    id: str = ""
+    prompt: Optional[str] = ""
+    model: Optional[str] = ""
+
+
 class SettingsBody(BaseModel):
     host: Optional[str] = None
     port: Optional[int] = None
@@ -234,6 +242,9 @@ class SettingsBody(BaseModel):
     validate_consensus: Optional[str] = None  # all | majority
     validate_poc_referee: Optional[bool] = None
     validate_llm: Optional[bool] = None
+    # Hunt MoA. Perspectives are independent of validate_models.
+    hunt_moa: Optional[bool] = None
+    hunt_perspectives: Optional[list[HuntPerspectiveSlot]] = None
     max_concurrent_agents: Optional[int] = None
     context_tokens: Optional[int] = None
     max_context_fraction: Optional[float] = None
@@ -2362,6 +2373,10 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             resolve_validate_models,
         )
         from vulnforge.settings import normalize_api_key
+        from vulnforge.stages.hunt_moa import (
+            hunt_moa_enabled,
+            resolve_hunt_perspectives,
+        )
 
         ui = load_ui_settings()
         # effective config after merge
@@ -2389,6 +2404,8 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 "validate_llm": bool(
                     stages.get("validate_llm", ui.get("validate_llm", True))
                 ),
+                "hunt_moa": hunt_moa_enabled(eff),
+                "hunt_perspectives": resolve_hunt_perspectives(eff),
                 "api_mode": llm.get("api_mode") or "chat_completions",
                 # Do not echo secrets; only whether a key is configured.
                 "api_key_set": bool(key),
@@ -2409,11 +2426,17 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         if "api_key" in body.model_fields_set:
             updates["api_key"] = body.api_key if body.api_key is not None else ""
         # Explicit bool clears (False is valid)
-        for bkey in ("validate_poc_referee", "validate_llm"):
+        for bkey in ("validate_poc_referee", "validate_llm", "hunt_moa"):
             if bkey in body.model_fields_set:
                 updates[bkey] = bool(getattr(body, bkey))
         if "validate_models" in body.model_fields_set:
             updates["validate_models"] = body.validate_models or []
+        if "hunt_perspectives" in body.model_fields_set:
+            raw_slots = body.hunt_perspectives or []
+            updates["hunt_perspectives"] = [
+                slot.model_dump() if hasattr(slot, "model_dump") else dict(slot)
+                for slot in raw_slots
+            ]
         if "model_recon" in body.model_fields_set:
             updates["model_recon"] = body.model_recon or ""
         if "model_hunt" in body.model_fields_set:

@@ -45,6 +45,11 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "validate_poc_referee": True,
     # Dual-LLM disprove after mech pass (default on — multi-model FP reduction)
     "validate_llm": True,
+    # Hunt MoA (issue #72). Default off. Empty perspectives → keep YAML /
+    # built-in slots; a non-empty list replaces llm.hunt_perspectives.
+    # Per-slot model is hunt-only and is not copied from validate_models.
+    "hunt_moa": False,
+    "hunt_perspectives": [],
     "max_concurrent_agents": 1,
     "context_tokens": 32768,
     "max_context_fraction": 0.25,
@@ -153,10 +158,79 @@ def settings_path() -> Path:
     return UI_SETTINGS_PATH
 
 
+def _coerce_bool(value: Any, default: bool) -> bool:
+    """Parse a settings flag. The string ``\"false\"`` is false, not true."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    if s in {"1", "true", "yes", "on"}:
+        return True
+    if s in {"0", "false", "no", "off", ""}:
+        return False
+    return default
+
+
+def normalize_hunt_perspectives(value: Any) -> list[dict[str, str]]:
+    """Normalize Settings slots to ``{id, prompt, model}``.
+
+    Mirrors ``llm.hunt_perspectives`` (id, prompt, optional model). Blank model
+    is stored as ``\"\"`` and omitted when applied onto config. Rows without an
+    id are dropped. Duplicate ids keep the first row. Empty input is ``[]``,
+    which means "do not override YAML". This does not read ``validate_models``.
+    """
+    from vulnforge.stages.hunt_moa import default_hunt_perspective_prompt
+
+    raw = value
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("id") or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        prompt = str(item.get("prompt") or "").strip()
+        if not prompt:
+            prompt = default_hunt_perspective_prompt(pid)
+        model = str(item.get("model") or "").strip()
+        out.append({"id": pid, "prompt": prompt, "model": model})
+    return out
+
+
+def _hunt_perspectives_for_cfg(slots: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Drop blank per-slot models so resolve treats them as unset."""
+    cleaned: list[dict[str, str]] = []
+    for slot in slots:
+        item = {"id": slot["id"], "prompt": slot["prompt"]}
+        model = str(slot.get("model") or "").strip()
+        if model:
+            item["model"] = model
+        cleaned.append(item)
+    return cleaned
+
+
 def load_ui_settings() -> dict[str, Any]:
     data = dict(DEFAULT_UI_SETTINGS)
     # deep-copy list defaults so callers cannot mutate module defaults
     data["validate_models"] = list(DEFAULT_UI_SETTINGS.get("validate_models") or [])
+    data["hunt_perspectives"] = [
+        dict(x) for x in (DEFAULT_UI_SETTINGS.get("hunt_perspectives") or [])
+    ]
     p = settings_path()
     if p.is_file():
         try:
@@ -194,6 +268,8 @@ def _normalize_ui_settings(current: dict[str, Any]) -> dict[str, Any]:
     current["validate_consensus"] = normalize_consensus(current.get("validate_consensus"))
     current["validate_poc_referee"] = bool(current.get("validate_poc_referee", True))
     current["validate_llm"] = bool(current.get("validate_llm", True))
+    current["hunt_moa"] = _coerce_bool(current.get("hunt_moa"), False)
+    current["hunt_perspectives"] = normalize_hunt_perspectives(current.get("hunt_perspectives"))
     current["api_mode"] = normalize_api_mode(current.get("api_mode"))
     current["api_key"] = normalize_api_key(current.get("api_key"))
     return current
@@ -211,6 +287,10 @@ def save_ui_settings(updates: dict[str, Any]) -> dict[str, Any]:
             from vulnforge.llm_models import normalize_model_list
 
             current[k] = normalize_model_list(updates[k])
+        elif k == "hunt_perspectives":
+            current[k] = normalize_hunt_perspectives(updates[k])
+        elif k == "hunt_moa":
+            current[k] = _coerce_bool(updates[k], False)
         elif k in ("validate_poc_referee", "validate_llm"):
             current[k] = bool(updates[k])
         elif updates[k] is not None:
@@ -259,10 +339,17 @@ def apply_ui_settings_to_cfg(cfg: dict, ui: Optional[dict] = None) -> dict:
 
     llm["validate_models"] = normalize_model_list(ui.get("validate_models"))
     llm["validate_consensus"] = normalize_consensus(ui.get("validate_consensus"))
+    # Non-empty UI slots replace YAML. Empty leaves llm.hunt_perspectives alone
+    # so a fresh settings file does not wipe a custom YAML list. Never copy
+    # validate_models into these slots.
+    hunt_slots = normalize_hunt_perspectives(ui.get("hunt_perspectives"))
+    if hunt_slots:
+        llm["hunt_perspectives"] = _hunt_perspectives_for_cfg(hunt_slots)
     stages = out.setdefault("stages", {})
     # UI owns these toggles when settings are loaded
     stages["validate_poc_referee"] = bool(ui.get("validate_poc_referee", True))
     stages["validate_llm"] = bool(ui.get("validate_llm", True))
+    stages["hunt_moa"] = _coerce_bool(ui.get("hunt_moa"), False)
     run = out.setdefault("run", {})
     run["max_leases_parallel"] = max(1, int(ui.get("max_concurrent_agents") or 1))
     run["max_tasks"] = int(ui.get("max_tasks") or run.get("max_tasks") or 50)

@@ -23,7 +23,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Recon agent **seeds** | `seeds/recon_agents/` |
 | Config knobs (yaml) | `config/default.yaml` |
 | UI / runtime overrides | `config/ui_settings.json` (+ env `VF_*`) — edit via **`/settings`** page |
-| Stage / multi-model routing | `vulnforge/llm_models.py` + Settings `model_*` / `validate_models` |
+| Stage / multi-model routing | `vulnforge/llm_models.py` + Settings `model_*` / `validate_models` / `hunt_perspectives` |
 | Load path helpers | `vulnforge/paths.py` |
 | Config load | `vulnforge/settings/load.py` (`cli.load_config` is a shim) |
 | Operator chat tools (control plane) | `vulnforge/operator_chat/tools_*.py` — **not** agent tools |

@@ -3762,9 +3762,52 @@ tr.task-row .task-actions-cell .btn {
 @media (min-width: 960px) {
   .settings-page-grid {
     grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "endpoint endpoint"
+      "stages budget"
+      "validate hunt";
   }
-  .settings-page-grid .settings-card:first-child {
-    grid-column: 1 / -1;
+  .settings-card-endpoint { grid-area: endpoint; }
+  .settings-card-stages { grid-area: stages; }
+  .settings-card-budget { grid-area: budget; }
+  .settings-card-validate { grid-area: validate; }
+  .settings-card-hunt { grid-area: hunt; }
+}
+.hunt-perspective-head,
+.hunt-perspective-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  gap: 0.4rem;
+  align-items: center;
+}
+.hunt-perspective-head {
+  margin: 0.65rem 0 0.3rem;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.hunt-perspective-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.hunt-perspective-row .field {
+  margin-bottom: 0;
+}
+.hunt-perspective-row input {
+  width: 100%;
+}
+#set-hunt-perspective-add {
+  margin-top: 0.65rem;
+}
+@media (max-width: 640px) {
+  .hunt-perspective-head,
+  .hunt-perspective-row {
+    grid-template-columns: 1fr;
+  }
+  .hunt-perspective-head span:last-child {
+    display: none;
   }
 }
 .settings-card h2 {

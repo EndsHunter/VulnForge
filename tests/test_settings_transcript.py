@@ -58,6 +58,185 @@ def test_ui_settings_merge(tmp_path: Path, monkeypatch):
     assert cfg["llm"]["context_tokens"] == 16384
 
 
+def test_hunt_moa_settings_do_not_reuse_validate_models(tmp_path: Path, monkeypatch):
+    """Hunt slots are their own list. Empty UI slots leave YAML perspectives."""
+    import json
+
+    from vulnforge.stages.hunt_moa import (
+        hunt_moa_enabled,
+        resolve_hunt_perspectives,
+    )
+    from vulnforge.settings.ui import normalize_hunt_perspectives
+
+    p = tmp_path / "ui_settings.json"
+    monkeypatch.setattr("vulnforge.settings.ui.UI_SETTINGS_PATH", p)
+    monkeypatch.setattr("vulnforge.settings.UI_SETTINGS_PATH", p)
+
+    fresh = load_ui_settings()
+    assert fresh["hunt_moa"] is False
+    assert fresh["hunt_perspectives"] == []
+
+    yaml_cfg = {
+        "llm": {
+            "validate_models": ["from-yaml-validate"],
+            "hunt_perspectives": [
+                {"id": "custom_only", "prompt": "custom.md", "model": "yaml-model"},
+            ],
+        },
+        "stages": {"hunt_moa": True},
+        "run": {},
+    }
+    kept = apply_ui_settings_to_cfg(yaml_cfg, fresh)
+    assert kept["stages"]["hunt_moa"] is False
+    assert hunt_moa_enabled(kept) is False
+    assert kept["llm"]["hunt_perspectives"] == yaml_cfg["llm"]["hunt_perspectives"]
+
+    defaults = resolve_hunt_perspectives({})
+    filled = normalize_hunt_perspectives([{"id": row["id"]} for row in defaults])
+    assert [(row["id"], row["prompt"]) for row in filled] == [
+        (row["id"], row["prompt"]) for row in defaults
+    ]
+
+    save_ui_settings(
+        {
+            "hunt_moa": "false",
+            "hunt_perspectives": [
+                {"id": "sink_driven", "model": "hunt-a"},
+                {"id": "dataflow"},
+                {"id": "sink_driven", "model": "dup-should-drop"},
+                {"id": "  "},
+                "nope",
+                {"id": "lens 2", "model": "  "},
+            ],
+            "validate_models": ["validate-only", "validate-only"],
+        }
+    )
+    ui = load_ui_settings()
+    assert ui["hunt_moa"] is False
+    assert ui["validate_models"] == ["validate-only"]
+    assert [slot["id"] for slot in ui["hunt_perspectives"]] == [
+        "sink_driven",
+        "dataflow",
+        "lens 2",
+    ]
+    assert ui["hunt_perspectives"][0]["model"] == "hunt-a"
+    assert ui["hunt_perspectives"][0]["prompt"] == "hunt_sink.md"
+    assert ui["hunt_perspectives"][1]["model"] == ""
+    assert ui["hunt_perspectives"][1]["prompt"] == "hunt_dataflow.md"
+    assert ui["hunt_perspectives"][2]["prompt"] == "hunt_lens_2.md"
+    assert "validate-only" not in json.dumps(ui["hunt_perspectives"])
+
+    cfg = apply_ui_settings_to_cfg(yaml_cfg, ui)
+    assert cfg["stages"]["hunt_moa"] is False
+    assert cfg["llm"]["validate_models"] == ["validate-only"]
+    slots = cfg["llm"]["hunt_perspectives"]
+    assert [slot["id"] for slot in slots] == ["sink_driven", "dataflow", "lens 2"]
+    assert slots[0]["model"] == "hunt-a"
+    assert "model" not in slots[1]
+    assert "model" not in slots[2]
+    assert "validate-only" not in json.dumps(slots)
+    assert "yaml-model" not in json.dumps(slots)
+
+    save_ui_settings({"validate_models": ["other-v"]})
+    ui2 = load_ui_settings()
+    assert ui2["validate_models"] == ["other-v"]
+    assert ui2["hunt_moa"] is False
+    assert [slot["id"] for slot in ui2["hunt_perspectives"]] == [
+        "sink_driven",
+        "dataflow",
+        "lens 2",
+    ]
+    assert ui2["hunt_perspectives"][0]["model"] == "hunt-a"
+
+    save_ui_settings({"hunt_moa": True})
+    ui3 = load_ui_settings()
+    assert ui3["hunt_moa"] is True
+    assert ui3["validate_models"] == ["other-v"]
+    on = apply_ui_settings_to_cfg({"llm": {}, "stages": {"hunt_moa": False}, "run": {}}, ui3)
+    assert on["stages"]["hunt_moa"] is True
+    assert hunt_moa_enabled(on) is True
+    assert on["llm"]["hunt_perspectives"][0]["model"] == "hunt-a"
+    assert on["llm"]["validate_models"] == ["other-v"]
+
+
+def test_settings_api_hunt_moa_roundtrip(tmp_path: Path, monkeypatch):
+    import json
+    import re
+
+    from fastapi.testclient import TestClient
+
+    from vulnforge.ui.app import create_app
+
+    p = tmp_path / "ui_settings.json"
+    monkeypatch.setattr("vulnforge.settings.ui.UI_SETTINGS_PATH", p)
+    monkeypatch.setattr("vulnforge.settings.UI_SETTINGS_PATH", p)
+
+    app = create_app(runs_root=tmp_path / "runs")
+    with TestClient(app) as client:
+        page = client.get("/settings")
+        assert page.status_code == 200
+        html = page.text
+        assert html.index("Multi-model validation") < html.index("Hunt perspectives")
+        assert "settings-card-validate" in html
+        assert "settings-card-hunt" in html
+        assert 'id="set-hunt-moa"' in html
+        assert 'id="set-hunt-perspectives"' in html
+        assert "Not copied from validation models" in html or "not validation models" in html
+        toggle = re.search(r'<input type="checkbox" id="set-hunt-moa"[^>]*>', html)
+        assert toggle is not None
+        assert "checked" not in toggle.group(0)
+        # step is measured from min; defaults 32768 / 4096 must be submittable
+        assert 'id="set-ctx" type="number" min="1024" step="1024"' in html
+        assert 'id="set-maxtok" type="number" min="256" step="256"' in html
+
+        before = client.get("/api/settings")
+        assert before.status_code == 200
+        body = before.json()
+        assert body["settings"]["hunt_moa"] is False
+        assert body["settings"]["hunt_perspectives"] == []
+        assert body["effective"]["hunt_moa"] is False
+        eff_ids = [slot["id"] for slot in body["effective"]["hunt_perspectives"]]
+        assert eff_ids[:3] == ["sink_driven", "dataflow", "authz"]
+        assert all(not slot.get("model") for slot in body["effective"]["hunt_perspectives"])
+
+        put = client.put(
+            "/api/settings",
+            json={
+                "hunt_moa": True,
+                "validate_models": ["val-a", "val-b"],
+                "hunt_perspectives": [
+                    {"id": "sink_driven", "model": "hunt-a"},
+                    {"id": "authz", "model": ""},
+                ],
+            },
+        )
+        assert put.status_code == 200
+        saved = put.json()["settings"]
+        assert saved["hunt_moa"] is True
+        assert saved["validate_models"] == ["val-a", "val-b"]
+        assert [slot["id"] for slot in saved["hunt_perspectives"]] == ["sink_driven", "authz"]
+        assert saved["hunt_perspectives"][0]["model"] == "hunt-a"
+        assert saved["hunt_perspectives"][1]["model"] == ""
+        blob = json.dumps(saved["hunt_perspectives"])
+        assert "val-a" not in blob and "val-b" not in blob
+
+        after = client.get("/api/settings").json()
+        assert after["effective"]["hunt_moa"] is True
+        eff_slots = after["effective"]["hunt_perspectives"]
+        assert eff_slots[0]["model"] == "hunt-a"
+        assert "model" not in eff_slots[1]
+        assert after["effective"]["validate_models"] == ["val-a", "val-b"]
+
+        off = client.put("/api/settings", json={"hunt_moa": False})
+        assert off.status_code == 200
+        assert off.json()["settings"]["hunt_moa"] is False
+        again = client.get("/api/settings").json()
+        assert again["settings"]["hunt_moa"] is False
+        assert again["effective"]["hunt_moa"] is False
+        assert again["settings"]["hunt_perspectives"][0]["model"] == "hunt-a"
+        assert again["settings"]["validate_models"] == ["val-a", "val-b"]
+
+
 def test_build_llm_base_url_https_and_local():
     assert build_llm_base_url("10.0.0.232", 1234) == "http://10.0.0.232:1234/v1"
     assert build_llm_base_url("192.168.1.5", 9999) == "http://192.168.1.5:9999/v1"
