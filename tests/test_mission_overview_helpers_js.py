@@ -29,3 +29,28 @@ def test_mission_overview_helpers_js():
         f"node --test failed (rc={proc.returncode})\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
+
+
+def test_mission_hover_tips_are_wired():
+    """Funnel stages and presence bits expose immediate data-tip help, not title alone."""
+    app = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    css = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+    funnel_start = app.index("function renderFindingFunnelHtml")
+    presence_start = app.index("function renderPresenceHtml")
+    strip_start = app.index("function renderCampaignStripHtml")
+    funnel = app[funnel_start:presence_start]
+    presence = app[presence_start:strip_start]
+    assert "data-tip=" in funnel
+    assert "aria-describedby=" in funnel
+    assert 'title="' in funnel
+    assert "arch-campaign-presence-bit" in presence
+    assert "data-tip=" in presence
+    assert "aria-describedby=" in presence
+    assert "function wireMissionHoverTips(" in app
+    assert "wireMissionHoverTips()" in app
+    assert "init-floating-tip" in css
+    assert "arch-campaign-presence-bit[data-tip]" in css

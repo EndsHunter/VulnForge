@@ -743,20 +743,58 @@ function closeInitModal() {
   hideInitFloatingTip();
 }
 
-/* Floating help tips for #init-modal (avoids overflow:auto clipping) */
+/* Floating help tip. Shared by New audit ? buttons and Mission funnel /
+   presence bits. position:fixed so overflow:auto on the page does not clip it. */
 let _initTipAnchor = null;
+let _floatingTipViewportWired = false;
+const FLOATING_TIP_ID = "init-floating-tip";
 
 function ensureInitFloatingTip() {
   let el = $("#init-floating-tip");
   if (!el) {
     el = document.createElement("div");
-    el.id = "init-floating-tip";
+    el.id = FLOATING_TIP_ID;
     el.className = "init-floating-tip";
     el.setAttribute("role", "tooltip");
     el.hidden = true;
     document.body.appendChild(el);
   }
   return el;
+}
+
+function releaseTipAnchor(anchor) {
+  if (!anchor) return;
+  if (anchor.dataset.tipTitle != null) {
+    anchor.setAttribute("title", anchor.dataset.tipTitle);
+    delete anchor.dataset.tipTitle;
+  }
+  if (anchor.dataset.tipDescribedby != null) {
+    const prev = anchor.dataset.tipDescribedby;
+    if (prev) anchor.setAttribute("aria-describedby", prev);
+    else anchor.removeAttribute("aria-describedby");
+    delete anchor.dataset.tipDescribedby;
+  } else if (anchor.getAttribute("aria-describedby") === FLOATING_TIP_ID) {
+    anchor.removeAttribute("aria-describedby");
+  }
+}
+
+function claimTipAnchor(anchor) {
+  const label = anchor.getAttribute("aria-label") || "";
+  const tipText = (anchor.getAttribute("data-tip") || "").trim();
+  const named = !!(tipText && label.includes(tipText));
+  if (!named) {
+    if (anchor.dataset.tipDescribedby == null) {
+      const prev = anchor.getAttribute("aria-describedby") || "";
+      if (prev !== FLOATING_TIP_ID) anchor.dataset.tipDescribedby = prev;
+    }
+    anchor.setAttribute("aria-describedby", FLOATING_TIP_ID);
+  }
+  if (anchor.hasAttribute("title")) {
+    if (anchor.dataset.tipTitle == null) {
+      anchor.dataset.tipTitle = anchor.getAttribute("title") || "";
+    }
+    anchor.removeAttribute("title");
+  }
 }
 
 function positionInitFloatingTip(anchor) {
@@ -786,12 +824,12 @@ function positionInitFloatingTip(anchor) {
 function showInitFloatingTip(anchor) {
   const text = (anchor?.getAttribute("data-tip") || "").trim();
   if (!text || !anchor) return;
+  if (_initTipAnchor && _initTipAnchor !== anchor) releaseTipAnchor(_initTipAnchor);
   const tip = ensureInitFloatingTip();
   tip.textContent = text;
   tip.hidden = false;
   _initTipAnchor = anchor;
-  const tipId = "init-floating-tip";
-  anchor.setAttribute("aria-describedby", tipId);
+  claimTipAnchor(anchor);
   positionInitFloatingTip(anchor);
 }
 
@@ -800,9 +838,24 @@ function hideInitFloatingTip(anchor) {
   const tip = $("#init-floating-tip");
   if (tip) tip.hidden = true;
   if (_initTipAnchor) {
-    _initTipAnchor.removeAttribute("aria-describedby");
+    releaseTipAnchor(_initTipAnchor);
     _initTipAnchor = null;
   }
+}
+
+function wireFloatingTipViewport() {
+  if (_floatingTipViewportWired) return;
+  _floatingTipViewportWired = true;
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (_initTipAnchor) positionInitFloatingTip(_initTipAnchor);
+    },
+    true
+  );
+  window.addEventListener("resize", () => {
+    if (_initTipAnchor) positionInitFloatingTip(_initTipAnchor);
+  });
 }
 
 /** Event delegation for .init-help buttons inside New audit modal. */
@@ -849,16 +902,64 @@ function wireInitHelpTips() {
     true
   );
 
-  window.addEventListener(
-    "scroll",
-    () => {
-      if (_initTipAnchor) positionInitFloatingTip(_initTipAnchor);
-    },
-    true
-  );
-  window.addEventListener("resize", () => {
-    if (_initTipAnchor) positionInitFloatingTip(_initTipAnchor);
+  wireFloatingTipViewport();
+}
+
+/** Immediate hover tips for Mission funnel stages and who/why-paused bits. */
+function wireMissionHoverTips() {
+  const root = $("#arch-panel");
+  if (!root || root.dataset.tipsWired === "1") return;
+  root.dataset.tipsWired = "1";
+  wireFloatingTipViewport();
+
+  const anchorOf = (target) => {
+    const el = target && target.closest?.("[data-tip]");
+    if (!el || !root.contains(el)) return null;
+    if (!el.closest(".arch-campaign-strip")) return null;
+    return el;
+  };
+  const onEnter = (e) => {
+    const el = anchorOf(e.target);
+    if (el) showInitFloatingTip(el);
+  };
+  const onLeave = (e) => {
+    const el = anchorOf(e.target);
+    if (!el) return;
+    const next = e.relatedTarget;
+    if (next && (next === el || el.contains(next))) return;
+    hideInitFloatingTip(el);
+  };
+
+  root.addEventListener("mouseover", onEnter);
+  root.addEventListener("mouseout", onLeave);
+  root.addEventListener("focusin", onEnter);
+  root.addEventListener("focusout", onLeave);
+  root.addEventListener("click", (e) => {
+    const step = e.target.closest?.(".arch-campaign-funnel-step");
+    if (step && root.contains(step)) hideInitFloatingTip();
   });
+}
+
+function refreshMissionHoverTip() {
+  const apply = () => {
+    const hovered = document.querySelector(
+      "#arch-panel .arch-campaign-strip [data-tip]:hover"
+    );
+    if (hovered) {
+      showInitFloatingTip(hovered);
+      return;
+    }
+    if (
+      _initTipAnchor &&
+      typeof _initTipAnchor.closest === "function" &&
+      _initTipAnchor.closest("#arch-panel") &&
+      !_initTipAnchor.isConnected
+    ) {
+      hideInitFloatingTip();
+    }
+  };
+  apply();
+  requestAnimationFrame(apply);
 }
 
 /* ---------- Host path picker (New audit) ---------- */
@@ -2026,9 +2127,15 @@ function campaignLaneAria(stage, state, counts) {
  * Finding counts: ingested → screened → needs_human → confirmed.
  * Arrows are the funnel, not work-lane progress. Lanes stay concurrent.
  */
+function missionTipId(prefix, id) {
+  const safe = String(id || "item").replace(/[^A-Za-z0-9_-]/g, "") || "item";
+  return prefix + safe;
+}
+
 function renderFindingFunnelHtml(funnel) {
   const steps = funnel || [];
   if (!steps.length) return "";
+  const described = [];
   const body = steps
     .map((step, i) => {
       const arrow =
@@ -2037,28 +2144,61 @@ function renderFindingFunnelHtml(funnel) {
           : "";
       const label = step.label || step.id || "";
       const value = String(step.value ?? 0);
-      const hint = step.hint || label;
+      const hint = String(step.hint || "").trim();
       const aria = label + " " + value;
+      const hintId = hint ? missionTipId("mission-funnel-hint-", step.id || i) : "";
+      const tipAttrs = hint
+        ? ` data-tip="${esc(hint)}" title="${esc(hint)}" aria-describedby="${esc(hintId)}"`
+        : "";
+      if (hint) {
+        described.push(
+          `<span id="${esc(hintId)}" class="visually-hidden">${esc(hint)}</span>`
+        );
+      }
       const inner = `<span class="arch-campaign-funnel-label">${esc(label)}</span><span class="arch-campaign-funnel-value mono">${esc(value)}</span>`;
       if (step.nav) {
-        return `${arrow}<button type="button" class="arch-campaign-funnel-step" data-funnel-idx="${i}" title="${esc(hint)}" aria-label="${esc(aria)}">${inner}</button>`;
+        return `${arrow}<button type="button" class="arch-campaign-funnel-step" data-funnel-idx="${i}"${tipAttrs} aria-label="${esc(aria)}">${inner}</button>`;
       }
-      return `${arrow}<span class="arch-campaign-funnel-step" title="${esc(hint)}" aria-label="${esc(aria)}">${inner}</span>`;
+      const tab = hint ? ' tabindex="0"' : "";
+      return `${arrow}<span class="arch-campaign-funnel-step"${tab}${tipAttrs} aria-label="${esc(aria)}">${inner}</span>`;
     })
     .join("");
-  return `<div class="arch-campaign-funnel" role="group" aria-label="Finding funnel">${body}</div>`;
+  return `<div class="arch-campaign-funnel" role="group" aria-label="Finding funnel">${body}${described.join("")}</div>`;
 }
 
 function renderPresenceHtml(presence) {
+  const segments =
+    presence && Array.isArray(presence.segments) ? presence.segments : [];
   const line = presence && presence.line ? String(presence.line) : "";
-  if (!line) return "";
+  if (!line && !segments.length) return "";
   const paused =
     (presence.pauses && presence.pauses.length) ||
     presence.pausedCount ||
     presence.runnerState === "paused" ||
     presence.runnerState === "pausing";
   const mark = paused ? ' data-paused="1"' : "";
-  return `<p class="arch-campaign-presence" role="status"${mark}>${esc(line)}</p>`;
+  if (!segments.length) {
+    return `<p class="arch-campaign-presence" role="status"${mark}>${esc(line)}</p>`;
+  }
+  const described = [];
+  const bits = segments
+    .map((seg, i) => {
+      const sep = i > 0 ? `<span class="arch-campaign-presence-sep"> · </span>` : "";
+      const text = String(seg.text || "");
+      const tip = String(seg.tip || "").trim();
+      const hintId = tip ? missionTipId("mission-presence-hint-", seg.id || i) : "";
+      const tipAttrs = tip
+        ? ` data-tip="${esc(tip)}" title="${esc(tip)}" aria-describedby="${esc(hintId)}"`
+        : "";
+      if (tip) {
+        described.push(
+          `<span id="${esc(hintId)}" class="visually-hidden">${esc(tip)}</span>`
+        );
+      }
+      return `${sep}<span class="arch-campaign-presence-bit" tabindex="0"${tipAttrs}>${esc(text)}</span>`;
+    })
+    .join("");
+  return `<div class="arch-campaign-presence-wrap"><p class="arch-campaign-presence" role="status"${mark}>${bits}</p>${described.join("")}</div>`;
 }
 
 /**
@@ -2203,6 +2343,7 @@ function bindArchCampaignHandlers(root, vm) {
   const funnel = (vm && vm.funnel) || [];
   scope.querySelectorAll(".arch-campaign-funnel-step[data-funnel-idx]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      hideInitFloatingTip();
       const i = Number(btn.getAttribute("data-funnel-idx"));
       applyKpiNav(funnel[i] && funnel[i].nav);
     });
@@ -3748,6 +3889,7 @@ function archSectionCard(title, count, bodyHtml, extraClass, tone) {
 
 function bindArchPage(el, vm, arch, summary) {
   bindArchCampaignHandlers(el, vm);
+  refreshMissionHoverTip();
   $("#arch-focus-refine")?.addEventListener("click", () => toggleArchRefine(true));
   $("#arch-go-explorer")?.addEventListener("click", () => {
     window.VulnForgeModes?.setMode?.("explorer");
@@ -5397,6 +5539,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   if (page === "run") {
     currentKey = document.body.dataset.runKey;
+    wireMissionHoverTips();
     setupTabs();
     eventOffset = 0;
     loadRunFull()

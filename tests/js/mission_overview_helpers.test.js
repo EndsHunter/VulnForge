@@ -437,7 +437,20 @@ describe("buildFindingFunnel", () => {
     );
     assert.equal(funnel[2].nav.filter, "needs_human");
     assert.equal(funnel[3].nav.filter, "confirmed");
-    assert.equal(funnel[3].hint.includes("Never automatic"), true);
+    assert.deepEqual(
+      funnel.map((s) => s.hint),
+      [
+        "Findings written into this run. Includes every status: new, waiting, accepted, and rejected.",
+        "Findings that are no longer just a fresh candidate. A later check or a person already updated them. Not a separate status of its own.",
+        "Waiting for a person. Automatic checks passed. Not confirmed until someone accepts it.",
+        "A person accepted this finding. Confirmation is never automatic.",
+      ]
+    );
+    const jargon = /\b(mech|disprove|needs_human)\b/i;
+    for (const step of funnel) {
+      assert.equal(jargon.test(step.hint), false);
+      assert.equal(step.hint.length < 220, true);
+    }
   });
 
   it("counts a state map the same way as a finding list", () => {
@@ -491,6 +504,23 @@ describe("buildMissionPresence", () => {
       presence.line,
       "Ralph running · Working: vf-4242-ab12cd34 on hunt #7 · Paused: hunt #8 — operator pause"
     );
+    assert.deepEqual(
+      presence.segments.map((s) => s.id),
+      ["ralph", "working", "paused"]
+    );
+    assert.equal(
+      presence.segments.map((s) => s.text).join(" · "),
+      presence.line
+    );
+    assert.equal(
+      presence.segments[0].tip,
+      "Ralph is the task loop. Running means it is picking up queued work."
+    );
+    assert.equal(
+      presence.segments[1].tip,
+      "Who is on a task right now. The id is the worker holding the lease, then the task kind and number."
+    );
+    assert.match(presence.segments[2].tip, /Operator pause means a person paused that task/);
   });
 
   it("says why Ralph is paused when STOP is set", () => {
@@ -500,6 +530,15 @@ describe("buildMissionPresence", () => {
     });
     assert.equal(presence.runnerWhy, "STOP set");
     assert.equal(presence.line, "Ralph paused — STOP set · No worker leased");
+    assert.deepEqual(
+      presence.segments.map((s) => s.id),
+      ["ralph", "working"]
+    );
+    assert.match(presence.segments[0].tip, /will not pick up work until someone resumes it/);
+    assert.equal(
+      presence.segments[1].tip,
+      "No task is checked out to a worker right now."
+    );
   });
 
   it("explains pausing while workers are still finishing", () => {
@@ -511,6 +550,8 @@ describe("buildMissionPresence", () => {
       presence.line,
       "Ralph pausing — STOP set; workers still finishing · Working: vf-9-aa on recon #2"
     );
+    assert.match(presence.segments[0].tip, /workers already going are still finishing/);
+    assert.equal(presence.segments.some((s) => s.id === "paused"), false);
   });
 
   it("falls back to leased and paused counts when the snap has no task rows", () => {
@@ -524,6 +565,15 @@ describe("buildMissionPresence", () => {
     assert.equal(
       presence.line,
       "Ralph idle · Working: 2 leased · Paused: 1 task"
+    );
+    assert.match(presence.segments.find((s) => s.id === "ralph").tip, /not running/);
+    assert.match(
+      presence.segments.find((s) => s.id === "working").tip,
+      /only has the count, not which worker/
+    );
+    assert.match(
+      presence.segments.find((s) => s.id === "paused").tip,
+      /only has the count, not each reason/
     );
   });
 

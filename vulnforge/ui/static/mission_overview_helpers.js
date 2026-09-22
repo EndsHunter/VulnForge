@@ -462,28 +462,28 @@
         id: "ingested",
         label: "Ingested",
         value: ingested,
-        hint: "Findings recorded in this run, every state.",
+        hint: "Findings written into this run. Includes every status: new, waiting, accepted, and rejected.",
         nav: { mode: "report", tab: "report", filter: "all" },
       },
       {
         id: "screened",
         label: "Screened",
         value: screened,
-        hint: "Left candidate. Mech, disprove, or review wrote a later state. Not a separate stored state.",
+        hint: "Findings that are no longer just a fresh candidate. A later check or a person already updated them. Not a separate status of its own.",
         nav: { mode: "report", tab: "report", filter: "all" },
       },
       {
         id: "needs_human",
         label: "Needs human",
         value: needs,
-        hint: "State needs_human. Mechanical gates passed. Not confirmed.",
+        hint: "Waiting for a person. Automatic checks passed. Not confirmed until someone accepts it.",
         nav: { mode: "report", tab: "report", filter: "needs_human" },
       },
       {
         id: "confirmed",
         label: "Confirmed",
         value: confirmed,
-        hint: "State confirmed. Human accepted. Never automatic.",
+        hint: "A person accepted this finding. Confirmation is never automatic.",
         nav: { mode: "report", tab: "report", filter: "confirmed" },
       },
     ];
@@ -581,6 +581,35 @@
     return "";
   }
 
+  function ralphTip(state) {
+    if (state === "running") {
+      return "Ralph is the task loop. Running means it is picking up queued work.";
+    }
+    if (state === "pausing") {
+      return "Ralph is the task loop. Stop was requested: it will not start new tasks, and workers already going are still finishing.";
+    }
+    if (state === "paused") {
+      return "Ralph is the task loop. Paused means it will not pick up work until someone resumes it.";
+    }
+    if (state === "busy") {
+      return "Ralph is the task loop. The run lock is held, so a second loop cannot start.";
+    }
+    if (state === "idle") {
+      return "Ralph is the task loop. It is not running. Start or resume it from the top bar to pick up queued tasks.";
+    }
+    return "Ralph is the task loop that picks up queued work.";
+  }
+
+  const TIP_WORKING_WHO =
+    "Who is on a task right now. The id is the worker holding the lease, then the task kind and number.";
+  const TIP_WORKING_COUNT =
+    "How many tasks are leased to a worker. This view only has the count, not which worker.";
+  const TIP_WORKING_NONE = "No task is checked out to a worker right now.";
+  const TIP_PAUSED_WHY =
+    "Tasks that stopped before they finished, and why. Operator pause means a person paused that task.";
+  const TIP_PAUSED_COUNT =
+    "How many tasks are paused. This view only has the count, not each reason.";
+
   /**
    * Who is leased, and why Ralph or a task is paused.
    * Reads runner state plus task lease_owner / pause result already on the snap.
@@ -619,22 +648,42 @@
       leasedCount = (Number(summary.leased) || 0) + (Number(summary.running) || 0);
       pausedCount = Number(summary.paused) || 0;
     }
-    const parts = [];
+    const segments = [];
     const ralph = ralphClause(runnerState, runnerWhy);
-    if (ralph) parts.push(ralph);
+    if (ralph) {
+      segments.push({ id: "ralph", text: ralph, tip: ralphTip(runnerState) });
+    }
     if (workers.length) {
-      parts.push(joinCapped("Working: ", workers.map(formatWorkerBit)));
+      segments.push({
+        id: "working",
+        text: joinCapped("Working: ", workers.map(formatWorkerBit)),
+        tip: TIP_WORKING_WHO,
+      });
     } else if (leasedCount > 0) {
-      parts.push("Working: " + leasedCount + " leased");
+      segments.push({
+        id: "working",
+        text: "Working: " + leasedCount + " leased",
+        tip: TIP_WORKING_COUNT,
+      });
     } else {
-      parts.push("No worker leased");
+      segments.push({
+        id: "working",
+        text: "No worker leased",
+        tip: TIP_WORKING_NONE,
+      });
     }
     if (pauses.length) {
-      parts.push(joinCapped("Paused: ", pauses.map(formatPauseBit)));
+      segments.push({
+        id: "paused",
+        text: joinCapped("Paused: ", pauses.map(formatPauseBit)),
+        tip: TIP_PAUSED_WHY,
+      });
     } else if (pausedCount > 0) {
-      parts.push(
-        "Paused: " + pausedCount + (pausedCount === 1 ? " task" : " tasks")
-      );
+      segments.push({
+        id: "paused",
+        text: "Paused: " + pausedCount + (pausedCount === 1 ? " task" : " tasks"),
+        tip: TIP_PAUSED_COUNT,
+      });
     }
     return {
       runnerState,
@@ -643,7 +692,8 @@
       pauses,
       leasedCount,
       pausedCount,
-      line: parts.filter(Boolean).join(" · "),
+      segments,
+      line: segments.map((s) => s.text).join(" · "),
     };
   }
 
