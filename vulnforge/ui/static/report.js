@@ -19,10 +19,6 @@
   let clustersCache = [];
   /** Map finding_id -> cluster member meta */
   let clusterByFinding = {};
-  /** Selected finding ids for attack chain builder */
-  let selectedIds = new Set();
-  let chainsCache = [];
-  let openChainId = null;
   let reportPanelsBound = false;
   /** Client-side search (case-insensitive substring) */
   let searchQuery = "";
@@ -1741,7 +1737,7 @@
     if (!tbody) return;
     const rows = sortedFindings();
     if (!cache.length) {
-      tbody.innerHTML = `<tr><td colspan="8"><div class="empty empty-cta">
+      tbody.innerHTML = `<tr><td colspan="7"><div class="empty empty-cta">
         <p><strong>No findings yet</strong></p>
         <p class="controls-hint">Run recon and hunts, then return here. Use Explorer to steer work.</p>
         <div class="empty-cta-actions">
@@ -1763,7 +1759,7 @@
       const msg = searchOrFilterActive()
         ? "No findings match this search / filter."
         : "No findings match this filter.";
-      tbody.innerHTML = `<tr><td colspan="8" class="empty">${msg}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" class="empty">${msg}</td></tr>`;
       updateSearchCount();
       updateSortHeaders();
       return;
@@ -1783,16 +1779,12 @@
               }</span>`
             : "";
         const llmBadge = llmVerifyBadge(f);
-        const checked = selectedIds.has(Number(f.id)) ? " checked" : "";
         const group = grouping ? nearDupGroupKey(f) : "";
         const groupStart = grouping && group !== prevGroup;
         prevGroup = group;
         const groupClass = groupStart ? " near-dup-cluster-start" : "";
         const groupAttr = grouping ? ` data-near-group="${esc(group)}"` : "";
         return `<tr class="report-row${open ? " open" : ""}${f.near_dup || cm ? " near-dup-row" : ""}${groupClass}" data-fid="${f.id}"${groupAttr} tabindex="0">
-          <td class="report-check-cell" onclick="event.stopPropagation()">
-            <input type="checkbox" class="report-select-cb" data-fid="${f.id}" aria-label="Select finding ${f.id}"${checked} />
-          </td>
           <td class="mono">${f.id}</td>
           <td class="report-title-cell">${esc(b.title || f.stable_key || "-")} ${near} ${llmBadge}</td>
           <td><span class="mono">${esc(b.weakness_class || "-")}</span></td>
@@ -1803,16 +1795,6 @@
         </tr>`;
       })
       .join("");
-
-    tbody.querySelectorAll(".report-select-cb").forEach((cb) => {
-      cb.addEventListener("change", (e) => {
-        e.stopPropagation();
-        const id = Number(cb.getAttribute("data-fid"));
-        if (!id) return;
-        if (cb.checked) selectedIds.add(id);
-        else selectedIds.delete(id);
-      });
-    });
 
     tbody.querySelectorAll(".report-row").forEach((tr) => {
       const openDetail = () => {
@@ -2240,26 +2222,6 @@
   setupExportModal();
   ensureExportMeta();
 
-  async function exportRawProjection(name) {
-    if (!meta.target_id || !meta.run_id) {
-      toast("No run loaded", true);
-      return;
-    }
-    try {
-      const data = await (typeof window.api === "function"
-        ? window.api(
-            `/api/runs/${encodeURIComponent(meta.target_id)}/${encodeURIComponent(meta.run_id)}/project/${encodeURIComponent(name)}`
-          )
-        : fetch(
-            `/api/runs/${encodeURIComponent(meta.target_id)}/${encodeURIComponent(meta.run_id)}/project/${encodeURIComponent(name)}`
-          ).then((r) => r.json()));
-      downloadBlob(name, data.content ?? "", "text/plain;charset=utf-8");
-      toast(`Downloaded ${name}`);
-    } catch (e) {
-      toast(e.message || String(e), true);
-    }
-  }
-
   function rebuildClusterIndex() {
     clusterByFinding = {};
     for (const c of clustersCache) {
@@ -2372,293 +2334,10 @@
     });
   }
 
-  function chainScopeStates() {
-    const sel = $("#report-chain-scope");
-    const raw = sel ? sel.value : "confirmed";
-    return String(raw || "confirmed")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-
-  async function loadChains() {
-    const base = apiBase();
-    const el = $("#report-chains-list");
-    if (!base) {
-      if (el) el.innerHTML = `<p class="controls-hint">No run loaded.</p>`;
-      return;
-    }
-    try {
-      const r = await callApi(`${base}/chains`);
-      chainsCache = Array.isArray(r.chains) ? r.chains : [];
-      renderChainsList();
-      if (openChainId) {
-        const ch = chainsCache.find((c) => c.id === openChainId);
-        if (ch) renderChainDetail(ch);
-        else {
-          openChainId = null;
-          const d = $("#report-chain-detail");
-          if (d) {
-            d.hidden = true;
-            d.innerHTML = "";
-          }
-        }
-      }
-    } catch (e) {
-      if (el) {
-        el.innerHTML = `<p class="controls-hint err">${esc(e.message || String(e))}</p>`;
-      }
-    }
-  }
-
-  function renderChainsList() {
-    const el = $("#report-chains-list");
-    if (!el) return;
-    if (!chainsCache.length) {
-      el.innerHTML = `<p class="controls-hint">No attack chains yet. Select findings (checkboxes) or create from scope.</p>`;
-      return;
-    }
-    el.innerHTML = chainsCache
-      .map((c) => {
-        const n = (c.steps || []).length;
-        const open = openChainId === c.id;
-        return `<div class="report-chain-row${open ? " open" : ""}" data-chain="${esc(c.id)}">
-          <button type="button" class="btn btn-ghost report-chain-open" data-chain="${esc(c.id)}">
-            <strong>${esc(c.title || "Chain")}</strong>
-            <span class="controls-hint mono">${esc(String(c.id).slice(0, 8))}… · ${n} step${n === 1 ? "" : "s"}</span>
-          </button>
-          <button type="button" class="btn btn-sm report-chain-export" data-chain="${esc(c.id)}" title="Export markdown">MD</button>
-          <button type="button" class="btn btn-sm btn-bad report-chain-delete" data-chain="${esc(c.id)}" title="Delete chain">Delete</button>
-        </div>`;
-      })
-      .join("");
-    el.querySelectorAll(".report-chain-open").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const id = btn.getAttribute("data-chain");
-        const ch = chainsCache.find((c) => c.id === id);
-        if (ch) {
-          openChainId = id;
-          renderChainsList();
-          renderChainDetail(ch);
-        }
-      });
-    });
-    el.querySelectorAll(".report-chain-export").forEach((btn) => {
-      btn.addEventListener("click", () => exportChainMd(btn.getAttribute("data-chain")));
-    });
-    el.querySelectorAll(".report-chain-delete").forEach((btn) => {
-      btn.addEventListener("click", () => deleteChain(btn.getAttribute("data-chain")));
-    });
-  }
-
-  function renderChainDetail(chain) {
-    const d = $("#report-chain-detail");
-    if (!d || !chain) return;
-    d.hidden = false;
-    const steps = chain.steps || [];
-    const stepsHtml = steps
-      .map((s, i) => {
-        const f = cache.find((x) => Number(x.id) === Number(s.finding_id));
-        const title = f ? bodyOf(f).title || f.stable_key : "";
-        const st = f ? f.state : "";
-        return `<div class="report-chain-step" data-idx="${i}">
-          <span class="mono">#${i + 1}</span>
-          <button type="button" class="btn btn-ghost btn-sm report-open-related" data-fid="${s.finding_id}">finding #${s.finding_id}</button>
-          ${st ? badge(st) : ""}
-          <span class="report-related-title">${esc(title || "")}</span>
-          <input type="text" class="report-chain-role" data-idx="${i}" placeholder="role" value="${esc(s.role || "")}" />
-          <input type="text" class="report-chain-notes" data-idx="${i}" placeholder="notes" value="${esc(s.notes || "")}" />
-          <span class="controls-hint mono">${esc(s.poc_path || "no poc")}</span>
-          <button type="button" class="btn btn-sm report-chain-up" data-idx="${i}" title="Move up" ${i === 0 ? "disabled" : ""}>↑</button>
-          <button type="button" class="btn btn-sm report-chain-down" data-idx="${i}" title="Move down" ${i >= steps.length - 1 ? "disabled" : ""}>↓</button>
-        </div>`;
-      })
-      .join("");
-    d.innerHTML = `
-      <div class="report-chain-detail-inner" data-chain="${esc(chain.id)}">
-        <div class="report-panel-head">
-          <label class="field-label">Title
-            <input type="text" id="report-chain-title" value="${esc(chain.title || "")}" />
-          </label>
-          <div>
-            <button type="button" class="btn btn-sm btn-primary" id="report-chain-save">Save steps</button>
-            <button type="button" class="btn btn-sm" id="report-chain-export-detail">Export MD</button>
-            <button type="button" class="btn btn-sm" id="report-chain-close-detail">Close</button>
-          </div>
-        </div>
-        <p class="controls-hint">Scope: <span class="mono">${esc((chain.include_states || []).join(", "))}</span>
-          · stored under <span class="mono">evidence/chains/${esc(chain.id)}.json</span></p>
-        <div class="report-chain-steps">${stepsHtml || '<p class="controls-hint">No steps.</p>'}</div>
-      </div>`;
-    d.querySelectorAll(".report-open-related").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const fid = Number(btn.getAttribute("data-fid"));
-        if (fid) openFinding(fid);
-      });
-    });
-    d.querySelectorAll(".report-chain-up").forEach((btn) => {
-      btn.addEventListener("click", () => reorderChainStep(chain, Number(btn.getAttribute("data-idx")), -1));
-    });
-    d.querySelectorAll(".report-chain-down").forEach((btn) => {
-      btn.addEventListener("click", () => reorderChainStep(chain, Number(btn.getAttribute("data-idx")), 1));
-    });
-    $("#report-chain-save")?.addEventListener("click", () => saveChainEdits(chain));
-    $("#report-chain-export-detail")?.addEventListener("click", () => exportChainMd(chain.id));
-    $("#report-chain-close-detail")?.addEventListener("click", () => {
-      openChainId = null;
-      d.hidden = true;
-      d.innerHTML = "";
-      renderChainsList();
-    });
-  }
-
-  function collectChainStepsFromDom(chain) {
-    const steps = (chain.steps || []).map((s) => ({ ...s }));
-    const d = $("#report-chain-detail");
-    if (!d) return steps;
-    d.querySelectorAll(".report-chain-role").forEach((inp) => {
-      const i = Number(inp.getAttribute("data-idx"));
-      if (steps[i]) steps[i].role = inp.value || "";
-    });
-    d.querySelectorAll(".report-chain-notes").forEach((inp) => {
-      const i = Number(inp.getAttribute("data-idx"));
-      if (steps[i]) steps[i].notes = inp.value || "";
-    });
-    return steps;
-  }
-
-  async function reorderChainStep(chain, idx, delta) {
-    const steps = collectChainStepsFromDom(chain);
-    const j = idx + delta;
-    if (j < 0 || j >= steps.length) return;
-    const tmp = steps[idx];
-    steps[idx] = steps[j];
-    steps[j] = tmp;
-    const titleEl = $("#report-chain-title");
-    await putChain({
-      ...chain,
-      title: titleEl ? titleEl.value : chain.title,
-      steps,
-    });
-  }
-
-  async function saveChainEdits(chain) {
-    const titleEl = $("#report-chain-title");
-    await putChain({
-      ...chain,
-      title: titleEl ? titleEl.value : chain.title,
-      steps: collectChainStepsFromDom(chain),
-    });
-  }
-
-  async function putChain(chain) {
-    const base = apiBase();
-    if (!base || !chain?.id) return;
-    try {
-      const r = await callApi(`${base}/chains/${encodeURIComponent(chain.id)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: chain.id,
-          title: chain.title || "Attack chain",
-          include_states: chain.include_states,
-          steps: chain.steps || [],
-        }),
-      });
-      toast("Chain saved");
-      openChainId = r.chain?.id || chain.id;
-      await loadChains();
-    } catch (e) {
-      toast(e.message || String(e), true);
-    }
-  }
-
-  async function createChain(opts) {
-    const base = apiBase();
-    if (!base) {
-      toast("No run loaded", true);
-      return;
-    }
-    const include_states = chainScopeStates();
-    const body = {
-      include_states,
-      title: "",
-      enqueue_poc: false,
-      operator: "operator",
-    };
-    if (opts && opts.fromSelection) {
-      const ids = [...selectedIds];
-      if (!ids.length) {
-        toast("Select findings with checkboxes first", true);
-        return;
-      }
-      body.finding_ids = ids;
-    }
-    try {
-      const r = await callApi(`${base}/chains/from-findings`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      toast(`Created chain ${r.chain?.id?.slice?.(0, 8) || ""}… (${(r.chain?.steps || []).length} steps)`);
-      openChainId = r.chain?.id || null;
-      selectedIds.clear();
-      renderTable();
-      await loadChains();
-    } catch (e) {
-      toast(e.message || String(e), true);
-    }
-  }
-
-  async function deleteChain(chainId) {
-    const base = apiBase();
-    if (!base || !chainId) return;
-    try {
-      await callApi(`${base}/chains/${encodeURIComponent(chainId)}`, {
-        method: "DELETE",
-      });
-      toast("Chain deleted");
-      if (openChainId === chainId) {
-        openChainId = null;
-        const d = $("#report-chain-detail");
-        if (d) {
-          d.hidden = true;
-          d.innerHTML = "";
-        }
-      }
-      await loadChains();
-    } catch (e) {
-      toast(e.message || String(e), true);
-    }
-  }
-
-  async function exportChainMd(chainId) {
-    const base = apiBase();
-    if (!base || !chainId) return;
-    try {
-      const r = await callApi(`${base}/chains/${encodeURIComponent(chainId)}/export`);
-      downloadBlob(
-        r.filename || `chain-${chainId}.md`,
-        r.markdown || "",
-        "text/markdown;charset=utf-8"
-      );
-      toast("Exported chain markdown");
-    } catch (e) {
-      toast(e.message || String(e), true);
-    }
-  }
-
   function setupReportPanels() {
     if (reportPanelsBound) return;
     reportPanelsBound = true;
     $("#report-clusters-refresh")?.addEventListener("click", () => loadClusters());
-    $("#report-chains-refresh")?.addEventListener("click", () => loadChains());
-    $("#report-chain-create")?.addEventListener("click", () =>
-      createChain({ fromSelection: true })
-    );
-    $("#report-chain-create-all")?.addEventListener("click", () =>
-      createChain({ fromSelection: false })
-    );
   }
 
   function wireReportStateTips() {
@@ -2707,13 +2386,6 @@
     setupExportModal();
     ensureExportMeta();
     setupBookTabs();
-    $$("[data-export-proj]").forEach((btn) => {
-      if (btn.dataset.bound) return;
-      btn.dataset.bound = "1";
-      btn.addEventListener("click", () =>
-        exportRawProjection(btn.getAttribute("data-export-proj"))
-      );
-    });
 
     const search = $("#report-search");
     if (search && !search.dataset.bound) {
@@ -2789,9 +2461,8 @@
     renderTable();
     updateSearchCount();
     updateSortHeaders();
-    // Load clusters + chains (async); badges update when clusters return
+    // Near-dup badges and row grouping depend on cluster membership.
     loadClusters().catch(() => {});
-    loadChains().catch(() => {});
     // Restore open detail after refresh / human review (if still visible under filter/search)
     if (openId != null) {
       const stillVisible = sortedFindings().some(
@@ -2816,27 +2487,6 @@
     if (pocFindingId != null && isPocOpen()) {
       const pf = cache.find((x) => Number(x.id) === Number(pocFindingId));
       if (pf) fillPocWorkshopHeader(pf, pocLastLoad);
-    }
-
-    // Optional: list available projection downloads
-    const raw = $("#report-raw-exports");
-    if (raw) {
-      const files = snap.project_files || [];
-      if (!files.length) {
-        raw.innerHTML = `<span class="controls-hint">No raw projection files yet (generate on idle).</span>`;
-      } else {
-        raw.innerHTML = files
-          .map(
-            (f) =>
-              `<button type="button" class="btn btn-ghost btn-sm" data-export-proj="${esc(f.name)}">${esc(f.name)}</button>`
-          )
-          .join(" ");
-        raw.querySelectorAll("[data-export-proj]").forEach((btn) => {
-          btn.addEventListener("click", () =>
-            exportRawProjection(btn.getAttribute("data-export-proj"))
-          );
-        });
-      }
     }
   }
 
