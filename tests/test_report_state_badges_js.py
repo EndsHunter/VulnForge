@@ -34,7 +34,7 @@ def test_report_state_badges_js():
     )
 
 
-def test_report_rows_use_progression_trail():
+def test_report_rows_show_current_state_only():
     report = REPORT_JS.read_text(encoding="utf-8")
     html = RUN_HTML.read_text(encoding="utf-8")
     css = CSS.read_text(encoding="utf-8")
@@ -44,8 +44,21 @@ def test_report_rows_use_progression_trail():
     assert html.index('src="/static/report_state_badges.js"') < html.index(
         'src="/static/report.js"'
     )
+    # Detail / context may still use the trail helper. The State column is current status only.
     assert "function stateTrailHtml(" in report
-    assert 'class="report-state-cell">${stateTrailHtml(f)}' in report
+    assert 'class="report-state-cell">${badge(f.state, f)}' in report
+    assert 'class="report-state-cell">${stateTrailHtml(f)}' not in report
+    assert "Click a count to filter the table" not in report
+    assert "report-disclaimer" not in report
+    assert "Row badges follow proposed" not in report
+    assert 'data-rfilter="near_dup"' in report
+    assert "function nearDupGroupKey(" in report
+    assert "nearDupFilterActive()" in report
+    assert "near-dup-cluster-start" in report
+    assert "Near-dup / Overlaps" not in html
+    assert 'id="report-clusters"' not in html
+    assert "Related variants" not in report
+    assert "Merge metadata" not in report
     assert "llm survived" not in report
     assert "wireReportStateTips(" in report
     assert "data-tip=" in report
@@ -56,6 +69,7 @@ def test_report_rows_use_progression_trail():
 
     assert ".badge.step-stood" in css
     assert ".report-state-trail" in css
+    assert ".near-dup-cluster-start" in css
     confirmed_rule = next(
         line for line in css.splitlines() if ".badge.confirmed" in line and "succeeded" in line
     )
