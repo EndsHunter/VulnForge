@@ -1,15 +1,16 @@
-"""Hunt mixture-of-agents helpers (spike #68).
+"""Hunt mixture-of-agents helpers (spike #68, wired by #71).
 
 Pure resolve + merge for sequential multi-perspective hunt. Mirrors
 ``validate_llm.resolve_disprove_verifiers`` / ``aggregate_disprove_verdicts``:
 config slots, then a merge that never confirms.
 
-This module is the thin proof. ``stages.hunt.run`` does not loop perspectives
-until a follow-up PR turns ``stages.hunt_moa`` on (default off).
+``stages.hunt.run`` loops perspectives only when ``stages.hunt_moa`` is true
+(default off). ``build_hunt_moa_body`` is the finding-body contract #73 reads.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from vulnforge.findings.identity import compute_stable_key
@@ -21,8 +22,8 @@ from vulnforge.findings.merge import merge_key
 EMIT_STATE = "candidate"
 _FORBIDDEN_EMIT_STATES = frozenset({"confirmed"})
 
-# Default slots when llm.hunt_perspectives is omitted. Prompt files land
-# with the wiring PR; resolve only names them.
+# Default slots when llm.hunt_perspectives is omitted. Prompt files live in
+# seeds/system/ (hunt_sink.md, hunt_dataflow.md, hunt_authz.md).
 _DEFAULT_HUNT_PERSPECTIVES: list[dict[str, str]] = [
     {"id": "sink_driven", "prompt": "hunt_sink.md"},
     {"id": "dataflow", "prompt": "hunt_dataflow.md"},
@@ -47,8 +48,7 @@ def default_hunt_perspective_prompt(perspective_id: str) -> str:
 def hunt_moa_enabled(cfg: dict) -> bool:
     """Return True only when stages.hunt_moa is explicitly on.
 
-    Missing / false → off. Hunt.py must keep today's single-pass loop
-    until the wiring PR reads this flag.
+    Missing / false → off. ``stages.hunt.run`` keeps the single-pass loop.
     """
     stages = cfg.get("stages") if isinstance(cfg, dict) else None
     if not isinstance(stages, dict):
@@ -143,11 +143,113 @@ def merge_hunt_candidates(
     return result
 
 
+_TITLE_CLIP = 160
+_REASON_CLIP = 240
+
+
+def slot_evidence_id(task_id: int, perspective_id: str, index: int = 0) -> str:
+    """Distinct evidence pack id for one MoA slot (session auth is per loop)."""
+    from vulnforge.tools.evidence_write import InvalidEvidenceId, sanitize_evidence_id
+
+    raw = f"t{int(task_id)}-{perspective_id}"
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-._")
+    if not cleaned or not cleaned[0].isalnum():
+        cleaned = f"t{int(task_id)}p{int(index) + 1}"
+    cleaned = cleaned[:128]
+    try:
+        return sanitize_evidence_id(cleaned)
+    except InvalidEvidenceId:
+        return sanitize_evidence_id(f"t{int(task_id)}p{int(index) + 1}")
+
+
+def build_hunt_moa_body(
+    slots: list[dict[str, Any]] | None,
+    *,
+    n_perspectives: int,
+    agree_count: int = 0,
+    cell_outcome: str = "none",
+) -> dict[str, Any]:
+    """Build the ``body.hunt_moa`` object (#71 writes, #73 reads).
+
+    ``slots`` use internal outcomes ``candidate`` | ``none`` | ``aborted`` |
+    ``skipped``. Public perspective outcomes are only ``candidate`` or ``none``.
+    ``requeue_note`` is ``all_perspectives_none``, ``partial_none``, or None.
+    ``label`` is ``{agree_count}/{n_perspectives} hunt agree``. Never confirmed.
+    """
+    n = max(0, int(n_perspectives))
+    cell = str(cell_outcome or "").strip().lower()
+    if cell != "candidate":
+        cell = "none"
+    agree = max(0, int(agree_count)) if cell == "candidate" else 0
+
+    perspectives: list[dict[str, Any]] = []
+    none_ids: list[str] = []
+    internals: list[str] = []
+    for i, raw in enumerate(slots or []):
+        if not isinstance(raw, dict):
+            pid = f"slot_{i + 1}"
+            internal = "none"
+            cand = None
+            title = None
+            reason = None
+        else:
+            pid = str(
+                raw.get("perspective_id") or raw.get("id") or f"slot_{i + 1}"
+            ).strip() or f"slot_{i + 1}"
+            internal = str(raw.get("outcome") or "").strip().lower() or "none"
+            cand = raw.get("candidate") if isinstance(raw.get("candidate"), dict) else None
+            title = raw.get("title")
+            reason = raw.get("reason") or raw.get("none_reason")
+        internals.append(internal)
+        public = "candidate" if internal == "candidate" else "none"
+        entry: dict[str, Any] = {"id": pid, "outcome": public}
+        if not title and isinstance(cand, dict):
+            title = cand.get("title")
+        if title and str(title).strip():
+            entry["title"] = _clip(str(title), _TITLE_CLIP)
+        if (not reason or not str(reason).strip()) and public == "candidate" and isinstance(
+            cand, dict
+        ):
+            reason = cand.get("summary")
+        if reason and str(reason).strip():
+            entry["reason"] = _clip(str(reason), _REASON_CLIP)
+        perspectives.append(entry)
+        if public == "none" and pid not in none_ids:
+            none_ids.append(pid)
+
+    if cell == "candidate" and any(x == "none" for x in internals):
+        note: str | None = "partial_none"
+    elif cell == "none" and internals and all(x == "none" for x in internals):
+        note = "all_perspectives_none"
+    else:
+        note = None
+
+    record = {
+        "perspectives": perspectives,
+        "agree_count": agree,
+        "label": f"{agree}/{n} hunt agree",
+        "cell_outcome": cell,
+        "requeue_note": note,
+        "none_perspectives": none_ids,
+    }
+    _assert_never_confirmed(record)
+    return record
+
+
 def result_emits_confirmed(result: dict[str, Any] | None) -> bool:
     """True if any finding-state field in the merge result is ``confirmed``."""
     if not isinstance(result, dict):
         return False
     return _walk_emits_confirmed(result)
+
+
+def _clip(text: str, limit: int) -> str:
+    s = " ".join(str(text).split())
+    if len(s) <= limit:
+        return s
+    if limit <= 3:
+        return s[:limit]
+    return s[: limit - 3].rstrip() + "..."
 
 
 def _normalize_slot(perspective_id: str, body: dict, profile: str) -> dict[str, Any]:

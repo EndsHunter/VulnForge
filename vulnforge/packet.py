@@ -604,6 +604,8 @@ def pack_hunt(
     seed_sinks: list | None = None,
     known_findings: list[str] | None = None,
     codemap: dict | None = None,
+    perspective: str | None = None,
+    perspective_id: str | None = None,
 ) -> Packet:
     system = load_prompt_slice(prompts_root, "PRINCIPLES.md")
     cls = task_payload.get("class") or "wildcard"
@@ -707,6 +709,18 @@ def pack_hunt(
         or ""
     ).strip()
     op_block = ""
+    perspective_txt = ""
+    if perspective:
+        rel = str(perspective).replace("\\", "/").lstrip("/")
+        if ".." in rel.split("/"):
+            raise PermissionError(f"path escape: {perspective}")
+        try:
+            perspective_txt = "\n\n" + load_prompt_slice(prompts_root, rel)
+        except FileNotFoundError:
+            perspective_txt = (
+                f"\n\n# Perspective: {perspective_id or rel}\n"
+                f"(Perspective prompt missing: {rel}. Follow PRINCIPLES and the class skill only.)\n"
+            )
     if op_notes:
         op_block = (
             "\n## Operator brief (authoritative for this hunt)\n"
@@ -726,6 +740,7 @@ def pack_hunt(
         f"path_hints={task_payload.get('path_hints')}\n"
         f"{scope_note}\n"
         f"{class_md}{angles_block}"
+        f"{perspective_txt}"
         f"{op_block}{sel_block}"
         f"## Architecture (area slice)\n{arch}\n"
         f"{cm_struct_block}"
@@ -792,6 +807,11 @@ def pack_hunt(
             "class": cls,
             "seed_sinks": len(sinks),
             "tools_allowlist": tools_allowlist,
+            **(
+                {"perspective": perspective, "perspective_id": perspective_id}
+                if perspective or perspective_id
+                else {}
+            ),
         },
         over_budget=total > budget * 1.5,
     )

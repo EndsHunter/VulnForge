@@ -9,7 +9,7 @@
 | Change hunting angle library | `seeds/system/hunting_angles.md` (+ profile `angle_ids`) |
 | Change hunt packet packing | `vulnforge/packet.py` → hunt pack helpers |
 | Change hunt stage loop / split / abort | `vulnforge/stages/hunt.py` |
-| Hunt MoA resolve / merge (sequential perspectives; default off) | `vulnforge/stages/hunt_moa.py` + spike [2026-09-22-hunt-moa.md](../spikes/2026-09-22-hunt-moa.md); config `llm.hunt_perspectives` / `stages.hunt_moa`. Settings page persists both via `config/ui_settings.json` |
+| Hunt MoA resolve / merge / sequential loop (default off) | `vulnforge/stages/hunt.py` + `hunt_moa.py`; prompts `seeds/system/hunt_sink.md`, `hunt_dataflow.md`, `hunt_authz.md`; spike [2026-09-22-hunt-moa.md](../spikes/2026-09-22-hunt-moa.md); config `llm.hunt_perspectives` / `stages.hunt_moa`. Settings page persists both via `config/ui_settings.json` |
 | Context-window continuation | `continue_hunt` tool + `vulnforge/tools/continue_task.py` + `agent_runtime/context_watch.py` |
 | Add or extend agent tools | `vulnforge/tools/agent/<name>.py` (see `toolgen.md`, [LAYOUT](../../LAYOUT.md)) |
 | Change tool allowlists | profile tools + `config/default_tools.json` / Dev Tools defaults |

@@ -9,6 +9,13 @@ from typing import Any
 from vulnforge.agent_runtime import run_tool_loop as run_agent_tool_loop
 from vulnforge.llm import InfraError, classify_llm_failure
 from vulnforge.packet import pack_hunt, refuse_if_over_budget
+from vulnforge.stages.hunt_moa import (
+    build_hunt_moa_body,
+    hunt_moa_enabled,
+    merge_hunt_candidates,
+    resolve_hunt_perspectives,
+    slot_evidence_id,
+)
 from vulnforge.tools import build_tool_handler
 from vulnforge.tools.queue_note import flush_notes_to_db
 from vulnforge.transcript import save_transcript
@@ -88,6 +95,8 @@ def _mark_sink_coverage(
 
 
 def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
+    if hunt_moa_enabled(cfg if isinstance(cfg, dict) else {}):
+        return _run_hunt_moa(task, db, run_dir, cfg if isinstance(cfg, dict) else {})
     run_row = db.get_run()
     if not run_row:
         return {"status": "failed_task", "error": "no_run"}
@@ -557,6 +566,814 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         return out_ns
     finally:
         client.close()
+
+
+def _rounds_consumed(result: Any, allotted: int) -> int:
+    """Tool rounds this slot spent, capped by the rounds it was given.
+
+    The lease shares one ``llm.max_tool_rounds`` budget. A slot must not be
+    charged more than its allotment, and a max_tool_rounds miss consumes the
+    allotment even when usage is missing.
+    """
+    allotted_n = max(0, int(allotted))
+    usage = getattr(result, "usage", None)
+    calls = 0
+    if usage is not None:
+        raw = usage.get("llm_calls") if isinstance(usage, dict) else getattr(usage, "llm_calls", None)
+        try:
+            calls = int(raw or 0)
+        except (TypeError, ValueError):
+            calls = 0
+    if calls <= 0:
+        err = str(getattr(result, "error", "") or "")
+        if "max_tool_rounds" in err:
+            return allotted_n
+        transcript = getattr(result, "transcript", None) or []
+        calls = sum(
+            1
+            for message in transcript
+            if isinstance(message, dict) and message.get("role") == "assistant"
+        )
+    if calls <= 0:
+        calls = 1 if allotted_n else 0
+    return max(0, min(calls, allotted_n))
+
+
+def _merge_usage(acc: dict[str, Any], fields: dict[str, Any] | None) -> dict[str, Any]:
+    if not fields:
+        return acc
+    if not acc:
+        return dict(fields)
+    out = dict(acc)
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "reasoning_tokens",
+        "llm_calls",
+    ):
+        if key in out or key in fields:
+            out[key] = int(out.get(key) or 0) + int(fields.get(key) or 0)
+    if fields.get("usage_source"):
+        out["usage_source"] = fields["usage_source"]
+    return out
+
+
+def _reset_perspective_session(session: dict) -> None:
+    """Drop slot submit/evidence auth. Keep lease-level tools, notes, and spawns.
+
+    Each perspective must ``write_evidence`` itself. Session membership does
+    not carry a previous slot's pack.
+    """
+    session["candidate"] = None
+    session["none_reason"] = None
+    session["evidence_id"] = None
+    session["evidence_ids_written"] = []
+    for key in (
+        "continued",
+        "continue_auto",
+        "continue_child_task_id",
+        "continue_handoff",
+        "operator_forced_submit_none",
+    ):
+        session.pop(key, None)
+
+
+def _moa_coverage(db, payload, arch, cfg, *, area: str, cls: str, depth: str) -> None:
+    db.upsert_coverage_fact(area, cls, visit_delta=1, last_depth=depth)
+    _mark_sink_coverage(
+        db,
+        payload,
+        arch,
+        cfg,
+        area=area,
+        attack_class=cls,
+        visit_delta=1,
+        last_depth=depth,
+    )
+
+
+def _moa_base(task, model_id: str | None, usage: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "model_id": model_id,
+        "transcript": f"task-{task.id}",
+    }
+    out.update(usage or {})
+    return out
+
+
+def _save_perspective_transcript(
+    run_dir: Path,
+    task,
+    *,
+    model_id: str | None,
+    result,
+    session: dict,
+    usage_fields: dict[str, Any],
+    payload: dict,
+    temp: float,
+    allotted: int,
+    total_rounds: int,
+    perspective_id: str,
+    perspective: str,
+    slot_tools: list[str],
+) -> None:
+    try:
+        evidence_ids = list(session.get("evidence_ids_written") or [])
+        if session.get("evidence_id") and session["evidence_id"] not in evidence_ids:
+            evidence_ids.append(session["evidence_id"])
+        files_created: list[str] = []
+        for eid in evidence_ids:
+            pack = Path(run_dir) / "evidence" / str(eid)
+            if pack.is_dir():
+                for f in pack.rglob("*"):
+                    if f.is_file():
+                        try:
+                            files_created.append(
+                                str(f.relative_to(run_dir)).replace("\\", "/")
+                            )
+                        except ValueError:
+                            files_created.append(str(f))
+            else:
+                files_created.append(f"evidence/{eid}/")
+        save_transcript(
+            run_dir,
+            task.id,
+            kind="hunt",
+            model_id=model_id,
+            messages=list(result.transcript or []),
+            result={
+                "ok": result.ok,
+                "classification": result.classification.value,
+                "error": result.error,
+                "content": result.content,
+                "evidence_id": session.get("evidence_id"),
+                "evidence_ids": evidence_ids,
+                **usage_fields,
+            },
+            meta={
+                "payload": payload,
+                "tools_used": list(slot_tools),
+                "evidence_id": session.get("evidence_id"),
+                "evidence_ids_written": evidence_ids,
+                "files_created": files_created,
+                "temperature": temp,
+                "max_tool_rounds": allotted,
+                "max_tool_rounds_total": total_rounds,
+                "agent_runtime": "strands",
+                "perspective_id": perspective_id,
+                "perspective": perspective,
+            },
+            pass_key=perspective_id,
+        )
+    except OSError:
+        pass
+
+
+def _flush_moa_notes(ctx, db, session: dict, codemap_struct) -> None:
+    flush_notes_to_db(ctx, db)
+    try:
+        from vulnforge.tools.codemap import merge_annotations_into_codemap
+
+        note_rows = [
+            n
+            for n in (session.get("notes") or [])
+            if isinstance(n, dict) and n.get("kind") == "codemap"
+        ]
+        if note_rows:
+            base_cm = db.get_codemap() or codemap_struct
+            if base_cm:
+                db.set_codemap(
+                    merge_annotations_into_codemap(base_cm, note_rows),
+                    source="merge",
+                )
+    except Exception:
+        pass
+
+
+def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
+    """Sequential perspectives inside the already-held hunt lease.
+
+    Flag-off hunts never enter here. One shared ``max_tool_rounds`` budget,
+    one merge, at most one candidate insert, one coverage upsert.
+    ``validate_mech`` is enqueued only when that candidate exists.
+    ``continue_hunt`` stops the panel; the child is a full hunt, not a resumed slot.
+    """
+    run_row = db.get_run()
+    if not run_row:
+        return {"status": "failed_task", "error": "no_run"}
+    target = Path(run_row["target_path"])
+    arch = db.get_architecture() or {}
+    payload = dict(task.payload or {})
+    codemap_struct = None
+    try:
+        codemap_struct = db.get_codemap()
+    except Exception:
+        codemap_struct = None
+    architecture_txt = _architecture_slice(arch, payload, codemap=codemap_struct)
+    known_findings = _known_findings_readable(db)
+    known_keys = [f.stable_key for f in db.list_findings()]
+    codemap_notes = [
+        json.dumps(n["payload"])[:200]
+        for n in db.list_notes(kind="codemap")
+    ]
+    seed_sinks = _resolve_task_seed_sinks(payload, arch, cfg)
+    session: dict = {
+        "candidate": None,
+        "none_reason": None,
+        "notes": [],
+        "tools_used": [],
+        "evidence_id": None,
+        "evidence_ids_written": [],
+    }
+
+    def _submit_candidate(body: dict) -> dict:
+        prepared, err = prepare_candidate_submission(
+            body, session, Path(run_dir / "evidence")
+        )
+        if err is not None:
+            return err
+        session["candidate"] = prepared
+        return {
+            "ok": True,
+            "stored": "candidate",
+            "evidence_id": prepared.get("evidence_id"),
+        }
+
+    def _submit_none(args: dict) -> dict:
+        reason = args.get("reason") if isinstance(args, dict) else str(args)
+        if not reason or not str(reason).strip():
+            return {"ok": False, "error": "reason required"}
+        session["none_reason"] = str(reason).strip()
+        from vulnforge.live_task import operator_force_active
+
+        if operator_force_active():
+            session["operator_forced_submit_none"] = True
+        return {"ok": True, "stored": "none"}
+
+    path_hints = list(payload.get("path_hints") or [])
+    try:
+        profile = str(run_row["profile"] or "")
+    except (KeyError, IndexError, TypeError):
+        profile = ""
+    if not profile:
+        profile = str((cfg.get("run") or {}).get("profile") or "code_static")
+    target_root = str(target if target.is_dir() else target.parent)
+    ctx = {
+        "target_root": target_root,
+        "evidence_root": str(run_dir / "evidence"),
+        "run_dir": run_dir,
+        "task_id": task.id,
+        "task_payload": payload,
+        "db": db,
+        "cfg": cfg,
+        "session": session,
+        "submit_candidate": _submit_candidate,
+        "submit_none": _submit_none,
+        "scope": {
+            "enabled": True,
+            "path_hints": path_hints,
+            "path_prefix": payload.get("path_prefix") or "",
+            "force_depth": bool(payload.get("force_depth")),
+            "widened": False,
+        },
+    }
+    if isinstance(cfg.get("run"), dict):
+        cfg.setdefault("run", {})
+        cfg["run"]["profile"] = profile
+    else:
+        cfg = dict(cfg)
+        cfg["run"] = {**(cfg.get("run") or {}), "profile": profile}
+        ctx["cfg"] = cfg
+    handler = build_tool_handler(ctx)
+    prompts_root = system_prompts_root()
+    perspectives = resolve_hunt_perspectives(cfg)
+    area = payload.get("area", "app")
+    cls = payload.get("class", "wildcard")
+    hunt_class = str(payload.get("class") or "wildcard").strip() or "wildcard"
+    total_rounds = int((cfg.get("llm") or {}).get("max_tool_rounds", 12))
+    remaining = total_rounds
+    temp = float((cfg.get("llm") or {}).get("temperature_hunt", 0.4))
+
+    from vulnforge.llm_models import make_client_for_model, make_client_for_stage
+
+    client = make_client_for_stage(cfg, "hunt")
+    try:
+        try:
+            model_id = client.fingerprint_model()
+        except InfraError as e:
+            return {"status": "failed_infra", "error": str(e)}
+
+        slot_rows: list[dict[str, Any]] = []
+        usage_acc: dict[str, Any] = {}
+        last_abort_result = None
+        fake = bool((cfg.get("llm") or {}).get("fake"))
+
+        for index, slot in enumerate(perspectives):
+            pid = str(slot.get("id") or f"perspective_{index + 1}")
+            prompt = str(slot.get("prompt") or "")
+            if remaining <= 0:
+                slot_rows.append(
+                    {
+                        "perspective_id": pid,
+                        "outcome": "skipped",
+                        "none_reason": "shared_round_budget_exhausted",
+                    }
+                )
+                continue
+
+            _reset_perspective_session(session)
+            ctx["default_evidence_id"] = slot_evidence_id(task.id, pid, index)
+            try:
+                packet = pack_hunt(
+                    cfg,
+                    prompts_root,
+                    payload,
+                    architecture_txt,
+                    known_keys,
+                    codemap_notes,
+                    seed_sinks=seed_sinks or [],
+                    known_findings=known_findings,
+                    codemap=codemap_struct,
+                    perspective=prompt or None,
+                    perspective_id=pid,
+                )
+            except PermissionError as e:
+                return {"status": "failed_task", "error": str(e), "perspective_id": pid}
+            try:
+                refuse_if_over_budget(packet)
+            except Exception as e:
+                return {
+                    "status": "failed_task",
+                    "error": f"over_budget: {e}",
+                    "perspective_id": pid,
+                }
+
+            slot_model = str(slot.get("model") or "").strip()
+            active = client
+            owned = None
+            slot_model_id = model_id
+            if slot_model and not fake:
+                owned = make_client_for_model(cfg, slot_model)
+                active = owned
+            tools_before = len(session.get("tools_used") or [])
+            allotted = remaining
+            try:
+                if owned is not None:
+                    try:
+                        slot_model_id = owned.fingerprint_model()
+                    except InfraError as e:
+                        return {
+                            "status": "failed_infra",
+                            "error": str(e),
+                            "perspective_id": pid,
+                            "model_id": slot_model,
+                        }
+                result = run_agent_tool_loop(
+                    active,
+                    packet,
+                    handler,
+                    max_rounds=allotted,
+                    temperature=temp,
+                    cfg=cfg,
+                )
+            finally:
+                if owned is not None:
+                    try:
+                        owned.close()
+                    except Exception:
+                        pass
+
+            used = _rounds_consumed(result, allotted)
+            remaining = max(0, remaining - used)
+            usage_fields = record_llm_result(
+                run_dir,
+                task_id=task.id,
+                kind=f"hunt:{hunt_class}",
+                model_id=slot_model_id,
+                result=result,
+                extra={
+                    "class": hunt_class,
+                    "area": payload.get("area"),
+                    "perspective_id": pid,
+                },
+            )
+            usage_acc = _merge_usage(usage_acc, usage_fields)
+            model_id = slot_model_id or model_id
+            slot_tools = list(session.get("tools_used") or [])[tools_before:]
+            _save_perspective_transcript(
+                run_dir,
+                task,
+                model_id=slot_model_id,
+                result=result,
+                session=session,
+                usage_fields=usage_fields,
+                payload=payload,
+                temp=temp,
+                allotted=allotted,
+                total_rounds=total_rounds,
+                perspective_id=pid,
+                perspective=prompt,
+                slot_tools=slot_tools,
+            )
+
+            if result.ok and session.get("continued"):
+                # Child is a new hunt lease. Do not merge a half-finished panel.
+                _moa_coverage(
+                    db, payload, arch, cfg, area=area, cls=cls, depth="continued"
+                )
+                flush_notes_to_db(ctx, db)
+                return {
+                    "status": "succeeded",
+                    "continued": True,
+                    "auto_continued": bool(session.get("continue_auto")),
+                    "child_task_id": session.get("continue_child_task_id"),
+                    "spawned_hunts": list(session.get("spawned_hunts") or []),
+                    "perspective_id": pid,
+                    **_moa_base(task, model_id, usage_acc),
+                }
+
+            if not result.ok:
+                status = classify_llm_failure(result)
+                err = result.error or result.classification.value
+                from vulnforge.agent_runtime.context_watch import (
+                    is_context_overflow_error,
+                )
+                from vulnforge.tools.continue_task import maybe_auto_continue
+
+                if is_context_overflow_error(err, result.classification):
+                    cont = maybe_auto_continue(
+                        ctx,
+                        kind="hunt",
+                        error=err,
+                        transcript=list(result.transcript or []),
+                    )
+                    if cont:
+                        _moa_coverage(
+                            db,
+                            payload,
+                            arch,
+                            cfg,
+                            area=area,
+                            cls=cls,
+                            depth="continued",
+                        )
+                        return {
+                            "status": "succeeded",
+                            "error": err,
+                            "perspective_id": pid,
+                            **_moa_base(task, model_id, usage_acc),
+                            **cont,
+                        }
+                if status == "failed_infra":
+                    return {
+                        "status": "failed_infra",
+                        "error": err,
+                        "perspective_id": pid,
+                        **_moa_base(task, model_id, usage_acc),
+                    }
+                is_abort = status == "failed_task" and (
+                    str(err) in ABORT_ERRORS or "max_tool_rounds" in str(err)
+                )
+                if is_abort:
+                    last_abort_result = result
+                slot_rows.append(
+                    {
+                        "perspective_id": pid,
+                        "outcome": "aborted" if is_abort else "error",
+                        "none_reason": (
+                            "max_tool_rounds" if "max_tool_rounds" in str(err) else str(err)
+                        ),
+                        "status": status,
+                    }
+                )
+                continue
+
+            if session.get("none_reason") is not None:
+                slot_rows.append(
+                    {
+                        "perspective_id": pid,
+                        "outcome": "none",
+                        "none_reason": session.get("none_reason"),
+                    }
+                )
+                if session.get("operator_forced_submit_none"):
+                    break
+                continue
+
+            if session.get("candidate"):
+                slot_rows.append(
+                    {
+                        "perspective_id": pid,
+                        "outcome": "candidate",
+                        "candidate": dict(session["candidate"]),
+                    }
+                )
+                continue
+
+            last_abort_result = result
+            slot_rows.append(
+                {
+                    "perspective_id": pid,
+                    "outcome": "aborted",
+                    "none_reason": "no_submit",
+                    "status": "failed_task",
+                }
+            )
+
+        while len(slot_rows) < len(perspectives):
+            missing = perspectives[len(slot_rows)]
+            slot_rows.append(
+                {
+                    "perspective_id": str(missing.get("id") or f"slot_{len(slot_rows) + 1}"),
+                    "outcome": "skipped",
+                    "none_reason": "not_run",
+                }
+            )
+
+        return _finish_hunt_moa(
+            task,
+            db,
+            run_dir,
+            cfg,
+            ctx=ctx,
+            session=session,
+            payload=payload,
+            arch=arch,
+            codemap_struct=codemap_struct,
+            profile=profile,
+            area=area,
+            cls=cls,
+            model_id=model_id,
+            usage_acc=usage_acc,
+            perspectives=perspectives,
+            slot_rows=slot_rows,
+            last_abort_result=last_abort_result,
+        )
+    finally:
+        client.close()
+
+
+def _finish_hunt_moa(
+    task,
+    db,
+    run_dir: Path,
+    cfg: dict,
+    *,
+    ctx: dict,
+    session: dict,
+    payload: dict,
+    arch: dict,
+    codemap_struct,
+    profile: str,
+    area: str,
+    cls: str,
+    model_id: str | None,
+    usage_acc: dict[str, Any],
+    perspectives: list[dict[str, Any]],
+    slot_rows: list[dict[str, Any]],
+    last_abort_result,
+) -> dict[str, Any]:
+    merge_input: list[dict[str, Any]] = []
+    for row in slot_rows:
+        outcome = row.get("outcome")
+        if outcome == "candidate" and isinstance(row.get("candidate"), dict):
+            merge_input.append(
+                {
+                    "perspective_id": row.get("perspective_id"),
+                    "outcome": "candidate",
+                    "candidate": row["candidate"],
+                }
+            )
+        elif outcome == "none":
+            merge_input.append(
+                {
+                    "perspective_id": row.get("perspective_id"),
+                    "outcome": "none",
+                    "none_reason": row.get("none_reason"),
+                }
+            )
+    merged = merge_hunt_candidates(merge_input, profile=profile)
+    tops = list(merged.get("candidates") or [])
+    cell = "candidate" if tops else "none"
+    agree = int(tops[0].get("agree_count") or 0) if tops else 0
+    record = build_hunt_moa_body(
+        slot_rows,
+        n_perspectives=len(perspectives),
+        agree_count=agree,
+        cell_outcome=cell,
+    )
+    base = _moa_base(task, model_id, usage_acc)
+    spawned = list(session.get("spawned_hunts") or [])
+    shallow = is_shallow(session, profile=profile)
+
+    if tops:
+        _flush_moa_notes(ctx, db, session, codemap_struct)
+        body = dict(tops[0].get("body") or {})
+        body.pop("state", None)
+        body["hunt_moa"] = record
+        from vulnforge.findings.merge import merge_near_duplicate
+
+        merge_info = merge_near_duplicate(db, body, profile=profile)
+        if merge_info and merge_info.get("superseded_existing"):
+            fid = merge_info["finding_id"]
+            need_validate = bool(merge_info.get("revalidate", False))
+        else:
+            # Hunt MoA is propose-only. The column state is candidate, never confirmed.
+            fid = db.insert_finding(body, state="candidate", profile=profile)
+            need_validate = True
+        if need_validate:
+            db.enqueue_task(
+                "validate_mech",
+                {"finding_id": fid, "parent_task_id": task.id},
+                priority=20,
+            )
+        _moa_coverage(db, payload, arch, cfg, area=area, cls=cls, depth="candidate")
+        out_ok: dict[str, Any] = {
+            "status": "succeeded",
+            "finding_id": fid,
+            "shallow": shallow,
+            "spawned_hunts": spawned,
+            "hunt_moa": record,
+            **base,
+        }
+        if merge_info:
+            out_ok["merge"] = merge_info
+        return out_ok
+
+    aborts = [r for r in slot_rows if r.get("outcome") == "aborted"]
+    errors = [r for r in slot_rows if r.get("outcome") == "error"]
+    nones = [r for r in slot_rows if r.get("outcome") == "none"]
+    if aborts or (errors and nones) or (not nones and not errors):
+        return _finish_moa_abort(
+            task,
+            db,
+            run_dir,
+            cfg,
+            payload=payload,
+            arch=arch,
+            area=area,
+            cls=cls,
+            shallow=shallow,
+            base=base,
+            aborts=aborts,
+            session=session,
+            last_abort_result=last_abort_result,
+        )
+    if errors and not nones:
+        err_row = errors[-1]
+        return {
+            "status": err_row.get("status") or "failed_task",
+            "error": err_row.get("none_reason") or "no_submit",
+            "perspective_id": err_row.get("perspective_id"),
+            **base,
+        }
+
+    return _finish_moa_none(
+        task,
+        db,
+        run_dir,
+        cfg,
+        ctx=ctx,
+        session=session,
+        payload=payload,
+        arch=arch,
+        codemap_struct=codemap_struct,
+        area=area,
+        cls=cls,
+        shallow=shallow,
+        base=base,
+        spawned=spawned,
+        record=record,
+        slot_rows=slot_rows,
+    )
+
+
+def _finish_moa_abort(
+    task,
+    db,
+    run_dir: Path,
+    cfg: dict,
+    *,
+    payload: dict,
+    arch: dict,
+    area: str,
+    cls: str,
+    shallow: bool,
+    base: dict[str, Any],
+    aborts: list[dict[str, Any]],
+    session: dict,
+    last_abort_result,
+) -> dict[str, Any]:
+    reasons = [str(r.get("none_reason") or "") for r in aborts]
+    if any("max_tool_rounds" in r for r in reasons):
+        err = "max_tool_rounds"
+    elif reasons:
+        err = reasons[-1] or "no_submit"
+    else:
+        err = "max_tool_rounds"
+    _moa_coverage(db, payload, arch, cfg, area=area, cls=cls, depth="aborted")
+    diagnostics: dict[str, Any] = {}
+    if last_abort_result is not None:
+        diagnostics = _diagnose_no_submit(last_abort_result, session)
+    out: dict[str, Any] = {
+        "status": "failed_task",
+        "error": err,
+        "aborted_scope": True,
+        "shallow": shallow,
+        "diagnostics": diagnostics,
+        **base,
+    }
+    split_info = maybe_auto_split(task, db, cfg, run_dir)
+    if split_info:
+        out["split"] = split_info
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "Hunt task %s MoA ended without a candidate (%s).",
+        task.id,
+        err,
+    )
+    return out
+
+
+def _finish_moa_none(
+    task,
+    db,
+    run_dir: Path,
+    cfg: dict,
+    *,
+    ctx: dict,
+    session: dict,
+    payload: dict,
+    arch: dict,
+    codemap_struct,
+    area: str,
+    cls: str,
+    shallow: bool,
+    base: dict[str, Any],
+    spawned: list,
+    record: dict[str, Any],
+    slot_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """All-none (or none plus budget skips). One coverage write. No finding insert."""
+    _flush_moa_notes(ctx, db, session, codemap_struct)
+    db.insert_note(
+        "hunt_moa",
+        {"area": area, "class": cls, "hunt_moa": record},
+        task_id=task.id,
+    )
+    reasons = [
+        str(r.get("none_reason") or "").strip()
+        for r in slot_rows
+        if r.get("outcome") == "none" and str(r.get("none_reason") or "").strip()
+    ]
+    reason = "; ".join(reasons) if reasons else "no issue"
+    if shallow_none_should_requeue(session, payload, shallow):
+        _moa_coverage(db, payload, arch, cfg, area=area, cls=cls, depth="shallow")
+        child_payload = {
+            **payload,
+            "force_depth": True,
+            "shallow_requeued": True,
+            "parent_task_id": task.id,
+        }
+        child_id = db.enqueue_task("hunt", child_payload, priority=45)
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "vf",
+                    "event": "shallow_requeue",
+                    "task_id": task.id,
+                    "child_task_id": child_id,
+                    "area": area,
+                    "class": cls,
+                },
+            )
+        except OSError:
+            pass
+        return {
+            "status": "succeeded",
+            "none_found": True,
+            "reason": reason,
+            "shallow": True,
+            "shallow_requeued": True,
+            "child_task_id": child_id,
+            "spawned_hunts": spawned,
+            "hunt_moa": record,
+            **base,
+        }
+    depth = "shallow" if shallow else "none"
+    _moa_coverage(db, payload, arch, cfg, area=area, cls=cls, depth=depth)
+    return {
+        "status": "succeeded",
+        "none_found": True,
+        "reason": reason,
+        "shallow": shallow,
+        "spawned_hunts": spawned,
+        "hunt_moa": record,
+        **base,
+    }
 
 
 def _diagnose_no_submit(result: LLMResult, session: dict) -> dict[str, Any]:

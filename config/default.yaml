@@ -56,11 +56,11 @@ llm:
       prompt: disprove_threat.md
     - id: code_mitigation
       prompt: disprove_code.md
-  # Sequential hunt MoA perspectives (issue #68). resolve_hunt_perspectives reads
-  # this list. Settings → Hunt perspectives can replace it (id + optional model;
-  # not validate_models). An empty UI list keeps this YAML. hunt.py does not
-  # loop them until stages.hunt_moa is true (default off). Prompt files land in
-  # the wiring PR; per-slot model is optional.
+  # Sequential hunt MoA perspectives (issue #68 / #71). resolve_hunt_perspectives
+  # reads this list. Settings → Hunt perspectives can replace it (id + optional
+  # model; not validate_models). Empty UI list keeps this YAML. hunt.py loops
+  # them only when stages.hunt_moa is true (default off). Prompt files:
+  # seeds/system/hunt_*.md. Per-slot model is optional.
   hunt_perspectives:
     - id: sink_driven
       prompt: hunt_sink.md
@@ -126,8 +126,10 @@ stages:
   # See docs/harness/validate/README.md and seeds/system/disprove.md.
   validate_llm: true
   # Sequential multi-perspective hunt (docs/harness/spikes/2026-09-22-hunt-moa.md).
-  # Default off. Settings → Hunt perspectives writes this flag (UI wins).
-  # Enabling is a no-op until the wiring PR. Merge never sets confirmed.
+  # Default off: one pack_hunt + one tool loop. Settings → Hunt perspectives
+  # writes this flag (UI wins). When true, hunt.py runs llm.hunt_perspectives
+  # sequentially inside the lease, shares max_tool_rounds, merges once, and
+  # inserts at most one candidate. Merge never sets confirmed.
   hunt_moa: false
   # Multi-model PoC referee after harness run (default on; never auto-confirm)
   validate_poc_referee: true
