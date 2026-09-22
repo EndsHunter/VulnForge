@@ -75,3 +75,34 @@ def test_report_rows_show_current_state_only():
     )
     assert "step-stood" not in confirmed_rule
     assert "step-pass" not in confirmed_rule
+
+
+def test_report_folds_disk_projections_into_export():
+    """Attack chains and the raw shelf stay off Report; project/* downloads live in Export."""
+    report = REPORT_JS.read_text(encoding="utf-8")
+    html = RUN_HTML.read_text(encoding="utf-8")
+    css = CSS.read_text(encoding="utf-8")
+
+    assert 'id="report-chains-card"' not in html
+    assert 'id="report-chain-create"' not in html
+    assert "report-chain-honesty" not in html
+    assert "report-select-cb" not in report
+    assert "function loadChains(" not in report
+    assert 'id="report-raw-exports"' not in html
+    assert "report-raw-card" not in html
+
+    modal = html.split('id="report-export-modal"', 1)[1].split('id="poc-modal"', 1)[0]
+    assert "Disk projections" in modal
+    assert 'id="report-export-projections"' in modal
+    assert "function exportRawProjection(" in report
+    assert "/project/${encodeURIComponent(name)}" in report
+    assert "snap.project_files" in report
+    assert "No project files on disk yet." in report
+    assert report.count("renderExportProjections()") >= 3
+    open_body = report.split("function openExportModal", 1)[1].split(
+        "function closeExportModal", 1
+    )[0]
+    refresh_body = report.split("function renderReport", 1)[1]
+    assert "renderExportProjections()" in open_body
+    assert "renderExportProjections()" in refresh_body
+    assert ".report-export-projections" in css
