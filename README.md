@@ -124,7 +124,8 @@ vf dashboard
 | New audit | Dashboard **New audit**, or `vf init --target PATH` |
 | Drive queue | Dashboard **Start**, or `python scripts/ralph.py --run-dir DIR` |
 | One task only | `vf run-once --run-dir DIR` |
-| Status | `vf status --run-dir DIR` or Mission (campaign strip) |
+| Status | `vf status --run-dir DIR`, Mission strip, or `GET .../campaign/status` |
+| Campaign verbs | `GET /api/campaign/grammar` — `start` `stop` `pause` `resume` `status` `findings` `gate` ([docs/harness/CAMPAIGN.md](docs/harness/CAMPAIGN.md)) |
 | Steer | Explorer (enqueue hunts), Hunts (residual cells), Report (accept/reject) |
 | Dev tools | Home → **Dev** — hunt skills + recon agents; generate custom skills |
 | Tool gaps | `vf tool-gaps --run-dir DIR` or Home **Tool gaps** |

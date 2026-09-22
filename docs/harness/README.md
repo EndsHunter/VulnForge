@@ -8,6 +8,8 @@ init → recon → hunt → validate_mech → validate_llm (default on) → huma
 
 Ralph (`scripts/ralph.py` / `vf run-once`) leases one task, runs the stage handler, and exits. Durable state lives in `harness.db`, `evidence/`, transcripts, and events.
 
+Campaign control (start / stop / pause / resume / status / findings / gate) is one grammar over that loop: [CAMPAIGN.md](CAMPAIGN.md). It does not add a second runner.
+
 | Stage | Task kind | LLM? | Maintainer docs |
 |-------|-----------|------|-----------------|
 | **Recon** | `recon` | Yes | [recon/](recon/) |
@@ -51,6 +53,7 @@ Stage LLM packets load markdown from `seeds/system/` (with optional `config/prom
 |-------|----------|
 | Stage handlers | `vulnforge/stages/<kind>.py` |
 | Enqueue / requeue ops | `vulnforge/control/ops.py` |
+| Campaign verbs (start/stop/pause/resume/status/findings/gate) | `vulnforge/control/campaign.py` — [CAMPAIGN.md](CAMPAIGN.md) |
 | Packet builders | `vulnforge/packet.py` |
 | Package layout map | [docs/LAYOUT.md](../LAYOUT.md) |
 | Topology / flow | [docs/AGENTS_MAP.md](../AGENTS_MAP.md) |

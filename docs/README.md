@@ -8,6 +8,7 @@ VulnForge keeps operator docs, maintainer maps, and campaign prompts in differen
 |-----|------|
 | Install, smoke, daily CLI | [`README.md`](../README.md) |
 | Labels, exit codes, CLI contract | [`PROTOCOL.md`](../PROTOCOL.md) |
+| Campaign verbs (start/stop/pause/resume/status/findings/gate) | [`harness/CAMPAIGN.md`](harness/CAMPAIGN.md) |
 | Research cockpit while a run is live | Dashboard at `http://127.0.0.1:8787` |
 
 ## Coding agents

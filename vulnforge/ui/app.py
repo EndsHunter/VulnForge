@@ -26,6 +26,7 @@ from vulnforge.transcript import (
     list_transcript_passes,
     load_transcript,
 )
+from vulnforge.control import campaign as campaign_ctl
 from vulnforge.ui import ops as dashops
 from vulnforge.ui import runner as runctl
 from vulnforge.ui import store
@@ -43,6 +44,38 @@ def incomplete_from_flags(has_work: bool, runner_state: str | None) -> bool:
     """True when residual queue work remains but the runner is not alive."""
     rstate = runner_state or "idle"
     return bool(has_work) and rstate not in _RUNNER_ALIVE
+
+
+def _campaign_http(result: dict[str, Any]) -> dict[str, Any]:
+    """Map a campaign verb result onto the legacy lifecycle status codes."""
+    http = int(result.pop("http", 200 if result.get("ok") else 400))
+    if not result.get("ok"):
+        raise HTTPException(http, str(result.get("error") or "campaign verb failed"))
+    return result
+
+
+def _campaign_finding_args(
+    body: Optional[CampaignControlBody],
+    *,
+    state: str,
+    attack_class: str,
+    q: str,
+    limit: int,
+) -> dict[str, Any]:
+    picked_state = ((body.state if body and body.state else "") or state).strip()
+    picked_class = (
+        (body.attack_class if body and body.attack_class else "") or attack_class
+    ).strip()
+    picked_q = ((body.q if body and body.q else "") or q).strip()
+    picked_limit = body.limit if body and body.limit is not None else limit
+    args: dict[str, Any] = {"limit": int(picked_limit)}
+    if picked_state:
+        args["state"] = picked_state
+    if picked_class:
+        args["class"] = picked_class
+    if picked_q:
+        args["q"] = picked_q
+    return args
 
 
 def with_runner_flags(
@@ -101,6 +134,17 @@ class ControlBody(BaseModel):
     workers: Optional[int] = None  # defaults from UI settings
     # Dev/API only: named profile under config/harnesses/ (not operator UI)
     loop_profile_id: Optional[str] = None
+
+
+class CampaignControlBody(ControlBody):
+    """Start/resume knobs plus findings filters for the campaign grammar."""
+
+    state: Optional[str] = None
+    attack_class: Optional[str] = Field(default=None, alias="class")
+    q: Optional[str] = None
+    limit: Optional[int] = None
+
+    model_config = {"populate_by_name": True}
 
 
 class ChatTurnBody(BaseModel):
@@ -3169,6 +3213,102 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
     def api_stop_hard(target_id: str, run_id: str):
         run = _get_run(target_id, run_id)
         return runctl.stop_run_hard(run.path)
+
+    # ---------- API: campaign control grammar (clients of the routes above) ----------
+
+    @app.get("/api/campaign/grammar")
+    def api_campaign_grammar():
+        """Static start/stop/pause/resume/status/findings/gate map."""
+        return campaign_ctl.describe_grammar()
+
+    @app.get("/api/runs/{target_id}/{run_id}/campaign")
+    def api_campaign_home(target_id: str, run_id: str):
+        run = _get_run(target_id, run_id)
+        return campaign_ctl.campaign_home(run)
+
+    def _dispatch_campaign(
+        run: store.RunRef,
+        verb: str,
+        method: str,
+        body: Optional[CampaignControlBody],
+        *,
+        state: str,
+        attack_class: str,
+        q: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        name = verb.strip().lower()
+        if name not in campaign_ctl.VERBS:
+            raise HTTPException(404, f"unknown campaign verb: {name}")
+        if method.upper() == "GET" and name not in campaign_ctl.READ_VERBS:
+            raise HTTPException(
+                405,
+                f"use POST for campaign verb {name}",
+                headers={"Allow": "POST"},
+            )
+        if name in ("start", "resume"):
+            try:
+                args: dict[str, Any] = control_start_kwargs(body or ControlBody())
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+        elif name == "findings":
+            args = _campaign_finding_args(
+                body,
+                state=state,
+                attack_class=attack_class,
+                q=q,
+                limit=limit,
+            )
+        else:
+            args = {}
+        return _campaign_http(
+            campaign_ctl.apply(run, name, args)
+        )
+
+    @app.get("/api/runs/{target_id}/{run_id}/campaign/{verb}")
+    def api_campaign_get(
+        target_id: str,
+        run_id: str,
+        verb: str,
+        state: str = "",
+        attack_class: str = Query("", alias="class"),
+        q: str = "",
+        limit: int = Query(40, ge=1),
+    ):
+        run = _get_run(target_id, run_id)
+        return _dispatch_campaign(
+            run,
+            verb,
+            "GET",
+            None,
+            state=state,
+            attack_class=attack_class,
+            q=q,
+            limit=limit,
+        )
+
+    @app.post("/api/runs/{target_id}/{run_id}/campaign/{verb}")
+    def api_campaign_post(
+        target_id: str,
+        run_id: str,
+        verb: str,
+        body: CampaignControlBody = Body(default_factory=CampaignControlBody),
+        state: str = "",
+        attack_class: str = Query("", alias="class"),
+        q: str = "",
+        limit: int = Query(40, ge=1),
+    ):
+        run = _get_run(target_id, run_id)
+        return _dispatch_campaign(
+            run,
+            verb,
+            "POST",
+            body,
+            state=state,
+            attack_class=attack_class,
+            q=q,
+            limit=limit,
+        )
 
     @app.delete("/api/runs/{target_id}/{run_id}")
     def api_delete_run(

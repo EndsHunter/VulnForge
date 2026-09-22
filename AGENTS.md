@@ -53,6 +53,10 @@ The dashboard is the main operator surface:
 - Implementation: `vulnforge/operator_chat/` (control-plane tools only — not the code_static hunt agent loop). Sessions: `config/operator_chat/home/` or `{run_dir}/operator_chat/`.
 - Chat **enqueues** work; Ralph **executes** hunts.
 
+### Campaign control grammar
+
+Seven verbs — `start`, `stop`, `pause`, `resume`, `status`, `findings`, `gate` — on `/api/runs/{target_id}/{run_id}/campaign/{verb}`. They call the existing Ralph runner and `harness.db` (dashboard lifecycle and operator chat use the same functions). `gate` reads the HITL inbox and never sets `confirmed`. Contract: [`docs/harness/CAMPAIGN.md`](docs/harness/CAMPAIGN.md) and `GET /api/campaign/grammar`.
+
 ### Steer a live campaign
 
 1. Start Ralph from the mission bar.

@@ -835,7 +835,7 @@ flowchart TB
 
 | Mode | Purpose |
 |------|---------|
-| **Mission** | Architecture map + campaign strip; Ralph control |
+| **Mission** | Architecture map + campaign strip; Ralph control via the campaign grammar (`start` / `stop` / `pause` / `resume` / `status` / `findings` / `gate`) |
 | **Hunts** | Residual-risk matrix; re-queue cells with notes |
 | **Explorer** | Code browse; selection hunts (`POST …/hunts/from-selection`) |
 | **Report** | Findings + human gates + PoC workshop |
@@ -857,6 +857,7 @@ vulnforge/
   operator_chat/         # Home + run AI co-pilot (Confirm for mutators)
   packet.py              # Packet builder; schemas projected from tool SPECs
   control/ops.py         # Hunts requeue, cell detail, selection hunt, browse
+  control/campaign.py    # Campaign verb grammar → Ralph runner + harness.db + HITL gate
   stages/
     recon.py             # Multi recon-agent map + hunt planner + merge
     hunt.py              # Area×class tool-loop + shallow/split + candidate prep
