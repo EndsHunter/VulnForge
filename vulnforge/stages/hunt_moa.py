@@ -30,6 +30,20 @@ _DEFAULT_HUNT_PERSPECTIVES: list[dict[str, str]] = [
 ]
 
 
+def default_hunt_perspective_prompt(perspective_id: str) -> str:
+    """Prompt file for a perspective id.
+
+    Known built-in ids keep their spike filenames. Any other id gets
+    ``hunt_<id>.md`` so a Settings row without a prompt is still resolvable.
+    """
+    pid = str(perspective_id or "").strip()
+    for row in _DEFAULT_HUNT_PERSPECTIVES:
+        if row["id"] == pid:
+            return row["prompt"]
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in pid).strip("_")
+    return f"hunt_{safe or 'perspective'}.md"
+
+
 def hunt_moa_enabled(cfg: dict) -> bool:
     """Return True only when stages.hunt_moa is explicitly on.
 

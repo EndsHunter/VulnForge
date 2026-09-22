@@ -25,6 +25,7 @@ from vulnforge.settings import (
     load_ui_settings,
     normalize_api_key,
     normalize_api_mode,
+    normalize_hunt_perspectives,
 )
 
 # Tiny tool schema for compliance probe (OpenAI-style).
@@ -671,6 +672,13 @@ def optimize_ui_settings(
     tests: list[dict[str, Any]] = []
     warnings: list[str] = []
     recommended = dict(DEFAULT_UI_SETTINGS)
+    # Fresh lists — do not share mutable defaults. Keep hunt slots the operator
+    # already saved; optimize must not reset them or copy validate_models.
+    recommended["validate_models"] = list(DEFAULT_UI_SETTINGS.get("validate_models") or [])
+    recommended["hunt_moa"] = bool(current.get("hunt_moa", False))
+    recommended["hunt_perspectives"] = normalize_hunt_perspectives(
+        current.get("hunt_perspectives")
+    )
     # Preserve operator caps that are not model-derived
     recommended["host"] = host
     recommended["port"] = port

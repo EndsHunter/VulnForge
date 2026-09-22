@@ -30,6 +30,132 @@
     console[bad ? "error" : "log"](msg);
   }
 
+  // Built-in slots match stages.hunt_moa defaults. Not validate_models.
+  const DEFAULT_HUNT_PERSPECTIVES = [
+    { id: "sink_driven", prompt: "hunt_sink.md", model: "" },
+    { id: "dataflow", prompt: "hunt_dataflow.md", model: "" },
+    { id: "authz", prompt: "hunt_authz.md", model: "" },
+  ];
+
+  function defaultHuntPrompt(id) {
+    const pid = String(id || "").trim();
+    const known = DEFAULT_HUNT_PERSPECTIVES.find((row) => row.id === pid);
+    if (known) return known.prompt;
+    const safe = pid.replace(/[^A-Za-z0-9_-]/g, "_").replace(/^_+|_+$/g, "");
+    return `hunt_${safe || "perspective"}.md`;
+  }
+
+  function huntPerspectiveRow(slot) {
+    const row = document.createElement("div");
+    row.className = "hunt-perspective-row";
+    const idField = document.createElement("div");
+    idField.className = "field";
+    const idInput = document.createElement("input");
+    idInput.className = "mono";
+    idInput.dataset.field = "id";
+    idInput.setAttribute("aria-label", "Perspective id");
+    idInput.autocomplete = "off";
+    idInput.placeholder = "sink_driven";
+    idInput.value = slot?.id || "";
+    idInput.dataset.prev = idInput.value.trim();
+    idField.appendChild(idInput);
+
+    const modelField = document.createElement("div");
+    modelField.className = "field";
+    const modelInput = document.createElement("input");
+    modelInput.className = "mono";
+    modelInput.dataset.field = "model";
+    modelInput.setAttribute("aria-label", "Perspective model");
+    modelInput.autocomplete = "off";
+    modelInput.placeholder = "(hunt model)";
+    modelInput.value = slot?.model || "";
+    modelField.appendChild(modelInput);
+
+    const promptInput = document.createElement("input");
+    promptInput.type = "hidden";
+    promptInput.dataset.field = "prompt";
+    promptInput.value = slot?.prompt || defaultHuntPrompt(idInput.value);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "btn";
+    remove.dataset.action = "remove";
+    remove.textContent = "Remove";
+    remove.setAttribute("aria-label", "Remove perspective");
+
+    row.appendChild(idField);
+    row.appendChild(modelField);
+    row.appendChild(promptInput);
+    row.appendChild(remove);
+
+    idInput.addEventListener("input", () => {
+      const prev = idInput.dataset.prev || "";
+      const cur = promptInput.value.trim();
+      const auto =
+        !cur || cur === defaultHuntPrompt(prev) || cur === `hunt_${prev}.md`;
+      if (auto) promptInput.value = defaultHuntPrompt(idInput.value.trim());
+      idInput.dataset.prev = idInput.value.trim();
+      updateHuntModelWarn(readHuntPerspectives());
+    });
+    modelInput.addEventListener("input", () => {
+      updateHuntModelWarn(readHuntPerspectives());
+    });
+    return row;
+  }
+
+  function readHuntPerspectives() {
+    const rows = document.querySelectorAll("#set-hunt-perspectives .hunt-perspective-row");
+    const out = [];
+    rows.forEach((row) => {
+      const id = row.querySelector("[data-field=id]")?.value.trim() || "";
+      if (!id) return;
+      out.push({
+        id,
+        model: row.querySelector("[data-field=model]")?.value.trim() || "",
+        prompt: row.querySelector("[data-field=prompt]")?.value.trim() || "",
+      });
+    });
+    return out;
+  }
+
+  function renderHuntPerspectives(slots) {
+    const list = $("#set-hunt-perspectives");
+    if (!list) return;
+    list.replaceChildren();
+    const rows = Array.isArray(slots) ? slots : [];
+    rows.forEach((slot) => list.appendChild(huntPerspectiveRow(slot)));
+    updateHuntModelWarn(readHuntPerspectives());
+  }
+
+  function perspectiveSlotsForForm(s, eff) {
+    const saved = Array.isArray(s?.hunt_perspectives) ? s.hunt_perspectives : [];
+    if (saved.length) return saved;
+    const fromEff = Array.isArray(eff?.hunt_perspectives) ? eff.hunt_perspectives : [];
+    if (fromEff.length) {
+      return fromEff.map((p) => ({
+        id: p.id || "",
+        prompt: p.prompt || "",
+        model: p.model || "",
+      }));
+    }
+    return DEFAULT_HUNT_PERSPECTIVES.map((p) => ({ ...p }));
+  }
+
+  function updateHuntModelWarn(slots) {
+    const warn = $("#set-hunt-perspectives-warn");
+    if (!warn) return;
+    const list = Array.isArray(slots) ? slots : [];
+    const explicit = list.map((s) => String(s.model || "").trim()).filter(Boolean);
+    const uniq = [...new Set(explicit.map((m) => m.toLowerCase()))];
+    if (explicit.length >= 2 && explicit.length === list.length && uniq.length <= 1) {
+      warn.hidden = false;
+      warn.textContent = "Same model on every hunt perspective is a weak signal.";
+    } else {
+      warn.hidden = true;
+      warn.textContent = "";
+    }
+  }
+
   function settingsFormBody() {
     const modelsText = ($("#set-validate-models")?.value || "").trim();
     const validate_models = modelsText
@@ -51,6 +177,8 @@
       validate_consensus: $("#set-validate-consensus")?.value || "majority",
       validate_poc_referee: !!$("#set-validate-poc-referee")?.checked,
       validate_llm: !!$("#set-validate-llm")?.checked,
+      hunt_moa: !!$("#set-hunt-moa")?.checked,
+      hunt_perspectives: $("#set-hunt-perspectives") ? readHuntPerspectives() : [],
       max_concurrent_agents: parseInt($("#set-workers").value, 10),
       context_tokens: parseInt($("#set-ctx").value, 10),
       max_context_fraction: parseFloat($("#set-frac").value),
@@ -61,7 +189,7 @@
     };
   }
 
-  function fillForm(s) {
+  function fillForm(s, eff) {
     if (!s) return;
     if ($("#set-host")) $("#set-host").value = s.host || "";
     if ($("#set-port")) $("#set-port").value = s.port || 1234;
@@ -103,6 +231,13 @@
       // Product default is ON; only uncheck when explicitly false.
       $("#set-validate-llm").checked = s.validate_llm !== false;
     }
+    if ($("#set-hunt-moa")) {
+      // Product default is OFF. Only check when explicitly enabled.
+      $("#set-hunt-moa").checked = s.hunt_moa === true;
+    }
+    if ($("#set-hunt-perspectives")) {
+      renderHuntPerspectives(perspectiveSlotsForForm(s, eff));
+    }
     if ($("#set-workers")) $("#set-workers").value = s.max_concurrent_agents || 1;
     if ($("#set-ctx")) $("#set-ctx").value = s.context_tokens || 32768;
     if ($("#set-frac")) $("#set-frac").value = s.max_context_fraction ?? 0.25;
@@ -124,13 +259,28 @@
           ? s.validate_models
           : [eff.model || s.model || dash];
     const vModels = vList.join(", ");
+    const huntOn = (eff.hunt_moa ?? s.hunt_moa) === true;
+    const huntList =
+      eff.hunt_perspectives && eff.hunt_perspectives.length
+        ? eff.hunt_perspectives
+        : s.hunt_perspectives && s.hunt_perspectives.length
+          ? s.hunt_perspectives
+          : [];
+    const huntBrief = huntList
+      .map((p) => {
+        const id = p.id || "?";
+        const model = String(p.model || "").trim();
+        return model ? `${id}:${model}` : id;
+      })
+      .join(", ");
     const el = $("#settings-effective");
     if (!el) return;
     el.textContent =
       `Effective: ${eff.base_url || dash} | default ${eff.model || dash} | ` +
       `validate [${vModels}] | consensus ${eff.validate_consensus || s.validate_consensus || "majority"} | ` +
       `referee ${eff.validate_poc_referee ?? s.validate_poc_referee} | ` +
-      `disprove ${eff.validate_llm ?? s.validate_llm} | ${keyNote} | ` +
+      `disprove ${eff.validate_llm ?? s.validate_llm} | ` +
+      `hunt MoA ${huntOn ? "on" : "off"} [${huntBrief}] | ${keyNote} | ` +
       `agents ${eff.max_leases_parallel || 1}`;
     updateValidateModelsWarn(vList, eff.model || s.model || "");
   }
@@ -215,7 +365,7 @@
   async function loadSettings() {
     try {
       const data = await api("/api/settings");
-      fillForm(data.settings || {});
+      fillForm(data.settings || {}, data.effective || {});
       showEffective(data);
     } catch (e) {
       toast(e.message || String(e), true);
@@ -268,11 +418,8 @@
         body: JSON.stringify(body),
       });
       toast("Settings saved");
-      if (data && data.settings) {
-        fillForm(data.settings);
-      }
-      // refresh effective line
       const again = await api("/api/settings");
+      fillForm((again && again.settings) || (data && data.settings) || {}, again?.effective || {});
       showEffective(again);
     } catch (e) {
       toast(e.message || String(e), true);
@@ -284,6 +431,17 @@
     loadSettings();
     $("#settings-form")?.addEventListener("submit", saveSettings);
     $("#settings-optimize")?.addEventListener("click", optimizeSettings);
+    $("#set-hunt-perspective-add")?.addEventListener("click", () => {
+      $("#set-hunt-perspectives")?.appendChild(
+        huntPerspectiveRow({ id: "", prompt: "", model: "" })
+      );
+    });
+    $("#set-hunt-perspectives")?.addEventListener("click", (ev) => {
+      const btn = ev.target.closest?.("[data-action=remove]");
+      if (!btn) return;
+      btn.closest(".hunt-perspective-row")?.remove();
+      updateHuntModelWarn(readHuntPerspectives());
+    });
   }
 
   if (document.readyState === "loading") {

@@ -4,6 +4,8 @@
   "model": "ornith-1.0-35b",
   "api_mode": "chat_completions",
   "api_key": "",
+  "hunt_moa": false,
+  "hunt_perspectives": [],
   "max_concurrent_agents": 1,
   "context_tokens": 32768,
   "max_context_fraction": 0.25,
