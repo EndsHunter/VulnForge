@@ -7,5 +7,6 @@ tool_gaps (CLI or auto), generate_skill (custom hunt profile from brief),
 generate_run_skills (N target-specific skills after recon when dynamic_skills).
 
 Near-duplicate merge helpers live in ``stages.dedup`` (not a leased task kind).
-Hunt MoA resolve/merge lives in ``stages.hunt_moa`` (default off; never confirms).
+Hunt MoA resolve/merge lives in ``stages.hunt_moa``. ``stages.hunt`` runs the
+sequential loop only when ``stages.hunt_moa`` is true (default off; never confirms).
 """

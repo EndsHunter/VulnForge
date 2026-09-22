@@ -46,4 +46,4 @@ Typical operator/residual hunts: **35–50**. Recon at 1–8 always leases first
 
 A submitted candidate is **not** confirmed. Mechanical validation and human review follow.
 
-Hunt mixture-of-agents (sequential perspectives in one lease) is designed in [spikes/2026-09-22-hunt-moa.md](../spikes/2026-09-22-hunt-moa.md). **Settings → Hunt perspectives** writes `stages.hunt_moa` (default **off**) and `llm.hunt_perspectives` (id and optional model — not `validate_models`). The hunt loop ignores the flag until the wiring change. Merge still never emits `confirmed`.
+Hunt mixture-of-agents runs sequential perspectives inside one lease when `stages.hunt_moa` is true (default **off**). See [spikes/2026-09-22-hunt-moa.md](../spikes/2026-09-22-hunt-moa.md). **Settings → Hunt perspectives** writes that flag and `llm.hunt_perspectives` (id and optional model — not `validate_models`). Slots share `llm.max_tool_rounds`. Merge inserts at most one candidate and never emits `confirmed`. Provenance is `body.hunt_moa` (a `hunt_moa` note when the cell is none).

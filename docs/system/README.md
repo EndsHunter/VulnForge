@@ -25,6 +25,9 @@ Loader: `vulnforge.packet.load_prompt_slice` prefers override for top-level base
 | `recon.md` | [RECON.md](RECON.md) | `packet.py` legacy pack | recon |
 | `architecture_merge.md` | [RECON.md](RECON.md) | `stages/recon.py` merge | recon multi-agent / re-run |
 | `hunting_angles.md` | [HUNT.md](HUNT.md) | `packet.py` + profile `angle_ids` | hunt |
+| `hunt_sink.md` | [HUNT.md](HUNT.md) | `pack_hunt` perspective | hunt MoA (`sink_driven`) |
+| `hunt_dataflow.md` | [HUNT.md](HUNT.md) | `pack_hunt` perspective | hunt MoA (`dataflow`) |
+| `hunt_authz.md` | [HUNT.md](HUNT.md) | `pack_hunt` perspective | hunt MoA (`authz`) |
 | `disprove.md` | [VALIDATE.md](VALIDATE.md) | `pack_disprove` | validate_llm |
 | `disprove_threat.md` | [VALIDATE.md](VALIDATE.md) | perspective slice | validate_llm |
 | `disprove_code.md` | [VALIDATE.md](VALIDATE.md) | perspective slice | validate_llm |

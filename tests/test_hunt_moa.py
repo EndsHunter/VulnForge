@@ -11,6 +11,7 @@ from vulnforge.findings.merge import merge_key
 from vulnforge.stages import hunt_moa
 from vulnforge.stages.hunt_moa import (
     EMIT_STATE,
+    build_hunt_moa_body,
     hunt_moa_enabled,
     merge_hunt_candidates,
     resolve_hunt_perspectives,
@@ -218,6 +219,78 @@ def test_merge_empty_and_stable_identity():
     expected = compute_stable_key("code_static", body)
     assert result["candidates"][0]["stable_key"] == expected
     assert result["candidates"][0]["identity"] == expected
+
+
+def test_build_hunt_moa_body_contract_shape():
+    """#71 write / #73 read. Agreement label is not a confirm."""
+    slots = [
+        {
+            "perspective_id": "sink_driven",
+            "outcome": "candidate",
+            "candidate": _cand(title="SQL injection in search"),
+        },
+        {
+            "perspective_id": "dataflow",
+            "outcome": "candidate",
+            "candidate": _cand(title="Concatenated SQL"),
+        },
+        {"perspective_id": "authz", "outcome": "none", "none_reason": "boundary holds"},
+    ]
+    merged = merge_hunt_candidates(slots)
+    record = build_hunt_moa_body(
+        slots,
+        n_perspectives=3,
+        agree_count=merged["candidates"][0]["agree_count"],
+        cell_outcome=merged["cell_outcome"],
+    )
+    assert set(record) == {
+        "perspectives",
+        "agree_count",
+        "label",
+        "cell_outcome",
+        "requeue_note",
+        "none_perspectives",
+    }
+    assert record["cell_outcome"] == "candidate"
+    assert record["agree_count"] == 2
+    assert record["label"] == "2/3 hunt agree"
+    assert record["requeue_note"] == "partial_none"
+    assert record["none_perspectives"] == ["authz"]
+    assert [p["id"] for p in record["perspectives"]] == [
+        "sink_driven",
+        "dataflow",
+        "authz",
+    ]
+    assert record["perspectives"][2]["outcome"] == "none"
+    assert "boundary holds" in record["perspectives"][2]["reason"]
+    assert result_emits_confirmed(record) is False
+    assert record["cell_outcome"] != "confirmed"
+
+    none_slots = [
+        {"perspective_id": "sink_driven", "outcome": "none", "none_reason": "no sink"},
+        {"perspective_id": "dataflow", "outcome": "none", "none_reason": "no flow"},
+    ]
+    none_rec = build_hunt_moa_body(
+        none_slots, n_perspectives=2, agree_count=9, cell_outcome="none"
+    )
+    assert none_rec["agree_count"] == 0
+    assert none_rec["label"] == "0/2 hunt agree"
+    assert none_rec["cell_outcome"] == "none"
+    assert none_rec["requeue_note"] == "all_perspectives_none"
+    assert none_rec["none_perspectives"] == ["sink_driven", "dataflow"]
+
+    skipped = [
+        {"perspective_id": "sink_driven", "outcome": "candidate", "title": "Only one"},
+        {"perspective_id": "dataflow", "outcome": "skipped", "none_reason": "shared_round_budget_exhausted"},
+    ]
+    skipped_rec = build_hunt_moa_body(
+        skipped, n_perspectives=2, agree_count=1, cell_outcome="candidate"
+    )
+    assert skipped_rec["requeue_note"] is None
+    assert skipped_rec["label"] == "1/2 hunt agree"
+    assert skipped_rec["none_perspectives"] == ["dataflow"]
+    assert skipped_rec["perspectives"][1]["outcome"] == "none"
+    assert result_emits_confirmed(skipped_rec) is False
 
 
 def test_default_yaml_hunt_moa_off():
