@@ -114,6 +114,85 @@ def test_cell_detail_reasons(tmp_path: Path, toy_sqli: Path):
     assert "residual_sinks" in detail
     assert isinstance(detail["sinks"], list)
     assert detail["sink_count"] == len(detail["sinks"])
+    why = detail["why"]
+    assert why["residual"] is True
+    assert "no solid issue" in why["abort_reason"]
+    assert "submit_none" in why["abort_reason"]
+    assert why["snippet"] == ""
+    assert why["has_transcript"] is False
+    assert detail["tasks"]
+    assert detail["tasks"][0]["has_transcript"] is False
+
+
+def test_cell_detail_why_abort_transcript(tmp_path: Path, toy_sqli: Path):
+    """Residual cell carries abort reason plus a short transcript snippet."""
+    from vulnforge.transcript import save_transcript
+
+    run = _init_run(tmp_path, toy_sqli)
+    db = Database.open(run / "harness.db")
+    parent = db.list_tasks()[0]
+    db.conn.execute(
+        "UPDATE tasks SET state='failed_task', result_json=? WHERE id=?",
+        (
+            json.dumps(
+                {
+                    "status": "failed_task",
+                    "error": "max_tool_rounds",
+                    "aborted_scope": True,
+                    "diagnostics": {"likely_cause": "exhausted_max_tool_rounds"},
+                }
+            ),
+            parent.id,
+        ),
+    )
+    db.upsert_coverage_fact("app", "injection", path="app.py", visit_delta=0, last_depth="aborted")
+    child = db.enqueue_task(
+        "hunt",
+        {"area": "app", "class": "injection", "path_hints": ["app.py"]},
+        priority=45,
+    )
+    db.conn.commit()
+    db.close()
+    save_transcript(
+        run,
+        parent.id,
+        kind="hunt",
+        model_id="fake",
+        messages=[
+            {"role": "system", "content": "system prompt should not be the snippet"},
+            {"role": "user", "content": "hunt app injection"},
+            {
+                "role": "assistant",
+                "content": "Stopping: session fixation in auth/session.py was not fully traced.",
+            },
+        ],
+        result={"error": "max_tool_rounds"},
+    )
+    detail = dashops.cell_detail(run, "app", "injection")
+    why = detail["why"]
+    assert why["residual"] is True
+    assert why["task_id"] == parent.id
+    assert why["task_id"] != child
+    assert "max_tool_rounds" in why["abort_reason"]
+    assert "exhausted max tool rounds" in why["abort_reason"]
+    assert "session fixation" in why["snippet"]
+    assert "system prompt" not in why["snippet"]
+    assert why["has_transcript"] is True
+    by_id = {t["id"]: t for t in detail["tasks"]}
+    assert by_id[parent.id]["has_transcript"] is True
+    assert by_id[child]["has_transcript"] is False
+
+
+def test_cell_detail_why_unvisited_has_no_evidence(tmp_path: Path, toy_sqli: Path):
+    run = _init_run(tmp_path, toy_sqli)
+    detail = dashops.cell_detail(run, "nowhere", "injection")
+    why = detail["why"]
+    assert why["residual"] is True
+    assert why["abort_reason"] == ""
+    assert why["snippet"] == ""
+    assert why["task_id"] is None
+    assert why["has_transcript"] is False
+    assert detail["can_requeue"] is True
 
 
 def test_requeue_hunt_bulk(tmp_path: Path, toy_sqli: Path):
