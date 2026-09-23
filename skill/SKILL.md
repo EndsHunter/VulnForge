@@ -52,7 +52,7 @@ Follow `seeds/system/PRINCIPLES.md` for the full exploitability bar, threat mode
 | Protocol CLI | Prefer `vf` / Ralph / dashboard over free-form audit markdown |
 | Durable state | Truth is `harness.db` + evidence packs + events — not chat |
 | project/ views | Regenerate with `vf project`; never hand-edit as truth |
-| Config | LM Studio / models via `config/default.yaml` and/or dashboard Settings |
+| Config | LLM via `config/default.yaml` or Settings hosts. Roles use verified `(host, model)` pairs only |
 
 ### Filing candidates
 
@@ -107,7 +107,7 @@ See **PROTOCOL.md** for CLI contracts and **AGENTS.md** for operator/agent roles
 
 ## Workflow
 
-1. Ensure harness repo available; config points at LM Studio (`config/default.yaml` and/or dashboard Settings → `config/ui_settings.json`).
+1. Ensure harness repo available. Point at LM Studio with `config/default.yaml`, or in Settings add a host, **Refresh catalog**, **Verify** the model (not automatic), and assign the default role. That writes `config/ui_settings.json`. A role always uses that host's URL, API mode, and API key together.
 2. `vf init --target <path>` if no run exists (prints `runs/<target_id>/run-00N`).
 3. Drive progress:
    - `vf run-once --run-dir <dir>` one task at a time, or

@@ -34,7 +34,7 @@
       <div>
         <h1>Settings</h1>
         <p>
-          Endpoint, per-stage models, multi-model validation, hunt perspectives, and agent budgets.
+          Hosts, verified models, and role assignments.
           Saved to <code>config/ui_settings.json</code> and applied on the next task lease.
         </p>
       </div>
@@ -42,79 +42,58 @@
 
     <form id="settings-form" class="settings-page-form">
       <div class="settings-page-grid">
-        <section class="card settings-card settings-card-endpoint">
-          <h2>Endpoint</h2>
-          <div class="grid-2">
-            <div class="field">
-              <label class="field-label" for="set-host"><span class="label-text">Host or base URL</span></label>
-              <input id="set-host" required autocomplete="off" placeholder="10.0.0.232 or https://api.example.com" />
-              <p class="controls-hint">Bare host + port, or full <code>https://…</code> URL.</p>
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-port"><span class="label-text">Port</span></label>
-              <input id="set-port" type="number" required min="1" max="65535" />
-            </div>
-            <div class="field" style="grid-column:1/-1">
-              <label class="field-label" for="set-model"><span class="label-text">Default model id</span></label>
-              <input id="set-model" required autocomplete="off" placeholder="ornith-1.0-35b" />
-              <p class="controls-hint">Must match an id from the server’s <code>/v1/models</code>. Used when a stage override is blank.</p>
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-api-mode"><span class="label-text">API mode</span></label>
-              <select id="set-api-mode" class="settings-select">
-                <option value="chat_completions">chat-completions</option>
-                <option value="responses">responses</option>
-                <option value="messages">messages</option>
-              </select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-api-key"><span class="label-text">API key</span></label>
-              <input id="set-api-key" type="password" autocomplete="off" placeholder="optional — blank or none" />
-            </div>
-          </div>
+        <section class="card settings-card settings-card-hosts" id="settings-hosts">
+          <h2>Hosts</h2>
+          <p class="controls-hint" style="margin-top:0">
+            Each host has its own URL, API mode, and API key. Save before refresh.
+          </p>
+          <div id="set-hosts" class="host-list"></div>
+          <button type="button" class="btn" id="set-host-add">Add host</button>
         </section>
 
-        <section class="card settings-card settings-card-stages">
-          <h2>Stage models</h2>
+        <section class="card settings-card settings-card-catalog" id="settings-catalog">
+          <h2>Catalog</h2>
           <p class="controls-hint" style="margin-top:0">
-            Optional overrides. Leave blank to use the default model.
+            Refresh reads <code>/v1/models</code> for that host. Verify is a button — not automatic.
+            Available is verified pairs only.
+          </p>
+          <div id="set-catalog"></div>
+          <h3 class="settings-subhead">Available</h3>
+          <ul id="set-available" class="settings-available"></ul>
+        </section>
+
+        <section class="card settings-card settings-card-roles" id="settings-roles">
+          <h2>Roles</h2>
+          <p class="controls-hint" style="margin-top:0">
+            Pick from Available. A blank stage uses the default role. A missing host fails the lease.
           </p>
           <div class="grid-2">
+            <div class="field" style="grid-column:1/-1">
+              <label class="field-label" for="set-model"><span class="label-text">Default</span></label>
+              <select id="set-model" class="settings-select"></select>
+            </div>
             <div class="field">
               <label class="field-label" for="set-model-recon"><span class="label-text">Recon</span></label>
-              <input id="set-model-recon" autocomplete="off" placeholder="(default model)" />
+              <select id="set-model-recon" class="settings-select"></select>
             </div>
             <div class="field">
               <label class="field-label" for="set-model-hunt"><span class="label-text">Hunt</span></label>
-              <input id="set-model-hunt" autocomplete="off" placeholder="(default model)" />
+              <select id="set-model-hunt" class="settings-select"></select>
             </div>
             <div class="field" style="grid-column:1/-1">
               <label class="field-label" for="set-model-develop-poc"><span class="label-text">Develop PoC</span></label>
-              <input id="set-model-develop-poc" autocomplete="off" placeholder="(default model)" />
+              <select id="set-model-develop-poc" class="settings-select"></select>
             </div>
           </div>
-        </section>
 
-        <section class="card settings-card settings-card-validate">
-          <h2>Multi-model validation</h2>
+          <h3 class="settings-subhead">Multi-model validation</h3>
           <p class="controls-hint" style="margin-top:0">
-            One or more model ids that independently argue whether a finding holds.
-            Agreement across models is used to reduce false positives (auto-reject only when
-            <em>all</em> disprove slots reject; PoC “signal observed” needs consensus).
+            Checked models argue whether a finding holds. Auto-reject only when every disprove slot rejects.
+            Empty = default role only — <strong>same-model dual disprove is a weak signal</strong>.
             Never auto-confirms.
           </p>
-          <div class="field">
-            <label class="field-label" for="set-validate-models">
-              <span class="label-text">Validation models (1+)</span>
-            </label>
-            <textarea id="set-validate-models" class="mono" rows="4" placeholder="one model id per line&#10;(empty = default model only)"></textarea>
-            <p class="controls-hint">
-              Used for <code>validate_llm</code> disprove and PoC referee.
-              Empty = default model only — <strong>same-model dual disprove is a weak signal</strong>.
-              Prefer 2+ distinct model ids when available.
-            </p>
-            <p id="set-validate-models-warn" class="controls-hint warn-text" hidden style="color:var(--warn,#c9a227)"></p>
-          </div>
+          <div id="set-validate-models" class="validate-model-picks"></div>
+          <p id="set-validate-models-warn" class="controls-hint warn-text" hidden style="color:var(--warn,#c9a227)"></p>
           <div class="grid-2">
             <div class="field">
               <label class="field-label" for="set-validate-consensus"><span class="label-text">Positive consensus</span></label>
@@ -122,7 +101,6 @@
                 <option value="majority">majority</option>
                 <option value="all">all (strictest)</option>
               </select>
-              <p class="controls-hint">Required agreement for positive signals (e.g. signal_observed).</p>
             </div>
             <div class="field">
               <label class="field-label"><span class="label-text">Pipeline toggles</span></label>
@@ -136,12 +114,10 @@
               </label>
             </div>
           </div>
-        </section>
 
-        <section class="card settings-card settings-card-hunt" id="settings-hunt-moa">
-          <h2>Hunt perspectives</h2>
+          <h3 class="settings-subhead" id="settings-hunt-moa">Hunt perspectives</h3>
           <p class="controls-hint" style="margin-top:0">
-            Off by default. Each row is a hunt perspective with an optional model — not validation models.
+            Off by default. Optional model from Available — not validation models.
             An empty list keeps the built-in perspectives. Never confirms a finding.
           </p>
           <label class="settings-check">
@@ -197,7 +173,7 @@
         <div class="controls-hint" id="settings-effective"></div>
         <pre class="controls-hint mono" id="settings-optimize-report" hidden style="margin-top:0.65rem;max-height:12rem;overflow:auto;white-space:pre-wrap;padding:0.5rem;border:1px solid var(--border);border-radius:6px"></pre>
         <div class="modal-actions" style="margin-top:0.75rem">
-          <button type="button" class="btn" id="settings-optimize" title="Probe the endpoint and fill recommended values (does not save until you click Save)">Optimize AI settings</button>
+          <button type="button" class="btn" id="settings-optimize" title="Probe the default role's host and fill global budgets (does not save until you click Save)">Optimize AI settings</button>
           <button type="submit" class="btn btn-primary" id="settings-save">Save settings</button>
         </div>
       </div>

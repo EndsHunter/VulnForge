@@ -71,7 +71,7 @@ vf --help
    - `llm.api_mode` — `chat_completions` (LM Studio default), or `responses` / `messages` if needed
    - For AI tool generation: keep `llm.max_tokens` / `llm.toolgen_max_tokens` high (reasoning models burn tokens on chain-of-thought first)
 2. Start your local model server and load a model (recommended: **LM Studio + Ornith** on `:1234`).
-3. Dashboard **Settings → Optimize AI settings → Save** writes `config/ui_settings.json` (host/model/max_tokens) and overrides YAML. Optimize reads the model card and empirically tests prompt capacity.
+3. Dashboard **Settings**: add a host (URL, API mode, API key), **Refresh catalog**, **Verify** the model, then assign roles from Available. **Optimize AI settings** fills global token budgets for the default role's host. Save writes `config/ui_settings.json` and overrides YAML. With no hosts saved, YAML `llm.*` still applies.
 4. Env overrides: `VF_BASE_URL`, `VF_MODEL`, `VF_HOST`+`VF_PORT`, `VF_RECON_ORCHESTRATOR`.
 
 **Ornith notes:** Toolgen (Dev → Generate tool) is JSON text generation. Recon/hunt need reliable **tool_calls**. Optimize’s tool probe warns if the model ignores tools. Prefer LM Studio on `:1234` for VulnForge. Alternate mlx servers often cap tokens too low for toolgen JSON. See `toolgen.md`.

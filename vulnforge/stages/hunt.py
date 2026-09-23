@@ -653,6 +653,19 @@ def _moa_coverage(db, payload, arch, cfg, *, area: str, cls: str, depth: str) ->
     )
 
 
+def _perspective_model(value: Any) -> Any:
+    """Blank, a legacy model id, or a ``{host_id, model_id}`` ref. Not ``str(dict)``."""
+    if isinstance(value, dict):
+        mid = str(value.get("model_id") or "").strip()
+        hid = str(value.get("host_id") or "").strip()
+        if not mid:
+            return ""
+        if hid:
+            return {"host_id": hid, "model_id": mid}
+        return mid
+    return str(value or "").strip()
+
+
 def _moa_base(task, model_id: str | None, usage: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {
         "model_id": model_id,
@@ -909,7 +922,7 @@ def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     "perspective_id": pid,
                 }
 
-            slot_model = str(slot.get("model") or "").strip()
+            slot_model = _perspective_model(slot.get("model"))
             active = client
             owned = None
             slot_model_id = model_id
@@ -927,7 +940,11 @@ def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                             "status": "failed_infra",
                             "error": str(e),
                             "perspective_id": pid,
-                            "model_id": slot_model,
+                            "model_id": (
+                                slot_model.get("model_id")
+                                if isinstance(slot_model, dict)
+                                else slot_model
+                            ),
                         }
                 result = run_agent_tool_loop(
                     active,

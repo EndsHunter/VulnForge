@@ -1,9 +1,23 @@
 /**
- * Dedicated /settings page — load, save, optimize UI settings.
- * Relies on window.api / toast from app.js when available; has fetch fallback.
+ * Dedicated /settings page — hosts, catalog verify, role pickers, global budgets.
+ * Refresh and verify run only from their buttons.
  */
 (function () {
   const $ = (sel) => document.querySelector(sel);
+
+  const API_MODES = [
+    ["chat_completions", "chat-completions"],
+    ["responses", "responses"],
+    ["messages", "messages"],
+  ];
+
+  const DEFAULT_HUNT_PERSPECTIVES = [
+    { id: "sink_driven", prompt: "hunt_sink.md", model: "" },
+    { id: "dataflow", prompt: "hunt_dataflow.md", model: "" },
+    { id: "authz", prompt: "hunt_authz.md", model: "" },
+  ];
+
+  let available = [];
 
   async function api(path, opts) {
     if (typeof window.api === "function") return window.api(path, opts);
@@ -30,12 +44,42 @@
     console[bad ? "error" : "log"](msg);
   }
 
-  // Built-in slots match stages.hunt_moa defaults. Not validate_models.
-  const DEFAULT_HUNT_PERSPECTIVES = [
-    { id: "sink_driven", prompt: "hunt_sink.md", model: "" },
-    { id: "dataflow", prompt: "hunt_dataflow.md", model: "" },
-    { id: "authz", prompt: "hunt_authz.md", model: "" },
-  ];
+  function refKey(ref) {
+    if (!ref || typeof ref !== "object") return "";
+    const hid = String(ref.host_id || "").trim();
+    const mid = String(ref.model_id || "").trim();
+    if (!hid || !mid) return "";
+    return `${encodeURIComponent(hid)}|${encodeURIComponent(mid)}`;
+  }
+
+  function parseRefKey(value) {
+    const raw = String(value || "");
+    const cut = raw.indexOf("|");
+    if (cut < 0) return null;
+    const host_id = decodeURIComponent(raw.slice(0, cut));
+    const model_id = decodeURIComponent(raw.slice(cut + 1));
+    if (!host_id || !model_id) return null;
+    return { host_id, model_id };
+  }
+
+  function refLabel(ref) {
+    const host = (availableHost(ref.host_id) || {}).base_url || ref.host_id;
+    return `${host} · ${ref.model_id}`;
+  }
+
+  function availableHost(hostId) {
+    const row = document.querySelector(`.host-row[data-host-id="${cssEscape(hostId)}"]`);
+    if (!row) return null;
+    return {
+      id: hostId,
+      base_url: row.querySelector("[data-field=base_url]")?.value.trim() || "",
+    };
+  }
+
+  function cssEscape(value) {
+    if (window.CSS && CSS.escape) return CSS.escape(String(value));
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+  }
 
   function defaultHuntPrompt(id) {
     const pid = String(id || "").trim();
@@ -43,6 +87,156 @@
     if (known) return known.prompt;
     const safe = pid.replace(/[^A-Za-z0-9_-]/g, "_").replace(/^_+|_+$/g, "");
     return `hunt_${safe || "perspective"}.md`;
+  }
+
+  function modeSelect(selected) {
+    const select = document.createElement("select");
+    select.className = "settings-select";
+    select.dataset.field = "api_mode";
+    select.setAttribute("aria-label", "API mode");
+    API_MODES.forEach(([value, label]) => {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label;
+      select.appendChild(opt);
+    });
+    select.value = selected || "chat_completions";
+    if (select.value !== (selected || "chat_completions")) select.value = "chat_completions";
+    return select;
+  }
+
+  function hostRow(host) {
+    const row = document.createElement("div");
+    row.className = "host-row";
+    if (host?.id) row.dataset.hostId = host.id;
+
+    const urlField = document.createElement("div");
+    urlField.className = "field";
+    const urlLabel = document.createElement("label");
+    urlLabel.className = "field-label";
+    urlLabel.textContent = "Base URL or host:port";
+    const url = document.createElement("input");
+    url.dataset.field = "base_url";
+    url.autocomplete = "off";
+    url.placeholder = "http://127.0.0.1:1234/v1 or 10.0.0.232:1234";
+    url.value = host?.base_url || "";
+    url.setAttribute("aria-label", "Host base URL");
+    urlField.appendChild(urlLabel);
+    urlField.appendChild(url);
+
+    const modeField = document.createElement("div");
+    modeField.className = "field";
+    const modeLabel = document.createElement("label");
+    modeLabel.className = "field-label";
+    modeLabel.textContent = "API mode";
+    modeField.appendChild(modeLabel);
+    modeField.appendChild(modeSelect(host?.api_mode));
+
+    const keyField = document.createElement("div");
+    keyField.className = "field";
+    const keyLabel = document.createElement("label");
+    keyLabel.className = "field-label";
+    keyLabel.textContent = "API key";
+    const key = document.createElement("input");
+    key.type = "password";
+    key.dataset.field = "api_key";
+    key.autocomplete = "off";
+    key.placeholder = "blank or none";
+    key.value = host?.api_key || "";
+    key.setAttribute("aria-label", "API key");
+    keyField.appendChild(keyLabel);
+    keyField.appendChild(key);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "btn";
+    remove.dataset.action = "remove-host";
+    remove.textContent = "Remove";
+
+    row.appendChild(urlField);
+    row.appendChild(modeField);
+    row.appendChild(keyField);
+    row.appendChild(remove);
+    return row;
+  }
+
+  function readHosts() {
+    const out = [];
+    document.querySelectorAll("#set-hosts .host-row").forEach((row) => {
+      const base_url = row.querySelector("[data-field=base_url]")?.value.trim() || "";
+      if (!base_url) return;
+      const host = {
+        base_url,
+        api_mode: row.querySelector("[data-field=api_mode]")?.value || "chat_completions",
+        api_key: row.querySelector("[data-field=api_key]")?.value ?? "",
+      };
+      if (row.dataset.hostId) host.id = row.dataset.hostId;
+      out.push(host);
+    });
+    return out;
+  }
+
+  function fillRoleSelect(select, selected, allowEmpty) {
+    if (!select) return;
+    const current = refKey(selected);
+    select.replaceChildren();
+    if (allowEmpty) {
+      const blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = "(default)";
+      select.appendChild(blank);
+    } else {
+      const blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = available.length ? "Select a verified model" : "No verified models";
+      select.appendChild(blank);
+    }
+    available.forEach((ref) => {
+      const opt = document.createElement("option");
+      opt.value = refKey(ref);
+      opt.textContent = refLabel(ref);
+      select.appendChild(opt);
+    });
+    select.value = current;
+    if (select.value !== current) select.value = "";
+  }
+
+  function renderValidatePicks(selected) {
+    const box = $("#set-validate-models");
+    if (!box) return;
+    const chosen = new Set((selected || []).map((ref) => refKey(ref)).filter(Boolean));
+    box.replaceChildren();
+    if (!available.length) {
+      const empty = document.createElement("p");
+      empty.className = "controls-hint";
+      empty.textContent = "Verify a model to add it here.";
+      box.appendChild(empty);
+      return;
+    }
+    available.forEach((ref) => {
+      const label = document.createElement("label");
+      label.className = "settings-check";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = refKey(ref);
+      input.checked = chosen.has(refKey(ref));
+      input.addEventListener("change", () => updateValidateWarn());
+      label.appendChild(input);
+      const text = document.createElement("span");
+      text.textContent = refLabel(ref);
+      label.appendChild(text);
+      box.appendChild(label);
+    });
+    updateValidateWarn();
+  }
+
+  function readValidateRefs() {
+    const out = [];
+    document.querySelectorAll("#set-validate-models input[type=checkbox]:checked").forEach((input) => {
+      const ref = parseRefKey(input.value);
+      if (ref) out.push(ref);
+    });
+    return out;
   }
 
   function huntPerspectiveRow(slot) {
@@ -62,14 +256,14 @@
 
     const modelField = document.createElement("div");
     modelField.className = "field";
-    const modelInput = document.createElement("input");
-    modelInput.className = "mono";
-    modelInput.dataset.field = "model";
-    modelInput.setAttribute("aria-label", "Perspective model");
-    modelInput.autocomplete = "off";
-    modelInput.placeholder = "(hunt model)";
-    modelInput.value = slot?.model || "";
-    modelField.appendChild(modelInput);
+    const modelSelect = document.createElement("select");
+    modelSelect.className = "settings-select";
+    modelSelect.dataset.field = "model";
+    modelSelect.setAttribute("aria-label", "Perspective model");
+    fillRoleSelect(modelSelect, slot?.model, true);
+    const blank = modelSelect.querySelector("option[value='']");
+    if (blank) blank.textContent = "(hunt model)";
+    modelField.appendChild(modelSelect);
 
     const promptInput = document.createElement("input");
     promptInput.type = "hidden";
@@ -91,15 +285,12 @@
     idInput.addEventListener("input", () => {
       const prev = idInput.dataset.prev || "";
       const cur = promptInput.value.trim();
-      const auto =
-        !cur || cur === defaultHuntPrompt(prev) || cur === `hunt_${prev}.md`;
+      const auto = !cur || cur === defaultHuntPrompt(prev) || cur === `hunt_${prev}.md`;
       if (auto) promptInput.value = defaultHuntPrompt(idInput.value.trim());
       idInput.dataset.prev = idInput.value.trim();
       updateHuntModelWarn(readHuntPerspectives());
     });
-    modelInput.addEventListener("input", () => {
-      updateHuntModelWarn(readHuntPerspectives());
-    });
+    modelSelect.addEventListener("change", () => updateHuntModelWarn(readHuntPerspectives()));
     return row;
   }
 
@@ -111,7 +302,7 @@
       if (!id) return;
       out.push({
         id,
-        model: row.querySelector("[data-field=model]")?.value.trim() || "",
+        model: parseRefKey(row.querySelector("[data-field=model]")?.value || "") || "",
         prompt: row.querySelector("[data-field=prompt]")?.value.trim() || "",
       });
     });
@@ -122,9 +313,24 @@
     const list = $("#set-hunt-perspectives");
     if (!list) return;
     list.replaceChildren();
-    const rows = Array.isArray(slots) ? slots : [];
-    rows.forEach((slot) => list.appendChild(huntPerspectiveRow(slot)));
+    (Array.isArray(slots) ? slots : []).forEach((slot) => list.appendChild(huntPerspectiveRow(slot)));
     updateHuntModelWarn(readHuntPerspectives());
+  }
+
+  function refreshRoleOptions() {
+    fillRoleSelect($("#set-model"), parseRefKey($("#set-model")?.value || ""), false);
+    ["set-model-recon", "set-model-hunt", "set-model-develop-poc"].forEach((id) => {
+      const el = document.getElementById(id);
+      fillRoleSelect(el, parseRefKey(el?.value || ""), true);
+    });
+    document.querySelectorAll("#set-hunt-perspectives [data-field=model]").forEach((select) => {
+      const current = parseRefKey(select.value);
+      fillRoleSelect(select, current, true);
+      const blank = select.querySelector("option[value='']");
+      if (blank) blank.textContent = "(hunt model)";
+    });
+    const checked = readValidateRefs();
+    renderValidatePicks(checked);
   }
 
   function perspectiveSlotsForForm(s, eff) {
@@ -135,18 +341,24 @@
       return fromEff.map((p) => ({
         id: p.id || "",
         prompt: p.prompt || "",
-        model: p.model || "",
+        model: p.model && typeof p.model === "object" ? p.model : "",
       }));
     }
     return DEFAULT_HUNT_PERSPECTIVES.map((p) => ({ ...p }));
+  }
+
+  function modelKey(ref) {
+    if (!ref) return "";
+    if (typeof ref === "object") return refKey(ref);
+    return String(ref || "").trim().toLowerCase();
   }
 
   function updateHuntModelWarn(slots) {
     const warn = $("#set-hunt-perspectives-warn");
     if (!warn) return;
     const list = Array.isArray(slots) ? slots : [];
-    const explicit = list.map((s) => String(s.model || "").trim()).filter(Boolean);
-    const uniq = [...new Set(explicit.map((m) => m.toLowerCase()))];
+    const explicit = list.map((s) => modelKey(s.model)).filter(Boolean);
+    const uniq = [...new Set(explicit)];
     if (explicit.length >= 2 && explicit.length === list.length && uniq.length <= 1) {
       warn.hidden = false;
       warn.textContent = "Same model on every hunt perspective is a weak signal.";
@@ -156,24 +368,119 @@
     }
   }
 
+  function updateValidateWarn() {
+    const warn = $("#set-validate-models-warn");
+    if (!warn) return;
+    const refs = readValidateRefs();
+    const keys = refs.map((ref) => ref.model_id.toLowerCase());
+    const uniq = [...new Set(keys)];
+    if (refs.length === 0 || uniq.length <= 1) {
+      warn.hidden = false;
+      warn.textContent =
+        "Same-model disprove is a weak signal. Add a second validation model when you can.";
+    } else {
+      warn.hidden = true;
+      warn.textContent = "";
+    }
+  }
+
+  function renderHosts(hosts) {
+    const list = $("#set-hosts");
+    if (!list) return;
+    list.replaceChildren();
+    (hosts || []).forEach((host) => list.appendChild(hostRow(host)));
+  }
+
+  function renderCatalog(settings) {
+    const root = $("#set-catalog");
+    const avail = $("#set-available");
+    if (!root || !avail) return;
+    root.replaceChildren();
+    const hosts = settings.hosts || [];
+    const catalog = settings.catalog || [];
+    const verified = new Set((settings.available || []).map((ref) => refKey(ref)));
+    if (!hosts.length) {
+      const empty = document.createElement("p");
+      empty.className = "controls-hint";
+      empty.textContent = "Add a host and save it.";
+      root.appendChild(empty);
+    }
+    hosts.forEach((host) => {
+      const block = document.createElement("div");
+      block.className = "catalog-host";
+      const head = document.createElement("div");
+      head.className = "catalog-host-head";
+      const title = document.createElement("div");
+      title.className = "mono";
+      title.textContent = host.base_url || host.id;
+      const refresh = document.createElement("button");
+      refresh.type = "button";
+      refresh.className = "btn";
+      refresh.dataset.action = "refresh-catalog";
+      refresh.dataset.hostId = host.id;
+      refresh.textContent = "Refresh catalog";
+      head.appendChild(title);
+      head.appendChild(refresh);
+      block.appendChild(head);
+      const models = catalog.filter((row) => row.host_id === host.id);
+      if (!models.length) {
+        const none = document.createElement("p");
+        none.className = "controls-hint";
+        none.textContent = "No models yet.";
+        block.appendChild(none);
+      } else {
+        const ul = document.createElement("div");
+        ul.className = "catalog-models";
+        models.forEach((row) => {
+          const line = document.createElement("div");
+          line.className = "catalog-model";
+          const name = document.createElement("span");
+          name.className = "mono";
+          name.textContent = row.model_id;
+          const state = document.createElement("span");
+          state.className = "controls-hint";
+          const key = refKey(row);
+          state.textContent = verified.has(key) ? "verified" : "unverified";
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "btn";
+          button.dataset.action = "verify-model";
+          button.dataset.hostId = host.id;
+          button.dataset.modelId = row.model_id;
+          button.textContent = "Verify";
+          line.appendChild(name);
+          line.appendChild(state);
+          line.appendChild(button);
+          ul.appendChild(line);
+        });
+        block.appendChild(ul);
+      }
+      root.appendChild(block);
+    });
+    avail.replaceChildren();
+    if (!available.length) {
+      const li = document.createElement("li");
+      li.className = "controls-hint";
+      li.textContent = "None yet.";
+      avail.appendChild(li);
+      return;
+    }
+    available.forEach((ref) => {
+      const li = document.createElement("li");
+      li.className = "mono";
+      li.textContent = refLabel(ref);
+      avail.appendChild(li);
+    });
+  }
+
   function settingsFormBody() {
-    const modelsText = ($("#set-validate-models")?.value || "").trim();
-    const validate_models = modelsText
-      ? modelsText
-          .split(/\r?\n|,/)
-          .map((s) => s.trim())
-          .filter(Boolean)
-      : [];
     return {
-      host: $("#set-host").value.trim(),
-      port: parseInt($("#set-port").value, 10),
-      model: $("#set-model").value.trim(),
-      api_mode: $("#set-api-mode")?.value || "chat_completions",
-      api_key: ($("#set-api-key")?.value ?? "").trim(),
-      model_recon: ($("#set-model-recon")?.value || "").trim(),
-      model_hunt: ($("#set-model-hunt")?.value || "").trim(),
-      model_develop_poc: ($("#set-model-develop-poc")?.value || "").trim(),
-      validate_models,
+      hosts: readHosts(),
+      model: parseRefKey($("#set-model")?.value || ""),
+      model_recon: parseRefKey($("#set-model-recon")?.value || ""),
+      model_hunt: parseRefKey($("#set-model-hunt")?.value || ""),
+      model_develop_poc: parseRefKey($("#set-model-develop-poc")?.value || ""),
+      validate_models: readValidateRefs(),
       validate_consensus: $("#set-validate-consensus")?.value || "majority",
       validate_poc_referee: !!$("#set-validate-poc-referee")?.checked,
       validate_llm: !!$("#set-validate-llm")?.checked,
@@ -191,36 +498,14 @@
 
   function fillForm(s, eff) {
     if (!s) return;
-    if ($("#set-host")) $("#set-host").value = s.host || "";
-    if ($("#set-port")) $("#set-port").value = s.port || 1234;
-    if ($("#set-model")) $("#set-model").value = s.model || "";
-    const apiModeEl = $("#set-api-mode");
-    if (apiModeEl) {
-      const mode = s.api_mode || "chat_completions";
-      apiModeEl.value = mode;
-      if (apiModeEl.value !== mode) apiModeEl.value = "chat_completions";
-    }
-    if ($("#set-api-key")) $("#set-api-key").value = s.api_key || "";
-    if ($("#set-model-recon")) $("#set-model-recon").value = s.model_recon || "";
-    if ($("#set-model-hunt")) $("#set-model-hunt").value = s.model_hunt || "";
-    if ($("#set-model-develop-poc"))
-      $("#set-model-develop-poc").value = s.model_develop_poc || "";
-    const vm = s.validate_models;
-    if ($("#set-validate-models")) {
-      $("#set-validate-models").value = Array.isArray(vm)
-        ? vm.join("\n")
-        : String(vm || "");
-      const list = Array.isArray(vm)
-        ? vm
-        : String(vm || "")
-            .split(/\n|,/)
-            .map((x) => x.trim())
-            .filter(Boolean);
-      updateValidateModelsWarn(
-        list.length ? list : [s.model || ""],
-        s.model || ""
-      );
-    }
+    available = Array.isArray(s.available) ? s.available : [];
+    renderHosts(s.hosts || []);
+    renderCatalog(s);
+    fillRoleSelect($("#set-model"), s.model, false);
+    fillRoleSelect($("#set-model-recon"), s.model_recon, true);
+    fillRoleSelect($("#set-model-hunt"), s.model_hunt, true);
+    fillRoleSelect($("#set-model-develop-poc"), s.model_develop_poc, true);
+    renderValidatePicks(Array.isArray(s.validate_models) ? s.validate_models.filter((x) => x && typeof x === "object") : []);
     if ($("#set-validate-consensus")) {
       $("#set-validate-consensus").value = s.validate_consensus || "majority";
     }
@@ -228,11 +513,9 @@
       $("#set-validate-poc-referee").checked = s.validate_poc_referee !== false;
     }
     if ($("#set-validate-llm")) {
-      // Product default is ON; only uncheck when explicitly false.
       $("#set-validate-llm").checked = s.validate_llm !== false;
     }
     if ($("#set-hunt-moa")) {
-      // Product default is OFF. Only check when explicitly enabled.
       $("#set-hunt-moa").checked = s.hunt_moa === true;
     }
     if ($("#set-hunt-perspectives")) {
@@ -252,83 +535,40 @@
     const s = data.settings || {};
     const dash = "-";
     const keyNote = eff.api_key_set ? "api key set" : "no api key";
-    const vList =
-      eff.validate_models && eff.validate_models.length
-        ? eff.validate_models
-        : s.validate_models && s.validate_models.length
-          ? s.validate_models
-          : [eff.model || s.model || dash];
-    const vModels = vList.join(", ");
+    const vList = eff.validate_models && eff.validate_models.length ? eff.validate_models : [eff.model || dash];
     const huntOn = (eff.hunt_moa ?? s.hunt_moa) === true;
-    const huntList =
-      eff.hunt_perspectives && eff.hunt_perspectives.length
-        ? eff.hunt_perspectives
-        : s.hunt_perspectives && s.hunt_perspectives.length
-          ? s.hunt_perspectives
-          : [];
+    const huntList = eff.hunt_perspectives && eff.hunt_perspectives.length ? eff.hunt_perspectives : [];
     const huntBrief = huntList
       .map((p) => {
         const id = p.id || "?";
-        const model = String(p.model || "").trim();
+        const model = p.model && typeof p.model === "object" ? p.model.model_id : String(p.model || "").trim();
         return model ? `${id}:${model}` : id;
       })
       .join(", ");
     const el = $("#settings-effective");
     if (!el) return;
+    const hostCount = (s.hosts || []).length;
     el.textContent =
-      `Effective: ${eff.base_url || dash} | default ${eff.model || dash} | ` +
-      `validate [${vModels}] | consensus ${eff.validate_consensus || s.validate_consensus || "majority"} | ` +
+      `Effective: ${eff.base_url || dash} | default ${eff.model || dash} | hosts ${hostCount} | ` +
+      `available ${(s.available || []).length} | validate [${vList.join(", ")}] | ` +
+      `consensus ${eff.validate_consensus || s.validate_consensus || "majority"} | ` +
       `referee ${eff.validate_poc_referee ?? s.validate_poc_referee} | ` +
       `disprove ${eff.validate_llm ?? s.validate_llm} | ` +
       `hunt MoA ${huntOn ? "on" : "off"} [${huntBrief}] | ${keyNote} | ` +
       `agents ${eff.max_leases_parallel || 1}`;
-    updateValidateModelsWarn(vList, eff.model || s.model || "");
   }
 
-  function updateValidateModelsWarn(models, defaultModel) {
-    const warn = $("#set-validate-models-warn");
-    if (!warn) return;
-    const list = (models || []).map((m) => String(m || "").trim()).filter(Boolean);
-    const uniq = [...new Set(list.map((m) => m.toLowerCase()))];
-    const def = String(defaultModel || "").trim().toLowerCase();
-    if (uniq.length <= 1) {
-      warn.hidden = false;
-      warn.textContent =
-        "Same-model disprove is a weak signal. Add a second validation model id when you can.";
-    } else {
-      warn.hidden = true;
-      warn.textContent = "";
-    }
-    void def; // reserved if we later warn when list equals only default
-  }
-
-  function applyRecommendedToSettingsForm(rec) {
+  function applyRecommendedBudgets(rec) {
     if (!rec || typeof rec !== "object") return;
-    if (rec.host != null && $("#set-host")) $("#set-host").value = rec.host;
-    if (rec.port != null && $("#set-port")) $("#set-port").value = rec.port;
-    if (rec.model != null && $("#set-model")) $("#set-model").value = rec.model;
-    const apiModeEl = $("#set-api-mode");
-    if (apiModeEl && rec.api_mode) {
-      apiModeEl.value = rec.api_mode;
-      if (apiModeEl.value !== rec.api_mode) apiModeEl.value = "chat_completions";
-    }
-    if (rec.api_key != null && $("#set-api-key")) {
-      $("#set-api-key").value = rec.api_key;
-    }
     if (rec.max_concurrent_agents != null && $("#set-workers"))
       $("#set-workers").value = rec.max_concurrent_agents;
-    if (rec.context_tokens != null && $("#set-ctx"))
-      $("#set-ctx").value = rec.context_tokens;
+    if (rec.context_tokens != null && $("#set-ctx")) $("#set-ctx").value = rec.context_tokens;
     if (rec.max_context_fraction != null && $("#set-frac"))
       $("#set-frac").value = rec.max_context_fraction;
-    if (rec.max_tokens != null && $("#set-maxtok"))
-      $("#set-maxtok").value = rec.max_tokens;
-    if (rec.max_tool_rounds != null && $("#set-rounds"))
-      $("#set-rounds").value = rec.max_tool_rounds;
-    if (rec.timeout_seconds != null && $("#set-timeout"))
-      $("#set-timeout").value = rec.timeout_seconds;
-    if (rec.max_tasks != null && $("#set-maxtasks"))
-      $("#set-maxtasks").value = rec.max_tasks;
+    if (rec.max_tokens != null && $("#set-maxtok")) $("#set-maxtok").value = rec.max_tokens;
+    if (rec.max_tool_rounds != null && $("#set-rounds")) $("#set-rounds").value = rec.max_tool_rounds;
+    if (rec.timeout_seconds != null && $("#set-timeout")) $("#set-timeout").value = rec.timeout_seconds;
+    if (rec.max_tasks != null && $("#set-maxtasks")) $("#set-maxtasks").value = rec.max_tasks;
   }
 
   function formatOptimizeReport(data) {
@@ -372,32 +612,47 @@
     }
   }
 
+  function defaultHostForProbe() {
+    const ref = parseRefKey($("#set-model")?.value || "");
+    if (!ref) return null;
+    const row = document.querySelector(`#set-hosts .host-row[data-host-id="${cssEscape(ref.host_id)}"]`);
+    if (!row) return null;
+    return {
+      host: row.querySelector("[data-field=base_url]")?.value.trim() || "",
+      api_key: row.querySelector("[data-field=api_key]")?.value ?? "",
+      model: ref.model_id,
+    };
+  }
+
   async function optimizeSettings() {
     const btn = $("#settings-optimize");
     const report = $("#settings-optimize-report");
-    const form = settingsFormBody();
+    const target = defaultHostForProbe();
+    if (!target || !target.host) {
+      toast("Pick a verified default model first", true);
+      return;
+    }
     if (btn) {
       btn.disabled = true;
       btn.textContent = "Optimizing…";
     }
     if (report) {
       report.hidden = false;
-      report.textContent = "Probing endpoint (models, completion, tool-call, context window, latency)…";
+      report.textContent = "Probing the default role's host for global budgets…";
     }
     try {
       const data = await api("/api/settings/optimize", {
         method: "POST",
         body: JSON.stringify({
-          host: form.host,
-          port: form.port,
-          model: form.model,
-          api_key: form.api_key,
+          host: target.host,
+          model: target.model,
+          api_key: target.api_key,
           apply: false,
         }),
       });
-      if (data.recommended) applyRecommendedToSettingsForm(data.recommended);
+      if (data.recommended) applyRecommendedBudgets(data.recommended);
       if (report) report.textContent = formatOptimizeReport(data);
-      toast(data.ok ? "Optimized — review & Save" : data.error || "Optimize failed", !data.ok);
+      toast(data.ok ? "Budgets updated — review & Save" : data.error || "Optimize failed", !data.ok);
     } catch (e) {
       if (report) report.textContent = String(e.message || e);
       toast(e.message || String(e), true);
@@ -426,15 +681,68 @@
     }
   }
 
+  async function refreshCatalog(hostId) {
+    if (!hostId) {
+      toast("Save the host first", true);
+      return;
+    }
+    try {
+      const data = await api(`/api/settings/hosts/${encodeURIComponent(hostId)}/catalog`, {
+        method: "POST",
+        body: "{}",
+      });
+      if (!data.ok) {
+        toast(data.error || "Refresh failed", true);
+        return;
+      }
+      toast(`Catalog: ${(data.models || []).length} model(s)`);
+      await loadSettings();
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async function verifyModel(hostId, modelId) {
+    try {
+      const data = await api(`/api/settings/hosts/${encodeURIComponent(hostId)}/verify`, {
+        method: "POST",
+        body: JSON.stringify({ model_id: modelId }),
+      });
+      if (!data.ok) {
+        toast(data.error || "Verify failed", true);
+        return;
+      }
+      toast(`Verified ${modelId}`);
+      await loadSettings();
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
   function boot() {
     if (document.body?.dataset?.page !== "settings") return;
     loadSettings();
     $("#settings-form")?.addEventListener("submit", saveSettings);
     $("#settings-optimize")?.addEventListener("click", optimizeSettings);
+    $("#set-host-add")?.addEventListener("click", () => {
+      $("#set-hosts")?.appendChild(hostRow({}));
+    });
+    $("#set-hosts")?.addEventListener("click", (ev) => {
+      const btn = ev.target.closest?.("[data-action=remove-host]");
+      if (!btn) return;
+      btn.closest(".host-row")?.remove();
+    });
+    $("#set-catalog")?.addEventListener("click", (ev) => {
+      const refresh = ev.target.closest?.("[data-action=refresh-catalog]");
+      if (refresh) {
+        refreshCatalog(refresh.dataset.hostId || "");
+        return;
+      }
+      const verify = ev.target.closest?.("[data-action=verify-model]");
+      if (verify) verifyModel(verify.dataset.hostId || "", verify.dataset.modelId || "");
+    });
     $("#set-hunt-perspective-add")?.addEventListener("click", () => {
-      $("#set-hunt-perspectives")?.appendChild(
-        huntPerspectiveRow({ id: "", prompt: "", model: "" })
-      );
+      $("#set-hunt-perspectives")?.appendChild(huntPerspectiveRow({ id: "", prompt: "", model: "" }));
     });
     $("#set-hunt-perspectives")?.addEventListener("click", (ev) => {
       const btn = ev.target.closest?.("[data-action=remove]");
@@ -450,11 +758,11 @@
     boot();
   }
 
-  // Export for app.js optimize/save reuse if needed
   window.VFSettingsPage = {
     loadSettings,
     saveSettings,
     settingsFormBody,
     fillForm,
+    refreshRoleOptions,
   };
 })();

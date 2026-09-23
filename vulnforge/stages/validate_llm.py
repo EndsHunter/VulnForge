@@ -365,14 +365,15 @@ def _run_disprove(
         make_client_for_model,
         multi_model_disprove_meta,
         resolve_validate_consensus,
-        resolve_validate_models,
+        resolve_validate_targets,
     )
+    from vulnforge.settings.catalog import is_model_ref, model_id_of
 
-    validate_models = resolve_validate_models(cfg)
+    validate_models = resolve_validate_targets(cfg)
     if not validate_models:
         validate_models = [str((cfg.get("llm") or {}).get("model") or "")]
     consensus_mode = resolve_validate_consensus(cfg)
-    model_id: str | None = validate_models[0] if validate_models else None
+    model_id: str | None = model_id_of(validate_models[0]) if validate_models else None
     verifier_results: list[dict[str, Any]] = []
     open_clients: list[Any] = []
     try:
@@ -380,8 +381,9 @@ def _run_disprove(
 
         # Multi-model × dual perspectives: independent arguments; all must reject
         # to auto-reject_llm (low false-positive automation).
-        for mid in validate_models:
-            client = make_client_for_model(cfg, mid or None)
+        for target in validate_models:
+            mid = model_id_of(target)
+            client = make_client_for_model(cfg, target or None)
             open_clients.append(client)
             try:
                 resolved = client.fingerprint_model()
@@ -406,10 +408,21 @@ def _run_disprove(
                 perspective = str(slot.get("prompt") or "")
                 # Per-verifier model override wins over validate_models entry
                 slot_model = slot.get("model")
-                recorded_model = str(slot_model) if slot_model else resolved
+                recorded_model = model_id_of(slot_model) if slot_model else resolved
                 active_client = client
-                if slot_model and str(slot_model) != mid:
-                    active_client = make_client_for_model(cfg, str(slot_model))
+                same_slot = False
+                if slot_model:
+                    if is_model_ref(slot_model) or is_model_ref(target):
+                        same_slot = (
+                            is_model_ref(slot_model)
+                            and is_model_ref(target)
+                            and slot_model.get("host_id") == target.get("host_id")
+                            and slot_model.get("model_id") == target.get("model_id")
+                        )
+                    else:
+                        same_slot = model_id_of(slot_model) == mid
+                if slot_model and not same_slot:
+                    active_client = make_client_for_model(cfg, slot_model)
                     open_clients.append(active_client)
                     try:
                         recorded_model = active_client.fingerprint_model()
@@ -422,7 +435,7 @@ def _run_disprove(
                             "status": "failed_infra",
                             "error": str(e),
                             "finding_id": fid,
-                            "model_id": str(slot_model),
+                            "model_id": model_id_of(slot_model),
                             "verifier_id": slot_id,
                         }
 

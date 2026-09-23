@@ -35,12 +35,17 @@ def test_ui_settings_merge(tmp_path: Path, monkeypatch):
         }
     )
     ui = load_ui_settings()
-    assert ui["host"] == "192.168.1.5"
-    assert ui["port"] == 9999
-    assert ui["api_mode"] == "responses"
-    assert ui["api_key"] == "sk-test"
-    assert ui["model_hunt"] == "hunt-model"
-    assert ui["validate_models"] == ["m1", "m2"]  # deduped
+    assert len(ui["hosts"]) == 1
+    host = ui["hosts"][0]
+    assert host["base_url"] == "http://192.168.1.5:9999/v1"
+    assert host["api_mode"] == "responses"
+    assert host["api_key"] == "sk-test"
+    assert ui["model"] == {"host_id": host["id"], "model_id": "test-model"}
+    assert ui["model_hunt"] == {"host_id": host["id"], "model_id": "hunt-model"}
+    assert ui["validate_models"] == [
+        {"host_id": host["id"], "model_id": "m1"},
+        {"host_id": host["id"], "model_id": "m2"},
+    ]
     assert ui["validate_consensus"] == "all"
     assert ui["validate_poc_referee"] is True
     assert ui["validate_llm"] is True
@@ -49,8 +54,8 @@ def test_ui_settings_merge(tmp_path: Path, monkeypatch):
     assert cfg["llm"]["model"] == "test-model"
     assert cfg["llm"]["api_mode"] == "responses"
     assert cfg["llm"]["api_key"] == "sk-test"
-    assert cfg["llm"]["model_hunt"] == "hunt-model"
-    assert cfg["llm"]["validate_models"] == ["m1", "m2"]
+    assert cfg["llm"]["model_hunt"] == {"host_id": host["id"], "model_id": "hunt-model"}
+    assert cfg["llm"]["validate_models"] == ui["validate_models"]
     assert cfg["llm"]["validate_consensus"] == "all"
     assert cfg["stages"]["validate_poc_referee"] is True
     assert cfg["stages"]["validate_llm"] is True
@@ -176,9 +181,14 @@ def test_settings_api_hunt_moa_roundtrip(tmp_path: Path, monkeypatch):
         page = client.get("/settings")
         assert page.status_code == 200
         html = page.text
+        assert html.index("Hosts") < html.index("Catalog") < html.index("Roles")
         assert html.index("Multi-model validation") < html.index("Hunt perspectives")
-        assert "settings-card-validate" in html
-        assert "settings-card-hunt" in html
+        assert "settings-card-hosts" in html
+        assert "settings-card-catalog" in html
+        assert "settings-card-roles" in html
+        assert 'id="set-model"' in html
+        assert "verified pairs only" in html
+        assert "not automatic" in html
         assert 'id="set-hunt-moa"' in html
         assert 'id="set-hunt-perspectives"' in html
         assert "Not copied from validation models" in html or "not validation models" in html
@@ -266,7 +276,7 @@ def test_ui_settings_https_host(tmp_path: Path, monkeypatch):
         }
     )
     ui = load_ui_settings()
-    assert ui["host"] == "https://random.something"
+    assert ui["hosts"][0]["base_url"] == "https://random.something/v1"
     cfg = apply_ui_settings_to_cfg({"llm": {}, "run": {}}, ui)
     assert cfg["llm"]["base_url"] == "https://random.something/v1"
 
@@ -287,14 +297,14 @@ def test_api_key_blank_and_none_accepted(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("vulnforge.settings.ui.UI_SETTINGS_PATH", p)
     monkeypatch.setattr("vulnforge.settings.UI_SETTINGS_PATH", p)
     save_ui_settings({"api_key": "sk-keep"})
-    assert load_ui_settings()["api_key"] == "sk-keep"
+    assert load_ui_settings()["hosts"][0]["api_key"] == "sk-keep"
     # clear with explicit blank
     save_ui_settings({"api_key": ""})
-    assert load_ui_settings()["api_key"] == ""
+    assert load_ui_settings()["hosts"][0]["api_key"] == ""
     # clear with placeholder
     save_ui_settings({"api_key": "sk-again"})
     save_ui_settings({"api_key": "none"})
-    assert load_ui_settings()["api_key"] == ""
+    assert load_ui_settings()["hosts"][0]["api_key"] == ""
 
     ui = load_ui_settings()
     cfg = apply_ui_settings_to_cfg({"llm": {"api_key": "from-yaml"}, "run": {}}, ui)
@@ -347,7 +357,7 @@ def test_api_mode_aliases_and_default(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("vulnforge.settings.UI_SETTINGS_PATH", p)
     save_ui_settings({"api_mode": "chat-completions"})
     ui = load_ui_settings()
-    assert ui["api_mode"] == "chat_completions"
+    assert ui["hosts"][0]["api_mode"] == "chat_completions"
     cfg = apply_ui_settings_to_cfg({"llm": {"api_mode": "messages"}, "run": {}}, ui)
     # UI wins over bare cfg default when applying ui settings
     assert cfg["llm"]["api_mode"] == "chat_completions"

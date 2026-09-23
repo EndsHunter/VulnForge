@@ -58,35 +58,13 @@ def normalize_consensus(raw: Any) -> str:
     return s if s in CONSENSUS_MODES else "majority"
 
 
-def resolve_stage_model(cfg: dict | None, stage: str) -> str:
-    """Single model id for recon/hunt/develop_poc (falls back to llm.model)."""
-    llm = (cfg or {}).get("llm") or {}
-    key = STAGE_MODEL_KEYS.get(stage or "")
-    if key and key != "validate_models":
-        override = str(llm.get(key) or "").strip()
-        if override:
-            return override
-    return str(llm.get("model") or "").strip()
-
-
-def resolve_validate_models(cfg: dict | None) -> list[str]:
-    """1+ models for multi-LLM validation (disprove + PoC referee)."""
-    llm = (cfg or {}).get("llm") or {}
-    models = normalize_model_list(llm.get("validate_models"))
-    if not models:
-        default = str(llm.get("model") or "").strip()
-        if default:
-            models = [default]
-    return models
-
-
 def resolve_validate_consensus(cfg: dict | None) -> str:
     llm = (cfg or {}).get("llm") or {}
     return normalize_consensus(llm.get("validate_consensus"))
 
 
 def cfg_with_model(cfg: dict, model: str | None) -> dict:
-    """Shallow-deep copy of cfg with llm.model set (for make_client)."""
+    """Deep copy of cfg with llm.model set (single-endpoint / no host list)."""
     if not model:
         return cfg
     out = deepcopy(cfg)
@@ -94,20 +72,130 @@ def cfg_with_model(cfg: dict, model: str | None) -> dict:
     return out
 
 
+def resolve_stage_ref(cfg: dict | None, stage: str) -> Any:
+    """Stage role value: a host ref, a legacy model id, or "" when unset.
+
+    An empty stage override falls back to the default role ref, then ``llm.model``.
+    """
+    from vulnforge.settings.catalog import is_model_ref
+
+    llm = (cfg or {}).get("llm") or {}
+    key = STAGE_MODEL_KEYS.get(stage or "")
+    raw = llm.get(key) if key and key != "validate_models" else None
+    if is_model_ref(raw):
+        return {"host_id": str(raw["host_id"]).strip(), "model_id": str(raw["model_id"]).strip()}
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if is_model_ref(llm.get("model_ref")):
+        ref = llm["model_ref"]
+        return {"host_id": str(ref["host_id"]).strip(), "model_id": str(ref["model_id"]).strip()}
+    return str(llm.get("model") or "").strip()
+
+
+def resolve_stage_model(cfg: dict | None, stage: str) -> str:
+    """Single model id for recon/hunt/develop_poc (falls back to llm.model)."""
+    from vulnforge.settings.catalog import model_id_of
+
+    return model_id_of(resolve_stage_ref(cfg, stage))
+
+
+def resolve_validate_targets(cfg: dict | None) -> list[Any]:
+    """Validate slots as host refs when configured, else legacy model id strings.
+
+    Empty list falls back to the default role ref, then ``llm.model``.
+    """
+    from vulnforge.settings.catalog import is_model_ref
+
+    llm = (cfg or {}).get("llm") or {}
+    raw = llm.get("validate_models")
+    items = raw if isinstance(raw, list) else []
+    refs = [
+        {"host_id": str(item["host_id"]).strip(), "model_id": str(item["model_id"]).strip()}
+        for item in items
+        if is_model_ref(item)
+    ]
+    if refs:
+        return refs
+    models = normalize_model_list(raw)
+    if models:
+        return models
+    if is_model_ref(llm.get("model_ref")):
+        ref = llm["model_ref"]
+        return [{"host_id": str(ref["host_id"]).strip(), "model_id": str(ref["model_id"]).strip()}]
+    default = str(llm.get("model") or "").strip()
+    return [default] if default else []
+
+
+def resolve_validate_models(cfg: dict | None) -> list[str]:
+    """1+ model ids for multi-LLM validation (disprove + PoC referee)."""
+    from vulnforge.settings.catalog import model_id_of
+
+    return [model_id_of(item) for item in resolve_validate_targets(cfg) if model_id_of(item)]
+
+
+def bind_role_cfg(cfg: dict, ref: Any) -> dict:
+    """Copy cfg so llm base_url, api_mode, api_key, and model come from one ref.
+
+    No host list: a string model id only swaps ``llm.model`` (YAML single endpoint).
+    Host list present: the ref must name that host and an available pair.
+    A bare model id is refused — the same id on another host is not a fallback.
+    """
+    from vulnforge.llm import ConfigError
+    from vulnforge.settings.catalog import (
+        find_host,
+        host_id_of,
+        is_model_ref,
+        model_id_of,
+        pair_available,
+    )
+
+    llm = (cfg or {}).get("llm") or {}
+    hosts = llm.get("hosts") or []
+    if not hosts:
+        return cfg_with_model(cfg, model_id_of(ref))
+
+    model_id = model_id_of(ref)
+    host_id = host_id_of(ref)
+    if not model_id:
+        raise ConfigError("model ref is empty")
+    if not is_model_ref(ref):
+        raise ConfigError(
+            f"model {model_id!r} is not a host ref; refusing cross-host fallback"
+        )
+    host = find_host(hosts, host_id)
+    if host is None:
+        raise ConfigError(f"host {host_id!r} is not configured")
+    if not pair_available(llm.get("available"), host_id, model_id):
+        raise ConfigError(
+            f"{model_id!r} on host {host_id!r} is not available"
+        )
+    out = deepcopy(cfg)
+    bound = out.setdefault("llm", {})
+    bound["base_url"] = str(host.get("base_url") or "").rstrip("/")
+    bound["api_mode"] = host.get("api_mode") or "chat_completions"
+    bound["api_key"] = host.get("api_key") if host.get("api_key") is not None else ""
+    bound["model"] = model_id
+    bound["model_ref"] = {"host_id": host_id, "model_id": model_id}
+    bound["model_unbound"] = False
+    return out
+
+
 def make_client_for_stage(cfg: dict, stage: str):
-    """LLM client bound to the stage's configured model."""
+    """LLM client bound to the stage role's host, key, and model."""
     from vulnforge.llm import make_client
 
-    model = resolve_stage_model(cfg, stage)
-    return make_client(cfg_with_model(cfg, model) if model else cfg)
+    ref = resolve_stage_ref(cfg, stage)
+    if not ref:
+        return make_client(cfg)
+    return make_client(cfg, ref)
 
 
-def make_client_for_model(cfg: dict, model: str | None):
-    """LLM client for an explicit model id (validate multi-model loops)."""
+def make_client_for_model(cfg: dict, model: Any | None):
+    """LLM client for an explicit role ref or legacy model id."""
     from vulnforge.llm import make_client
 
     if model:
-        return make_client(cfg_with_model(cfg, model))
+        return make_client(cfg, model)
     return make_client(cfg)
 
 

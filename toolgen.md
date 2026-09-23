@@ -43,7 +43,7 @@ Checklist of record for humans and local/offline models. Linked from `AGENTS.md`
 Primary surface for VulnForge: **LM Studio** (or compatible) OpenAI chat API on `http://127.0.0.1:1234/v1`.
 
 1. Load Ornith (listed id is usually `ornith-1.0-35b` — match **`GET /v1/models`**).
-2. Dashboard **Settings → Optimize AI settings → Save** so host/model/`max_tokens` match the server.
+2. Dashboard **Settings**: verify the model on its host, assign the default role, then **Optimize AI settings → Save** so global `max_tokens` match the server.
    - Reasoning models need **high** `max_tokens` (often ≥ 4096–8192). Low budgets yield empty `content` and only `reasoning_content`.
 3. Optional config keys in `config/default.yaml` → `llm.toolgen_max_tokens` (default 8192) and `llm.temperature_code` (≈0.15).
 4. Env overrides: `VF_BASE_URL`, `VF_MODEL`, or `VF_HOST`+`VF_PORT`.
