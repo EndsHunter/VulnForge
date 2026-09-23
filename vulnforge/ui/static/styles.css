@@ -3763,15 +3763,62 @@ tr.task-row .task-actions-cell .btn {
   .settings-page-grid {
     grid-template-columns: 1fr 1fr;
     grid-template-areas:
-      "endpoint endpoint"
-      "stages budget"
-      "validate hunt";
+      "hosts hosts"
+      "catalog roles"
+      "budget budget";
   }
-  .settings-card-endpoint { grid-area: endpoint; }
-  .settings-card-stages { grid-area: stages; }
+  .settings-card-hosts { grid-area: hosts; }
+  .settings-card-catalog { grid-area: catalog; }
+  .settings-card-roles { grid-area: roles; }
   .settings-card-budget { grid-area: budget; }
-  .settings-card-validate { grid-area: validate; }
-  .settings-card-hunt { grid-area: hunt; }
+}
+.settings-subhead {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.95rem;
+}
+.host-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-bottom: 0.65rem;
+}
+.host-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(8rem, 0.7fr) minmax(8rem, 0.8fr) auto;
+  gap: 0.4rem;
+  align-items: end;
+}
+.host-row .field { margin-bottom: 0; }
+.host-row input, .host-row select { width: 100%; }
+.catalog-host {
+  border-top: 1px solid var(--border);
+  padding-top: 0.55rem;
+  margin-top: 0.55rem;
+}
+.catalog-host-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+.catalog-models, .settings-available, .validate-model-picks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.catalog-model, .validate-model-picks label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.9rem;
+}
+.catalog-model .mono, .settings-available .mono { font-size: 12px; }
+@media (max-width: 720px) {
+  .host-row { grid-template-columns: 1fr; }
 }
 .hunt-perspective-head,
 .hunt-perspective-row {

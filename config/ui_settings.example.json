@@ -1,9 +1,26 @@
 {
-  "host": "127.0.0.1",
-  "port": 1234,
-  "model": "ornith-1.0-35b",
-  "api_mode": "chat_completions",
-  "api_key": "",
+  "hosts": [
+    {
+      "id": "local",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "api_mode": "chat_completions",
+      "api_key": ""
+    }
+  ],
+  "catalog": [
+    {"host_id": "local", "model_id": "ornith-1.0-35b"}
+  ],
+  "available": [
+    {"host_id": "local", "model_id": "ornith-1.0-35b"}
+  ],
+  "model": {"host_id": "local", "model_id": "ornith-1.0-35b"},
+  "model_recon": null,
+  "model_hunt": null,
+  "model_develop_poc": null,
+  "validate_models": [],
+  "validate_consensus": "majority",
+  "validate_poc_referee": true,
+  "validate_llm": true,
   "hunt_moa": false,
   "hunt_perspectives": [],
   "max_concurrent_agents": 1,

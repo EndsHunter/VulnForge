@@ -219,32 +219,37 @@ def control_start_kwargs(body: ControlBody, ui: Optional[dict[str, Any]] = None)
 
 
 class HuntPerspectiveSlot(BaseModel):
-    """One hunt MoA slot. Model is optional and is not a validate_models entry."""
+    """One hunt MoA slot. Model is an available ref, or blank. Not a validate entry."""
 
     id: str = ""
     prompt: Optional[str] = ""
-    model: Optional[str] = ""
+    model: Any = ""
 
 
 class SettingsBody(BaseModel):
+    # Hosts replace the single endpoint. Legacy host/port/model still migrate.
+    hosts: Optional[list[dict[str, Any]]] = None
     host: Optional[str] = None
     port: Optional[int] = None
-    model: Optional[str] = None
+    model: Any = None
     api_mode: Optional[str] = None  # chat_completions | responses | messages
     # Optional; blank / "none" / "null" clear the key (local servers need none).
     api_key: Optional[str] = None
-    # Per-stage model overrides (blank → default model)
-    model_recon: Optional[str] = None
-    model_hunt: Optional[str] = None
-    model_develop_poc: Optional[str] = None
-    # Multi-model validation (list or newline/comma string accepted in save)
-    validate_models: Optional[list[str]] = None
+    # Per-stage role refs (null/blank → default role). Not free-text once hosts exist.
+    model_recon: Any = None
+    model_hunt: Any = None
+    model_develop_poc: Any = None
+    # Available refs, or legacy bare strings when no hosts are saved.
+    validate_models: Any = None
     validate_consensus: Optional[str] = None  # all | majority
     validate_poc_referee: Optional[bool] = None
     validate_llm: Optional[bool] = None
     # Hunt MoA. Perspectives are independent of validate_models.
     hunt_moa: Optional[bool] = None
     hunt_perspectives: Optional[list[HuntPerspectiveSlot]] = None
+    # Server-owned; refresh/verify routes write these. Accepted so a caller can round-trip.
+    catalog: Optional[list[dict[str, Any]]] = None
+    available: Optional[list[dict[str, Any]]] = None
     max_concurrent_agents: Optional[int] = None
     context_tokens: Optional[int] = None
     max_context_fraction: Optional[float] = None
@@ -252,6 +257,10 @@ class SettingsBody(BaseModel):
     max_tool_rounds: Optional[int] = None
     timeout_seconds: Optional[int] = None
     max_tasks: Optional[int] = None
+
+
+class VerifyModelBody(BaseModel):
+    model_id: str = ""
 
 
 class SettingsOptimizeBody(BaseModel):
@@ -2384,13 +2393,17 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         llm = eff.get("llm") or {}
         run = eff.get("run") or {}
         stages = eff.get("stages") or {}
-        key = normalize_api_key(llm.get("api_key") if "api_key" in llm else ui.get("api_key"))
+        key = normalize_api_key(llm.get("api_key") if "api_key" in llm else "")
         vmodels = resolve_validate_models(eff)
         return {
             "settings": ui,
             "effective": {
                 "base_url": llm.get("base_url"),
-                "model": llm.get("model"),
+                "model": llm.get("model") if not isinstance(llm.get("model"), dict) else "",
+                "model_ref": llm.get("model_ref") or ui.get("model"),
+                "hosts": ui.get("hosts") or [],
+                "catalog": ui.get("catalog") or [],
+                "available": ui.get("available") or [],
                 "model_recon": llm.get("model_recon") or "",
                 "model_hunt": llm.get("model_hunt") or "",
                 "model_develop_poc": llm.get("model_develop_poc") or "",
@@ -2437,13 +2450,13 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 slot.model_dump() if hasattr(slot, "model_dump") else dict(slot)
                 for slot in raw_slots
             ]
-        if "model_recon" in body.model_fields_set:
-            updates["model_recon"] = body.model_recon or ""
-        if "model_hunt" in body.model_fields_set:
-            updates["model_hunt"] = body.model_hunt or ""
-        if "model_develop_poc" in body.model_fields_set:
-            updates["model_develop_poc"] = body.model_develop_poc or ""
-        saved = save_ui_settings(updates)
+        for role_key in ("model", "model_recon", "model_hunt", "model_develop_poc", "hosts", "catalog", "available"):
+            if role_key in body.model_fields_set:
+                updates[role_key] = getattr(body, role_key)
+        try:
+            saved = save_ui_settings(updates)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
         # refresh app config for init paths in this process
         app.state.config = load_config()
         return {"ok": True, "settings": saved}
@@ -2472,6 +2485,85 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         if result.get("applied"):
             app.state.config = load_config()
         return result
+
+    @app.post("/api/settings/hosts/{host_id}/catalog")
+    def api_refresh_host_catalog(host_id: str):
+        """GET /v1/models for one host. Does not verify. Not called on page open."""
+        from vulnforge.settings.catalog import find_host, merge_refresh
+        from vulnforge.settings_probe import list_model_ids
+
+        ui = load_ui_settings()
+        host = find_host(ui.get("hosts"), host_id)
+        if host is None:
+            raise HTTPException(404, f"host {host_id!r} is not configured")
+        try:
+            listed = list_model_ids(str(host.get("base_url") or ""), str(host.get("api_key") or ""))
+        except Exception as e:
+            return {
+                "ok": False,
+                "host_id": host_id,
+                "error": f"catalog refresh failed: {e}",
+                "settings": ui,
+            }
+        catalog, available = merge_refresh(
+            list(ui.get("catalog") or []),
+            list(ui.get("available") or []),
+            host_id,
+            listed,
+        )
+        saved = save_ui_settings({"catalog": catalog, "available": available})
+        app.state.config = load_config()
+        return {
+            "ok": True,
+            "host_id": host_id,
+            "models": listed,
+            "settings": saved,
+        }
+
+    @app.post("/api/settings/hosts/{host_id}/verify")
+    def api_verify_host_model(host_id: str, body: VerifyModelBody):
+        """Explicit probe of one (host, model) pair. Success marks it available."""
+        from vulnforge.settings.catalog import find_host, mark_available
+        from vulnforge.settings_probe import verify_model_pair
+
+        ui = load_ui_settings()
+        host = find_host(ui.get("hosts"), host_id)
+        if host is None:
+            raise HTTPException(404, f"host {host_id!r} is not configured")
+        model_id = str(body.model_id or "").strip()
+        if not model_id:
+            raise HTTPException(400, "model_id is required")
+        listed = {
+            str(row.get("model_id") or "")
+            for row in (ui.get("catalog") or [])
+            if str(row.get("host_id") or "") == host_id
+        }
+        if model_id not in listed:
+            raise HTTPException(400, "refresh the catalog before verify")
+        probed = verify_model_pair(
+            base_url=str(host.get("base_url") or ""),
+            api_mode=str(host.get("api_mode") or ""),
+            api_key=str(host.get("api_key") or ""),
+            model_id=model_id,
+        )
+        if not probed.get("ok"):
+            return {
+                "ok": False,
+                "host_id": host_id,
+                "model_id": model_id,
+                "error": probed.get("detail") or "verify failed",
+                "settings": ui,
+            }
+        available = mark_available(list(ui.get("available") or []), host_id, model_id)
+        saved = save_ui_settings({"available": available})
+        app.state.config = load_config()
+        return {
+            "ok": True,
+            "host_id": host_id,
+            "model_id": model_id,
+            "detail": probed.get("detail") or "",
+            "settings": saved,
+        }
 
     # ---------- API: hunt profiles (Dev dashboard) ----------
 

@@ -635,6 +635,123 @@ def _recommend_context_tokens(
     return n, n, "heuristic"
 
 
+def _endpoint_from_settings(current: dict[str, Any]) -> tuple[str, Any, str, str]:
+    """Host, port, model, api key for the global budget probe.
+
+    Prefers the flat fields (legacy callers). Otherwise the default role's host.
+    """
+    if current.get("host") or (isinstance(current.get("model"), str) and current.get("model")):
+        return (
+            str(current.get("host") or "127.0.0.1"),
+            current.get("port") if current.get("port") is not None else 1234,
+            str(current.get("model") or "") if not isinstance(current.get("model"), dict) else "",
+            str(current.get("api_key") or ""),
+        )
+    ref = current.get("model") if isinstance(current.get("model"), dict) else None
+    hosts = current.get("hosts") or []
+    if isinstance(ref, dict) and isinstance(hosts, list):
+        hid = str(ref.get("host_id") or "")
+        for host in hosts:
+            if isinstance(host, dict) and str(host.get("id") or "") == hid:
+                return (
+                    str(host.get("base_url") or ""),
+                    None,
+                    str(ref.get("model_id") or ""),
+                    str(host.get("api_key") or ""),
+                )
+    return ("127.0.0.1", 1234, "", "")
+
+
+def list_model_ids(base_url: str, api_key: str = "", *, timeout: float = 20.0) -> list[str]:
+    """GET ``{base_url}/models``. Raises on transport or non-200."""
+    key = normalize_api_key(api_key)
+    headers: dict[str, str] = {}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    url = str(base_url or "").rstrip("/") + "/models"
+    with httpx.Client(timeout=timeout, headers=headers) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        body = response.json()
+    data = body.get("data") if isinstance(body, dict) else body
+    if not isinstance(data, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in data:
+        if isinstance(item, dict) and item.get("id"):
+            mid = str(item["id"]).strip()
+        elif isinstance(item, str):
+            mid = item.strip()
+        else:
+            continue
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        out.append(mid)
+    return out
+
+
+def verify_model_pair(
+    *,
+    base_url: str,
+    api_mode: str,
+    api_key: str = "",
+    model_id: str,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """One completion against this host and model. Does not search other hosts."""
+    mode = normalize_api_mode(api_mode)
+    key = normalize_api_key(api_key)
+    headers: dict[str, str] = {}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    base = str(base_url or "").rstrip("/")
+    model_id = str(model_id or "").strip()
+    if mode == "responses":
+        url = base + "/responses"
+        payload: dict[str, Any] = {
+            "model": model_id,
+            "input": "Reply with ok",
+            "max_output_tokens": 16,
+        }
+    elif mode == "messages":
+        url = base + "/messages"
+        payload = {
+            "model": model_id,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "Reply with ok"}],
+        }
+    else:
+        url = base + "/chat/completions"
+        payload = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": "Reply with ok"}],
+            "max_tokens": 16,
+        }
+    try:
+        with httpx.Client(timeout=timeout, headers=headers) as client:
+            response = client.post(url, json=payload)
+    except Exception as exc:
+        return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+    if response.status_code != 200:
+        detail = f"HTTP {response.status_code}"
+        try:
+            body = response.json()
+            if isinstance(body, dict) and body.get("error"):
+                detail = f"{detail} {body.get('error')}"[:240]
+        except Exception:
+            pass
+        return {"ok": False, "detail": detail}
+    try:
+        data = response.json()
+    except Exception:
+        return {"ok": False, "detail": "response was not JSON"}
+    if isinstance(data, dict) and data.get("error"):
+        return {"ok": False, "detail": str(data.get("error"))[:240]}
+    return {"ok": True, "detail": f"HTTP 200 {mode}"}
+
+
 def optimize_ui_settings(
     *,
     host: Optional[str] = None,
@@ -659,15 +776,14 @@ def optimize_ui_settings(
         use only the model card / name heuristic.
     """
     current = load_ui_settings()
-    host = (host if host is not None else current.get("host") or "127.0.0.1").strip()
+    derived_host, derived_port, derived_model, derived_key = _endpoint_from_settings(current)
+    host = (host if host is not None else derived_host or "127.0.0.1").strip()
     try:
-        port = int(port if port is not None else current.get("port") or 1234)
+        port = int(port if port is not None else derived_port or 1234)
     except (TypeError, ValueError):
         port = 1234
-    model_req = (model if model is not None else current.get("model") or "").strip()
-    key = normalize_api_key(
-        api_key if api_key is not None else current.get("api_key")
-    )
+    model_req = (model if model is not None else derived_model or "").strip()
+    key = normalize_api_key(api_key if api_key is not None else derived_key)
 
     tests: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -1129,7 +1245,17 @@ def optimize_ui_settings(
     if apply:
         from vulnforge.settings import save_ui_settings
 
-        save_ui_settings(recommended)
+        # Global budgets only. Per-model optimize is out of scope; verify is separate.
+        save_ui_settings(
+            {
+                "context_tokens": recommended.get("context_tokens"),
+                "max_context_fraction": recommended.get("max_context_fraction"),
+                "max_tokens": recommended.get("max_tokens"),
+                "max_tool_rounds": recommended.get("max_tool_rounds"),
+                "timeout_seconds": recommended.get("timeout_seconds"),
+                "max_concurrent_agents": recommended.get("max_concurrent_agents"),
+            }
+        )
         applied = True
 
     summary_bits = [

@@ -23,7 +23,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Recon agent **seeds** | `seeds/recon_agents/` |
 | Config knobs (yaml) | `config/default.yaml` |
 | UI / runtime overrides | `config/ui_settings.json` (+ env `VF_*`) — edit via **`/settings`** page |
-| Stage / multi-model routing | `vulnforge/llm_models.py` + Settings `model_*` / `validate_models` / `hunt_perspectives` |
+| Stage / multi-model routing | `vulnforge/llm_models.py` — role refs bind that host's URL, API mode, and API key. Settings: `hosts`, `catalog`, `available`, `model*` |
 | Load path helpers | `vulnforge/paths.py` |
 | Config load | `vulnforge/settings/load.py` (`cli.load_config` is a shim) |
 | Operator chat tools (control plane) | `vulnforge/operator_chat/tools_*.py` — **not** agent tools |
@@ -64,6 +64,17 @@ schema / code defaults
 
 Collections (`config/hunt_profiles`, `config/recon_agents`, `config/default_tools.json`)
 are **separate** concerns — not folded into one mega-yaml.
+
+### Settings (`/settings`)
+
+| Section | Operator does | Stored in `ui_settings.json` |
+|---------|---------------|------------------------------|
+| Hosts | Add or remove an LLM server. Each row is a base URL (or `host:port`), API mode, and **that host's** API key | `hosts[]` |
+| Catalog | **Refresh catalog** = `GET /v1/models` for one saved host. **Verify** is a button on one model. Neither runs on page open | `catalog[]` discovered ids; `available[]` verified `(host_id, model_id)` only |
+| Roles | Default, recon, hunt, develop PoC, validation list, and hunt perspective models are pickers of Available. Blank stage = default role | `model`, `model_recon`, `model_hunt`, `model_develop_poc`, `validate_models`, `hunt_perspectives[].model` as `{host_id, model_id}` |
+| Budgets | Max tokens, context, consensus, workers, rounds, `validate_llm` / hunt MoA toggles, max concurrent agents. Still global | same global keys as before |
+
+A role ref resolves to that host's URL + API mode + API key + model (`vulnforge/llm_models.py` `bind_role_cfg`). A missing host or a pair that is not Available fails the lease. The same model id on another host is not a fallback. A flat `host` / `port` / `model` file migrates once into one host and verified role refs. With no hosts saved, YAML `llm.*` still supplies the endpoint.
 
 ### Seed vs runtime prompts
 

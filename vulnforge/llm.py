@@ -1501,20 +1501,37 @@ def messages_from_packet(packet: Any) -> list[dict]:
     ]
 
 
-def make_client(cfg: dict, model: str | None = None) -> Any:
+def make_client(cfg: dict, model: Any | None = None) -> Any:
     """Factory: fake if cfg['llm']['fake'] else real.
 
-    Optional ``model`` overrides ``llm.model`` for this client only (stage routing
-    and multi-model validation). Prefer ``vulnforge.llm_models.make_client_for_stage``.
+    ``model`` is a legacy model id or a ``{host_id, model_id}`` ref. A ref binds
+    that host's base URL, API mode, and API key together with the model.
+    With a host list and no explicit model, the default role ref is required.
+    Prefer ``vulnforge.llm_models.make_client_for_stage``.
     """
     if model:
-        from vulnforge.llm_models import cfg_with_model
+        from vulnforge.llm_models import bind_role_cfg
 
-        cfg = cfg_with_model(cfg, model)
+        cfg = bind_role_cfg(cfg, model)
+    else:
+        llm_pre = cfg.get("llm") or {}
+        if llm_pre.get("hosts"):
+            from vulnforge.llm_models import bind_role_cfg
+            from vulnforge.settings.catalog import find_host, is_model_ref, pair_available
+
+            ref = llm_pre.get("model_ref")
+            host_id = str(ref.get("host_id") or "").strip() if isinstance(ref, dict) else ""
+            model_id = str(ref.get("model_id") or "").strip() if isinstance(ref, dict) else ""
+            host = find_host(llm_pre.get("hosts"), host_id) if is_model_ref(ref) else None
+            if host is None or not pair_available(llm_pre.get("available"), host_id, model_id):
+                raise ConfigError(
+                    "default model is not an available (host, model) pair"
+                )
+            cfg = bind_role_cfg(cfg, ref)
     llm = cfg.get("llm") or {}
     if llm.get("fake"):
         return FakeLLMClient(
             responses=llm.get("fake_responses") or [],
-            model_id=llm.get("model") or model or "fake",
+            model_id=str(llm.get("model") or "") or "fake",
         )
     return LLMClient(cfg)

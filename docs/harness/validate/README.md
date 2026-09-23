@@ -41,7 +41,7 @@ Dual adversarial disprove (`pack_disprove` + `disprove.md` + perspective files).
 
 Default: `stages.validate_llm: true`. Set **false** to skip for speed, debug, or when same-model disprove adds noise (mech pass → human directly). Same-model dual stand is still weak signal — never treat as proof.
 
-**Recommended multi-model:** set `llm.validate_models` to 2+ distinct model ids (Settings → Validate models). Empty list falls back to `[llm.model]` only. Rejection still requires **all** slots (model × perspective) to return `reject`.
+**Recommended multi-model:** assign 2+ verified `(host, model)` pairs in Settings → Roles (validation). Empty list falls back to the default role only. Rejection still requires **all** slots (model × perspective) to return `reject`. A pair that is not Available fails that slot; VulnForge does not substitute the same model id from another host.
 
 ## Quality recipe (better severity / impact results)
 

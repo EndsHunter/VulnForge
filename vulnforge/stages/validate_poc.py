@@ -84,8 +84,9 @@ def _run_referee(
         consensus_referee_slots,
         make_client_for_model,
         resolve_validate_consensus,
-        resolve_validate_models,
+        resolve_validate_targets,
     )
+    from vulnforge.settings.catalog import model_id_of
     from vulnforge.stages.validate_llm import load_citation_slices
     from vulnforge.util import target_tool_root
 
@@ -108,7 +109,7 @@ def _run_referee(
     except FileNotFoundError as e:
         return {"ok": False, "error": f"missing_prompts:{e}"}
 
-    models = resolve_validate_models(cfg)
+    models = resolve_validate_targets(cfg)
     if not models:
         models = [str((cfg.get("llm") or {}).get("model") or "")]
     mode = resolve_validate_consensus(cfg)
@@ -117,8 +118,9 @@ def _run_referee(
     slots: list[dict[str, Any]] = []
     open_clients: list[Any] = []
     try:
-        for mid in models:
-            client = make_client_for_model(cfg, mid or None)
+        for target in models:
+            mid = model_id_of(target)
+            client = make_client_for_model(cfg, target or None)
             open_clients.append(client)
             try:
                 model_id = client.fingerprint_model()

@@ -25,19 +25,19 @@ DEFAULT_API_MODE = "chat_completions"
 # Sentinel strings operators may type when no key is needed (local LM Studio, etc.)
 _NO_API_KEY = frozenset({"", "none", "null", "n/a", "na", "blank", "-"})
 
-# Fields the dashboard may edit
+# Fields the dashboard may edit.
+# Connection identity lives on ``hosts`` (per-host URL, api_mode, api_key).
+# Role fields are ``{host_id, model_id}`` refs or null. Empty stage refs mean
+# "use the default role". ``catalog`` is discovered ids; ``available`` is verified.
 DEFAULT_UI_SETTINGS: dict[str, Any] = {
-    "host": "127.0.0.1",
-    "port": 1234,
-    "model": "ornith-1.0-35b",
-    "api_mode": DEFAULT_API_MODE,
-    # Optional; blank / none / null → no Authorization header (local servers).
-    "api_key": "",
-    # Per-stage model overrides (blank → use default model above)
-    "model_recon": "",
-    "model_hunt": "",
-    "model_develop_poc": "",
-    # Multi-model validation (1+). Empty list → [model]. One id per entry.
+    "hosts": [],
+    "catalog": [],
+    "available": [],
+    "model": None,
+    "model_recon": None,
+    "model_hunt": None,
+    "model_develop_poc": None,
+    # Refs once hosts exist; legacy bare strings only when hosts is empty.
     "validate_models": [],
     # all | majority — required agreement for positive “valid” signals
     "validate_consensus": "majority",
@@ -47,7 +47,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "validate_llm": True,
     # Hunt MoA (issue #72). Default off. Empty perspectives → keep YAML /
     # built-in slots; a non-empty list replaces llm.hunt_perspectives.
-    # Per-slot model is hunt-only and is not copied from validate_models.
+    # Per-slot model is a role ref (or blank). It is not copied from validate_models.
     "hunt_moa": False,
     "hunt_perspectives": [],
     "max_concurrent_agents": 1,
@@ -58,6 +58,21 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "timeout_seconds": 600,
     "max_tasks": 50,
 }
+
+_ROLE_KEYS = ("model", "model_recon", "model_hunt", "model_develop_poc")
+_GLOBAL_KEYS = (
+    "validate_consensus",
+    "validate_poc_referee",
+    "validate_llm",
+    "hunt_moa",
+    "max_concurrent_agents",
+    "context_tokens",
+    "max_context_fraction",
+    "max_tokens",
+    "max_tool_rounds",
+    "timeout_seconds",
+    "max_tasks",
+)
 
 
 def normalize_api_mode(value: Any) -> str:
@@ -207,46 +222,98 @@ def normalize_hunt_perspectives(value: Any) -> list[dict[str, str]]:
         prompt = str(item.get("prompt") or "").strip()
         if not prompt:
             prompt = default_hunt_perspective_prompt(pid)
-        model = str(item.get("model") or "").strip()
+        model = _coerce_perspective_model(item.get("model"))
         out.append({"id": pid, "prompt": prompt, "model": model})
     return out
 
 
-def _hunt_perspectives_for_cfg(slots: list[dict[str, str]]) -> list[dict[str, str]]:
+def _coerce_perspective_model(value: Any) -> Any:
+    """Blank, a legacy model id string, or a ``{host_id, model_id}`` ref."""
+    from vulnforge.settings.catalog import is_model_ref, model_ref
+
+    if isinstance(value, dict):
+        if is_model_ref(value):
+            return model_ref(str(value.get("host_id") or ""), str(value.get("model_id") or ""))
+        return ""
+    return str(value or "").strip()
+
+
+def _hunt_perspectives_for_cfg(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop blank per-slot models so resolve treats them as unset."""
-    cleaned: list[dict[str, str]] = []
+    cleaned: list[dict[str, Any]] = []
     for slot in slots:
-        item = {"id": slot["id"], "prompt": slot["prompt"]}
-        model = str(slot.get("model") or "").strip()
+        item: dict[str, Any] = {"id": slot["id"], "prompt": slot["prompt"]}
+        model = _coerce_perspective_model(slot.get("model"))
         if model:
             item["model"] = model
         cleaned.append(item)
     return cleaned
 
 
-def load_ui_settings() -> dict[str, Any]:
+def _blank_settings() -> dict[str, Any]:
     data = dict(DEFAULT_UI_SETTINGS)
-    # deep-copy list defaults so callers cannot mutate module defaults
-    data["validate_models"] = list(DEFAULT_UI_SETTINGS.get("validate_models") or [])
-    data["hunt_perspectives"] = [
-        dict(x) for x in (DEFAULT_UI_SETTINGS.get("hunt_perspectives") or [])
-    ]
+    data["hosts"] = []
+    data["catalog"] = []
+    data["available"] = []
+    data["validate_models"] = []
+    data["hunt_perspectives"] = []
+    return data
+
+
+def _read_settings_file() -> dict[str, Any] | None:
     p = settings_path()
-    if p.is_file():
-        try:
-            raw = json.loads(p.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                data.update({k: raw[k] for k in DEFAULT_UI_SETTINGS if k in raw})
-        except (OSError, json.JSONDecodeError):
-            pass
+    if not p.is_file():
+        return None
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _write_settings(current: dict[str, Any]) -> None:
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    persist = {k: current[k] for k in DEFAULT_UI_SETTINGS}
+    persist["updated_at"] = current.get("updated_at") or utc_now_iso()
+    path.write_text(json.dumps(persist, indent=2) + "\n", encoding="utf-8")
+
+
+def load_ui_settings() -> dict[str, Any]:
+    data = _blank_settings()
+    raw = _read_settings_file()
+    if raw is None:
+        return _normalize_ui_settings(data)
+    from vulnforge.settings.catalog import is_flat_document, migrate_flat_settings
+
+    if is_flat_document(raw):
+        merged = dict(raw)
+        for key in _GLOBAL_KEYS:
+            if key not in merged and key in data:
+                merged[key] = data[key]
+        data = migrate_flat_settings(merged, base=data)
+        for key in _GLOBAL_KEYS:
+            if key in raw:
+                data[key] = raw[key]
+        data = _normalize_ui_settings(data)
+        data["updated_at"] = utc_now_iso()
+        _write_settings(data)
+        return data
+    data.update({k: raw[k] for k in DEFAULT_UI_SETTINGS if k in raw})
     return _normalize_ui_settings(data)
 
 
 def _normalize_ui_settings(current: dict[str, Any]) -> dict[str, Any]:
     """Coerce types for UI settings (shared by load + save)."""
-    from vulnforge.llm_models import normalize_consensus, normalize_model_list
+    from vulnforge.llm_models import normalize_consensus
+    from vulnforge.settings.catalog import (
+        coerce_role_ref,
+        normalize_available,
+        normalize_catalog,
+        normalize_hosts,
+        normalize_validate_entries,
+    )
 
-    current["port"] = max(1, min(65535, int(current.get("port") or 1234)))
     current["max_concurrent_agents"] = max(1, int(current.get("max_concurrent_agents") or 1))
     current["context_tokens"] = max(1, int(current.get("context_tokens") or 32768))
     frac = float(current.get("max_context_fraction") if current.get("max_context_fraction") is not None else 0.25)
@@ -259,69 +326,288 @@ def _normalize_ui_settings(current: dict[str, Any]) -> dict[str, Any]:
     current["max_tool_rounds"] = max(1, int(current.get("max_tool_rounds") or 12))
     current["timeout_seconds"] = max(1, int(current.get("timeout_seconds") or 600))
     current["max_tasks"] = max(1, int(current.get("max_tasks") or 50))
-    current["host"] = str(current.get("host") or "127.0.0.1").strip().rstrip("/")
-    current["model"] = str(current.get("model") or "").strip()
-    current["model_recon"] = str(current.get("model_recon") or "").strip()
-    current["model_hunt"] = str(current.get("model_hunt") or "").strip()
-    current["model_develop_poc"] = str(current.get("model_develop_poc") or "").strip()
-    current["validate_models"] = normalize_model_list(current.get("validate_models"))
+    try:
+        current["hosts"] = normalize_hosts(current.get("hosts") or [])
+    except ValueError:
+        current["hosts"] = []
+    current["catalog"] = normalize_catalog(current.get("catalog"))
+    current["available"] = normalize_available(current.get("available"))
+    for key in _ROLE_KEYS:
+        current[key] = coerce_role_ref(current.get(key))
+    current["validate_models"] = normalize_validate_entries(current.get("validate_models"))
     current["validate_consensus"] = normalize_consensus(current.get("validate_consensus"))
     current["validate_poc_referee"] = bool(current.get("validate_poc_referee", True))
     current["validate_llm"] = bool(current.get("validate_llm", True))
     current["hunt_moa"] = _coerce_bool(current.get("hunt_moa"), False)
     current["hunt_perspectives"] = normalize_hunt_perspectives(current.get("hunt_perspectives"))
-    current["api_mode"] = normalize_api_mode(current.get("api_mode"))
-    current["api_key"] = normalize_api_key(current.get("api_key"))
     return current
+
+
+def _legacy_connection_update(updates: dict[str, Any]) -> bool:
+    return "hosts" not in updates and any(
+        k in updates for k in ("host", "port", "model", "api_mode", "api_key")
+    )
+
+
+def _apply_legacy_connection(current: dict[str, Any], updates: dict[str, Any]) -> None:
+    """Fold a pre-hosts save into the host list.
+
+    No hosts yet → one-way migrate (default model verified when a model id is present).
+    Hosts already saved → update that host's URL / mode / key. Do not invent a role
+    from a free-text model id.
+    """
+    from vulnforge.settings.catalog import (
+        LEGACY_DEFAULT_HOST,
+        LEGACY_DEFAULT_MODEL,
+        LEGACY_DEFAULT_PORT,
+        find_host,
+        migrate_flat_settings,
+    )
+
+    if not current.get("hosts"):
+        flat = {
+            "host": updates.get("host", LEGACY_DEFAULT_HOST),
+            "port": updates.get("port", LEGACY_DEFAULT_PORT),
+            "api_mode": updates.get("api_mode", DEFAULT_API_MODE),
+            "api_key": updates.get("api_key", ""),
+            "model": updates.get("model", LEGACY_DEFAULT_MODEL),
+            "model_recon": updates.get("model_recon", current.get("model_recon") or ""),
+            "model_hunt": updates.get("model_hunt", current.get("model_hunt") or ""),
+            "model_develop_poc": updates.get(
+                "model_develop_poc", current.get("model_develop_poc") or ""
+            ),
+            "validate_models": updates.get("validate_models", current.get("validate_models") or []),
+            "hunt_perspectives": updates.get(
+                "hunt_perspectives", current.get("hunt_perspectives") or []
+            ),
+        }
+        if "model" in updates:
+            flat["model"] = str(updates.get("model") or "").strip()
+        migrated = migrate_flat_settings(flat, base=current)
+        current["hosts"] = migrated["hosts"]
+        current["catalog"] = migrated["catalog"]
+        current["available"] = migrated["available"]
+        current["model"] = migrated["model"]
+        current["model_recon"] = migrated["model_recon"]
+        current["model_hunt"] = migrated["model_hunt"]
+        current["model_develop_poc"] = migrated["model_develop_poc"]
+        current["validate_models"] = migrated["validate_models"]
+        current["hunt_perspectives"] = migrated["hunt_perspectives"]
+        return
+
+    from vulnforge.settings.catalog import drop_host_records
+
+    ref = current.get("model") if isinstance(current.get("model"), dict) else None
+    host = find_host(current.get("hosts"), ref.get("host_id")) if ref else None
+    if host is None:
+        hosts = current.get("hosts") or []
+        host = hosts[0] if len(hosts) == 1 else None
+    if host is None:
+        return
+    url_changed = False
+    if any(k in updates for k in ("host", "port")):
+        host_field = updates.get("host", host.get("base_url"))
+        port = updates.get("port")
+        new_url = build_llm_base_url(host_field, port)
+        url_changed = new_url != host.get("base_url")
+        host["base_url"] = new_url
+    mode_changed = False
+    if "api_mode" in updates:
+        mode = normalize_api_mode(updates.get("api_mode"))
+        mode_changed = mode != host.get("api_mode")
+        host["api_mode"] = mode
+    if "api_key" in updates:
+        host["api_key"] = normalize_api_key(updates.get("api_key"))
+    # Key-only edits keep verification so an existing lease still resolves.
+    # A different URL or API mode must be verified again.
+    if url_changed or mode_changed:
+        catalog, available = drop_host_records(
+            list(current.get("catalog") or []),
+            list(current.get("available") or []),
+            str(host.get("id") or ""),
+            drop_catalog=url_changed,
+            drop_available=True,
+        )
+        current["catalog"] = catalog
+        current["available"] = available
+        _clear_dangling_roles(current)
+
+
+def _invalidate_dropped_roles(current: dict[str, Any], previous_available: list[dict[str, Any]]) -> None:
+    """Clear refs that this save just unverified. Other missing refs still error."""
+    prev = {
+        (str(a.get("host_id") or ""), str(a.get("model_id") or ""))
+        for a in previous_available
+        if isinstance(a, dict)
+    }
+    now = {
+        (str(a.get("host_id") or ""), str(a.get("model_id") or ""))
+        for a in (current.get("available") or [])
+        if isinstance(a, dict)
+    }
+    dropped = prev - now
+    if not dropped:
+        return
+
+    def dropped_ref(ref: Any) -> bool:
+        from vulnforge.settings.catalog import is_model_ref
+
+        return (
+            is_model_ref(ref)
+            and (str(ref.get("host_id") or ""), str(ref.get("model_id") or "")) in dropped
+        )
+
+    for key in _ROLE_KEYS:
+        if dropped_ref(current.get(key)):
+            current[key] = None
+    current["validate_models"] = [
+        item for item in (current.get("validate_models") or []) if not dropped_ref(item)
+    ]
+    for slot in current.get("hunt_perspectives") or []:
+        if dropped_ref(slot.get("model")):
+            slot["model"] = ""
+
+
+def _clear_dangling_roles(current: dict[str, Any]) -> None:
+    """Drop role refs whose pair is no longer available. Blank means use default / YAML."""
+    from vulnforge.settings.catalog import is_model_ref, pair_available
+
+    available = current.get("available") or []
+
+    def live(ref: Any) -> bool:
+        return is_model_ref(ref) and pair_available(available, ref["host_id"], ref["model_id"])
+
+    for key in _ROLE_KEYS:
+        ref = current.get(key)
+        if is_model_ref(ref) and not live(ref):
+            current[key] = None
+    kept = []
+    for item in current.get("validate_models") or []:
+        if is_model_ref(item) and live(item):
+            kept.append(item)
+        elif isinstance(item, str) and item.strip() and not current.get("hosts"):
+            kept.append(item.strip())
+    current["validate_models"] = kept
+    for slot in current.get("hunt_perspectives") or []:
+        model = slot.get("model")
+        if is_model_ref(model) and not live(model):
+            slot["model"] = ""
+
+
+def _validate_roles_against_available(current: dict[str, Any]) -> None:
+    """Once hosts exist, every non-empty role must be an available pair."""
+    from vulnforge.settings.catalog import (
+        clear_unavailable_perspective_models,
+        require_available_ref,
+    )
+
+    if not current.get("hosts"):
+        return
+    available = current.get("available") or []
+    for key, label in (
+        ("model", "default model"),
+        ("model_recon", "recon model"),
+        ("model_hunt", "hunt model"),
+        ("model_develop_poc", "develop PoC model"),
+    ):
+        current[key] = require_available_ref(current.get(key), available, label=label)
+    refs = []
+    for item in current.get("validate_models") or []:
+        ref = require_available_ref(item, available, label="validation model")
+        if ref:
+            refs.append(ref)
+    current["validate_models"] = refs
+    current["hunt_perspectives"] = clear_unavailable_perspective_models(
+        current.get("hunt_perspectives") or [], available
+    )
 
 
 def save_ui_settings(updates: dict[str, Any]) -> dict[str, Any]:
-    current = load_ui_settings()
-    for k in DEFAULT_UI_SETTINGS:
-        if k not in updates:
-            continue
-        # api_key may be cleared with "" / "none"; other fields ignore null only
-        if k == "api_key":
-            current[k] = normalize_api_key(updates[k])
-        elif k == "validate_models":
-            from vulnforge.llm_models import normalize_model_list
+    from vulnforge.settings.catalog import (
+        coerce_role_ref,
+        normalize_available,
+        normalize_catalog,
+        normalize_hosts,
+        normalize_validate_entries,
+        sync_catalog_for_host_edit,
+    )
 
-            current[k] = normalize_model_list(updates[k])
-        elif k == "hunt_perspectives":
-            current[k] = normalize_hunt_perspectives(updates[k])
-        elif k == "hunt_moa":
-            current[k] = _coerce_bool(updates[k], False)
-        elif k in ("validate_poc_referee", "validate_llm"):
-            current[k] = bool(updates[k])
-        elif updates[k] is not None:
-            current[k] = updates[k]
+    current = load_ui_settings()
+    if not isinstance(updates, dict):
+        updates = {}
+    legacy = _legacy_connection_update(updates)
+    apply_roles = True
+    previous_available = list(current.get("available") or [])
+
+    if "hosts" in updates and updates.get("hosts") is not None:
+        old_hosts = list(current.get("hosts") or [])
+        new_hosts = normalize_hosts(updates.get("hosts") or [])
+        catalog, available = sync_catalog_for_host_edit(
+            old_hosts,
+            new_hosts,
+            list(current.get("catalog") or []),
+            list(current.get("available") or []),
+        )
+        current["hosts"] = new_hosts
+        current["catalog"] = catalog
+        current["available"] = available
+        if not new_hosts:
+            current["catalog"] = []
+            current["available"] = []
+            for key in _ROLE_KEYS:
+                current[key] = None
+            current["validate_models"] = []
+            for slot in current.get("hunt_perspectives") or []:
+                slot["model"] = ""
+    elif legacy:
+        _apply_legacy_connection(current, updates)
+        # Migration already rewrote role strings into refs for this payload.
+        apply_roles = False
+
+    if "catalog" in updates and "hosts" not in updates:
+        current["catalog"] = normalize_catalog(updates.get("catalog"))
+    if "available" in updates and "hosts" not in updates:
+        current["available"] = normalize_available(updates.get("available"))
+
+    if apply_roles:
+        for key in _ROLE_KEYS:
+            if key in updates:
+                current[key] = coerce_role_ref(updates.get(key))
+        if "validate_models" in updates:
+            current["validate_models"] = normalize_validate_entries(updates.get("validate_models"))
+        if "hunt_perspectives" in updates:
+            current["hunt_perspectives"] = normalize_hunt_perspectives(
+                updates.get("hunt_perspectives")
+            )
+    if "hunt_moa" in updates:
+        current["hunt_moa"] = _coerce_bool(updates.get("hunt_moa"), False)
+    for key in ("validate_poc_referee", "validate_llm"):
+        if key in updates:
+            current[key] = bool(updates.get(key))
+    for key in (
+        "validate_consensus",
+        "max_concurrent_agents",
+        "context_tokens",
+        "max_context_fraction",
+        "max_tokens",
+        "max_tool_rounds",
+        "timeout_seconds",
+        "max_tasks",
+    ):
+        if key in updates and updates[key] is not None:
+            current[key] = updates[key]
+
     current = _normalize_ui_settings(current)
+    if "hosts" in updates:
+        _invalidate_dropped_roles(current, previous_available)
+    _validate_roles_against_available(current)
     current["updated_at"] = utc_now_iso()
-    path = settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Persist only known fields + updated_at
-    persist = {k: current[k] for k in DEFAULT_UI_SETTINGS}
-    persist["updated_at"] = current["updated_at"]
-    path.write_text(json.dumps(persist, indent=2) + "\n", encoding="utf-8")
+    _write_settings(current)
     return current
 
 
-def apply_ui_settings_to_cfg(cfg: dict, ui: Optional[dict] = None) -> dict:
-    """Deep-merge UI settings into a harness config dict (returns new dict)."""
-    out = deepcopy(cfg)
-    ui = ui if ui is not None else load_ui_settings()
-    host = ui.get("host") or "127.0.0.1"
-    port = ui.get("port") or 1234
-    base = build_llm_base_url(host, port)
+def _apply_globals(out: dict, ui: dict[str, Any]) -> None:
     llm = out.setdefault("llm", {})
-    llm["base_url"] = base
-    llm["model"] = ui.get("model") or llm.get("model")
-    llm["api_mode"] = normalize_api_mode(
-        ui.get("api_mode") if ui.get("api_mode") is not None else llm.get("api_mode")
-    )
-    # UI always owns api_key when settings are applied (blank/none → empty string).
-    if "api_key" in ui:
-        llm["api_key"] = normalize_api_key(ui.get("api_key"))
     llm["context_tokens"] = int(ui.get("context_tokens") or llm.get("context_tokens") or 32768)
     llm["max_context_fraction"] = float(
         ui.get("max_context_fraction")
@@ -331,27 +617,76 @@ def apply_ui_settings_to_cfg(cfg: dict, ui: Optional[dict] = None) -> dict:
     llm["max_tokens"] = int(ui.get("max_tokens") or llm.get("max_tokens") or 4096)
     llm["max_tool_rounds"] = int(ui.get("max_tool_rounds") or llm.get("max_tool_rounds") or 12)
     llm["timeout_seconds"] = int(ui.get("timeout_seconds") or llm.get("timeout_seconds") or 600)
-    # Stage model routing + multi-model validation
-    llm["model_recon"] = str(ui.get("model_recon") or "").strip()
-    llm["model_hunt"] = str(ui.get("model_hunt") or "").strip()
-    llm["model_develop_poc"] = str(ui.get("model_develop_poc") or "").strip()
-    from vulnforge.llm_models import normalize_consensus, normalize_model_list
+    from vulnforge.llm_models import normalize_consensus
 
-    llm["validate_models"] = normalize_model_list(ui.get("validate_models"))
     llm["validate_consensus"] = normalize_consensus(ui.get("validate_consensus"))
-    # Non-empty UI slots replace YAML. Empty leaves llm.hunt_perspectives alone
-    # so a fresh settings file does not wipe a custom YAML list. Never copy
-    # validate_models into these slots.
-    hunt_slots = normalize_hunt_perspectives(ui.get("hunt_perspectives"))
-    if hunt_slots:
-        llm["hunt_perspectives"] = _hunt_perspectives_for_cfg(hunt_slots)
     stages = out.setdefault("stages", {})
-    # UI owns these toggles when settings are loaded
     stages["validate_poc_referee"] = bool(ui.get("validate_poc_referee", True))
     stages["validate_llm"] = bool(ui.get("validate_llm", True))
     stages["hunt_moa"] = _coerce_bool(ui.get("hunt_moa"), False)
     run = out.setdefault("run", {})
     run["max_leases_parallel"] = max(1, int(ui.get("max_concurrent_agents") or 1))
     run["max_tasks"] = int(ui.get("max_tasks") or run.get("max_tasks") or 50)
+
+
+def _bind_default_host(llm: dict, ui: dict[str, Any]) -> None:
+    """Point llm.base_url/api_key/api_mode/model at the default role's host.
+
+    A missing host or a pair that is not available does not borrow another host.
+    """
+    from vulnforge.settings.catalog import find_host, is_model_ref, pair_available
+
+    hosts = ui.get("hosts") or []
+    llm["hosts"] = hosts
+    llm["available"] = list(ui.get("available") or [])
+    llm["catalog"] = list(ui.get("catalog") or [])
+    ref = ui.get("model") if is_model_ref(ui.get("model")) else None
+    llm["model_ref"] = ref
+    if ref is None:
+        llm["model_unbound"] = True
+        return
+    host = find_host(hosts, ref["host_id"])
+    if host is None or not pair_available(ui.get("available"), ref["host_id"], ref["model_id"]):
+        llm["model"] = ref["model_id"]
+        llm["model_unbound"] = True
+        return
+    llm["base_url"] = host["base_url"]
+    llm["api_mode"] = host.get("api_mode") or DEFAULT_API_MODE
+    llm["api_key"] = host.get("api_key") or ""
+    llm["model"] = ref["model_id"]
+    llm["model_unbound"] = False
+
+
+def apply_ui_settings_to_cfg(cfg: dict, ui: Optional[dict] = None) -> dict:
+    """Deep-merge UI settings into a harness config dict (returns new dict).
+
+    No hosts (UI never saved a connection) → YAML ``llm`` URL / model / key stay.
+    Hosts present → the default role binds that host's URL, mode, and key.
+    """
+    out = deepcopy(cfg)
+    ui = ui if ui is not None else load_ui_settings()
+    llm = out.setdefault("llm", {})
+    hosts = ui.get("hosts") or []
+    if hosts:
+        _bind_default_host(llm, ui)
+        for key in ("model_recon", "model_hunt", "model_develop_poc"):
+            ref = ui.get(key)
+            llm[key] = ref if isinstance(ref, dict) else ""
+        llm["validate_models"] = list(ui.get("validate_models") or [])
+    else:
+        # Legacy string roles (no host list). Empty lists do not wipe YAML.
+        from vulnforge.llm_models import normalize_model_list
+
+        for key in ("model_recon", "model_hunt", "model_develop_poc"):
+            raw = ui.get(key)
+            if isinstance(raw, str) and raw.strip():
+                llm[key] = raw.strip()
+        validate = ui.get("validate_models") or []
+        if validate:
+            llm["validate_models"] = normalize_model_list(validate)
+    hunt_slots = normalize_hunt_perspectives(ui.get("hunt_perspectives"))
+    if hunt_slots:
+        llm["hunt_perspectives"] = _hunt_perspectives_for_cfg(hunt_slots)
+    _apply_globals(out, ui)
     out["_ui_settings"] = ui
     return out
