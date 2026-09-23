@@ -264,7 +264,12 @@ class VerifyModelBody(BaseModel):
 
 
 class SettingsOptimizeBody(BaseModel):
-    """Probe live endpoint and recommend settings (optional form overrides)."""
+    """Probe live endpoint and recommend settings (optional form overrides).
+
+    ``targets`` probes those verified pairs on their own hosts. Omit it for
+    the legacy single-endpoint probe. An empty list is a client error, not
+    a fallback to one global model.
+    """
 
     host: Optional[str] = None
     port: Optional[int] = None
@@ -272,6 +277,7 @@ class SettingsOptimizeBody(BaseModel):
     api_key: Optional[str] = None
     apply: bool = False
     test_context: bool = True
+    targets: Optional[list[dict[str, Any]]] = None
 
 
 class HuntProfileBody(BaseModel):
@@ -2463,23 +2469,35 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/settings/optimize")
     def api_optimize_settings(body: SettingsOptimizeBody = Body(default_factory=SettingsOptimizeBody)):
-        """Probe the configured LLM and recommend (optionally apply) settings.
+        """Probe explicitly. Not called when the settings page opens.
 
-        Runs connectivity, model-id resolution, API surface checks, a tool-call
-        compliance micro-probe, an empirical context-window test (unless
-        ``test_context`` is false), and latency heuristics. Does not touch targets.
+        ``targets`` runs one probe per selected verified pair, on that pair's
+        host. Without ``targets``, the legacy single-endpoint probe remains
+        for the old settings modal.
         """
-        from vulnforge.settings_probe import optimize_ui_settings
+        from vulnforge.settings_probe import optimize_selected_pairs, optimize_ui_settings
 
+        test_context = True if body.test_context is None else bool(body.test_context)
         try:
-            result = optimize_ui_settings(
-                host=body.host,
-                port=body.port,
-                model=body.model,
-                api_key=body.api_key,
-                apply=bool(body.apply),
-                test_context=True if body.test_context is None else bool(body.test_context),
-            )
+            if body.targets is not None:
+                if not body.targets:
+                    raise HTTPException(400, "select at least one verified model")
+                result = optimize_selected_pairs(
+                    targets=list(body.targets),
+                    apply=bool(body.apply),
+                    test_context=test_context,
+                )
+            else:
+                result = optimize_ui_settings(
+                    host=body.host,
+                    port=body.port,
+                    model=body.model,
+                    api_key=body.api_key,
+                    apply=bool(body.apply),
+                    test_context=test_context,
+                )
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(500, f"optimize failed: {e}") from e
         if result.get("applied"):

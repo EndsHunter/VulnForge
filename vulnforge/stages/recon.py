@@ -1072,9 +1072,10 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             + "\nDo not redo already-explored paths first.\n"
         )
 
-    from vulnforge.llm_models import make_client_for_stage
+    from vulnforge.llm_models import cfg_for_stage, make_client_for_stage
 
-    client = make_client_for_stage(cfg, "recon")
+    role_cfg = cfg_for_stage(cfg, "recon")
+    client = make_client_for_stage(role_cfg, "recon")
     try:
         try:
             model_id = client.fingerprint_model()
@@ -1113,7 +1114,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 if tools_allow is not None and not isinstance(tools_allow, list):
                     tools_allow = None
                 packet = _pack_ra(
-                    cfg,
+                    role_cfg,
                     prompts_root,
                     agent_body=body_md,
                     inventory=inventory,
@@ -1358,7 +1359,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             if tools_allow is not None and not isinstance(tools_allow, list):
                 tools_allow = None
             packet = pack_recon_agent(
-                cfg,
+                role_cfg,
                 prompts_root,
                 agent_body=body_md,
                 inventory=inventory,
@@ -1392,7 +1393,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 handler,
                 max_rounds=max_rounds,
                 temperature=temp,
-                cfg=cfg,
+                cfg=role_cfg,
             )
             last_result = result
             pass_usage = record_llm_result(

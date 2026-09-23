@@ -33,6 +33,25 @@ def _recording_handler(
     return wrapped
 
 
+def _cfg_with_client_budgets(cfg: Optional[dict[str, Any]], client: Any) -> Optional[dict[str, Any]]:
+    """Overlay the client's resolved pair budgets onto the loop cfg.
+
+    Hand-built fakes leave these unset and keep the caller's cfg.
+    """
+    ctx = getattr(client, "context_tokens", None)
+    mt = getattr(client, "max_tokens", None)
+    if ctx is None and mt is None:
+        return cfg
+    out = dict(cfg or {})
+    llm = dict(out.get("llm") or {})
+    if ctx is not None:
+        llm["context_tokens"] = int(ctx)
+    if mt is not None:
+        llm["max_tokens"] = int(mt)
+    out["llm"] = llm
+    return out
+
+
 def run_tool_loop(
     client: Any,
     packet: Any,
@@ -51,6 +70,7 @@ def run_tool_loop(
     from vulnforge.llm import FakeLLMClient
 
     tool_handler = _recording_handler(tool_handler)
+    cfg = _cfg_with_client_budgets(cfg, client)
 
     if isinstance(client, FakeLLMClient):
         result = client.run_tool_loop(

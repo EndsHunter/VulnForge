@@ -412,6 +412,7 @@ class LLMClient:
         self.default_max_tokens = int(llm.get("max_tokens", 4096))
         # Alias used by Strands OpenAIModel bridge
         self.max_tokens = self.default_max_tokens
+        self.context_tokens = int(llm.get("context_tokens") or 32768)
 
         self.api_mode = normalize_api_mode(llm.get("api_mode"))
         headers: dict[str, str] = {}
@@ -606,6 +607,9 @@ class FakeLLMClient:
     responses: list[LLMResult] = field(default_factory=list)
     model_id: str = "fake-model"
     _i: int = 0
+    # None: this client was not built from a resolved pair. make_client sets both.
+    max_tokens: Optional[int] = None
+    context_tokens: Optional[int] = None
 
     def fingerprint_model(self) -> str:
         return self.model_id
@@ -1533,5 +1537,7 @@ def make_client(cfg: dict, model: Any | None = None) -> Any:
         return FakeLLMClient(
             responses=llm.get("fake_responses") or [],
             model_id=str(llm.get("model") or "") or "fake",
+            max_tokens=int(llm.get("max_tokens") or 4096),
+            context_tokens=int(llm.get("context_tokens") or 32768),
         )
     return LLMClient(cfg)

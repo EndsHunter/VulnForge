@@ -1,6 +1,6 @@
 /**
- * Dedicated /settings page — hosts, catalog verify, role pickers, global budgets.
- * Refresh and verify run only from their buttons.
+ * Dedicated /settings page — hosts, catalog verify, role pickers, per-model budgets.
+ * Refresh, verify, and optimize run only from their buttons.
  */
 (function () {
   const $ = (sel) => document.querySelector(sel);
@@ -457,6 +457,8 @@
       }
       root.appendChild(block);
     });
+    const head = document.querySelector(".available-head");
+    if (head) head.hidden = !available.length;
     avail.replaceChildren();
     if (!available.length) {
       const li = document.createElement("li");
@@ -467,10 +469,72 @@
     }
     available.forEach((ref) => {
       const li = document.createElement("li");
-      li.className = "mono";
-      li.textContent = refLabel(ref);
+      li.className = "available-row";
+      li.dataset.hostId = ref.host_id;
+      li.dataset.modelId = ref.model_id;
+      if (ref.verified_at) li.dataset.verifiedAt = ref.verified_at;
+
+      const pick = document.createElement("input");
+      pick.type = "checkbox";
+      pick.dataset.field = "selected";
+      pick.setAttribute("aria-label", `Select ${ref.model_id}`);
+
+      const name = document.createElement("span");
+      name.className = "mono";
+      name.textContent = refLabel(ref);
+
+      const ctx = document.createElement("input");
+      ctx.type = "number";
+      ctx.min = "1";
+      ctx.step = "1";
+      ctx.dataset.field = "context_tokens";
+      ctx.placeholder = "default";
+      ctx.setAttribute("aria-label", `Context tokens for ${ref.model_id}`);
+      if (ref.context_tokens != null) ctx.value = String(ref.context_tokens);
+
+      const maxTok = document.createElement("input");
+      maxTok.type = "number";
+      maxTok.min = "1";
+      maxTok.step = "1";
+      maxTok.dataset.field = "max_tokens";
+      maxTok.placeholder = "default";
+      maxTok.setAttribute("aria-label", `Max tokens for ${ref.model_id}`);
+      if (ref.max_tokens != null) maxTok.value = String(ref.max_tokens);
+
+      li.appendChild(pick);
+      li.appendChild(name);
+      li.appendChild(ctx);
+      li.appendChild(maxTok);
       avail.appendChild(li);
     });
+  }
+
+  function readAvailableBudgets() {
+    const out = [];
+    document.querySelectorAll("#set-available .available-row").forEach((row) => {
+      const host_id = row.dataset.hostId || "";
+      const model_id = row.dataset.modelId || "";
+      if (!host_id || !model_id) return;
+      const item = { host_id, model_id };
+      if (row.dataset.verifiedAt) item.verified_at = row.dataset.verifiedAt;
+      const ctxRaw = row.querySelector("[data-field=context_tokens]")?.value.trim() ?? "";
+      const maxRaw = row.querySelector("[data-field=max_tokens]")?.value.trim() ?? "";
+      item.context_tokens = ctxRaw === "" ? null : parseInt(ctxRaw, 10);
+      item.max_tokens = maxRaw === "" ? null : parseInt(maxRaw, 10);
+      out.push(item);
+    });
+    return out;
+  }
+
+  function selectedPairs() {
+    const out = [];
+    document.querySelectorAll("#set-available .available-row").forEach((row) => {
+      if (!row.querySelector("[data-field=selected]")?.checked) return;
+      const host_id = row.dataset.hostId || "";
+      const model_id = row.dataset.modelId || "";
+      if (host_id && model_id) out.push({ host_id, model_id });
+    });
+    return out;
   }
 
   function settingsFormBody() {
@@ -493,6 +557,7 @@
       max_tool_rounds: parseInt($("#set-rounds").value, 10),
       timeout_seconds: parseInt($("#set-timeout").value, 10),
       max_tasks: parseInt($("#set-maxtasks").value, 10),
+      available: readAvailableBudgets(),
     };
   }
 
@@ -558,50 +623,6 @@
       `agents ${eff.max_leases_parallel || 1}`;
   }
 
-  function applyRecommendedBudgets(rec) {
-    if (!rec || typeof rec !== "object") return;
-    if (rec.max_concurrent_agents != null && $("#set-workers"))
-      $("#set-workers").value = rec.max_concurrent_agents;
-    if (rec.context_tokens != null && $("#set-ctx")) $("#set-ctx").value = rec.context_tokens;
-    if (rec.max_context_fraction != null && $("#set-frac"))
-      $("#set-frac").value = rec.max_context_fraction;
-    if (rec.max_tokens != null && $("#set-maxtok")) $("#set-maxtok").value = rec.max_tokens;
-    if (rec.max_tool_rounds != null && $("#set-rounds")) $("#set-rounds").value = rec.max_tool_rounds;
-    if (rec.timeout_seconds != null && $("#set-timeout")) $("#set-timeout").value = rec.timeout_seconds;
-    if (rec.max_tasks != null && $("#set-maxtasks")) $("#set-maxtasks").value = rec.max_tasks;
-  }
-
-  function formatOptimizeReport(data) {
-    const lines = [];
-    if (data.summary) lines.push(data.summary);
-    if (data.error) lines.push("Error: " + data.error);
-    if (data.measured_context_tokens != null) {
-      const src = data.context_source ? ` (${data.context_source})` : "";
-      lines.push(`Measured context: ${data.measured_context_tokens} tokens${src}`);
-    }
-    for (const w of data.warnings || []) lines.push("⚠ " + w);
-    const changes = data.changes || {};
-    const keys = Object.keys(changes);
-    if (keys.length) {
-      lines.push("Changes:");
-      for (const k of keys) {
-        const c = changes[k];
-        lines.push(`  ${k}: ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`);
-      }
-    } else if (data.ok) {
-      lines.push("No field changes vs current saved settings.");
-    }
-    const tests = data.tests || [];
-    if (tests.length) {
-      lines.push("Tests:");
-      for (const t of tests) {
-        lines.push(`  ${t.ok ? "✓" : "✗"} ${t.id}: ${t.detail || ""} (${t.seconds ?? "?"}s)`);
-      }
-    }
-    lines.push("Review values, then Save to persist.");
-    return lines.join("\n");
-  }
-
   async function loadSettings() {
     try {
       const data = await api("/api/settings");
@@ -612,24 +633,44 @@
     }
   }
 
-  function defaultHostForProbe() {
-    const ref = parseRefKey($("#set-model")?.value || "");
-    if (!ref) return null;
-    const row = document.querySelector(`#set-hosts .host-row[data-host-id="${cssEscape(ref.host_id)}"]`);
-    if (!row) return null;
-    return {
-      host: row.querySelector("[data-field=base_url]")?.value.trim() || "",
-      api_key: row.querySelector("[data-field=api_key]")?.value ?? "",
-      model: ref.model_id,
-    };
+  function applyPairRecommendations(data) {
+    for (const row of data.targets || []) {
+      if (!row || !row.ok) continue;
+      const el = document.querySelector(
+        `#set-available .available-row[data-host-id="${cssEscape(row.host_id)}"][data-model-id="${cssEscape(row.model_id)}"]`
+      );
+      if (!el) continue;
+      const ctx = el.querySelector("[data-field=context_tokens]");
+      const maxTok = el.querySelector("[data-field=max_tokens]");
+      if (ctx && row.context_tokens != null) ctx.value = String(row.context_tokens);
+      if (maxTok && row.max_tokens != null) maxTok.value = String(row.max_tokens);
+    }
+  }
+
+  function formatSelectedReport(data) {
+    const lines = [];
+    if (data.summary) lines.push(data.summary);
+    if (data.error && !(data.targets || []).length) lines.push("Error: " + data.error);
+    for (const row of data.targets || []) {
+      const name = `${row.host_id} · ${row.model_id}`;
+      if (!row.ok) {
+        lines.push(`${name}: ${row.error || "failed"}`);
+        continue;
+      }
+      const src = row.context_source ? ` (${row.context_source})` : "";
+      lines.push(`${name}: context ${row.context_tokens}, max ${row.max_tokens}${src}`);
+      for (const w of row.warnings || []) lines.push(`  ⚠ ${w}`);
+    }
+    lines.push("Review values, then Save to persist.");
+    return lines.join("\n");
   }
 
   async function optimizeSettings() {
     const btn = $("#settings-optimize");
     const report = $("#settings-optimize-report");
-    const target = defaultHostForProbe();
-    if (!target || !target.host) {
-      toast("Pick a verified default model first", true);
+    const targets = selectedPairs();
+    if (!targets.length) {
+      toast("Select a verified model", true);
       return;
     }
     if (btn) {
@@ -638,20 +679,15 @@
     }
     if (report) {
       report.hidden = false;
-      report.textContent = "Probing the default role's host for global budgets…";
+      report.textContent = `Probing ${targets.length} selected model${targets.length === 1 ? "" : "s"}…`;
     }
     try {
       const data = await api("/api/settings/optimize", {
         method: "POST",
-        body: JSON.stringify({
-          host: target.host,
-          model: target.model,
-          api_key: target.api_key,
-          apply: false,
-        }),
+        body: JSON.stringify({ targets, apply: false }),
       });
-      if (data.recommended) applyRecommendedBudgets(data.recommended);
-      if (report) report.textContent = formatOptimizeReport(data);
+      applyPairRecommendations(data);
+      if (report) report.textContent = formatSelectedReport(data);
       toast(data.ok ? "Budgets updated — review & Save" : data.error || "Optimize failed", !data.ok);
     } catch (e) {
       if (report) report.textContent = String(e.message || e);
@@ -659,7 +695,7 @@
     } finally {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = "Optimize AI settings";
+        btn.textContent = "Optimize selected";
       }
     }
   }

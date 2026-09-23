@@ -177,11 +177,29 @@ def bind_role_cfg(cfg: dict, ref: Any) -> dict:
     bound["model"] = model_id
     bound["model_ref"] = {"host_id": host_id, "model_id": model_id}
     bound["model_unbound"] = False
+    from vulnforge.settings.catalog import resolve_pair_budgets
+
+    budgets = resolve_pair_budgets(bound, host_id, model_id)
+    bound["max_tokens"] = budgets["max_tokens"]
+    bound["context_tokens"] = budgets["context_tokens"]
     return out
 
 
+def cfg_for_stage(cfg: dict, stage: str) -> dict:
+    """Cfg bound to the stage role, including that pair's token budgets.
+
+    No host list: ``cfg`` unchanged (single endpoint; globals are the seed).
+    Host list: ``bind_role_cfg``. An unavailable pair raises ``ConfigError``.
+    """
+    ref = resolve_stage_ref(cfg, stage)
+    llm = (cfg or {}).get("llm") or {}
+    if not llm.get("hosts") or not ref:
+        return cfg
+    return bind_role_cfg(cfg, ref)
+
+
 def make_client_for_stage(cfg: dict, stage: str):
-    """LLM client bound to the stage role's host, key, and model."""
+    """LLM client bound to the stage role's host, key, model, and budgets."""
     from vulnforge.llm import make_client
 
     ref = resolve_stage_ref(cfg, stage)

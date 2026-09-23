@@ -146,9 +146,12 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         return orig_handler(name, args)
 
     prompts_root = system_prompts_root()
+    from vulnforge.llm_models import cfg_for_stage, make_client_for_stage
+
+    role_cfg = cfg_for_stage(cfg, "develop_poc")
     try:
         packet = pack_develop_poc(
-            cfg,
+            role_cfg,
             prompts_root,
             body,
             slices,
@@ -172,9 +175,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "finding_id": fid,
         }
 
-    from vulnforge.llm_models import make_client_for_stage
-
-    client = make_client_for_stage(cfg, "develop_poc")
+    client = make_client_for_stage(role_cfg, "develop_poc")
     model_id: str | None = None
     try:
         try:
@@ -186,15 +187,15 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 "finding_id": fid,
             }
 
-        max_rounds = int((cfg.get("llm") or {}).get("max_tool_rounds", 12))
-        temp = float((cfg.get("llm") or {}).get("temperature_hunt", 0.3))
+        max_rounds = int((role_cfg.get("llm") or {}).get("max_tool_rounds", 12))
+        temp = float((role_cfg.get("llm") or {}).get("temperature_hunt", 0.3))
         result = run_agent_tool_loop(
             client,
             packet,
             handler,
             max_rounds=max_rounds,
             temperature=temp,
-            cfg=cfg,
+            cfg=role_cfg,
         )
         usage_fields = record_llm_result(
             run_dir,

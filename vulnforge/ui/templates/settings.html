@@ -59,7 +59,15 @@
           </p>
           <div id="set-catalog"></div>
           <h3 class="settings-subhead">Available</h3>
+          <div class="available-head" aria-hidden="true">
+            <span></span>
+            <span>Model</span>
+            <span>Context</span>
+            <span>Max tokens</span>
+          </div>
           <ul id="set-available" class="settings-available"></ul>
+          <button type="button" class="btn" id="settings-optimize">Optimize selected</button>
+          <pre class="controls-hint mono" id="settings-optimize-report" hidden style="margin-top:0.65rem;max-height:12rem;overflow:auto;white-space:pre-wrap;padding:0.5rem;border:1px solid var(--border);border-radius:6px"></pre>
         </section>
 
         <section class="card settings-card settings-card-roles" id="settings-roles">
@@ -142,7 +150,7 @@
               <input id="set-workers" type="number" min="1" step="1" />
             </div>
             <div class="field">
-              <label class="field-label" for="set-ctx"><span class="label-text">Context window (tokens)</span></label>
+              <label class="field-label" for="set-ctx"><span class="label-text">Default context tokens</span></label>
               <input id="set-ctx" type="number" min="1024" step="1024" />
             </div>
             <div class="field">
@@ -150,7 +158,7 @@
               <input id="set-frac" type="number" min="0.01" max="1" step="0.01" />
             </div>
             <div class="field">
-              <label class="field-label" for="set-maxtok"><span class="label-text">Max completion tokens</span></label>
+              <label class="field-label" for="set-maxtok"><span class="label-text">Default max tokens</span></label>
               <input id="set-maxtok" type="number" min="256" step="256" />
             </div>
             <div class="field">
@@ -171,9 +179,7 @@
 
       <div class="card settings-card settings-actions-card">
         <div class="controls-hint" id="settings-effective"></div>
-        <pre class="controls-hint mono" id="settings-optimize-report" hidden style="margin-top:0.65rem;max-height:12rem;overflow:auto;white-space:pre-wrap;padding:0.5rem;border:1px solid var(--border);border-radius:6px"></pre>
         <div class="modal-actions" style="margin-top:0.75rem">
-          <button type="button" class="btn" id="settings-optimize" title="Probe the default role's host and fill global budgets (does not save until you click Save)">Optimize AI settings</button>
           <button type="submit" class="btn btn-primary" id="settings-save">Save settings</button>
         </div>
       </div>

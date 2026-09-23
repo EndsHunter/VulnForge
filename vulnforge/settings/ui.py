@@ -51,6 +51,8 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "hunt_moa": False,
     "hunt_perspectives": [],
     "max_concurrent_agents": 1,
+    # Seed for a verified pair with no max_tokens / context_tokens override.
+    # Fraction stays global. See vulnforge.settings.catalog.resolve_pair_budgets.
     "context_tokens": 32768,
     "max_context_fraction": 0.25,
     "max_tokens": 4096,
@@ -524,6 +526,7 @@ def _validate_roles_against_available(current: dict[str, Any]) -> None:
 
 def save_ui_settings(updates: dict[str, Any]) -> dict[str, Any]:
     from vulnforge.settings.catalog import (
+        apply_submitted_budgets,
         coerce_role_ref,
         normalize_available,
         normalize_catalog,
@@ -568,6 +571,12 @@ def save_ui_settings(updates: dict[str, Any]) -> dict[str, Any]:
         current["catalog"] = normalize_catalog(updates.get("catalog"))
     if "available" in updates and "hosts" not in updates:
         current["available"] = normalize_available(updates.get("available"))
+    elif "available" in updates:
+        # Hosts were saved in this request, so the verified set came from
+        # sync above. Only the per-pair budget knobs travel with the form.
+        current["available"] = normalize_available(
+            apply_submitted_budgets(list(current.get("available") or []), updates.get("available"))
+        )
 
     if apply_roles:
         for key in _ROLE_KEYS:
