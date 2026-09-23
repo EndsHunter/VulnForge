@@ -2,6 +2,12 @@
 
 Role assignments are ``{host_id, model_id}`` refs. A bare model id is not a
 ref. Resolution never searches another host for the same model id.
+
+Per-pair agent budgets (``max_tokens``, ``context_tokens``) live on the
+available row. A missing knob is not written back: at resolve time the
+global ui_settings value is the seed. An override on one pair never copies
+onto another pair, another host, or back onto the globals.
+``max_context_fraction`` stays global.
 """
 
 from __future__ import annotations
@@ -178,11 +184,34 @@ def normalize_catalog(value: Any) -> list[dict[str, str]]:
     return out
 
 
-def normalize_available(value: Any) -> list[dict[str, str]]:
-    """Verified pairs only. ``verified_at`` is optional metadata."""
+def _budget_int(value: Any) -> int | None:
+    """Positive int, or None when the knob is blank / invalid (use the global seed)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        value = text
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    if n < 1:
+        return None
+    return n
+
+
+def normalize_available(value: Any) -> list[dict[str, Any]]:
+    """Verified pairs. Optional ``max_tokens`` / ``context_tokens`` overrides.
+
+    Absent budget keys are not filled from the globals. That seed is applied
+    in ``resolve_pair_budgets`` so a later global edit still covers pairs
+    that have no override, and so pair A cannot bleed onto pair B.
+    """
     if not isinstance(value, list):
         return []
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for item in value:
         if not isinstance(item, dict):
@@ -195,12 +224,105 @@ def normalize_available(value: Any) -> list[dict[str, str]]:
         if key in seen:
             continue
         seen.add(key)
-        row: dict[str, str] = {"host_id": hid, "model_id": mid}
+        row: dict[str, Any] = {"host_id": hid, "model_id": mid}
         stamp = str(item.get("verified_at") or "").strip()
         if stamp:
             row["verified_at"] = stamp
+        for knob in ("max_tokens", "context_tokens"):
+            n = _budget_int(item.get(knob)) if knob in item else None
+            if n is not None:
+                row[knob] = n
         out.append(row)
     return out
+
+
+def apply_submitted_budgets(available: list[dict[str, Any]], submitted: Any) -> list[dict[str, Any]]:
+    """Copy per-pair budget knobs onto pairs that already exist.
+
+    Does not add or remove pairs (verification stays on the refresh/verify
+    routes). A present null clears that knob back to the global seed. A
+    missing key leaves the stored override alone. No pair's numbers are
+    written onto a different ``(host_id, model_id)``.
+    """
+    if not isinstance(submitted, list):
+        return list(available)
+    incoming: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in submitted:
+        if not isinstance(item, dict):
+            continue
+        hid = str(item.get("host_id") or "").strip()
+        mid = str(item.get("model_id") or "").strip()
+        if not hid or not mid:
+            continue
+        incoming[(hid, mid)] = item
+    out: list[dict[str, Any]] = []
+    for row in available:
+        if not isinstance(row, dict):
+            continue
+        key = (str(row.get("host_id") or "").strip(), str(row.get("model_id") or "").strip())
+        src = incoming.get(key)
+        if src is None:
+            out.append(dict(row))
+            continue
+        updated = dict(row)
+        for knob in ("max_tokens", "context_tokens"):
+            if knob not in src:
+                continue
+            n = _budget_int(src.get(knob))
+            if n is None:
+                updated.pop(knob, None)
+            else:
+                updated[knob] = n
+        out.append(updated)
+    return out
+
+
+def pair_budget_overrides(available: Any, host_id: str, model_id: str) -> dict[str, int]:
+    """Stored overrides for this pair only. Empty when the pair has no knobs."""
+    hid = str(host_id or "").strip()
+    mid = str(model_id or "").strip()
+    if not hid or not mid or not isinstance(available, list):
+        return {}
+    for item in available:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("host_id") or "").strip() != hid:
+            continue
+        if str(item.get("model_id") or "").strip() != mid:
+            continue
+        out: dict[str, int] = {}
+        for knob in ("max_tokens", "context_tokens"):
+            n = _budget_int(item.get(knob)) if knob in item else None
+            if n is not None:
+                out[knob] = n
+        return out
+    return {}
+
+
+def resolve_pair_budgets(llm: dict[str, Any] | None, host_id: str, model_id: str) -> dict[str, int]:
+    """``max_tokens`` and ``context_tokens`` for one verified pair.
+
+    One-way rule: the available-row override wins per key. A missing key
+    uses the global value already on ``llm`` (the seed from ui_settings).
+    The seed is not written onto the pair. Pair A does not affect pair B.
+    ``max_context_fraction`` is not resolved here; it stays on ``llm``.
+    """
+    src = llm if isinstance(llm, dict) else {}
+    overrides = pair_budget_overrides(src.get("available"), host_id, model_id)
+
+    def pick(key: str, default: int) -> int:
+        if key in overrides:
+            return overrides[key]
+        try:
+            n = int(src.get(key) or default)
+        except (TypeError, ValueError):
+            n = default
+        return max(1, n)
+
+    return {
+        "max_tokens": pick("max_tokens", 4096),
+        "context_tokens": pick("context_tokens", 32768),
+    }
 
 
 def pair_available(available: Any, host_id: str, model_id: str) -> bool:
@@ -371,21 +493,27 @@ def merge_refresh(
 
 
 def mark_available(
-    available: list[dict[str, str]],
+    available: list[dict[str, Any]],
     host_id: str,
     model_id: str,
     *,
     when: str | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     hid = str(host_id).strip()
     mid = str(model_id).strip()
-    kept = [
-        a
-        for a in available
-        if not (a.get("host_id") == hid and a.get("model_id") == mid)
-    ]
-    row = {"host_id": hid, "model_id": mid, "verified_at": when or utc_now_iso()}
-    kept.append(row)
+    old: dict[str, Any] | None = None
+    kept: list[dict[str, Any]] = []
+    for row in available:
+        if row.get("host_id") == hid and row.get("model_id") == mid:
+            old = row
+            continue
+        kept.append(row)
+    fresh: dict[str, Any] = {"host_id": hid, "model_id": mid, "verified_at": when or utc_now_iso()}
+    if isinstance(old, dict):
+        for knob in ("max_tokens", "context_tokens"):
+            if knob in old:
+                fresh[knob] = old[knob]
+    kept.append(fresh)
     return kept
 
 

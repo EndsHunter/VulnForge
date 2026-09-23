@@ -3817,8 +3817,27 @@ tr.task-row .task-actions-cell .btn {
   font-size: 0.9rem;
 }
 .catalog-model .mono, .settings-available .mono { font-size: 12px; }
+.available-head,
+.available-row {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) 6.5rem 6.5rem;
+  gap: 0.35rem;
+  align-items: center;
+}
+.available-head {
+  margin: 0.35rem 0 0.2rem;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.available-row input[type="number"] { width: 100%; }
+#settings-optimize { margin-top: 0.55rem; }
 @media (max-width: 720px) {
   .host-row { grid-template-columns: 1fr; }
+  .available-head { display: none; }
+  .available-row { grid-template-columns: 1.25rem minmax(0, 1fr); }
+  .available-row input[type="number"] { grid-column: 2; }
 }
 .hunt-perspective-head,
 .hunt-perspective-row {

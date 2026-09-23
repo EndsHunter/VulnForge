@@ -761,6 +761,7 @@ def optimize_ui_settings(
     apply: bool = False,
     timeout_seconds: float = 90.0,
     test_context: bool = True,
+    strict_model: bool = False,
 ) -> dict[str, Any]:
     """Probe endpoint and return recommendations.
 
@@ -884,8 +885,25 @@ def optimize_ui_settings(
                 "context_source": None,
             }
 
+        if strict_model and model_req not in listed:
+            return {
+                "ok": False,
+                "error": f"{model_req or '(empty)'} is not listed on this host",
+                "tests": tests,
+                "recommended": recommended,
+                "current": current,
+                "applied": False,
+                "warnings": warnings,
+                "measured_context_tokens": None,
+                "context_source": None,
+                "resolved_model": None,
+                "listed_models": listed,
+            }
         candidates = _model_candidates(model_req, listed)
-        if not candidates and listed:
+        if strict_model:
+            # The selected id only. Do not fall through to another model on this host.
+            candidates = [model_req]
+        elif not candidates and listed:
             candidates = [listed[0]]
             warnings.append(
                 f"No model id provided; using first listed model {listed[0]!r}."
@@ -1245,7 +1263,8 @@ def optimize_ui_settings(
     if apply:
         from vulnforge.settings import save_ui_settings
 
-        # Global budgets only. Per-model optimize is out of scope; verify is separate.
+        # Legacy single-endpoint apply writes globals only.
+        # Per-pair apply is optimize_selected_pairs.
         save_ui_settings(
             {
                 "context_tokens": recommended.get("context_tokens"),
@@ -1286,4 +1305,119 @@ def optimize_ui_settings(
         "base_url": base,
         "measured_context_tokens": measured_context_tokens,
         "context_source": context_source,
+    }
+
+
+def optimize_selected_pairs(
+    *,
+    targets: list[dict[str, Any]],
+    apply: bool = False,
+    timeout_seconds: float = 90.0,
+    test_context: bool = True,
+) -> dict[str, Any]:
+    """Probe each selected ``(host_id, model_id)`` on that host.
+
+    Explicit only: callers pass the pairs. This does not run on settings
+    open and does not pick a single global model. Recommendations for
+    ``max_tokens`` and ``context_tokens`` stay on that pair. Globals,
+    including ``max_context_fraction``, are not rewritten. ``apply`` writes
+    the two knobs onto the matching available rows and leaves every other
+    pair untouched.
+    """
+    from vulnforge.settings.catalog import (
+        apply_submitted_budgets,
+        find_host,
+        pair_available,
+    )
+    from vulnforge.settings.ui import save_ui_settings
+
+    current = load_ui_settings()
+    results: list[dict[str, Any]] = []
+    for raw in targets or []:
+        if not isinstance(raw, dict):
+            results.append(
+                {
+                    "host_id": "",
+                    "model_id": "",
+                    "ok": False,
+                    "error": "not an available (host, model) pair",
+                }
+            )
+            continue
+        hid = str(raw.get("host_id") or "").strip()
+        mid = str(raw.get("model_id") or "").strip()
+        host = find_host(current.get("hosts"), hid)
+        if host is None or not pair_available(current.get("available"), hid, mid):
+            results.append(
+                {
+                    "host_id": hid,
+                    "model_id": mid,
+                    "ok": False,
+                    "error": f"{mid or '(empty)'} on host {hid or '(empty)'} is not available",
+                }
+            )
+            continue
+        probed = optimize_ui_settings(
+            host=str(host.get("base_url") or ""),
+            port=None,
+            model=mid,
+            api_key=str(host.get("api_key") or ""),
+            apply=False,
+            timeout_seconds=timeout_seconds,
+            test_context=test_context,
+            strict_model=True,
+        )
+        rec = probed.get("recommended") if isinstance(probed.get("recommended"), dict) else {}
+        ok = bool(probed.get("ok"))
+        results.append(
+            {
+                "host_id": hid,
+                "model_id": mid,
+                "ok": ok,
+                "error": None if ok else (probed.get("error") or "probe failed"),
+                "context_tokens": rec.get("context_tokens") if ok else None,
+                "max_tokens": rec.get("max_tokens") if ok else None,
+                "measured_context_tokens": probed.get("measured_context_tokens"),
+                "context_source": probed.get("context_source"),
+                "summary": probed.get("summary") or "",
+                "warnings": list(probed.get("warnings") or []),
+                "tests": list(probed.get("tests") or []),
+                "base_url": str(host.get("base_url") or ""),
+            }
+        )
+
+    applied = False
+    if apply:
+        submitted = [
+            {
+                "host_id": row["host_id"],
+                "model_id": row["model_id"],
+                "max_tokens": row.get("max_tokens"),
+                "context_tokens": row.get("context_tokens"),
+            }
+            for row in results
+            if row.get("ok") and row.get("max_tokens") and row.get("context_tokens")
+        ]
+        if submitted:
+            updated = apply_submitted_budgets(list(current.get("available") or []), submitted)
+            save_ui_settings({"available": updated})
+            applied = True
+
+    failed = [row for row in results if not row.get("ok")]
+    summary = "; ".join(
+        (
+            f"{row['model_id']}@{row['host_id']} ctx={row.get('context_tokens')} max={row.get('max_tokens')}"
+            if row.get("ok")
+            else f"{row.get('model_id') or '?'}@{row.get('host_id') or '?'}: {row.get('error')}"
+        )
+        for row in results
+    )
+    return {
+        "ok": bool(results) and not failed,
+        "error": None if not failed else (failed[0].get("error") or "probe failed"),
+        "summary": summary,
+        "targets": results,
+        "applied": applied,
+        "current": current,
+        "warnings": [w for row in results for w in (row.get("warnings") or [])],
     }

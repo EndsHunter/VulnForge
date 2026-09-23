@@ -193,8 +193,11 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         cfg["run"] = {**(cfg.get("run") or {}), "profile": profile}
     handler = build_tool_handler(ctx)
     prompts_root = system_prompts_root()
+    from vulnforge.llm_models import cfg_for_stage, make_client_for_stage
+
+    role_cfg = cfg_for_stage(cfg, "hunt")
     packet = pack_hunt(
-        cfg,
+        role_cfg,
         prompts_root,
         payload,
         architecture_txt,
@@ -209,23 +212,21 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     except Exception as e:
         return {"status": "failed_task", "error": f"over_budget: {e}"}
 
-    from vulnforge.llm_models import make_client_for_stage
-
-    client = make_client_for_stage(cfg, "hunt")
+    client = make_client_for_stage(role_cfg, "hunt")
     try:
         try:
             model_id = client.fingerprint_model()
         except InfraError as e:
             return {"status": "failed_infra", "error": str(e)}
-        max_rounds = int((cfg.get("llm") or {}).get("max_tool_rounds", 12))
-        temp = float((cfg.get("llm") or {}).get("temperature_hunt", 0.4))
+        max_rounds = int((role_cfg.get("llm") or {}).get("max_tool_rounds", 12))
+        temp = float((role_cfg.get("llm") or {}).get("temperature_hunt", 0.4))
         result = run_agent_tool_loop(
             client,
             packet,
             handler,
             max_rounds=max_rounds,
             temperature=temp,
-            cfg=cfg,
+            cfg=role_cfg,
         )
         hunt_class = str(payload.get("class") or "wildcard").strip() or "wildcard"
         usage_fields = record_llm_result(
@@ -868,9 +869,15 @@ def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     remaining = total_rounds
     temp = float((cfg.get("llm") or {}).get("temperature_hunt", 0.4))
 
-    from vulnforge.llm_models import make_client_for_model, make_client_for_stage
+    from vulnforge.llm_models import (
+        bind_role_cfg,
+        cfg_for_stage,
+        make_client_for_model,
+        make_client_for_stage,
+    )
 
-    client = make_client_for_stage(cfg, "hunt")
+    role_cfg = cfg_for_stage(cfg, "hunt")
+    client = make_client_for_stage(role_cfg, "hunt")
     try:
         try:
             model_id = client.fingerprint_model()
@@ -897,9 +904,13 @@ def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
 
             _reset_perspective_session(session)
             ctx["default_evidence_id"] = slot_evidence_id(task.id, pid, index)
+            slot_model = _perspective_model(slot.get("model"))
+            slot_cfg = role_cfg
+            if slot_model and not fake:
+                slot_cfg = bind_role_cfg(cfg, slot_model)
             try:
                 packet = pack_hunt(
-                    cfg,
+                    slot_cfg,
                     prompts_root,
                     payload,
                     architecture_txt,
@@ -922,12 +933,11 @@ def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     "perspective_id": pid,
                 }
 
-            slot_model = _perspective_model(slot.get("model"))
             active = client
             owned = None
             slot_model_id = model_id
             if slot_model and not fake:
-                owned = make_client_for_model(cfg, slot_model)
+                owned = make_client_for_model(slot_cfg, slot_model)
                 active = owned
             tools_before = len(session.get("tools_used") or [])
             allotted = remaining
@@ -952,7 +962,7 @@ def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     handler,
                     max_rounds=allotted,
                     temperature=temp,
-                    cfg=cfg,
+                    cfg=slot_cfg,
                 )
             finally:
                 if owned is not None:
