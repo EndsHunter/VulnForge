@@ -147,6 +147,8 @@ def build_single_file_manifest(target: Path, *, progress: Any = None) -> dict[st
         status="running",
         message=f"Hashing {label} {target.name}",
         files_seen=0,
+        hashed=0,
+        fingerprinted=0,
         percent=10,
     )
     digest = hash_file(target)
@@ -157,6 +159,7 @@ def build_single_file_manifest(target: Path, *, progress: Any = None) -> dict[st
         message=f"File inventory done: {name}",
         files_seen=1,
         hashed=1,
+        fingerprinted=0,
         percent=100,
     )
     try:
@@ -170,7 +173,9 @@ def build_single_file_manifest(target: Path, *, progress: Any = None) -> dict[st
         "file_count": 1,
         "files": {name: digest},
         "hashed_files": 1,
+        "fingerprinted_files": 0,
         "incomplete": False,
+        "listing_capped": False,
         "max_hash_files": 1,
         "max_list_files": 1,
         "single_file": {
@@ -198,11 +203,16 @@ def build_target_manifest(
     100k+ files). Defaults cap listing and hashing so init stays interactive:
 
     - first ``max_hash_files`` get content hashes
-    - further listed files get size+mtime fingerprints
-    - walk stops after ``max_list_files`` files (manifest marked incomplete)
+    - further listed files get size+mtime fingerprints (``fingerprinted_files``)
+    - walk stops after ``max_list_files`` files or the directory cap
+      (``listing_capped``)
+
+    ``incomplete`` is true when the listing stopped early or any listed file
+    was not content-hashed. A finished listing past the hash cap is incomplete
+    but not listing-capped.
 
     ``progress`` is an optional callable(dict) for status UI (phase, files_seen,
-    percent, message). Incomplete manifests are honest for large targets.
+    hashed, fingerprinted, percent, message).
 
     Single files are supported: PE → kind=single_binary; other files → single_file.
     """
@@ -221,7 +231,7 @@ def build_target_manifest(
             except Exception:
                 pass
 
-    truncated = False
+    listing_capped = False
     hashed = 0
     stack: list[Path] = [target]
     seen_dirs = 0
@@ -232,13 +242,15 @@ def build_target_manifest(
         status="running",
         message=f"Scanning {target}",
         files_seen=0,
+        hashed=0,
+        fingerprinted=0,
         percent=0,
     )
     while stack:
         d = stack.pop()
         seen_dirs += 1
         if seen_dirs > max_dirs:
-            truncated = True
+            listing_capped = True
             break
         try:
             entries = list(d.iterdir())
@@ -269,7 +281,7 @@ def build_target_manifest(
                     if _ignored(rel, globs):
                         continue
                     if len(files) >= max_list_files:
-                        truncated = True
+                        listing_capped = True
                         stack.clear()
                         break
                     try:
@@ -281,15 +293,20 @@ def build_target_manifest(
                     except OSError:
                         continue
                     n = len(files)
+                    fingerprinted = n - hashed
                     if n - last_report >= 100 or n in (1, 10, 50):
                         last_report = n
                         pct = min(99, int(100 * n / max(max_list_files, 1)))
                         _prog(
                             phase="inventory",
                             status="running",
-                            message=f"Indexed {n} files (hashed {hashed})",
+                            message=(
+                                f"Indexed {n} files "
+                                f"(hashed {hashed}, fingerprinted {fingerprinted})"
+                            ),
                             files_seen=n,
                             hashed=hashed,
+                            fingerprinted=fingerprinted,
                             dirs_seen=seen_dirs,
                             percent=pct,
                         )
@@ -297,20 +314,29 @@ def build_target_manifest(
                 continue
         for sd in reversed(sorted(subdirs, key=lambda p: p.name.lower())):
             stack.append(sd)
-        if truncated:
+        if listing_capped:
             break
 
-    incomplete = truncated or hashed < len(files)
+    fingerprinted = len(files) - hashed
+    incomplete = listing_capped or hashed < len(files)
+    done = (
+        f"Inventory done: {len(files)} files "
+        f"(hashed {hashed}, fingerprinted {fingerprinted})"
+    )
+    if listing_capped:
+        done += " (listing capped)"
     _prog(
         phase="inventory",
         status="running",
-        message=(
-            f"Inventory done: {len(files)} files"
-            + (" (capped / incomplete)" if incomplete else "")
-        ),
+        message=done,
         files_seen=len(files),
         hashed=hashed,
-        percent=100 if not incomplete else min(99, int(100 * len(files) / max_list_files)),
+        fingerprinted=fingerprinted,
+        percent=(
+            100
+            if not listing_capped
+            else min(99, int(100 * len(files) / max(max_list_files, 1)))
+        ),
     )
     return {
         "target": str(target),
@@ -318,7 +344,9 @@ def build_target_manifest(
         "file_count": len(files),
         "files": files,
         "hashed_files": hashed,
+        "fingerprinted_files": fingerprinted,
         "incomplete": incomplete,
+        "listing_capped": listing_capped,
         "max_hash_files": max_hash_files,
         "max_list_files": max_list_files,
     }

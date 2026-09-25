@@ -97,6 +97,7 @@ def make_progress_writer(
         for k in (
             "dirs_seen",
             "hashed",
+            "fingerprinted",
             "run_dir",
             "key",
             "target_id",

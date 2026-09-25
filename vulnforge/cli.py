@@ -470,6 +470,7 @@ def cmd_init(args, cfg: dict) -> int:
             "file_count": manifest.get("file_count"),
             "incomplete": manifest.get("incomplete"),
             "hashed_files": manifest.get("hashed_files"),
+            "fingerprinted_files": manifest.get("fingerprinted_files"),
             "strategy": strategy,
         },
     )
@@ -704,10 +705,12 @@ def cmd_init(args, cfg: dict) -> int:
             "phase": "done",
             "status": "done",
             "message": (
-                f"Ready: {manifest.get('file_count')} files indexed"
+                f"Ready: {manifest.get('file_count')} files indexed "
+                f"(hashed {manifest.get('hashed_files')}, "
+                f"fingerprinted {manifest.get('fingerprinted_files')})"
                 + (
-                    " (inventory capped — large target)"
-                    if manifest.get("incomplete")
+                    " (listing capped)"
+                    if manifest.get("listing_capped")
                     else ""
                 )
                 + (f", {hunts_enqueued} hunts queued" if hunts_enqueued else "")
@@ -728,6 +731,8 @@ def cmd_init(args, cfg: dict) -> int:
             "status": "done",
             "file_count": manifest.get("file_count"),
             "incomplete": manifest.get("incomplete"),
+            "hashed_files": manifest.get("hashed_files"),
+            "fingerprinted_files": manifest.get("fingerprinted_files"),
             "strategy": strategy,
             "hunts_enqueued": hunts_enqueued,
         },
