@@ -2531,9 +2531,11 @@ function formatTaskLoop(t, maxAttempts) {
     parts.push("retry");
   }
   const title =
-    "Lease = times this task row was leased (infra budget). " +
-    "Gen / parent = Ralph follow-up after terminal failure or operator re-run. " +
-    "Agent id + n/m = multi-profile recon batch (each profile is its own task).";
+    "Lease n/m counts how many times this row has been leased, out of the attempt budget. " +
+    "A new lease increments the count. " +
+    "When the count reaches the max, an infra failure deadletters the row and it is not leased again. " +
+    "Gen or a parent id is a Ralph follow-up after a terminal failure or an operator re-run. " +
+    "An agent id and a batch fraction mark a multi-profile recon batch. Each profile is its own task.";
   return { label: parts.join(" · "), title };
 }
 
