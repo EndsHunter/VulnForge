@@ -122,7 +122,15 @@ def test_reclaim_dead_owner_leases(tmp_path: Path, toy_sqli: Path):
     n = db.reclaim_dead_owner_leases()
     assert n == 1
     assert db.count_leased_tasks() == 0
-    assert db.list_tasks()[0].state == "queued"
+    reclaimed = db.get_task(leased.id)
+    assert reclaimed is not None
+    assert reclaimed.state == "queued"
+    assert reclaimed.result == {
+        "status": "requeued",
+        "message": "Worker died; task requeued",
+        "worker_died": True,
+    }
+    assert "error" not in reclaimed.result
     # Live owner must not be reclaimed
     db.enqueue_task("recon", {"agent_ids": ["x"]}, priority=14)
     import os
@@ -132,6 +140,29 @@ def test_reclaim_dead_owner_leases(tmp_path: Path, toy_sqli: Path):
     assert t2 is not None
     assert db.reclaim_dead_owner_leases() == 0
     assert db.count_leased_tasks() == 1
+    db.close()
+
+
+def test_reclaim_dead_owner_keeps_real_task_error(tmp_path: Path, toy_sqli: Path):
+    """A result already stored is not replaced by the requeue note."""
+    import json
+
+    _run, db = _db(tmp_path, toy_sqli)
+    db.enqueue_task("hunt", {"area": "login", "class": "injection"}, priority=20)
+    leased = db.lease_next_task("vf-9999999-deadbeef", ttl_seconds=1800, max_parallel=1)
+    assert leased is not None
+    real = {"status": "failed_task", "error": "no_submit"}
+    db.conn.execute(
+        "UPDATE tasks SET result_json=? WHERE id=?",
+        (json.dumps(real), leased.id),
+    )
+    db.conn.commit()
+    assert db.reclaim_dead_owner_leases() == 1
+    task = db.get_task(leased.id)
+    assert task is not None
+    assert task.state == "queued"
+    assert task.result == real
+    assert task.result["error"] == "no_submit"
     db.close()
 
 

@@ -3045,6 +3045,33 @@ async function abortLiveTask() {
   }
 }
 
+const DEAD_LEASE_REQUEUE_COPY = "Worker died; task requeued";
+
+/**
+ * Dead-owner reclaim is a queue note, not a task failure.
+ * Older rows still store error=dead_lease_owner; new rows set worker_died.
+ * Any other error (no_submit, operator halt, infra) stays a real result.
+ */
+function isDeadLeaseRequeueResult(result) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const err = result.error == null ? "" : String(result.error);
+  if (err && err !== "dead_lease_owner") return false;
+  if (result.worker_died === true) return true;
+  return err === "dead_lease_owner";
+}
+
+function formatTaskResult(task) {
+  const result = task && task.result;
+  if (isDeadLeaseRequeueResult(result)) {
+    return {
+      text: DEAD_LEASE_REQUEUE_COPY,
+      title: "The worker that held this lease is gone. The task is back on the queue.",
+    };
+  }
+  const res = result ? JSON.stringify(result, null, 0) : "";
+  return { text: res, title: res };
+}
+
 function renderTasks(tasks) {
   const tb = $("#tasks-body");
   if (!tb) return;
@@ -3106,7 +3133,7 @@ function renderTasks(tasks) {
       );
       lastGroup = group;
     }
-    const res = t.result ? JSON.stringify(t.result, null, 0) : "";
+    const shown = formatTaskResult(t);
     const payload = t.payload ? JSON.stringify(t.payload) : "";
     const hasT = !!t.has_transcript;
     const loop = formatTaskLoop(t, maxA);
@@ -3155,7 +3182,7 @@ function renderTasks(tasks) {
         <td>${prioBadge}</td>
         <td class="mono task-loop" title="${esc(loop.title)}">${esc(loop.label)}</td>
         <td class="mono" title="${esc(payload)}">${esc(payload.slice(0, 80))}${payload.length > 80 ? "..." : ""}</td>
-        <td><div class="task-result" title="${esc(res)}">${esc(res.slice(0, 200))}</div></td>
+        <td><div class="task-result" title="${esc(shown.title)}">${esc(shown.text.slice(0, 200))}</div></td>
         <td>${
           hasT
             ? `<button type="button" class="llm-pill llm-log-btn" data-tid="${t.id}" title="Open the LLM transcript">LLM log</button>`
