@@ -51,6 +51,8 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "hunt_moa": False,
     "hunt_perspectives": [],
     "max_concurrent_agents": 1,
+    # Optional overrides keyed by model id only. Missing id → max_concurrent_agents.
+    "model_concurrent_caps": {},
     # Seed for a verified pair with no max_tokens / context_tokens override.
     # Fraction stays global. See vulnforge.settings.catalog.resolve_pair_budgets.
     "context_tokens": 32768,
@@ -68,6 +70,7 @@ _GLOBAL_KEYS = (
     "validate_llm",
     "hunt_moa",
     "max_concurrent_agents",
+    "model_concurrent_caps",
     "context_tokens",
     "max_context_fraction",
     "max_tokens",
@@ -259,6 +262,7 @@ def _blank_settings() -> dict[str, Any]:
     data["available"] = []
     data["validate_models"] = []
     data["hunt_perspectives"] = []
+    data["model_concurrent_caps"] = {}
     return data
 
 
@@ -317,6 +321,11 @@ def _normalize_ui_settings(current: dict[str, Any]) -> dict[str, Any]:
     )
 
     current["max_concurrent_agents"] = max(1, int(current.get("max_concurrent_agents") or 1))
+    from vulnforge.settings.catalog import normalize_model_concurrent_caps
+
+    current["model_concurrent_caps"] = normalize_model_concurrent_caps(
+        current.get("model_concurrent_caps")
+    )
     current["context_tokens"] = max(1, int(current.get("context_tokens") or 32768))
     frac = float(current.get("max_context_fraction") if current.get("max_context_fraction") is not None else 0.25)
     if frac <= 0:
@@ -605,6 +614,8 @@ def save_ui_settings(updates: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in updates and updates[key] is not None:
             current[key] = updates[key]
+    if "model_concurrent_caps" in updates:
+        current["model_concurrent_caps"] = updates.get("model_concurrent_caps")
 
     current = _normalize_ui_settings(current)
     if "hosts" in updates:
@@ -634,7 +645,11 @@ def _apply_globals(out: dict, ui: dict[str, Any]) -> None:
     stages["validate_llm"] = bool(ui.get("validate_llm", True))
     stages["hunt_moa"] = _coerce_bool(ui.get("hunt_moa"), False)
     run = out.setdefault("run", {})
+    # Global cap is the per-model fallback. Overrides stay keyed by model id.
     run["max_leases_parallel"] = max(1, int(ui.get("max_concurrent_agents") or 1))
+    from vulnforge.settings.catalog import normalize_model_concurrent_caps
+
+    run["model_concurrent_caps"] = normalize_model_concurrent_caps(ui.get("model_concurrent_caps"))
     run["max_tasks"] = int(ui.get("max_tasks") or run.get("max_tasks") or 50)
 
 

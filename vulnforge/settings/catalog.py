@@ -184,6 +184,119 @@ def normalize_catalog(value: Any) -> list[dict[str, str]]:
     return out
 
 
+def normalize_model_concurrent_caps(value: Any) -> dict[str, int]:
+    """Optional concurrent-agent overrides keyed by model id alone.
+
+    A blank, zero, or non-int value drops that id so the global cap applies.
+    Nested host maps are not caps: the key is the model id string, never
+    ``(host_id, model_id)``.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, raw in value.items():
+        mid = str(key or "").strip()
+        if not mid:
+            continue
+        n = _budget_int(raw)
+        if n is None:
+            continue
+        out[mid] = n
+    return out
+
+
+def effective_model_cap(caps: Any, model_id: str, default: int) -> int:
+    """Cap for one model id. No override → ``default`` (the global cap).
+
+    ``model_id`` is the only lookup key. The host that serves it is ignored.
+    """
+    try:
+        fallback = max(1, int(default or 1))
+    except (TypeError, ValueError):
+        fallback = 1
+    mid = str(model_id or "").strip()
+    table = caps if isinstance(caps, dict) else {}
+    if not mid or mid not in table:
+        return fallback
+    n = _budget_int(table.get(mid))
+    if n is None:
+        return fallback
+    return n
+
+
+def configured_model_ids(source: Any) -> list[str]:
+    """Role model ids in first-seen order. The same id on two hosts counts once."""
+    if not isinstance(source, dict):
+        return []
+    found: list[str] = []
+
+    def add(value: Any) -> None:
+        mid = model_id_of(value)
+        if mid and mid not in found:
+            found.append(mid)
+
+    ref = source.get("model_ref")
+    add(ref if is_model_ref(ref) else source.get("model"))
+    for key in ("model_recon", "model_hunt", "model_develop_poc"):
+        add(source.get(key))
+    raw_validate = source.get("validate_models")
+    if isinstance(raw_validate, list):
+        for item in raw_validate:
+            add(item)
+    slots = source.get("hunt_perspectives")
+    if isinstance(slots, list):
+        for slot in slots:
+            if isinstance(slot, dict):
+                add(slot.get("model"))
+    return found
+
+
+def parallel_lease_ceiling(default_cap: int, caps: Any, model_ids: list[str]) -> int:
+    """How many leases can be in flight if every configured model is at its cap.
+
+    No configured model ids → ``default_cap`` (today's single pool).
+    Each distinct model id contributes its override or the global default once.
+    """
+    try:
+        default_n = max(1, int(default_cap or 1))
+    except (TypeError, ValueError):
+        default_n = 1
+    ids = [str(mid).strip() for mid in (model_ids or []) if str(mid or "").strip()]
+    if not ids:
+        return default_n
+    table = normalize_model_concurrent_caps(caps)
+    total = 0
+    seen: set[str] = set()
+    for mid in ids:
+        if mid in seen:
+            continue
+        seen.add(mid)
+        total += effective_model_cap(table, mid, default_n)
+    return max(1, total)
+
+
+def ui_lease_ceiling(ui: Any) -> int:
+    """Ralph worker ceiling from UI settings."""
+    src = ui if isinstance(ui, dict) else {}
+    return parallel_lease_ceiling(
+        src.get("max_concurrent_agents") or 1,
+        src.get("model_concurrent_caps"),
+        configured_model_ids(src),
+    )
+
+
+def cfg_lease_ceiling(cfg: Any) -> int:
+    """Ralph worker ceiling from a merged harness config."""
+    src = cfg if isinstance(cfg, dict) else {}
+    run = src.get("run") if isinstance(src.get("run"), dict) else {}
+    llm = src.get("llm") if isinstance(src.get("llm"), dict) else {}
+    return parallel_lease_ceiling(
+        run.get("max_leases_parallel") or 1,
+        run.get("model_concurrent_caps"),
+        configured_model_ids(llm),
+    )
+
+
 def _budget_int(value: Any) -> int | None:
     """Positive int, or None when the knob is blank / invalid (use the global seed)."""
     if isinstance(value, bool) or value is None:

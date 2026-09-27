@@ -3832,12 +3832,28 @@ tr.task-row .task-actions-cell .btn {
   text-transform: uppercase;
 }
 .available-row input[type="number"] { width: 100%; }
+.model-cap-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.model-cap-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6.5rem;
+  gap: 0.35rem;
+  align-items: center;
+}
+.model-cap-row input[type="number"] { width: 100%; }
 #settings-optimize { margin-top: 0.55rem; }
 @media (max-width: 720px) {
   .host-row { grid-template-columns: 1fr; }
   .available-head { display: none; }
   .available-row { grid-template-columns: 1.25rem minmax(0, 1fr); }
   .available-row input[type="number"] { grid-column: 2; }
+  .model-cap-row { grid-template-columns: minmax(0, 1fr) 5.5rem; }
 }
 .hunt-perspective-head,
 .hunt-perspective-row {

@@ -221,12 +221,16 @@ def _ralph_cmd(
 
 
 def _max_leases_from_settings() -> int:
-    """Effective concurrent-lease cap from UI settings (fallback 1)."""
+    """How many Ralph workers can hold a lease at once (fallback 1).
+
+    One configured model with no override keeps the global cap. Several model
+    ids sum their own caps. The same model id is counted once.
+    """
     try:
         from vulnforge.settings import load_ui_settings
+        from vulnforge.settings.catalog import ui_lease_ceiling
 
-        ui = load_ui_settings()
-        return max(1, int(ui.get("max_concurrent_agents") or 1))
+        return ui_lease_ceiling(load_ui_settings())
     except Exception:
         return 1
 
@@ -246,13 +250,12 @@ def start_run(
     Start Ralph against an existing run directory.
     Clears STOP if present (start implies resume-from-stop).
 
-    workers>1 spawns multiple Ralph processes. With
-    ``run.max_leases_parallel`` > 1 (set from Settings max concurrent agents),
-    run-once skips exclusive run.lock and SQLite caps concurrent leases so
-    agents truly run in parallel.
+    workers>1 spawns multiple Ralph processes. When the per-model lease
+    ceiling is above 1, run-once skips exclusive run.lock and SQLite caps
+    each model id so agents on different models can run in parallel.
 
-    Worker count is capped to the lease cap so spare Ralph processes cannot
-    busy-spin on EXIT_BUSY while a single lease is held.
+    Worker count is capped to that ceiling so spare Ralph processes cannot
+    busy-spin on EXIT_BUSY past the leases the models will accept.
     """
     run_dir = Path(run_dir).resolve()
     if not (run_dir / "harness.db").is_file():

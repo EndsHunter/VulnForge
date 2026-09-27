@@ -58,8 +58,9 @@ Outer loop: `python scripts/ralph.py` — thin client of `run-once` (not a `vf` 
 
 Ralph process codes: `0` clean STOP, `10` idle, `20` infra give-up, `30` config, `40` budget, `130` interrupt.
 
-Multi-worker note: Settings **max concurrent agents** spawns N Ralph processes and sets
-`run.max_leases_parallel=N`. Workers that cannot lease (cap full or only leased peers)
+Multi-worker note: Settings **max concurrent agents** is the per-model fallback and sets
+`run.max_leases_parallel=N`. A model id in `model_concurrent_caps` uses that override instead.
+Workers that cannot lease (that model's cap is full, or only leased peers)
 must return **11 (busy)**, not 0 — otherwise a waiting worker burns its progress budget
 and exits while the other is mid-task. Ralph treats **11** as free for both
 `--max-tasks` and `--max-iterations` so a second agent can wait through a long
@@ -86,11 +87,18 @@ Transport / model-list under `max_task_attempts` → requeue + exit 20; at cap �
 
 ## Concurrent agents
 
-`run.max_leases_parallel` (Settings: **Max concurrent agents**) caps how many
-tasks may be `leased` at once. Dashboard Start spawns that many Ralph workers.
+`run.max_leases_parallel` (Settings: **Max concurrent agents**) is the cap for a
+model that has no override. Settings `model_concurrent_caps` is an optional map
+keyed by **model id alone** (not host + model). Ralph counts in-flight leases
+for that model id and will not lease another task for it past the override, or
+past the global cap when the id is absent. The same model id on two hosts
+shares one cap. A queued task whose model is already at cap is skipped so a
+different model can still lease. Dashboard Start spawns one Ralph worker per
+slot in that sum (each model id counted once). With one model and no override
+this is still N = max concurrent agents.
 
-- **N = 1** (default): exclusive `run.lock` for the whole `run-once` (single writer).
-- **N > 1**: exclusive lock skipped; SQLite `BEGIN IMMEDIATE` + lease cap coordinates
+- **Ceiling = 1** (default): exclusive `run.lock` for the whole `run-once` (single writer).
+- **Ceiling > 1**: exclusive lock skipped; SQLite `BEGIN IMMEDIATE` + the per-model cap coordinates
   multi-process agents. Evidence packs are per-task; events.jsonl is best-effort concurrent append.
 
 LM Studio / the local server must accept concurrent chat completions for N>1 to help.

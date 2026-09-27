@@ -72,7 +72,7 @@ are **separate** concerns — not folded into one mega-yaml.
 | Hosts | Add or remove an LLM server. Each row is a base URL (or `host:port`), API mode, and **that host's** API key | `hosts[]` |
 | Catalog | **Refresh catalog** = `GET /v1/models` for one saved host. **Verify** is a button on one model. Neither runs on page open | `catalog[]` discovered ids; `available[]` verified `(host_id, model_id)` only |
 | Roles | Default, recon, hunt, develop PoC, validation list, and hunt perspective models are pickers of Available. Blank stage = default role | `model`, `model_recon`, `model_hunt`, `model_develop_poc`, `validate_models`, `hunt_perspectives[].model` as `{host_id, model_id}` |
-| Budgets | Max tokens, context, consensus, workers, rounds, `validate_llm` / hunt MoA toggles, max concurrent agents. Still global | same global keys as before |
+| Budgets | Max tokens, context, consensus, workers, rounds, `validate_llm` / hunt MoA toggles, max concurrent agents. Optional concurrent cap per model id (blank uses the global cap; the same id on two hosts shares one number) | `max_concurrent_agents`, `model_concurrent_caps` |
 
 A role ref resolves to that host's URL + API mode + API key + model (`vulnforge/llm_models.py` `bind_role_cfg`). A missing host or a pair that is not Available fails the lease. The same model id on another host is not a fallback. A flat `host` / `port` / `model` file migrates once into one host and verified role refs. With no hosts saved, YAML `llm.*` still supplies the endpoint.
 

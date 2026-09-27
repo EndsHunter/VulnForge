@@ -771,6 +771,33 @@ def cmd_status(args, cfg: dict) -> int:
     return EXIT_PROGRESS
 
 
+def lease_one_for_run(db: Database, cfg: dict, worker_id: str):
+    """Lease one task under the per-model concurrent cap.
+
+    ``run.max_leases_parallel`` is the cap for a model id with no override.
+    ``run.model_concurrent_caps`` overrides that number for one model id.
+    The host is not part of the key.
+    """
+    from vulnforge.llm_models import lease_model_id
+    from vulnforge.settings.catalog import normalize_model_concurrent_caps
+
+    run = cfg.get("run") or {}
+    max_parallel = max(1, int(run.get("max_leases_parallel") or 1))
+    caps = normalize_model_concurrent_caps(run.get("model_concurrent_caps"))
+    ttl = int(run.get("lease_ttl_seconds", 1800))
+
+    def resolve(kind: str, payload: dict) -> str:
+        return lease_model_id(cfg, kind, payload)
+
+    return db.lease_next_task(
+        worker_id,
+        ttl_seconds=ttl,
+        max_parallel=max_parallel,
+        model_caps=caps,
+        resolve_model=resolve,
+    )
+
+
 def cmd_run_once(args, cfg: dict) -> int:
     try:
         run_dir = resolve_run_dir(args, cfg)
@@ -783,12 +810,15 @@ def cmd_run_once(args, cfg: dict) -> int:
         print(f"missing harness.db in {run_dir}", file=sys.stderr)
         return EXIT_CONFIG
 
+    from vulnforge.settings.catalog import cfg_lease_ceiling
+
     max_parallel = max(1, int((cfg.get("run") or {}).get("max_leases_parallel") or 1))
-    # Serial mode (default): exclusive run.lock for the whole task.
-    # Parallel mode: skip exclusive lock — SQLite lease_next_task enforces
-    # max_leases_parallel so multiple Ralph workers can run concurrent agents.
+    # Serial mode (ceiling 1): exclusive run.lock for the whole task.
+    # Parallel mode: skip exclusive lock — SQLite lease_one_for_run enforces
+    # the per-model cap (global max_leases_parallel when a model has no override).
+    lease_ceiling = cfg_lease_ceiling(cfg)
     lock: Optional[RunLock] = None
-    if max_parallel <= 1:
+    if lease_ceiling <= 1:
         try:
             lock = RunLock(run_dir)
             lock.acquire()
@@ -852,11 +882,8 @@ def cmd_run_once(args, cfg: dict) -> int:
             append_event(run_dir, {"source": "vf", "event": "idle"})
             return EXIT_IDLE
 
-        ttl = int(cfg.get("run", {}).get("lease_ttl_seconds", 1800))
         worker_id = f"vf-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-        task = db.lease_next_task(
-            worker_id, ttl_seconds=ttl, max_parallel=max_parallel
-        )
+        task = lease_one_for_run(db, cfg, worker_id)
         if task is None:
             # Empty queue → idle. Cap saturated (or peers still working) →
             # EXIT_BUSY so multi-worker Ralph keeps retrying WITHOUT burning
@@ -896,6 +923,7 @@ def cmd_run_once(args, cfg: dict) -> int:
                 "task_id": task.id,
                 "kind": task.kind,
                 "worker": worker_id,
+                "model_id": task.lease_model_id,
             },
         )
 

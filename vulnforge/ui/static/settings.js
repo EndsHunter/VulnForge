@@ -465,6 +465,7 @@
       li.className = "controls-hint";
       li.textContent = "None yet.";
       avail.appendChild(li);
+      renderModelCaps(settings.model_concurrent_caps || {});
       return;
     }
     available.forEach((ref) => {
@@ -507,6 +508,64 @@
       li.appendChild(maxTok);
       avail.appendChild(li);
     });
+    renderModelCaps(settings.model_concurrent_caps || {});
+  }
+
+  function distinctModelIds() {
+    const ids = [];
+    const hosts = {};
+    available.forEach((ref) => {
+      const mid = String(ref.model_id || "").trim();
+      if (!mid) return;
+      hosts[mid] = (hosts[mid] || 0) + 1;
+      if (!ids.includes(mid)) ids.push(mid);
+    });
+    return { ids, hosts };
+  }
+
+  function renderModelCaps(caps) {
+    const list = $("#set-model-caps");
+    const head = $("#settings-model-caps-head");
+    const hint = $("#settings-model-caps-hint");
+    if (!list) return;
+    const { ids, hosts } = distinctModelIds();
+    const show = ids.length > 0;
+    if (head) head.hidden = !show;
+    if (hint) hint.hidden = !show;
+    list.hidden = !show;
+    list.replaceChildren();
+    const stored = caps && typeof caps === "object" ? caps : {};
+    ids.forEach((mid) => {
+      const li = document.createElement("li");
+      li.className = "model-cap-row";
+      li.dataset.modelId = mid;
+      const name = document.createElement("span");
+      name.className = "mono";
+      const nHosts = hosts[mid] || 1;
+      name.textContent = nHosts > 1 ? `${mid} · ${nHosts} hosts` : mid;
+      const input = document.createElement("input");
+      input.type = "number";
+      input.min = "1";
+      input.step = "1";
+      input.dataset.field = "model_concurrent_cap";
+      input.placeholder = "default";
+      input.setAttribute("aria-label", `Concurrent agents for ${mid}`);
+      if (stored[mid] != null && stored[mid] !== "") input.value = String(stored[mid]);
+      li.appendChild(name);
+      li.appendChild(input);
+      list.appendChild(li);
+    });
+  }
+
+  function readModelCaps() {
+    const caps = {};
+    document.querySelectorAll("#set-model-caps .model-cap-row").forEach((row) => {
+      const mid = row.dataset.modelId || "";
+      if (!mid) return;
+      const raw = row.querySelector("[data-field=model_concurrent_cap]")?.value.trim() ?? "";
+      caps[mid] = raw === "" ? null : parseInt(raw, 10);
+    });
+    return caps;
   }
 
   function readAvailableBudgets() {
@@ -558,6 +617,7 @@
       timeout_seconds: parseInt($("#set-timeout").value, 10),
       max_tasks: parseInt($("#set-maxtasks").value, 10),
       available: readAvailableBudgets(),
+      model_concurrent_caps: readModelCaps(),
     };
   }
 
@@ -595,6 +655,13 @@
     if ($("#set-maxtasks")) $("#set-maxtasks").value = s.max_tasks || 50;
   }
 
+  function capBrief(settings) {
+    const caps = (settings && settings.model_concurrent_caps) || {};
+    const keys = Object.keys(caps);
+    if (!keys.length) return "none";
+    return keys.map((key) => `${key}=${caps[key]}`).join(", ");
+  }
+
   function showEffective(data) {
     const eff = data.effective || {};
     const s = data.settings || {};
@@ -620,7 +687,7 @@
       `referee ${eff.validate_poc_referee ?? s.validate_poc_referee} | ` +
       `disprove ${eff.validate_llm ?? s.validate_llm} | ` +
       `hunt MoA ${huntOn ? "on" : "off"} [${huntBrief}] | ${keyNote} | ` +
-      `agents ${eff.max_leases_parallel || 1}`;
+      `agents ${eff.max_leases_parallel || 1} | model caps [${capBrief(s)}]`;
   }
 
   async function loadSettings() {
