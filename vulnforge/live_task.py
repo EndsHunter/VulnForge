@@ -3,7 +3,7 @@
 The dashboard and the leased worker are different processes. Progress and
 steer live in the run directory:
 
-- ``live/task-<id>.json`` — latest tool round (name, args summary, n/max)
+- ``live/task-<id>.json`` — current model round (n/max) and tool-call steps
 - ``steer/task-<id>.json`` — operator note / force submit_none / abort
 
 Steer is applied at a **round boundary** (before the next model call). It
@@ -154,7 +154,19 @@ def record_tool_call(name: str, args: Any, out: Any) -> None:
     else:
         ok = None
     rnd = bind.round_n if bind.round_n > 0 else 1
+    steps: list[dict[str, Any]] = []
+    snap: dict[str, Any] = {}
+    try:
+        snap = _read_json(_live_path(bind.run_dir, bind.task_id)) or {}
+        steps = [s for s in (snap.get("steps") or []) if isinstance(s, dict)]
+    except OSError:
+        snap = {}
+        steps = []
+    # `round` is the model round from note_round_start. `call` numbers the
+    # tool line inside that round so the pane does not treat each call as a round.
+    call_n = 1 + sum(1 for s in steps if _step_round(s) == rnd)
     step = {
+        "call": call_n,
         "round": rnd,
         "max_rounds": bind.max_rounds,
         "tool": tool,
@@ -163,8 +175,6 @@ def record_tool_call(name: str, args: Any, out: Any) -> None:
         "ts": utc_now_iso(),
     }
     try:
-        snap = _read_json(_live_path(bind.run_dir, bind.task_id)) or {}
-        steps = [s for s in (snap.get("steps") or []) if isinstance(s, dict)]
         steps.append(step)
         if len(steps) > _MAX_STEPS:
             steps = steps[-_MAX_STEPS:]
@@ -195,6 +205,7 @@ def record_tool_call(name: str, args: Any, out: Any) -> None:
                 "kind": bind.kind,
                 "tool": tool,
                 "args_summary": summary,
+                "call": call_n,
                 "round": rnd,
                 "max_rounds": bind.max_rounds,
                 "ok": ok,
@@ -477,6 +488,13 @@ def read_live_view(run_dir: Path, task_id: int) -> dict[str, Any]:
             "abort": steer.get("abort"),
         },
     }
+
+
+def _step_round(step: dict[str, Any]) -> int:
+    try:
+        return int(step.get("round") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _live_path(run_dir: Path, task_id: int) -> Path:

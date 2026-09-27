@@ -14,6 +14,7 @@ from vulnforge.live_task import (
     add_operator_note,
     apply_round_boundary,
     bind_task,
+    note_round_start,
     operator_force_active,
     read_live_view,
     record_tool_call,
@@ -102,6 +103,37 @@ def test_record_tool_round_and_event(tmp_path: Path):
     events = (run / "events.jsonl").read_text(encoding="utf-8")
     assert "task_step" in events
     assert "grep" in events
+
+
+def test_one_model_round_keeps_one_round_across_tool_calls(tmp_path: Path):
+    """Several tool calls in one model round share that round; each has its own call index."""
+    run = _run(tmp_path)
+    token = bind_task(run, 1, "hunt", 50)
+    try:
+        for _ in range(8):
+            note_round_start()
+        assert note_round_start() == 9
+        record_tool_call("grep", {"pattern": "SELECT", "path": "app.py"}, {"ok": True})
+        record_tool_call("read_file", {"path": "app.py"}, {"ok": True})
+        record_tool_call("submit_none", {"reason": "done"}, {"ok": False, "error": "no"})
+        view = read_live_view(run, 1)
+        assert view["round"] == 9
+        assert view["max_rounds"] == 50
+        assert [s["tool"] for s in view["steps"]] == ["grep", "read_file", "submit_none"]
+        assert [s["call"] for s in view["steps"]] == [1, 2, 3]
+        assert {s["round"] for s in view["steps"]} == {9}
+        assert note_round_start() == 10
+        record_tool_call("grep", {"pattern": "token"}, {"ok": True})
+    finally:
+        unbind_task(token)
+    view = read_live_view(run, 1)
+    assert view["round"] == 10
+    assert view["max_rounds"] == 50
+    assert [s["call"] for s in view["steps"]] == [1, 2, 3, 1]
+    assert [s["round"] for s in view["steps"]] == [9, 9, 9, 10]
+    assert view["steps"][-1]["tool"] == "grep"
+    events = (run / "events.jsonl").read_text(encoding="utf-8")
+    assert events.count('"event": "task_step"') == 4
 
 
 def test_note_is_injected_once_and_does_not_touch_findings(tmp_path: Path):
