@@ -97,8 +97,10 @@ def _norm_paths(raw: Any) -> list[str]:
 
 
 def _existing_child(db, *, kind: str, parent_id: int) -> Optional[int]:
+    # Tool worker thread: do not read db.conn (same-thread guard).
     try:
-        tasks = db.list_tasks(limit=500)
+        with db.caller_connection() as conn:
+            tasks = db.list_tasks(limit=500, conn=conn)
     except Exception:
         return None
     for t in tasks:
@@ -305,7 +307,10 @@ def enqueue_continuation(
         int(HUNT_CONTINUE_PRIORITY) if kind_s == "hunt" else int(RECON_CHILD_PRIORITY)
     )
     try:
-        tid = db.enqueue_task(kind_s, child, priority=priority)
+        # Open on this thread. Strands invokes tools off the Database owner thread;
+        # db.conn would raise sqlite3.ProgrammingError (check_same_thread).
+        with db.caller_connection() as conn:
+            tid = db.enqueue_task(kind_s, child, priority=priority, conn=conn)
     except Exception as e:
         return {"ok": False, "error": f"enqueue failed: {e}", "code": "enqueue_error"}
 
