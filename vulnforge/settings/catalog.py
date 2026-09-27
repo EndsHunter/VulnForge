@@ -3,10 +3,14 @@
 Role assignments are ``{host_id, model_id}`` refs. A bare model id is not a
 ref. Resolution never searches another host for the same model id.
 
-Per-pair agent budgets (``max_tokens``, ``context_tokens``) live on the
-available row. A missing knob is not written back: at resolve time the
-global ui_settings value is the seed. An override on one pair never copies
-onto another pair, another host, or back onto the globals.
+Per-pair agent budgets (``max_tokens``, ``context_tokens``) and the
+concurrent-agent cap (``max_concurrent_agents``) live on the available row.
+The cap key is ``(host_id, model_id)``: the same model id on two hosts can
+differ. A missing knob is not written back. Token knobs fall back to the
+global ui_settings seed at resolve time. A missing concurrent number falls
+back to global ``max_concurrent_agents`` only — there is no separate
+default-override map. An override on one pair never copies onto another
+pair, another host, or back onto the globals.
 ``max_context_fraction`` stays global.
 """
 
@@ -30,6 +34,11 @@ FLAT_CONNECTION_KEYS = (
 )
 
 MIGRATED_HOST_ID = "default"
+
+# Integers stored on an available row. Token knobs seed from the globals.
+# ``max_concurrent_agents`` is the (host, model) lease cap; blank uses the global cap.
+_PAIR_INT_KNOBS = ("max_tokens", "context_tokens", "max_concurrent_agents")
+_TOKEN_BUDGET_KNOBS = ("max_tokens", "context_tokens")
 
 # Used only when a legacy save names a connection field and omits the rest.
 LEGACY_DEFAULT_HOST = "127.0.0.1"
@@ -184,6 +193,230 @@ def normalize_catalog(value: Any) -> list[dict[str, str]]:
     return out
 
 
+def normalize_model_concurrent_caps(value: Any) -> dict[str, dict[str, int]]:
+    """Optional concurrent caps keyed by ``(host_id, model_id)``.
+
+    Accepted shape: ``{host_id: {model_id: n}}``. A flat ``{model_id: n}``
+    map is rejected (those values are not host maps). A blank, zero, or
+    non-int inner value drops that pair so the global cap applies.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    for host_key, raw_models in value.items():
+        if not isinstance(raw_models, dict):
+            continue
+        hid = str(host_key or "").strip()
+        if not hid:
+            continue
+        inner: dict[str, int] = {}
+        for model_key, raw in raw_models.items():
+            mid = str(model_key or "").strip()
+            if not mid:
+                continue
+            n = _budget_int(raw)
+            if n is None:
+                continue
+            inner[mid] = n
+        if inner:
+            out[hid] = inner
+    return out
+
+
+def caps_from_available(available: Any) -> dict[str, dict[str, int]]:
+    """Nested cap map from available rows that store a concurrent number."""
+    out: dict[str, dict[str, int]] = {}
+    if not isinstance(available, list):
+        return out
+    for item in available:
+        if not isinstance(item, dict) or "max_concurrent_agents" not in item:
+            continue
+        hid = str(item.get("host_id") or "").strip()
+        mid = str(item.get("model_id") or "").strip()
+        n = _budget_int(item.get("max_concurrent_agents"))
+        if not hid or not mid or n is None:
+            continue
+        out.setdefault(hid, {})[mid] = n
+    return out
+
+
+def merge_pair_caps(available: Any, caps: Any) -> dict[str, dict[str, int]]:
+    """Row numbers win. A nested map fills pairs the rows do not name.
+
+    A flat model-id map contributes nothing.
+    """
+    merged = normalize_model_concurrent_caps(caps)
+    for hid, models in caps_from_available(available).items():
+        bucket = merged.setdefault(hid, {})
+        bucket.update(models)
+    return merged
+
+
+def apply_explicit_cap_map(available: list[dict[str, Any]], caps: Any) -> list[dict[str, Any]]:
+    """Write a nested host→model map onto existing rows.
+
+    A flat model-id map is rejected and leaves rows unchanged. A null or
+    invalid inner value clears that pair. Pairs that are not available are
+    not invented.
+    """
+    rows = [dict(row) for row in available if isinstance(row, dict)]
+    if not isinstance(caps, dict) or not any(isinstance(v, dict) for v in caps.values()):
+        return rows
+    index = {
+        (str(row.get("host_id") or "").strip(), str(row.get("model_id") or "").strip()): row
+        for row in rows
+    }
+    for host_key, raw_models in caps.items():
+        if not isinstance(raw_models, dict):
+            continue
+        hid = str(host_key or "").strip()
+        if not hid:
+            continue
+        for model_key, raw in raw_models.items():
+            mid = str(model_key or "").strip()
+            row = index.get((hid, mid))
+            if row is None:
+                continue
+            n = _budget_int(raw)
+            if n is None:
+                row.pop("max_concurrent_agents", None)
+            else:
+                row["max_concurrent_agents"] = n
+    return rows
+
+
+def absorb_missing_caps(available: list[dict[str, Any]], caps: Any) -> list[dict[str, Any]]:
+    """Copy nested caps onto rows that have no concurrent number yet.
+
+    Does not clear a stored number and does not add pairs. A flat map is ignored.
+    """
+    nested = normalize_model_concurrent_caps(caps)
+    if not nested:
+        return available
+    out: list[dict[str, Any]] = []
+    for row in available:
+        updated = dict(row)
+        if "max_concurrent_agents" not in updated:
+            hid = str(updated.get("host_id") or "").strip()
+            mid = str(updated.get("model_id") or "").strip()
+            n = (nested.get(hid) or {}).get(mid)
+            if n is not None:
+                updated["max_concurrent_agents"] = n
+        out.append(updated)
+    return out
+
+
+def effective_pair_cap(caps: Any, host_id: str, model_id: str, default: int) -> int:
+    """Cap for one ``(host_id, model_id)``. No row → ``default`` (the global cap).
+
+    A flat model-id map does not match. The same model id on another host
+    does not match.
+    """
+    try:
+        fallback = max(1, int(default or 1))
+    except (TypeError, ValueError):
+        fallback = 1
+    hid = str(host_id or "").strip()
+    mid = str(model_id or "").strip()
+    table = normalize_model_concurrent_caps(caps)
+    host_map = table.get(hid) or {}
+    if not mid or mid not in host_map:
+        return fallback
+    return host_map[mid]
+
+
+def configured_lease_pairs(source: Any) -> list[tuple[str, str]]:
+    """Role ``(host_id, model_id)`` pairs in first-seen order.
+
+    The same pair counts once. A bare model id uses host ``""``.
+    """
+    if not isinstance(source, dict):
+        return []
+    found: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(value: Any) -> None:
+        if is_model_ref(value):
+            pair = (
+                str(value.get("host_id") or "").strip(),
+                str(value.get("model_id") or "").strip(),
+            )
+        else:
+            mid = model_id_of(value)
+            if not mid:
+                return
+            pair = ("", mid)
+        if not pair[1] or pair in seen:
+            return
+        seen.add(pair)
+        found.append(pair)
+
+    ref = source.get("model_ref")
+    add(ref if is_model_ref(ref) else source.get("model"))
+    for key in ("model_recon", "model_hunt", "model_develop_poc"):
+        add(source.get(key))
+    raw_validate = source.get("validate_models")
+    if isinstance(raw_validate, list):
+        for item in raw_validate:
+            add(item)
+    slots = source.get("hunt_perspectives")
+    if isinstance(slots, list):
+        for slot in slots:
+            if isinstance(slot, dict):
+                add(slot.get("model"))
+    return found
+
+
+def parallel_lease_ceiling(
+    default_cap: int,
+    caps: Any,
+    pairs: list[tuple[str, str]],
+) -> int:
+    """How many leases can be in flight if every configured pair is at its cap.
+
+    No configured pairs → ``default_cap`` (single pool). Each distinct
+    ``(host, model)`` contributes its row cap or the global default once.
+    """
+    try:
+        default_n = max(1, int(default_cap or 1))
+    except (TypeError, ValueError):
+        default_n = 1
+    table = normalize_model_concurrent_caps(caps)
+    total = 0
+    seen: set[tuple[str, str]] = set()
+    for hid, mid in pairs or []:
+        pair = (str(hid or "").strip(), str(mid or "").strip())
+        if not pair[1] or pair in seen:
+            continue
+        seen.add(pair)
+        total += effective_pair_cap(table, pair[0], pair[1], default_n)
+    if not seen:
+        return default_n
+    return max(1, total)
+
+
+def ui_lease_ceiling(ui: Any) -> int:
+    """Ralph worker ceiling from UI settings."""
+    src = ui if isinstance(ui, dict) else {}
+    return parallel_lease_ceiling(
+        src.get("max_concurrent_agents") or 1,
+        merge_pair_caps(src.get("available"), src.get("model_concurrent_caps")),
+        configured_lease_pairs(src),
+    )
+
+
+def cfg_lease_ceiling(cfg: Any) -> int:
+    """Ralph worker ceiling from a merged harness config."""
+    src = cfg if isinstance(cfg, dict) else {}
+    run = src.get("run") if isinstance(src.get("run"), dict) else {}
+    llm = src.get("llm") if isinstance(src.get("llm"), dict) else {}
+    return parallel_lease_ceiling(
+        run.get("max_leases_parallel") or 1,
+        merge_pair_caps(llm.get("available"), run.get("model_concurrent_caps")),
+        configured_lease_pairs(llm),
+    )
+
+
 def _budget_int(value: Any) -> int | None:
     """Positive int, or None when the knob is blank / invalid (use the global seed)."""
     if isinstance(value, bool) or value is None:
@@ -203,11 +436,12 @@ def _budget_int(value: Any) -> int | None:
 
 
 def normalize_available(value: Any) -> list[dict[str, Any]]:
-    """Verified pairs. Optional ``max_tokens`` / ``context_tokens`` overrides.
+    """Verified pairs. Optional token budgets and a per-pair concurrent cap.
 
-    Absent budget keys are not filled from the globals. That seed is applied
-    in ``resolve_pair_budgets`` so a later global edit still covers pairs
-    that have no override, and so pair A cannot bleed onto pair B.
+    Absent keys are not filled from the globals. Token seeds are applied in
+    ``resolve_pair_budgets``. A missing concurrent number stays missing so
+    the lease path can fall back to ``max_concurrent_agents``. Pair A cannot
+    bleed onto pair B.
     """
     if not isinstance(value, list):
         return []
@@ -228,7 +462,7 @@ def normalize_available(value: Any) -> list[dict[str, Any]]:
         stamp = str(item.get("verified_at") or "").strip()
         if stamp:
             row["verified_at"] = stamp
-        for knob in ("max_tokens", "context_tokens"):
+        for knob in _PAIR_INT_KNOBS:
             n = _budget_int(item.get(knob)) if knob in item else None
             if n is not None:
                 row[knob] = n
@@ -265,7 +499,7 @@ def apply_submitted_budgets(available: list[dict[str, Any]], submitted: Any) -> 
             out.append(dict(row))
             continue
         updated = dict(row)
-        for knob in ("max_tokens", "context_tokens"):
+        for knob in _PAIR_INT_KNOBS:
             if knob not in src:
                 continue
             n = _budget_int(src.get(knob))
@@ -291,7 +525,7 @@ def pair_budget_overrides(available: Any, host_id: str, model_id: str) -> dict[s
         if str(item.get("model_id") or "").strip() != mid:
             continue
         out: dict[str, int] = {}
-        for knob in ("max_tokens", "context_tokens"):
+        for knob in _TOKEN_BUDGET_KNOBS:
             n = _budget_int(item.get(knob)) if knob in item else None
             if n is not None:
                 out[knob] = n
@@ -510,7 +744,7 @@ def mark_available(
         kept.append(row)
     fresh: dict[str, Any] = {"host_id": hid, "model_id": mid, "verified_at": when or utc_now_iso()}
     if isinstance(old, dict):
-        for knob in ("max_tokens", "context_tokens"):
+        for knob in _PAIR_INT_KNOBS:
             if knob in old:
                 fresh[knob] = old[knob]
     kept.append(fresh)

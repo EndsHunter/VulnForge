@@ -177,7 +177,10 @@ def control_start_kwargs(body: ControlBody, ui: Optional[dict[str, Any]] = None)
     if ui is None:
         ui = load_ui_settings()
     kwargs: dict[str, Any] = {}
-    lease_cap = max(1, int(ui.get("max_concurrent_agents") or 1))
+    from vulnforge.settings.catalog import ui_lease_ceiling
+
+    # Sum of per (host, model) caps (global cap when a pair has no number).
+    lease_cap = ui_lease_ceiling(ui)
 
     if body.loop_profile_id:
         from vulnforge.loop_profiles import load_profile, profile_to_start_kwargs
@@ -251,6 +254,10 @@ class SettingsBody(BaseModel):
     catalog: Optional[list[dict[str, Any]]] = None
     available: Optional[list[dict[str, Any]]] = None
     max_concurrent_agents: Optional[int] = None
+    # {host_id: {model_id: n}}. Flat {model_id: n} is rejected. A pair with no
+    # number uses max_concurrent_agents. The Settings form writes the number on
+    # the available row; this map is the same data for API callers.
+    model_concurrent_caps: Optional[dict[str, Any]] = None
     context_tokens: Optional[int] = None
     max_context_fraction: Optional[float] = None
     max_tokens: Optional[int] = None

@@ -3764,7 +3764,8 @@ tr.task-row .task-actions-cell .btn {
     grid-template-columns: 1fr 1fr;
     grid-template-areas:
       "hosts hosts"
-      "catalog roles"
+      "catalog catalog"
+      "roles roles"
       "budget budget";
   }
   .settings-card-hosts { grid-area: hosts; }
@@ -3820,7 +3821,7 @@ tr.task-row .task-actions-cell .btn {
 .available-head,
 .available-row {
   display: grid;
-  grid-template-columns: 1.25rem minmax(0, 1fr) 8.5rem 7rem;
+  grid-template-columns: 1.25rem minmax(12rem, 1fr) 8.5rem 7rem 6.5rem;
   gap: 0.35rem;
   align-items: center;
 }
@@ -3832,6 +3833,12 @@ tr.task-row .task-actions-cell .btn {
   text-transform: uppercase;
 }
 .available-row input[type="number"] { width: 100%; }
+.available-head span,
+.available-row .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 #settings-optimize { margin-top: 0.55rem; }
 @media (max-width: 720px) {
   .host-row { grid-template-columns: 1fr; }

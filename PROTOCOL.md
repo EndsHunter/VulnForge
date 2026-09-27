@@ -58,8 +58,10 @@ Outer loop: `python scripts/ralph.py` — thin client of `run-once` (not a `vf` 
 
 Ralph process codes: `0` clean STOP, `10` idle, `20` infra give-up, `30` config, `40` budget, `130` interrupt.
 
-Multi-worker note: Settings **max concurrent agents** spawns N Ralph processes and sets
-`run.max_leases_parallel=N`. Workers that cannot lease (cap full or only leased peers)
+Multi-worker note: Settings **max concurrent agents** is the fallback when a
+`(host, model)` row has no concurrent number, and it sets `run.max_leases_parallel=N`.
+`model_concurrent_caps` is `{host_id: {model_id: n}}` for rows that have a number.
+Workers that cannot lease (that pair's cap is full, or only leased peers)
 must return **11 (busy)**, not 0 — otherwise a waiting worker burns its progress budget
 and exits while the other is mid-task. Ralph treats **11** as free for both
 `--max-tasks` and `--max-iterations` so a second agent can wait through a long
@@ -86,11 +88,22 @@ Transport / model-list under `max_task_attempts` → requeue + exit 20; at cap �
 
 ## Concurrent agents
 
-`run.max_leases_parallel` (Settings: **Max concurrent agents**) caps how many
-tasks may be `leased` at once. Dashboard Start spawns that many Ralph workers.
+`run.max_leases_parallel` (Settings: **Max concurrent agents**) is the silent
+fallback when an Available row has no concurrent number. There is no separate
+default-override section. The number lives on that row, next to context and
+max output. Settings `model_concurrent_caps` is `{host_id: {model_id: n}}`
+derived from those rows. A flat `{model_id: n}` map is rejected and not stored.
 
-- **N = 1** (default): exclusive `run.lock` for the whole `run-once` (single writer).
-- **N > 1**: exclusive lock skipped; SQLite `BEGIN IMMEDIATE` + lease cap coordinates
+Ralph counts in-flight leases by `(host_id, model_id)` and will not lease
+another task for that pair past its number, or past the global cap when the
+row has no number. The same model id on two hosts can differ (host-1/model-a
+= 2, host-2/model-a = 1, host-2/model-b = 3). A queued task whose pair is
+already at cap is skipped so a different pair can still lease. Dashboard
+Start spawns one Ralph worker per slot in that sum (each pair counted once).
+With one pair and no row number this is still N = max concurrent agents.
+
+- **Ceiling = 1** (default): exclusive `run.lock` for the whole `run-once` (single writer).
+- **Ceiling > 1**: exclusive lock skipped; SQLite `BEGIN IMMEDIATE` + the per-pair cap coordinates
   multi-process agents. Evidence packs are per-task; events.jsonl is best-effort concurrent append.
 
 LM Studio / the local server must accept concurrent chat completions for N>1 to help.

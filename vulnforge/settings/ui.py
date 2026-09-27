@@ -51,6 +51,10 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "hunt_moa": False,
     "hunt_perspectives": [],
     "max_concurrent_agents": 1,
+    # Derived from available[].max_concurrent_agents. Shape is
+    # {host_id: {model_id: n}}. A flat {model_id: n} map is not stored.
+    # A pair with no number uses max_concurrent_agents.
+    "model_concurrent_caps": {},
     # Seed for a verified pair with no max_tokens / context_tokens override.
     # Fraction stays global. See vulnforge.settings.catalog.resolve_pair_budgets.
     "context_tokens": 32768,
@@ -68,6 +72,7 @@ _GLOBAL_KEYS = (
     "validate_llm",
     "hunt_moa",
     "max_concurrent_agents",
+    "model_concurrent_caps",
     "context_tokens",
     "max_context_fraction",
     "max_tokens",
@@ -259,6 +264,7 @@ def _blank_settings() -> dict[str, Any]:
     data["available"] = []
     data["validate_models"] = []
     data["hunt_perspectives"] = []
+    data["model_concurrent_caps"] = {}
     return data
 
 
@@ -333,7 +339,15 @@ def _normalize_ui_settings(current: dict[str, Any]) -> dict[str, Any]:
     except ValueError:
         current["hosts"] = []
     current["catalog"] = normalize_catalog(current.get("catalog"))
-    current["available"] = normalize_available(current.get("available"))
+    from vulnforge.settings.catalog import absorb_missing_caps, caps_from_available
+
+    # Nested map fills rows that have no number yet (load of a host+model map).
+    # A flat model-id map is ignored. Rows already holding a number win.
+    current["available"] = absorb_missing_caps(
+        normalize_available(current.get("available")),
+        current.get("model_concurrent_caps"),
+    )
+    current["model_concurrent_caps"] = caps_from_available(current["available"])
     for key in _ROLE_KEYS:
         current[key] = coerce_role_ref(current.get(key))
     current["validate_models"] = normalize_validate_entries(current.get("validate_models"))
@@ -569,6 +583,16 @@ def save_ui_settings(updates: dict[str, Any]) -> dict[str, Any]:
 
     if "catalog" in updates and "hosts" not in updates:
         current["catalog"] = normalize_catalog(updates.get("catalog"))
+    if "model_concurrent_caps" in updates and "available" not in updates:
+        from vulnforge.settings.catalog import apply_explicit_cap_map, caps_from_available
+
+        # Nested {host: {model: n}} writes the row. A flat model-id map is rejected.
+        current["available"] = apply_explicit_cap_map(
+            list(current.get("available") or []),
+            updates.get("model_concurrent_caps"),
+        )
+        # Drop the raw map so a cleared pair is not absorbed back from the old value.
+        current["model_concurrent_caps"] = caps_from_available(current.get("available"))
     if "available" in updates and "hosts" not in updates:
         current["available"] = normalize_available(updates.get("available"))
     elif "available" in updates:
@@ -577,6 +601,12 @@ def save_ui_settings(updates: dict[str, Any]) -> dict[str, Any]:
         current["available"] = normalize_available(
             apply_submitted_budgets(list(current.get("available") or []), updates.get("available"))
         )
+    if "available" in updates:
+        # The submitted rows are the cap. Do not let a previously stored map
+        # fill a number the operator just cleared.
+        from vulnforge.settings.catalog import caps_from_available
+
+        current["model_concurrent_caps"] = caps_from_available(current.get("available"))
 
     if apply_roles:
         for key in _ROLE_KEYS:
@@ -634,7 +664,13 @@ def _apply_globals(out: dict, ui: dict[str, Any]) -> None:
     stages["validate_llm"] = bool(ui.get("validate_llm", True))
     stages["hunt_moa"] = _coerce_bool(ui.get("hunt_moa"), False)
     run = out.setdefault("run", {})
+    # Global cap is the fallback when a (host, model) row has no number.
     run["max_leases_parallel"] = max(1, int(ui.get("max_concurrent_agents") or 1))
+    from vulnforge.settings.catalog import merge_pair_caps
+
+    run["model_concurrent_caps"] = merge_pair_caps(
+        ui.get("available"), ui.get("model_concurrent_caps")
+    )
     run["max_tasks"] = int(ui.get("max_tasks") or run.get("max_tasks") or 50)
 
 

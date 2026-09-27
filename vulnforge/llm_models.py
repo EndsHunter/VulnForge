@@ -99,6 +99,46 @@ def resolve_stage_model(cfg: dict | None, stage: str) -> str:
     return model_id_of(resolve_stage_ref(cfg, stage))
 
 
+# Kinds that call the validation list. One lease is one agent; the first
+# validate target is the model id that lease counts against.
+_VALIDATE_LEASE_KINDS = frozenset({"validate_llm", "validate_poc", "validate_poc_referee", "poc_referee"})
+_KIND_LEASE_STAGE = {
+    "recon": "recon",
+    "hunt": "hunt",
+    "develop_poc": "develop_poc",
+    "validate_llm": "validate_llm",
+    "validate_poc": "validate_poc",
+    "validate_poc_referee": "poc_referee",
+    "poc_referee": "poc_referee",
+}
+
+
+def lease_pair(cfg: dict | None, kind: str, payload: dict | None = None) -> tuple[str, str]:
+    """``(host_id, model_id)`` an in-flight lease counts against.
+
+    Validation kinds use the first validate target. Other kinds use the stage
+    role, then the default model. A legacy bare model id uses host ``""``.
+    ``payload`` is accepted so the lease loop can pass the task body; the pair
+    comes from the role, not the payload.
+    """
+    del payload
+    from vulnforge.settings.catalog import host_id_of, is_model_ref, model_id_of
+
+    if kind in _VALIDATE_LEASE_KINDS:
+        targets = resolve_validate_targets(cfg)
+        ref: Any = targets[0] if targets else ""
+    else:
+        ref = resolve_stage_ref(cfg, _KIND_LEASE_STAGE.get(kind or "", ""))
+    if is_model_ref(ref):
+        return host_id_of(ref), model_id_of(ref)
+    return "", model_id_of(ref)
+
+
+def lease_model_id(cfg: dict | None, kind: str, payload: dict | None = None) -> str:
+    """Model id half of :func:`lease_pair`."""
+    return lease_pair(cfg, kind, payload)[1]
+
+
 def resolve_validate_targets(cfg: dict | None) -> list[Any]:
     """Validate slots as host refs when configured, else legacy model id strings.
 

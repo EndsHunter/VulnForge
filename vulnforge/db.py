@@ -115,6 +115,10 @@ class Task:
     lease_owner: Optional[str] = None
     lease_until: Optional[str] = None
     result: Optional[dict] = None
+    # (host, model) this lease counts against. None on leases taken before the
+    # column existed (those still count as untagged while a per-pair cap is in force).
+    lease_model_id: Optional[str] = None
+    lease_host_id: Optional[str] = None
 
 
 @dataclass
@@ -179,6 +183,8 @@ class Database:
             self._ensure_architecture_revisions()
             self._ensure_codemap_column()
             self._ensure_sink_coverage_table()
+        self._ensure_lease_model_column()
+        self._ensure_lease_host_column()
         self._ensure_hitl_tables()
 
     @classmethod
@@ -265,6 +271,8 @@ class Database:
               attempt INTEGER NOT NULL DEFAULT 0,
               lease_owner TEXT,
               lease_until TEXT,
+              lease_model_id TEXT,
+              lease_host_id TEXT,
               result_json TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
@@ -375,6 +383,20 @@ class Database:
             """
         )
         self.conn.commit()
+
+    def _ensure_lease_model_column(self) -> None:
+        """Record which model id a lease counts against. Does not bump schema_version."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "lease_model_id" not in cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN lease_model_id TEXT")
+            self.conn.commit()
+
+    def _ensure_lease_host_column(self) -> None:
+        """Record which host a lease counts against. Does not bump schema_version."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "lease_host_id" not in cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN lease_host_id TEXT")
+            self.conn.commit()
 
     def _ensure_codemap_column(self) -> None:
         """Add runs.codemap_json if missing (open path for older DBs)."""
@@ -772,6 +794,16 @@ class Database:
             lease_owner=row["lease_owner"],
             lease_until=row["lease_until"],
             result=json.loads(row["result_json"]) if row["result_json"] else None,
+            lease_model_id=(
+                None
+                if "lease_model_id" not in row.keys() or row["lease_model_id"] is None
+                else str(row["lease_model_id"])
+            ),
+            lease_host_id=(
+                None
+                if "lease_host_id" not in row.keys() or row["lease_host_id"] is None
+                else str(row["lease_host_id"])
+            ),
         )
 
     def count_leased_tasks(self) -> int:
@@ -786,58 +818,142 @@ class Database:
         ttl_seconds: int,
         *,
         max_parallel: int = 1,
+        model_caps: Optional[dict] = None,
+        resolve_model=None,
     ) -> Optional[Task]:
-        """Atomically lease one task, respecting concurrent lease cap.
+        """Atomically lease one task, respecting the concurrent lease cap.
 
         Prefers ``queued`` (priority ASC, id ASC). When the queue is empty,
         leases the next ``paused`` task so operator-paused work runs once it is
-        the last remaining work (or among only paused leftovers).
+        the last remaining work (or among only paused leftovers). Paused tasks
+        stay parked while any queued row exists, even if every queued model is
+        already at its cap.
 
-        ``max_parallel`` limits how many tasks may be in ``leased`` at once
-        (across all workers). Uses BEGIN IMMEDIATE so multi-process agents
-        cannot overshoot the cap under SQLite WAL.
+        Without ``resolve_model``, ``max_parallel`` is a single pool over every
+        leased row (historical behavior).
+
+        With ``resolve_model(kind, payload) -> (host_id, model_id)``, the cap is
+        per pair. ``model_caps`` is ``{host_id: {model_id: n}}``. A missing pair
+        uses ``max_parallel``. In-flight rows are counted by the host and model
+        stored when they were leased. A queued task whose pair is already at
+        cap is skipped so a different pair can still lease. A string return is
+        treated as model id with an empty host.
+
+        Uses BEGIN IMMEDIATE so multi-process agents cannot overshoot under WAL.
         """
         now = utc_now_iso()
         until = _iso_future(ttl_seconds)
         cap = max(1, int(max_parallel or 1))
+        if resolve_model is not None:
+            from vulnforge.settings.catalog import effective_pair_cap
         try:
             self.conn.execute("BEGIN IMMEDIATE")
-            leased_n = self.conn.execute(
-                "SELECT COUNT(*) AS n FROM tasks WHERE state='leased'"
-            ).fetchone()["n"]
-            if int(leased_n) >= cap:
-                self.conn.execute("COMMIT")
-                return None
-            # Prefer active queue; fall back to paused (last remaining).
-            row = self.conn.execute(
-                """
-                SELECT * FROM tasks
-                WHERE state='queued'
-                ORDER BY priority ASC, id ASC
-                LIMIT 1
-                """
-            ).fetchone()
-            if not row:
+            if resolve_model is None:
+                leased_n = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM tasks WHERE state='leased'"
+                ).fetchone()["n"]
+                if int(leased_n) >= cap:
+                    self.conn.execute("COMMIT")
+                    return None
                 row = self.conn.execute(
                     """
                     SELECT * FROM tasks
-                    WHERE state='paused'
+                    WHERE state='queued'
                     ORDER BY priority ASC, id ASC
                     LIMIT 1
                     """
                 ).fetchone()
-            if not row:
-                self.conn.execute("COMMIT")
-                return None
-            self.conn.execute(
-                """
-                UPDATE tasks
-                SET state='leased', lease_owner=?, lease_until=?,
-                    attempt=attempt+1, updated_at=?
-                WHERE id=?
-                """,
-                (worker_id, until, now, row["id"]),
-            )
+                if not row:
+                    row = self.conn.execute(
+                        """
+                        SELECT * FROM tasks
+                        WHERE state='paused'
+                        ORDER BY priority ASC, id ASC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                if not row:
+                    self.conn.execute("COMMIT")
+                    return None
+                self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET state='leased', lease_owner=?, lease_until=?,
+                        attempt=attempt+1, updated_at=?
+                    WHERE id=?
+                    """,
+                    (worker_id, until, now, row["id"]),
+                )
+            else:
+                leased_rows = self.conn.execute(
+                    "SELECT lease_host_id, lease_model_id FROM tasks WHERE state='leased'"
+                ).fetchall()
+                counts: dict[tuple[str, str], int] = {}
+                untagged = 0
+                for leased_row in leased_rows:
+                    raw_mid = leased_row["lease_model_id"]
+                    raw_hid = leased_row["lease_host_id"]
+                    # Missing host or model: leased before the pair key existed.
+                    # Count it toward every candidate so a restart cannot overshoot.
+                    if raw_mid is None or raw_hid is None:
+                        untagged += 1
+                        continue
+                    held = (str(raw_hid), str(raw_mid))
+                    counts[held] = counts.get(held, 0) + 1
+                queued_rows = self.conn.execute(
+                    """
+                    SELECT * FROM tasks
+                    WHERE state='queued'
+                    ORDER BY priority ASC, id ASC
+                    """
+                ).fetchall()
+                # Any queued work blocks paused rows, even when those queued
+                # models are already at their cap.
+                if queued_rows:
+                    pool = queued_rows
+                else:
+                    pool = self.conn.execute(
+                        """
+                        SELECT * FROM tasks
+                        WHERE state='paused'
+                        ORDER BY priority ASC, id ASC
+                        """
+                    ).fetchall()
+                row = None
+                chosen_host = ""
+                chosen_mid = ""
+                for candidate in pool:
+                    try:
+                        payload = json.loads(candidate["payload_json"] or "{}")
+                    except json.JSONDecodeError:
+                        payload = {}
+                    if not isinstance(payload, dict):
+                        payload = {}
+                    resolved = resolve_model(str(candidate["kind"] or ""), payload)
+                    if isinstance(resolved, tuple):
+                        chosen_host = str(resolved[0] or "").strip() if resolved else ""
+                        chosen_mid = str(resolved[1] or "").strip() if len(resolved) > 1 else ""
+                    else:
+                        chosen_host = ""
+                        chosen_mid = str(resolved or "").strip()
+                    limit = effective_pair_cap(model_caps, chosen_host, chosen_mid, cap)
+                    held_key = (chosen_host, chosen_mid)
+                    if counts.get(held_key, 0) + untagged >= limit:
+                        continue
+                    row = candidate
+                    break
+                if row is None:
+                    self.conn.execute("COMMIT")
+                    return None
+                self.conn.execute(
+                    """
+                    UPDATE tasks
+                    SET state='leased', lease_owner=?, lease_until=?,
+                        lease_model_id=?, lease_host_id=?, attempt=attempt+1, updated_at=?
+                    WHERE id=?
+                    """,
+                    (worker_id, until, chosen_mid, chosen_host, now, row["id"]),
+                )
             self.conn.execute("COMMIT")
         except Exception:
             self.conn.execute("ROLLBACK")

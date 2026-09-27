@@ -501,10 +501,19 @@
       maxTok.setAttribute("aria-label", `Max output for ${ref.model_id}`);
       if (ref.max_tokens != null) maxTok.value = String(ref.max_tokens);
 
+      const conc = document.createElement("input");
+      conc.type = "number";
+      conc.min = "1";
+      conc.step = "1";
+      conc.dataset.field = "max_concurrent_agents";
+      conc.setAttribute("aria-label", `Concurrent agents for ${ref.host_id} / ${ref.model_id}`);
+      if (ref.max_concurrent_agents != null) conc.value = String(ref.max_concurrent_agents);
+
       li.appendChild(pick);
       li.appendChild(name);
       li.appendChild(ctx);
       li.appendChild(maxTok);
+      li.appendChild(conc);
       avail.appendChild(li);
     });
   }
@@ -519,8 +528,10 @@
       if (row.dataset.verifiedAt) item.verified_at = row.dataset.verifiedAt;
       const ctxRaw = row.querySelector("[data-field=context_tokens]")?.value.trim() ?? "";
       const maxRaw = row.querySelector("[data-field=max_tokens]")?.value.trim() ?? "";
+      const concRaw = row.querySelector("[data-field=max_concurrent_agents]")?.value.trim() ?? "";
       item.context_tokens = ctxRaw === "" ? null : parseInt(ctxRaw, 10);
       item.max_tokens = maxRaw === "" ? null : parseInt(maxRaw, 10);
+      item.max_concurrent_agents = concRaw === "" ? null : parseInt(concRaw, 10);
       out.push(item);
     });
     return out;
@@ -595,6 +606,19 @@
     if ($("#set-maxtasks")) $("#set-maxtasks").value = s.max_tasks || 50;
   }
 
+  function capBrief(settings) {
+    const rows = (settings && settings.available) || [];
+    const parts = [];
+    rows.forEach((row) => {
+      if (!row || row.max_concurrent_agents == null || row.max_concurrent_agents === "") return;
+      const host = String(row.host_id || "").trim();
+      const model = String(row.model_id || "").trim();
+      if (!host || !model) return;
+      parts.push(`${host}/${model}=${row.max_concurrent_agents}`);
+    });
+    return parts.length ? parts.join(", ") : "none";
+  }
+
   function showEffective(data) {
     const eff = data.effective || {};
     const s = data.settings || {};
@@ -620,7 +644,7 @@
       `referee ${eff.validate_poc_referee ?? s.validate_poc_referee} | ` +
       `disprove ${eff.validate_llm ?? s.validate_llm} | ` +
       `hunt MoA ${huntOn ? "on" : "off"} [${huntBrief}] | ${keyNote} | ` +
-      `agents ${eff.max_leases_parallel || 1}`;
+      `agents ${eff.max_leases_parallel || 1} | pair caps [${capBrief(s)}]`;
   }
 
   async function loadSettings() {

@@ -24,6 +24,7 @@
   "hunt_moa": false,
   "hunt_perspectives": [],
   "max_concurrent_agents": 1,
+  "model_concurrent_caps": {},
   "context_tokens": 32768,
   "max_context_fraction": 0.25,
   "max_tokens": 4096,
