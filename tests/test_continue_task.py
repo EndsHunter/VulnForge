@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+import threading
 from pathlib import Path
 
 from vulnforge.agent_runtime.context_watch import (
@@ -123,6 +125,111 @@ def test_continue_recon_tool_enqueues_child(tmp_path: Path, toy_sqli: Path):
     assert child.payload.get("include_prior_architecture") is True
     assert child.payload.get("merge_with_existing") is True
     assert child.payload.get("continue_generation") == 1
+    db.close()
+
+
+def test_owner_connection_rejects_other_thread(tmp_path: Path, toy_sqli: Path):
+    """The owner connection keeps SQLite's same-thread check.
+
+    Sharing ``db.conn`` with the tool worker must fail this test. Disabling
+    ``check_same_thread`` makes the foreign-thread ``execute`` succeed, so the
+    assertion below fails.
+    """
+    _run_dir, db = _run(tmp_path, toy_sqli)
+    box: dict = {}
+
+    def worker() -> None:
+        try:
+            db.conn.execute("SELECT 1")
+        except sqlite3.ProgrammingError as exc:
+            box["error"] = exc
+        else:
+            box["error"] = None
+
+    thread = threading.Thread(target=worker, name="vf-conn-guard")
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert isinstance(box.get("error"), sqlite3.ProgrammingError)
+    db.close()
+
+
+def test_continue_tools_enqueue_from_worker_thread(tmp_path: Path, toy_sqli: Path):
+    """continue_hunt and continue_recon enqueue on the thread that runs the tool."""
+    run_dir, db = _run(tmp_path, toy_sqli)
+    hunt_parent = db.enqueue_task(
+        "hunt",
+        {"area": "app", "class": "injection", "path_hints": ["app.py"]},
+    )
+    recon_parent = db.enqueue_task("recon", {"enqueue_hunts": True})
+    hunt_ctx = {
+        "db": db,
+        "run_dir": run_dir,
+        "task_id": hunt_parent,
+        "task_payload": {
+            "area": "app",
+            "class": "injection",
+            "path_hints": ["app.py"],
+        },
+        "cfg": {"run": {"max_continue_depth": 3}},
+        "session": {},
+    }
+    recon_ctx = {
+        "db": db,
+        "run_dir": run_dir,
+        "task_id": recon_parent,
+        "task_payload": {"enqueue_hunts": True},
+        "cfg": {"run": {"max_continue_depth": 3}},
+        "session": {},
+    }
+    box: dict = {}
+
+    def worker() -> None:
+        try:
+            db.conn.execute("SELECT 1")
+        except sqlite3.ProgrammingError as exc:
+            box["guard"] = exc
+        else:
+            box["guard"] = None
+        hunt_h = build_tool_handler(hunt_ctx)
+        recon_h = build_tool_handler(recon_ctx)
+        box["hunt"] = hunt_h(
+            "continue_hunt",
+            {"handoff": "Read app.py; child should finish other.py."},
+        )
+        box["recon"] = recon_h(
+            "continue_recon",
+            {"handoff": "Mapped app.py; still need workers/."},
+        )
+        # Empty session: idempotent lookup must also run on this thread.
+        again = dict(hunt_ctx)
+        again["session"] = {}
+        box["hunt_again"] = build_tool_handler(again)(
+            "continue_hunt",
+            {"handoff": "should reuse the child"},
+        )
+
+    thread = threading.Thread(target=worker, name="vf-tool-worker")
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert isinstance(box.get("guard"), sqlite3.ProgrammingError)
+    hunt_r = box["hunt"]
+    recon_r = box["recon"]
+    assert hunt_r.get("ok") is True, hunt_r
+    assert recon_r.get("ok") is True, recon_r
+    assert box["hunt_again"].get("ok") is True
+    assert box["hunt_again"].get("already") is True
+    assert box["hunt_again"].get("task_id") == hunt_r.get("task_id")
+
+    tasks = db.list_tasks()
+    hunt_child = next(t for t in tasks if t.id == hunt_r["task_id"])
+    recon_child = next(t for t in tasks if t.id == recon_r["task_id"])
+    assert hunt_child.kind == "hunt" and hunt_child.state == "queued"
+    assert hunt_child.payload.get("continue_from_task_id") == hunt_parent
+    assert recon_child.kind == "recon" and recon_child.state == "queued"
+    assert recon_child.payload.get("continue_from_task_id") == recon_parent
+    assert sum(1 for t in tasks if t.kind == "hunt") == 2
     db.close()
 
 

@@ -12,10 +12,11 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 from vulnforge.util import normalize_relpath, utc_now_iso
 
@@ -152,7 +153,16 @@ def _hitl_report_from_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 class Database:
-    """Thin wrapper over harness.db."""
+    """Thin wrapper over harness.db.
+
+    ``self.conn`` is opened on the thread that constructs this object and keeps
+    SQLite's default ``check_same_thread=True``. Another thread that uses it
+    raises ``sqlite3.ProgrammingError``. Strands runs tool calls on a worker
+    thread (``strands._async.run_async``); those calls must use
+    ``caller_connection()`` — a connection opened on the calling thread — and
+    must not share ``self.conn``. Each connection is confined to one thread, so
+    this path does not take a process-wide lock; SQLite WAL serializes writers.
+    """
 
     def __init__(self, path: Path, *, create: bool = False):
         self.path = Path(path)
@@ -160,9 +170,7 @@ class Database:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists() and not create:
             raise FileNotFoundError(self.path)
-        self.conn = sqlite3.connect(str(self.path), timeout=30)
-        self.conn.row_factory = sqlite3.Row
-        self._apply_pragmas()
+        self.conn = self._connect()
         if create:
             self.migrate()
         else:
@@ -181,10 +189,37 @@ class Database:
     def open(cls, path: Path) -> "Database":
         return cls(path, create=False)
 
-    def _apply_pragmas(self) -> None:
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=5000")
-        self.conn.execute("PRAGMA foreign_keys=ON")
+    def _connect(self) -> sqlite3.Connection:
+        """Open a connection owned by the calling thread.
+
+        ``check_same_thread`` stays at the sqlite3 default (True). Do not pass
+        the returned connection to another thread.
+        """
+        conn = sqlite3.connect(str(self.path), timeout=30)
+        conn.row_factory = sqlite3.Row
+        self._apply_pragmas(conn)
+        return conn
+
+    @contextmanager
+    def caller_connection(self) -> Iterator[sqlite3.Connection]:
+        """Short-lived connection created and used on the calling thread.
+
+        Close happens when the context exits. The caller commits writes before
+        exit (``enqueue_task(..., conn=...)`` does). ``self.conn`` is untouched,
+        so the same-thread guard on the owner connection still fires if a tool
+        worker uses it.
+        """
+        conn = self._connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def _apply_pragmas(self, conn: sqlite3.Connection | None = None) -> None:
+        c = self.conn if conn is None else conn
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA busy_timeout=5000")
+        c.execute("PRAGMA foreign_keys=ON")
 
     def _check_schema(self) -> None:
         row = self.conn.execute(
@@ -706,16 +741,24 @@ class Database:
         kind: str,
         payload: Optional[dict] = None,
         priority: int = 100,
+        *,
+        conn: sqlite3.Connection | None = None,
     ) -> int:
+        """Insert a queued task.
+
+        ``conn``, when set, must be a connection created on this thread
+        (see ``caller_connection``). Otherwise the owner ``self.conn`` is used.
+        """
+        c = self.conn if conn is None else conn
         now = utc_now_iso()
-        cur = self.conn.execute(
+        cur = c.execute(
             """
             INSERT INTO tasks(kind, state, payload_json, priority, attempt, created_at, updated_at)
             VALUES (?, 'queued', ?, ?, 0, ?, ?)
             """,
             (kind, json.dumps(payload or {}), priority, now, now),
         )
-        self.conn.commit()
+        c.commit()
         return int(cur.lastrowid)
 
     def _row_to_task(self, row: sqlite3.Row) -> Task:
@@ -1740,9 +1783,19 @@ class Database:
         ).fetchone()
         return row is not None
 
-    def list_tasks(self, limit: int = 500) -> list[Task]:
-        """All tasks ordered by id (for dashboard / status)."""
-        rows = self.conn.execute(
+    def list_tasks(
+        self,
+        limit: int = 500,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> list[Task]:
+        """All tasks ordered by id (for dashboard / status).
+
+        ``conn``, when set, must be a connection created on this thread
+        (see ``caller_connection``). Otherwise the owner ``self.conn`` is used.
+        """
+        c = self.conn if conn is None else conn
+        rows = c.execute(
             """
             SELECT * FROM tasks
             ORDER BY id ASC
