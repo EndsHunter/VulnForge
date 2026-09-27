@@ -212,7 +212,7 @@ flowchart LR
 ```
 
 - **Ceiling = 1**: exclusive `run.lock` for whole `run-once`.
-- **Ceiling > 1**: skip exclusive lock; SQLite coordinates leases. The cap is per model id (`model_concurrent_caps`, else `max_leases_parallel`). Workers that cannot lease return **11**, not 0.
+- **Ceiling > 1**: skip exclusive lock; SQLite coordinates leases. The cap is per `(host_id, model_id)` (`model_concurrent_caps`, else `max_leases_parallel` when that pair has no number). Workers that cannot lease return **11**, not 0.
 
 ---
 

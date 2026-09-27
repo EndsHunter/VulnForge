@@ -772,13 +772,13 @@ def cmd_status(args, cfg: dict) -> int:
 
 
 def lease_one_for_run(db: Database, cfg: dict, worker_id: str):
-    """Lease one task under the per-model concurrent cap.
+    """Lease one task under the per ``(host, model)`` concurrent cap.
 
-    ``run.max_leases_parallel`` is the cap for a model id with no override.
-    ``run.model_concurrent_caps`` overrides that number for one model id.
-    The host is not part of the key.
+    ``run.max_leases_parallel`` is the cap when that pair has no number.
+    ``run.model_concurrent_caps`` is ``{host_id: {model_id: n}}``. A flat
+    model-id map is not a cap.
     """
-    from vulnforge.llm_models import lease_model_id
+    from vulnforge.llm_models import lease_pair
     from vulnforge.settings.catalog import normalize_model_concurrent_caps
 
     run = cfg.get("run") or {}
@@ -786,8 +786,8 @@ def lease_one_for_run(db: Database, cfg: dict, worker_id: str):
     caps = normalize_model_concurrent_caps(run.get("model_concurrent_caps"))
     ttl = int(run.get("lease_ttl_seconds", 1800))
 
-    def resolve(kind: str, payload: dict) -> str:
-        return lease_model_id(cfg, kind, payload)
+    def resolve(kind: str, payload: dict) -> tuple[str, str]:
+        return lease_pair(cfg, kind, payload)
 
     return db.lease_next_task(
         worker_id,
@@ -815,7 +815,7 @@ def cmd_run_once(args, cfg: dict) -> int:
     max_parallel = max(1, int((cfg.get("run") or {}).get("max_leases_parallel") or 1))
     # Serial mode (ceiling 1): exclusive run.lock for the whole task.
     # Parallel mode: skip exclusive lock — SQLite lease_one_for_run enforces
-    # the per-model cap (global max_leases_parallel when a model has no override).
+    # the per (host, model) cap (global max_leases_parallel when a pair has no number).
     lease_ceiling = cfg_lease_ceiling(cfg)
     lock: Optional[RunLock] = None
     if lease_ceiling <= 1:
@@ -924,6 +924,7 @@ def cmd_run_once(args, cfg: dict) -> int:
                 "kind": task.kind,
                 "worker": worker_id,
                 "model_id": task.lease_model_id,
+                "host_id": task.lease_host_id,
             },
         )
 

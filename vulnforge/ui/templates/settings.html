@@ -64,13 +64,9 @@
             <span>Model</span>
             <span>Context window</span>
             <span>Max output</span>
+            <span>Concurrent</span>
           </div>
           <ul id="set-available" class="settings-available"></ul>
-          <h3 class="settings-subhead" id="settings-model-caps-head">Concurrent cap by model</h3>
-          <p class="controls-hint" id="settings-model-caps-hint" style="margin-top:0">
-            Blank uses Max concurrent agents. One number per model id, shared by every host that serves it.
-          </p>
-          <ul id="set-model-caps" class="model-cap-list"></ul>
           <button type="button" class="btn" id="settings-optimize">Optimize selected</button>
           <pre class="controls-hint mono" id="settings-optimize-report" hidden style="margin-top:0.65rem;max-height:12rem;overflow:auto;white-space:pre-wrap;padding:0.5rem;border:1px solid var(--border);border-radius:6px"></pre>
         </section>
@@ -153,7 +149,6 @@
             <div class="field">
               <label class="field-label" for="set-workers"><span class="label-text">Max concurrent agents</span></label>
               <input id="set-workers" type="number" min="1" step="1" />
-              <p class="controls-hint" style="margin:0.25rem 0 0">Default for a model with no override.</p>
             </div>
             <div class="field">
               <label class="field-label" for="set-ctx"><span class="label-text">Default context window</span></label>

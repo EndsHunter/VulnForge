@@ -223,8 +223,8 @@ def _ralph_cmd(
 def _max_leases_from_settings() -> int:
     """How many Ralph workers can hold a lease at once (fallback 1).
 
-    One configured model with no override keeps the global cap. Several model
-    ids sum their own caps. The same model id is counted once.
+    One configured pair with no number keeps the global cap. Several
+    ``(host, model)`` pairs sum their own caps. The same pair is counted once.
     """
     try:
         from vulnforge.settings import load_ui_settings

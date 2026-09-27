@@ -115,9 +115,10 @@ class Task:
     lease_owner: Optional[str] = None
     lease_until: Optional[str] = None
     result: Optional[dict] = None
-    # Model id this lease counts against. None on leases taken before the column
-    # existed (those still count as untagged while a per-model cap is in force).
+    # (host, model) this lease counts against. None on leases taken before the
+    # column existed (those still count as untagged while a per-pair cap is in force).
     lease_model_id: Optional[str] = None
+    lease_host_id: Optional[str] = None
 
 
 @dataclass
@@ -183,6 +184,7 @@ class Database:
             self._ensure_codemap_column()
             self._ensure_sink_coverage_table()
         self._ensure_lease_model_column()
+        self._ensure_lease_host_column()
         self._ensure_hitl_tables()
 
     @classmethod
@@ -270,6 +272,7 @@ class Database:
               lease_owner TEXT,
               lease_until TEXT,
               lease_model_id TEXT,
+              lease_host_id TEXT,
               result_json TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
@@ -386,6 +389,13 @@ class Database:
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(tasks)").fetchall()}
         if "lease_model_id" not in cols:
             self.conn.execute("ALTER TABLE tasks ADD COLUMN lease_model_id TEXT")
+            self.conn.commit()
+
+    def _ensure_lease_host_column(self) -> None:
+        """Record which host a lease counts against. Does not bump schema_version."""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "lease_host_id" not in cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN lease_host_id TEXT")
             self.conn.commit()
 
     def _ensure_codemap_column(self) -> None:
@@ -789,6 +799,11 @@ class Database:
                 if "lease_model_id" not in row.keys() or row["lease_model_id"] is None
                 else str(row["lease_model_id"])
             ),
+            lease_host_id=(
+                None
+                if "lease_host_id" not in row.keys() or row["lease_host_id"] is None
+                else str(row["lease_host_id"])
+            ),
         )
 
     def count_leased_tasks(self) -> int:
@@ -817,11 +832,12 @@ class Database:
         Without ``resolve_model``, ``max_parallel`` is a single pool over every
         leased row (historical behavior).
 
-        With ``resolve_model(kind, payload) -> model_id``, the cap is per model
-        id. ``model_caps`` overrides ``max_parallel`` for that id. A missing
-        override uses ``max_parallel``. In-flight rows are counted by the model
-        id stored when they were leased. A queued task whose model is already
-        at cap is skipped so a different model can still lease.
+        With ``resolve_model(kind, payload) -> (host_id, model_id)``, the cap is
+        per pair. ``model_caps`` is ``{host_id: {model_id: n}}``. A missing pair
+        uses ``max_parallel``. In-flight rows are counted by the host and model
+        stored when they were leased. A queued task whose pair is already at
+        cap is skipped so a different pair can still lease. A string return is
+        treated as model id with an empty host.
 
         Uses BEGIN IMMEDIATE so multi-process agents cannot overshoot under WAL.
         """
@@ -829,7 +845,7 @@ class Database:
         until = _iso_future(ttl_seconds)
         cap = max(1, int(max_parallel or 1))
         if resolve_model is not None:
-            from vulnforge.settings.catalog import effective_model_cap
+            from vulnforge.settings.catalog import effective_pair_cap
         try:
             self.conn.execute("BEGIN IMMEDIATE")
             if resolve_model is None:
@@ -870,17 +886,20 @@ class Database:
                 )
             else:
                 leased_rows = self.conn.execute(
-                    "SELECT lease_model_id FROM tasks WHERE state='leased'"
+                    "SELECT lease_host_id, lease_model_id FROM tasks WHERE state='leased'"
                 ).fetchall()
-                counts: dict[str, int] = {}
+                counts: dict[tuple[str, str], int] = {}
                 untagged = 0
                 for leased_row in leased_rows:
                     raw_mid = leased_row["lease_model_id"]
-                    if raw_mid is None:
+                    raw_hid = leased_row["lease_host_id"]
+                    # Missing host or model: leased before the pair key existed.
+                    # Count it toward every candidate so a restart cannot overshoot.
+                    if raw_mid is None or raw_hid is None:
                         untagged += 1
                         continue
-                    mid_held = str(raw_mid)
-                    counts[mid_held] = counts.get(mid_held, 0) + 1
+                    held = (str(raw_hid), str(raw_mid))
+                    counts[held] = counts.get(held, 0) + 1
                 queued_rows = self.conn.execute(
                     """
                     SELECT * FROM tasks
@@ -901,6 +920,7 @@ class Database:
                         """
                     ).fetchall()
                 row = None
+                chosen_host = ""
                 chosen_mid = ""
                 for candidate in pool:
                     try:
@@ -909,11 +929,16 @@ class Database:
                         payload = {}
                     if not isinstance(payload, dict):
                         payload = {}
-                    chosen_mid = str(
-                        resolve_model(str(candidate["kind"] or ""), payload) or ""
-                    ).strip()
-                    limit = effective_model_cap(model_caps, chosen_mid, cap)
-                    if counts.get(chosen_mid, 0) + untagged >= limit:
+                    resolved = resolve_model(str(candidate["kind"] or ""), payload)
+                    if isinstance(resolved, tuple):
+                        chosen_host = str(resolved[0] or "").strip() if resolved else ""
+                        chosen_mid = str(resolved[1] or "").strip() if len(resolved) > 1 else ""
+                    else:
+                        chosen_host = ""
+                        chosen_mid = str(resolved or "").strip()
+                    limit = effective_pair_cap(model_caps, chosen_host, chosen_mid, cap)
+                    held_key = (chosen_host, chosen_mid)
+                    if counts.get(held_key, 0) + untagged >= limit:
                         continue
                     row = candidate
                     break
@@ -924,10 +949,10 @@ class Database:
                     """
                     UPDATE tasks
                     SET state='leased', lease_owner=?, lease_until=?,
-                        lease_model_id=?, attempt=attempt+1, updated_at=?
+                        lease_model_id=?, lease_host_id=?, attempt=attempt+1, updated_at=?
                     WHERE id=?
                     """,
-                    (worker_id, until, chosen_mid, now, row["id"]),
+                    (worker_id, until, chosen_mid, chosen_host, now, row["id"]),
                 )
             self.conn.execute("COMMIT")
         except Exception:
