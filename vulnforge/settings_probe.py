@@ -3,10 +3,12 @@
 Used by dashboard **Settings → Optimize AI settings**. Tests are sequential and
 read-only against the model server (no target tree access).
 
-Context is taken from the model card when present, then empirically verified
-with tiny-completion prompt-capacity probes (step + binary search). Runtime
-recommendations use more of a large discovered window than a conservative
-local-server default.
+Context recommendation order is empirical probe, then model card, then a
+name heuristic (any ``Nk`` / ``Nm`` marker, including 256k-class windows).
+The probe uses tiny completions. An unclaimed ladder starts at the 256k
+rung so a ~45s budget can reach a large window. Runtime recommendations
+use more of a large discovered window than a conservative local default.
+``max_tokens`` is max output and stays capped separately from context.
 """
 
 from __future__ import annotations
@@ -85,22 +87,27 @@ _OVER_CTX_RE = re.compile(
 )
 
 CONTEXT_PROBE_BUDGET_S = 45.0
-CONTEXT_PROBE_MAX_TOKENS = 262144
+# 1M-class cap. 256k (262144) is a rung, not the ceiling.
+CONTEXT_PROBE_MAX_TOKENS = 1048576
 CONTEXT_PROBE_MIN_TOKENS = 1024
 CONTEXT_PROBE_COMPLETION_TOKENS = 4
 CONTEXT_PROBE_PER_REQUEST_S = 25.0
+# Coarse rungs. Binary search fills the gaps. The unclaimed probe starts at
+# the 256k-class rung so the time budget is not spent on 1k–8k steps.
 CONTEXT_PROBE_STEPS = (
-    1024,
-    2048,
     4096,
     8192,
-    16384,
     32768,
-    65536,
-    98304,
     131072,
-    196608,
     262144,
+    524288,
+    1048576,
+)
+# First unclaimed attempt. Larger rungs are tried only after this one accepts.
+CONTEXT_PROBE_LARGE_START = 262144
+_NAMED_CONTEXT_RE = re.compile(
+    r"(?<![a-z0-9])(\d+(?:\.\d+)?)[\s_\-]*([km])(?![a-z0-9])",
+    re.IGNORECASE,
 )
 
 PostJsonFn = Callable[..., tuple[int, dict[str, Any] | str, float]]
@@ -241,18 +248,29 @@ def _unwrap_model_payload(payload: Any) -> Optional[dict[str, Any]]:
     return None
 
 
+def _named_context_tokens(name: str) -> Optional[int]:
+    """Largest context-size token in a model id (``8k``, ``256k``, ``1m``).
+
+    The marker is a number plus a ``k`` or ``m`` suffix on its own, so
+    ``128k`` is 131072 and is not read as ``8k``. ``8b`` parameter counts
+    do not match. Returns None when the name has no such marker.
+    """
+    best: Optional[int] = None
+    for match in _NAMED_CONTEXT_RE.finditer(name or ""):
+        qty = float(match.group(1))
+        mult = 1024 if match.group(2).lower() == "k" else 1024 * 1024
+        n = int(qty * mult)
+        if n < 1024 or n > 16 * 1024 * 1024:
+            continue
+        if best is None or n > best:
+            best = n
+    return best
+
+
 def _context_from_model_name(name: str, fallback: int) -> int:
-    low = (name or "").lower()
-    if "128k" in low:
-        return 131072
-    if "64k" in low:
-        return 65536
-    if "32k" in low:
-        return 32768
-    if "16k" in low:
-        return 16384
-    if "8k" in low:
-        return 8192
+    named = _named_context_tokens(name)
+    if named is not None:
+        return named
     return max(1024, int(fallback or 32768))
 
 
@@ -496,9 +514,12 @@ def probe_context_window(
     """Empirically find the largest prompt (chars/4 tokens) the endpoint accepts.
 
     Completions use ``max_tokens`` of 1–8 so only **prompt** capacity is tested.
-    When ``claimed`` is set (model card), that size is tried first, then slightly
-    above; a fail binary-searches down. Otherwise sizes step up, then binary
-    search between last-ok and first-fail.
+    When ``claimed`` is set (model card or a context-size token in the model
+    id), that size is tried first, then slightly above; a fail binary-searches
+    down. Otherwise the ladder starts at the 256k-class rung (then larger
+    rungs, or downward on over-context) so a ~45s budget can reach a large
+    window. Binary search closes the gap between the last accept and the
+    first over-context reject.
     """
     post = post_json or _post_json
     t0 = time.perf_counter()
@@ -585,16 +606,38 @@ def probe_context_window(
                     binary_between(last_ok or lo, first_fail)
         # error / timeout: do not treat as a measured window
     else:
-        for step in CONTEXT_PROBE_STEPS:
-            if step > cap:
+        steps = [s for s in CONTEXT_PROBE_STEPS if CONTEXT_PROBE_MIN_TOKENS <= s <= cap]
+        if not steps or steps[-1] != cap:
+            steps.append(cap)
+        # 256k-class first (or the cap, when the cap is smaller) so the
+        # budget is not consumed by 1k–8k accepts on the way up.
+        start_at = len(steps) - 1
+        for i, step in enumerate(steps):
+            if step >= CONTEXT_PROBE_LARGE_START:
+                start_at = i
                 break
-            if remaining() < 3.0:
-                break
-            result = try_size(step)
-            if result == "over":
-                break
-            if result != "ok":
-                break
+        result = try_size(steps[start_at])
+        if result == "ok":
+            for step in steps[start_at + 1 :]:
+                if remaining() < 3.0:
+                    break
+                if try_size(step) != "ok":
+                    break
+        elif result == "over":
+            for step in reversed(steps[:start_at]):
+                if remaining() < 3.0:
+                    break
+                if try_size(step) == "ok":
+                    break
+            if last_ok is None and remaining() > 3.0:
+                try_size(CONTEXT_PROBE_MIN_TOKENS)
+        else:
+            # Timeout or a transport error is not a measured ceiling.
+            for step in steps[:start_at]:
+                if remaining() < 3.0:
+                    break
+                if try_size(step) != "ok":
+                    break
         if last_ok is not None and first_fail is not None and first_fail > last_ok:
             binary_between(last_ok, first_fail)
 
@@ -622,12 +665,21 @@ def _recommend_context_tokens(
     last_ok: Optional[int],
     claimed: Optional[int],
     heuristic: int,
+    ceiling: bool = True,
 ) -> tuple[int, Optional[int], str]:
-    """Return (recommended, measured, source)."""
+    """Return (recommended, measured, source).
+
+    ``source`` is ``empirical``, ``model_card``, or ``heuristic``.
+    A partial accept with no over-context ceiling does not override a
+    larger model-card or name-heuristic window (the ladder ran out of
+    budget before the real limit).
+    """
     if last_ok is not None:
         measured = int(last_ok)
-        rec = max(CONTEXT_PROBE_MIN_TOKENS, int(measured * 0.9))
-        return rec, measured, "empirical"
+        larger_prior = max(int(claimed or 0), int(heuristic or 0))
+        if ceiling or measured >= larger_prior:
+            rec = max(CONTEXT_PROBE_MIN_TOKENS, int(measured * 0.9))
+            return rec, measured, "empirical"
     if claimed is not None:
         n = max(CONTEXT_PROBE_MIN_TOKENS, int(claimed))
         return n, n, "model_card"
@@ -1138,10 +1190,17 @@ def optimize_ui_settings(
             )
 
         # ---- 5. Context window (card + optional empirical probe) ----
-        heuristic_ctx = _context_from_model_name(
-            resolved_model, int(current.get("context_tokens") or 32768)
+        named_ctx = _named_context_tokens(resolved_model)
+        heuristic_ctx = (
+            named_ctx
+            if named_ctx is not None
+            else max(1024, int(current.get("context_tokens") or 32768))
         )
+        # Try the card first. A size token in the model id is only a probe
+        # hint — it must not be recorded as model_card.
+        probe_hint = context_from_card if context_from_card is not None else named_ctx
         last_ok_ctx: Optional[int] = None
+        probe_ceiling = False
         if test_context:
             used = time.perf_counter() - optimize_t0
             remaining = max(5.0, float(timeout_seconds) - used)
@@ -1150,11 +1209,15 @@ def optimize_ui_settings(
                 client,
                 chat_url,
                 resolved_model,
-                claimed=context_from_card,
+                claimed=probe_hint,
                 budget_s=budget,
                 max_size=CONTEXT_PROBE_MAX_TOKENS,
             )
             last_ok_ctx = probe.get("last_ok")
+            aimed = probe_hint if probe_hint is not None else CONTEXT_PROBE_MAX_TOKENS
+            aimed = min(int(CONTEXT_PROBE_MAX_TOKENS), int(aimed))
+            reached_aim = last_ok_ctx is not None and int(last_ok_ctx) >= int(aimed * 0.9)
+            probe_ceiling = probe.get("first_fail") is not None or reached_aim
             tests.append(
                 {
                     "id": "context_window",
@@ -1196,8 +1259,23 @@ def optimize_ui_settings(
             last_ok=last_ok_ctx,
             claimed=context_from_card,
             heuristic=heuristic_ctx,
+            ceiling=probe_ceiling,
         )
-        known_ctx = last_ok_ctx or context_from_card or heuristic_ctx
+        for row in tests:
+            if row.get("id") == "context_window":
+                row["source"] = context_source
+                break
+        if (
+            test_context
+            and last_ok_ctx is not None
+            and context_source != "empirical"
+        ):
+            warnings.append(
+                "Context probe accepted a prompt but did not reach an "
+                "over-context ceiling before the time budget; using the "
+                "model card or name heuristic."
+            )
+        known_ctx = int(rec_ctx)
 
         # ---- 6. Latency + ferocious runtime heuristics ----
         p95 = sorted(latencies)[max(0, int(len(latencies) * 0.95) - 1)] if latencies else 5.0

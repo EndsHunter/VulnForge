@@ -1804,15 +1804,16 @@ def _merge_usage_fields(acc: dict[str, Any], more: dict[str, Any]) -> dict[str, 
     return out
 
 
-_SUMMARY_MERGE_CAP = 2000
-
-
 def _normalize_summary_para(s: str) -> str:
     return " ".join(str(s).split()).strip().lower()
 
 
-def _merge_summary_paragraphs(parts: list[dict[str, Any]], *, cap: int = _SUMMARY_MERGE_CAP) -> str:
-    """Concatenate unique non-empty summary paragraphs (normalized dedupe), up to cap chars."""
+def _merge_summary_paragraphs(parts: list[dict[str, Any]]) -> str:
+    """Concatenate unique non-empty summary paragraphs (normalized dedupe).
+
+    Stored architecture and the Mission overview keep this full string.
+    Hunt prompts clip separately via ``packet.max_architecture_chars``.
+    """
     seen: set[str] = set()
     chunks: list[str] = []
     for part in parts:
@@ -1833,10 +1834,7 @@ def _merge_summary_paragraphs(parts: list[dict[str, Any]], *, cap: int = _SUMMAR
             chunks.append(p)
     if not chunks:
         return ""
-    out = "\n\n".join(chunks)
-    if len(out) > cap:
-        out = out[: cap - 1].rstrip() + "…"
-    return out
+    return "\n\n".join(chunks)
 
 
 def _merge_dict_items(prev: dict[str, Any], newer: dict[str, Any]) -> dict[str, Any]:
@@ -1902,7 +1900,7 @@ def merge_architectures(
 
     - List fields: deep-merge (append unique items; dict items by stable key,
       field-merge when same key).
-    - summary: concatenate unique non-empty paragraphs (dedupe normalized), ~2000 cap.
+    - summary: concatenate unique non-empty paragraphs (dedupe normalized), uncapped.
     - recon_agents_run metadata attached when provided.
     """
     list_fields = (

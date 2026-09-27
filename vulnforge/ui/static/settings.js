@@ -489,8 +489,8 @@
       ctx.min = "1";
       ctx.step = "1";
       ctx.dataset.field = "context_tokens";
-      ctx.placeholder = "default";
-      ctx.setAttribute("aria-label", `Context tokens for ${ref.model_id}`);
+      ctx.placeholder = "context window";
+      ctx.setAttribute("aria-label", `Context window for ${ref.model_id}`);
       if (ref.context_tokens != null) ctx.value = String(ref.context_tokens);
 
       const maxTok = document.createElement("input");
@@ -498,8 +498,8 @@
       maxTok.min = "1";
       maxTok.step = "1";
       maxTok.dataset.field = "max_tokens";
-      maxTok.placeholder = "default";
-      maxTok.setAttribute("aria-label", `Max tokens for ${ref.model_id}`);
+      maxTok.placeholder = "max output";
+      maxTok.setAttribute("aria-label", `Max output for ${ref.model_id}`);
       if (ref.max_tokens != null) maxTok.value = String(ref.max_tokens);
 
       li.appendChild(pick);
@@ -724,8 +724,10 @@
         lines.push(`${name}: ${row.error || "failed"}`);
         continue;
       }
-      const src = row.context_source ? ` (${row.context_source})` : "";
-      lines.push(`${name}: context ${row.context_tokens}, max ${row.max_tokens}${src}`);
+      const src = row.context_source || "heuristic";
+      lines.push(
+        `${name}: context window ${row.context_tokens} (${src}), max output ${row.max_tokens}`
+      );
       for (const w of row.warnings || []) lines.push(`  ⚠ ${w}`);
     }
     lines.push("Review values, then Save to persist.");
