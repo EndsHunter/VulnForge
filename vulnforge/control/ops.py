@@ -2164,7 +2164,7 @@ def architecture_summary(
     base: dict[str, Any] = {
         "mode": "source",
         "title": "Architecture",
-        "summary": str(arch.get("summary") or "")[:4000],
+        "summary": str(arch.get("summary") or ""),
         "components": comps,
         "modules": comps,
         "trust_boundaries": list(arch.get("trust_boundaries") or [])[:30]
