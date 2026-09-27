@@ -376,6 +376,85 @@ def test_merge_architectures_summary_concat_and_dedupe():
     assert m["summary"].count("Line two.") == 1
 
 
+def test_merge_and_store_keep_summary_past_2000(tmp_path: Path):
+    """Overview/storage must keep the full merge; the old 2000 clip is gone."""
+    para_a = ("Alpha boundary. " + ("authn detail " * 180)).strip()
+    para_b = ("Beta surfaces. " + ("route detail " * 180)).strip()
+    assert len(para_a) > 1200 and len(para_b) > 1200
+    part_a = {
+        "summary": para_a,
+        "components": [{"name": "api", "path_hints": ["api/"]}],
+        "trust_boundaries": [],
+        "input_surfaces": [],
+        "hunt_focus": [],
+    }
+    part_b = {
+        "summary": para_b,
+        "components": [{"name": "auth", "path_hints": ["auth/"]}],
+        "trust_boundaries": [],
+        "input_surfaces": [],
+        "hunt_focus": [],
+    }
+    merged = merge_architectures([part_a, part_b])
+    assert para_a in merged["summary"]
+    assert para_b in merged["summary"]
+    assert len(merged["summary"]) > 2000
+    assert "…" not in merged["summary"]
+
+    db = _run_db(tmp_path)
+    try:
+        stored = store_merged_architecture(
+            db,
+            part=part_a,
+            agents_run=[{"id": "default-map", "ok": True}],
+            inventory={"file_count": 2},
+            seed_sinks=[],
+        )
+        # Second pass merges with the stored map (mechanical; no LLM client).
+        stored = store_merged_architecture(
+            db,
+            part=part_b,
+            agents_run=[{"id": "surface-mapper", "ok": True}],
+            inventory={"file_count": 2},
+            seed_sinks=[],
+            merge_with_existing=True,
+        )
+        got = db.get_architecture()
+    finally:
+        db.close()
+    assert got is not None
+    assert got["summary"] == stored["summary"]
+    assert para_a in got["summary"]
+    assert para_b in got["summary"]
+    assert len(got["summary"]) > 2000
+    assert "…" not in got["summary"]
+
+
+def test_pack_hunt_still_clips_architecture_prompt_budget():
+    """Hunt packing keeps max_architecture_chars even when storage is uncapped."""
+    from vulnforge.packet import pack_hunt
+    from vulnforge.paths import system_prompts_root
+
+    long_summary = "H" * 4000
+    merged = merge_architectures([{"summary": long_summary}])
+    assert merged["summary"] == long_summary
+    cfg = {
+        "llm": {"context_tokens": 32768, "max_context_fraction": 0.25},
+        "packet": {"max_architecture_chars": 1800, "max_hunt_angles": 4},
+    }
+    pkt = pack_hunt(
+        cfg,
+        system_prompts_root(),
+        {"area": "app", "class": "injection", "path_hints": ["app.py"]},
+        merged["summary"],
+        [],
+        [],
+    )
+    assert long_summary not in pkt.user
+    assert "truncated architecture" in pkt.user
+    assert "chars=4000" in pkt.user
+
+
 def test_merge_architectures_component_field_merge():
     a1 = {
         "summary": "A",

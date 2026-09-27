@@ -459,6 +459,20 @@ def test_architecture_summary():
     assert s["components"][0]["name"] == "api"
 
 
+def test_architecture_summary_keeps_full_merged_text():
+    """Mission overview must not re-clip a stored summary (former 4000 slice)."""
+    from vulnforge.stages.recon import merge_architectures
+
+    long_summary = ("Mission map. " + ("component note " * 400)).strip()
+    assert len(long_summary) > 4000
+    merged = merge_architectures(
+        [{"summary": long_summary, "components": [{"name": "api"}]}]
+    )
+    s = dashops.architecture_summary(merged)
+    assert s["summary"] == long_summary
+    assert len(s["summary"]) > 4000
+
+
 def test_architecture_summary_always_source_mode():
     """Architecture summary is always source-mode (binary_re profile removed)."""
     s = dashops.architecture_summary(
