@@ -2,9 +2,10 @@
  * Run-page nav table. UMD for node --test and the browser (modes.js).
  *
  * One frozen table. `rail` is the only slot field (`"head"|"primary"|"footer"|null`).
- * `primaryNav` is the five rail modes. `workspaceModes` is all seven `kind === "mode"`
+ * `primaryNav` is the rail modes. `workspaceModes` is all seven `kind === "mode"`
  * items. `isRunMode` / `defaultTabFor` read `workspaceModes`, never `primaryNav`.
- * Evidence stays off the rail (open from Report). AI is overlay (`overlay: true`).
+ * Evidence stays off the rail (open from Report). AI is on the rail and overlay
+ * (`overlay: true`): it opens the bubble sheet in place.
  *
  * @typedef {{
  *   kind: "mode",
@@ -44,7 +45,7 @@
     { kind: "mode", id: "report", mode: "report", label: "Report", defaultTab: "report", rail: "primary" },
     { kind: "mode", id: "evidence", mode: "evidence", label: "Evidence", defaultTab: "evidence", rail: null },
     { kind: "mode", id: "audit", mode: "audit", label: "Tasks", defaultTab: "tasks", rail: "primary" },
-    { kind: "mode", id: "ai", mode: "ai", label: "AI", defaultTab: "ai", rail: null, overlay: true },
+    { kind: "mode", id: "ai", mode: "ai", label: "AI", defaultTab: "ai", rail: "primary", overlay: true },
     { kind: "href", id: "settings", href: "/settings", label: "Settings", rail: "footer" },
     { kind: "href", id: "dev", href: "/dev", label: "Dev", rail: "footer" },
     { kind: "href", id: "tool-gaps", href: "/tool-gaps", label: "Tool gaps", rail: "footer" },

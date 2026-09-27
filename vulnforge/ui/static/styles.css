@@ -5833,6 +5833,18 @@ button.cov-click .cov-moa-chip {
   flex-direction: column;
 }
 .ai-sheet[hidden] { display: none !important; }
+.ai-sheet.is-max {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+  z-index: 80;
+}
 .ai-head {
   display: flex;
   align-items: center;
@@ -5843,6 +5855,18 @@ button.cov-click .cov-moa-chip {
   font-size: 13px;
   font-weight: 500;
 }
+.ai-head #ai-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
 .ai-head button {
   appearance: none;
   background: transparent;
@@ -5851,7 +5875,9 @@ button.cov-click .cov-moa-chip {
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  padding: 2px 6px;
 }
+.ai-head button:hover { color: var(--text); }
 .ai-sheet .operator-chat-root,
 .ai-sheet .oc-shell {
   min-height: 0;
