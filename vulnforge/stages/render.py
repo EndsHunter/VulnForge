@@ -445,7 +445,7 @@ def write_report_md(path: Path, db) -> None:
     lines.extend(["## Hunts & coverage", ""])
     if matrix and (matrix.get("cells") or matrix.get("areas")):
         lines.append(
-            "_Depth: empty=planned, shallow=no substantial tools "
+            "_Depth: empty=not visited, planned=enqueued, shallow=no substantial tools "
             "(read_file/grep), none=honest miss, "
             "candidate=filed. Shallow/aborted != safe._"
         )

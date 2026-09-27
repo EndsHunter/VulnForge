@@ -49,7 +49,7 @@ def _row_profile(row) -> str:
         return ""
 
 DEPTH_BLURBS: dict[str, str] = {
-    "": "No completed hunt depth recorded for this cell yet (planned or unvisited).",
+    "": "No hunt recorded for this area × skill yet.",
     "planned": "Coverage fact created when the hunt was enqueued; visit not finished.",
     "shallow": (
         "Hunt ended without substantial analysis tools "

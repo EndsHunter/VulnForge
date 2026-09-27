@@ -1952,7 +1952,7 @@ function renderHuntsStripHtml(snap, opts = {}) {
         ${stat("Queued", queue.queued, queue.queued ? "warn" : "", "Queued + paused hunt tasks")}
         ${stat("Running", queue.active, queue.active ? "info" : "", "Leased / running hunt tasks")}
         ${stat("Done", queue.done, "", "Completed hunt tasks (incl. failed)")}
-        ${stat("Residual", residual.residual, residual.residual ? "warn" : "", "Empty / planned / shallow / none / aborted cells")}
+        ${stat("Residual", residual.residual, residual.residual ? "warn" : "", "Empty, planned, shallow, none, or aborted cells")}
         <button type="button" class="hunts-strip-stat warn hunts-strip-stat-btn" data-stat="needs_human" title="Open Report: needs human review">
           <div class="hunts-strip-stat-label">Needs human</div>
           <div class="hunts-strip-stat-value mono">${esc(String(needs.count))}</div>
