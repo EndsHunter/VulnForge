@@ -1676,8 +1676,9 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                         class_t,
                         path=(t.get("path_hints") or [""])[0],
                         visit_delta=0,
+                        last_depth="planned",
                     )
-                    # Sink-level planned residual (additive to area×class matrix)
+                    # Sink rows are additive. The matrix paints the area×skill fact above.
                     record_sink_coverage(
                         db,
                         t.get("seed_sinks") or [],
