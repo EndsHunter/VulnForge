@@ -45,6 +45,8 @@
     fab: null,
     sheet: null,
     scopeKey: "",
+    restoreToken: 0,
+    restorePromise: null,
   };
 
   function currentScopeKey() {
@@ -72,6 +74,31 @@
     syncBadge();
   }
 
+  function sessionStorageKey() {
+    return "vf-chat:" + currentScopeKey();
+  }
+
+  function readStoredSessionId() {
+    try {
+      return sessionStorage.getItem(sessionStorageKey()) || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function writeStoredSessionId(id) {
+    try {
+      if (id) sessionStorage.setItem(sessionStorageKey(), id);
+      else sessionStorage.removeItem(sessionStorageKey());
+    } catch (_) {}
+  }
+
+  function adoptStoredSession() {
+    if (state.sessionId) return;
+    const id = readStoredSessionId();
+    if (id) state.sessionId = id;
+  }
+
   function bindChrome() {
     state.fab = document.getElementById("ai-fab");
     state.sheet = document.getElementById("ai-sheet");
@@ -86,12 +113,44 @@
       state.fab.dataset.bound = "1";
       state.fab.addEventListener("click", () => toggleSheet());
     }
+    const entry = document.getElementById("ai-entry");
+    if (entry && !entry.dataset.bound) {
+      entry.dataset.bound = "1";
+      entry.addEventListener("click", () => toggleSheet());
+    }
     const closeBtn = document.getElementById("ai-close");
     if (closeBtn && !closeBtn.dataset.bound) {
       closeBtn.dataset.bound = "1";
       closeBtn.addEventListener("click", () => closeSheet());
     }
+    const maxBtn = document.getElementById("ai-max");
+    if (maxBtn && !maxBtn.dataset.bound) {
+      maxBtn.dataset.bound = "1";
+      maxBtn.addEventListener("click", () => toggleMaximize());
+    }
+    syncChrome();
+  }
+
+  function syncChrome() {
     syncBadge();
+    const maxed = !!(state.sheet && state.sheet.classList.contains("is-max"));
+    const maxBtn = document.getElementById("ai-max");
+    if (maxBtn) {
+      const label = maxed ? "Restore" : "Expand";
+      maxBtn.textContent = label;
+      maxBtn.setAttribute("aria-pressed", maxed ? "true" : "false");
+      maxBtn.setAttribute("aria-label", label);
+    }
+    if (state.fab) {
+      state.fab.classList.toggle("open", state.sheetOpen);
+      state.fab.setAttribute("aria-expanded", state.sheetOpen ? "true" : "false");
+    }
+    const entry = document.getElementById("ai-entry");
+    if (entry) entry.setAttribute("aria-expanded", state.sheetOpen ? "true" : "false");
+    document.querySelectorAll('[data-nav-id="ai"]').forEach((rail) => {
+      rail.classList.toggle("on", state.sheetOpen);
+      rail.setAttribute("aria-expanded", state.sheetOpen ? "true" : "false");
+    });
   }
 
   function openSheet() {
@@ -104,24 +163,30 @@
     ensureMounted();
     state.sheetOpen = true;
     if (state.sheet) state.sheet.hidden = false;
-    if (state.fab) {
-      state.fab.classList.add("open");
-      state.fab.setAttribute("aria-expanded", "true");
-    }
+    syncChrome();
   }
 
   function closeSheet() {
     state.sheetOpen = false;
     if (state.sheet) state.sheet.hidden = true;
-    if (state.fab) {
-      state.fab.classList.remove("open");
-      state.fab.setAttribute("aria-expanded", "false");
-    }
+    syncChrome();
   }
 
   function toggleSheet() {
     if (state.sheetOpen) closeSheet();
     else openSheet();
+  }
+
+  function toggleMaximize() {
+    bindChrome();
+    if (!state.sheet) return;
+    const next = !state.sheet.classList.contains("is-max");
+    state.sheet.classList.toggle("is-max", next);
+    syncChrome();
+  }
+
+  function isMaximized() {
+    return !!(state.sheet && state.sheet.classList.contains("is-max"));
   }
 
   function mount(root, opts) {
@@ -137,10 +202,42 @@
     renderMessages([]);
   }
 
+  function restoreSession(token) {
+    const id = state.sessionId;
+    if (!id || !state.root) {
+      state.restorePromise = null;
+      return Promise.resolve();
+    }
+    const p = (async () => {
+      try {
+        const res = await fetch(apiBase(state.scope) + "/sessions/" + encodeURIComponent(id));
+        if (token !== state.restoreToken) return;
+        if (!res.ok) {
+          if (state.sessionId === id) {
+            state.sessionId = null;
+            writeStoredSessionId("");
+          }
+          return;
+        }
+        const data = await res.json();
+        if (token !== state.restoreToken || state.sessionId !== id || !state.root) return;
+        const msgs = (Array.isArray(data.messages) ? data.messages : []).filter(
+          (m) => m && m.role !== "system"
+        );
+        renderMessages(msgs);
+      } catch (_) {
+        /* keep the shell; a later send still uses the stored id */
+      }
+    })();
+    state.restorePromise = p;
+    return p;
+  }
+
   function ensureMounted() {
     const root = document.getElementById("operator-chat-root");
     if (!root) return;
-    if (state.mounted && root.dataset.ready === "1") {
+    adoptStoredSession();
+    if (state.mounted && root.dataset.ready === "1" && state.root === root) {
       const input = root.querySelector("#oc-input");
       if (input) setTimeout(() => input.focus(), 50);
       return;
@@ -149,6 +246,8 @@
     const scope = page === "run" ? "run" : "home";
     mount(root, { scope, chips: defaultChips(scope) });
     root.dataset.ready = "1";
+    const token = ++state.restoreToken;
+    restoreSession(token);
     const input = root.querySelector("#oc-input");
     if (input) setTimeout(() => input.focus(), 50);
   }
@@ -225,8 +324,10 @@
   function bind(root) {
     $("#oc-send", root)?.addEventListener("click", () => send());
     $("#oc-new", root)?.addEventListener("click", () => {
+      state.restoreToken += 1;
       state.sessionId = null;
       state.pending = null;
+      writeStoredSessionId("");
       renderMessages([]);
       hideConfirm();
     });
@@ -338,7 +439,13 @@
   }
 
   async function send() {
+    if (state.restorePromise) {
+      try {
+        await state.restorePromise;
+      } catch (_) {}
+    }
     if (state.busy || !state.root) return;
+    state.restoreToken += 1;
     const input = $("#oc-input", state.root);
     const text = (input?.value || "").trim();
     if (!text) return;
@@ -365,7 +472,10 @@
         ]);
         return;
       }
-      if (data.session_id) state.sessionId = data.session_id;
+      if (data.session_id) {
+        state.sessionId = data.session_id;
+        writeStoredSessionId(data.session_id);
+      }
       const msgs = (data.messages || []).filter((m) => m.role !== "user");
       appendMessages(msgs);
       if (data.pending_confirm) showConfirm(data.pending_confirm);
@@ -435,7 +545,13 @@
   }
 
   function bootChrome() {
-    if (!document.getElementById("ai-fab")) return;
+    if (
+      !document.getElementById("ai-fab") &&
+      !document.getElementById("ai-sheet") &&
+      !document.getElementById("ai-entry")
+    ) {
+      return;
+    }
     bindChrome();
   }
 
@@ -453,5 +569,9 @@
     openSheet,
     closeSheet,
     toggleSheet,
+    toggleMaximize,
+    isMaximized,
+    isSheetOpen: () => state.sheetOpen,
+    syncChrome,
   };
 })();

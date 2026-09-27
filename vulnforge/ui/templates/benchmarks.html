@@ -25,6 +25,7 @@
       <a class="btn" href="/settings">⚙ Settings</a>
       <a class="btn" href="/dev">Dev</a>
       <a class="btn" href="/benchmarks" aria-current="page">Benchmarks</a>
+      <button type="button" class="btn" id="ai-entry" aria-expanded="false" title="AI">AI</button>
       <span class="controls-hint mono">{{ runs_root }}</span>
     </div>
   </header>
@@ -1465,5 +1466,16 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
+  <div id="ai-sheet" class="ai-sheet" hidden>
+    <header class="ai-head">
+      <div id="ai-title">Across runs</div>
+      <div class="ai-head-actions">
+        <button type="button" id="ai-max" aria-pressed="false">Expand</button>
+        <button type="button" id="ai-close" aria-label="Close">Close</button>
+      </div>
+    </header>
+    <div id="operator-chat-root" class="operator-chat-root" data-chat-scope="home"></div>
+  </div>
+  <script src="/static/chat.js"></script>
 </body>
 </html>

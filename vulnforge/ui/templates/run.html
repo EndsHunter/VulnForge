@@ -264,7 +264,10 @@
   <div id="ai-sheet" class="ai-sheet" hidden>
     <header class="ai-head">
       <div id="ai-title">{{ target_id }} / {{ run_id }}</div>
-      <button type="button" id="ai-close" aria-label="Close">Close</button>
+      <div class="ai-head-actions">
+        <button type="button" id="ai-max" aria-pressed="false">Expand</button>
+        <button type="button" id="ai-close" aria-label="Close">Close</button>
+      </div>
     </header>
     <div id="operator-chat-root" class="operator-chat-root" data-chat-scope="run"></div>
   </div>

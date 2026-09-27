@@ -23,6 +23,7 @@
     settings: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 2.5v1.5M8 12v1.5M2.5 8h1.5M12 8h1.5M4.2 4.2l1.1 1.1M10.7 10.7l1.1 1.1M11.8 4.2l-1.1 1.1M5.3 10.7l-1.1 1.1"/></svg>`,
     dev: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 5 L2.5 8 L5 11M11 5 L13.5 8 L11 11M9.2 3.6 L6.8 12.4"/></svg>`,
     "tool-gaps": `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5"/><path d="M6 8h4M8 6v4"/></svg>`,
+    ai: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3.4h10v7.2H6.6L3 13.2V3.4z"/></svg>`,
   };
 
   let exclusive = { mode: "mission", tab: "arch" };
@@ -89,10 +90,12 @@
     const primary = primaryNav(items);
     const footer = footerNav(items);
     const primaryHtml = primary
-      .map(
-        (item) =>
-          `<button type="button" class="run-rail-item" role="tab" data-nav-id="${item.id}" data-mode="${item.mode}" aria-selected="false" title="${item.label}">${railInner(item)}</button>`
-      )
+      .map((item) => {
+        if (item.overlay) {
+          return `<button type="button" class="run-rail-item" data-nav-id="${item.id}" data-mode="${item.mode}" aria-expanded="false" title="${item.label}">${railInner(item)}</button>`;
+        }
+        return `<button type="button" class="run-rail-item" role="tab" data-nav-id="${item.id}" data-mode="${item.mode}" aria-selected="false" title="${item.label}">${railInner(item)}</button>`;
+      })
       .join("");
     const footerHtml = footer
       .map(
@@ -122,12 +125,23 @@
     const tab = preferredTab || defaultTabFor(mode) || mode;
 
     if (isOverlayMode(mode)) {
-      if (window.VulnForgeChat?.openSheet) window.VulnForgeChat.openSheet();
-      else if (window.VulnForgeChat?.ensureMounted) window.VulnForgeChat.ensureMounted();
-      try {
-        history.replaceState(null, "", `#${mode}/${tab}`);
-      } catch {
-        /* ignore */
+      const chat = window.VulnForgeChat;
+      if (chat?.isSheetOpen?.()) {
+        chat.closeSheet();
+        try {
+          history.replaceState(null, "", `#${exclusive.mode}/${exclusive.tab}`);
+        } catch {
+          /* ignore */
+        }
+      } else if (chat?.openSheet) {
+        chat.openSheet();
+        try {
+          history.replaceState(null, "", `#${mode}/${tab}`);
+        } catch {
+          /* ignore */
+        }
+      } else if (chat?.ensureMounted) {
+        chat.ensureMounted();
       }
       return;
     }
@@ -140,6 +154,11 @@
       if (!item || item.kind !== "mode" || item.rail !== "primary") {
         t.removeAttribute("aria-selected");
         t.classList.remove("active", "on");
+        return;
+      }
+      if (item.overlay) {
+        t.classList.remove("active");
+        t.removeAttribute("aria-selected");
         return;
       }
       const on = item.mode === mode;
@@ -180,6 +199,7 @@
     } catch {
       /* ignore */
     }
+    if (window.VulnForgeChat?.syncChrome) window.VulnForgeChat.syncChrome();
   }
 
   function parseHash() {
