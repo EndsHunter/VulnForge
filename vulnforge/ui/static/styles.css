@@ -3820,7 +3820,7 @@ tr.task-row .task-actions-cell .btn {
 .available-head,
 .available-row {
   display: grid;
-  grid-template-columns: 1.25rem minmax(0, 1fr) 6.5rem 6.5rem;
+  grid-template-columns: 1.25rem minmax(0, 1fr) 8.5rem 7rem;
   gap: 0.35rem;
   align-items: center;
 }

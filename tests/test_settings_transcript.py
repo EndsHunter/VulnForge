@@ -511,6 +511,95 @@ def test_is_over_context_and_recommend_tokens():
         last_ok=None, claimed=None, heuristic=8192
     )
     assert src3 == "heuristic" and rec3 == 8192
+    # A short accept with no ceiling must not hide a larger named window.
+    rec4, measured4, src4 = _recommend_context_tokens(
+        last_ok=8192, claimed=None, heuristic=262144, ceiling=False
+    )
+    assert src4 == "heuristic" and rec4 == 262144 and measured4 == 262144
+    rec5, _, src5 = _recommend_context_tokens(
+        last_ok=8192, claimed=262144, heuristic=8192, ceiling=False
+    )
+    assert src5 == "model_card" and rec5 == 262144
+
+
+def test_context_from_model_name_large_windows():
+    from vulnforge.settings_probe import _context_from_model_name
+
+    assert _context_from_model_name("hosted-8k", 111) == 8192
+    assert _context_from_model_name("hosted-16k", 111) == 16384
+    assert _context_from_model_name("hosted-32k", 111) == 32768
+    assert _context_from_model_name("hosted-64k", 111) == 65536
+    assert _context_from_model_name("hosted-128k", 111) == 131072
+    assert _context_from_model_name("operator-hosted-256k", 8192) == 262144
+    assert _context_from_model_name("operator-hosted-512k", 8192) == 524288
+    assert _context_from_model_name("operator-hosted-1m", 8192) == 1048576
+    # 128k contains the letters "8k" but is not an 8k window.
+    assert _context_from_model_name("qwen-2.5-128k-instruct", 8192) == 131072
+    assert _context_from_model_name("migrate-8k-to-256k", 8192) == 262144
+    # Parameter counts are not context markers.
+    assert _context_from_model_name("llama-3.1-8b-instruct", 32768) == 32768
+    assert _context_from_model_name("model-8b-256k", 1) == 262144
+    assert _context_from_model_name("plain-model", 32768) == 32768
+
+
+def test_probe_ladder_reaches_256k_before_small_rungs():
+    from vulnforge.settings_probe import probe_context_window
+
+    seen: list[int] = []
+    limit = 262144
+
+    def fake_post(client, url, body, timeout=None):
+        msgs = body.get("messages") or []
+        text = "".join(str(m.get("content") or "") for m in msgs if isinstance(m, dict))
+        tokens = max(1, len(text) // 4)
+        seen.append(tokens)
+        assert int(body.get("max_tokens") or 0) <= 8
+        if tokens > limit:
+            return 400, {"error": {"message": "context length exceeded (n_ctx)"}}, 0.001
+        return 200, {"choices": [{"message": {"content": "ok"}}]}, 0.001
+
+    result = probe_context_window(
+        None,
+        "http://example.invalid/v1/chat/completions",
+        "unnamed-model",
+        claimed=None,
+        budget_s=45.0,
+        post_json=fake_post,
+    )
+    assert seen, "ladder made no attempts"
+    assert seen[0] >= 262144
+    assert 1024 not in seen[:1]
+    assert result["ok"] is True
+    assert result["last_ok"] is not None
+    assert result["last_ok"] >= limit - 2048
+    assert result["last_ok"] <= limit
+
+
+def test_probe_ladder_descends_to_small_window():
+    from vulnforge.settings_probe import probe_context_window
+
+    limit = 8192
+
+    def fake_post(client, url, body, timeout=None):
+        msgs = body.get("messages") or []
+        text = "".join(str(m.get("content") or "") for m in msgs if isinstance(m, dict))
+        tokens = max(1, len(text) // 4)
+        if tokens > limit:
+            return 400, {"error": {"message": "n_ctx exceeded"}}, 0.001
+        return 200, {"choices": [{"message": {"content": "ok"}}]}, 0.001
+
+    result = probe_context_window(
+        None,
+        "http://example.invalid/v1/chat/completions",
+        "small-model",
+        claimed=None,
+        budget_s=30.0,
+        post_json=fake_post,
+    )
+    assert result["ok"] is True
+    assert result["last_ok"] is not None
+    assert result["last_ok"] <= limit
+    assert result["last_ok"] >= 4096
 
 
 def test_probe_context_window_binary_search():
@@ -892,6 +981,142 @@ def test_optimize_skips_empirical_when_disabled(monkeypatch):
     assert r["recommended"]["max_context_fraction"] == 0.30
     ctx_test = next(t for t in r["tests"] if t.get("id") == "context_window")
     assert "skipped" in (ctx_test.get("detail") or "")
+
+
+def test_optimize_256k_name_records_source_near_limit(monkeypatch):
+    """Name heuristic covers 256k, and a live accept is recorded as empirical.
+
+    max_tokens stays the output cap (8192), separate from context_tokens.
+    When the capacity probe errors, the same name still yields heuristic
+    262144 instead of the saved 8k fallback.
+    """
+    import json
+
+    from vulnforge import settings_probe
+
+    def _settings():
+        return {
+            "host": "127.0.0.1",
+            "port": 1234,
+            "model": "operator-hosted-256k",
+            "api_mode": "chat_completions",
+            "api_key": "",
+            "max_concurrent_agents": 1,
+            "context_tokens": 8192,
+            "max_context_fraction": 0.2,
+            "max_tokens": 1024,
+            "max_tool_rounds": 8,
+            "timeout_seconds": 30,
+            "max_tasks": 10,
+        }
+
+    monkeypatch.setattr("vulnforge.settings_probe.load_ui_settings", _settings)
+
+    class _Resp:
+        def __init__(self, status: int, payload):
+            self.status_code = status
+            self._payload = payload
+            self.text = json.dumps(payload) if not isinstance(payload, str) else payload
+
+        def json(self):
+            if isinstance(self._payload, str):
+                raise ValueError("not json")
+            return self._payload
+
+    def _client_factory(limit: int | None):
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get(self, url, **kwargs):
+                return _Resp(
+                    200,
+                    {"data": [{"id": "operator-hosted-256k", "object": "model"}]},
+                )
+
+            def post(self, url, json=None, timeout=None, **kwargs):
+                body = json or {}
+                if str(url).endswith("/responses") or str(url).endswith("/messages"):
+                    return _Resp(404, {"error": "nope"})
+                if body.get("tools"):
+                    return _Resp(
+                        200,
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "tool_calls": [
+                                            {
+                                                "id": "1",
+                                                "type": "function",
+                                                "function": {
+                                                    "name": "ping",
+                                                    "arguments": "{}",
+                                                },
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        },
+                    )
+                msgs = body.get("messages") or []
+                text = "".join(
+                    str(m.get("content") or "") for m in msgs if isinstance(m, dict)
+                )
+                tokens = max(1, len(text) // 4)
+                if int(body.get("max_tokens") or 0) <= 8:
+                    if limit is None:
+                        return _Resp(500, {"error": {"message": "busy"}})
+                    if tokens > limit:
+                        return _Resp(
+                            400,
+                            {"error": {"message": "context length exceeded (n_ctx)"}},
+                        )
+                return _Resp(200, {"choices": [{"message": {"content": "ok"}}]})
+
+        return _FakeClient
+
+    monkeypatch.setattr(settings_probe.httpx, "Client", _client_factory(262144))
+    live = settings_probe.optimize_ui_settings(
+        host="127.0.0.1",
+        port=1234,
+        model="operator-hosted-256k",
+        apply=False,
+        timeout_seconds=30.0,
+        test_context=True,
+    )
+    assert live["ok"] is True
+    assert live["context_source"] == "empirical"
+    measured = live["measured_context_tokens"]
+    assert measured is not None and measured >= 262144 - 4096
+    rec_ctx = live["recommended"]["context_tokens"]
+    assert rec_ctx >= int(262144 * 0.85)
+    assert rec_ctx <= 262144
+    assert live["recommended"]["max_tokens"] == 8192
+    assert live["recommended"]["max_tokens"] != rec_ctx
+    ctx_test = next(t for t in live["tests"] if t.get("id") == "context_window")
+    assert ctx_test.get("source") == "empirical"
+
+    monkeypatch.setattr(settings_probe.httpx, "Client", _client_factory(None))
+    missed = settings_probe.optimize_ui_settings(
+        host="127.0.0.1",
+        port=1234,
+        model="operator-hosted-256k",
+        apply=False,
+        timeout_seconds=20.0,
+        test_context=True,
+    )
+    assert missed["ok"] is True
+    assert missed["context_source"] == "heuristic"
+    assert missed["recommended"]["context_tokens"] == 262144
+    assert missed["recommended"]["max_tokens"] == 8192
 
 
 def test_transcript_roundtrip(tmp_path: Path):

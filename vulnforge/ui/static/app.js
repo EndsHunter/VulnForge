@@ -3547,9 +3547,16 @@ function formatOptimizeReport(data) {
   const lines = [];
   if (data.summary) lines.push(data.summary);
   if (data.error) lines.push("Error: " + data.error);
+  if (data.recommended && data.recommended.context_tokens != null) {
+    const src = data.context_source ? ` (${data.context_source})` : "";
+    lines.push(`Context window: ${data.recommended.context_tokens} tokens${src}`);
+  }
+  if (data.recommended && data.recommended.max_tokens != null) {
+    lines.push(`Max output: ${data.recommended.max_tokens} tokens`);
+  }
   if (data.measured_context_tokens != null) {
     const src = data.context_source ? ` (${data.context_source})` : "";
-    lines.push(`Measured context: ${data.measured_context_tokens} tokens${src}`);
+    lines.push(`Measured context window: ${data.measured_context_tokens} tokens${src}`);
   }
   const warns = data.warnings || [];
   for (const w of warns) lines.push("⚠ " + w);
@@ -3613,8 +3620,8 @@ async function optimizeSettings() {
             : `http://${r.host}:${r.port}/v1`);
         eff.textContent =
           `Recommended: ${base} | model ${r.model} | api ${r.api_mode} | ` +
-          `agents ${r.max_concurrent_agents} | ctx ${r.context_tokens} × ${r.max_context_fraction} | ` +
-          `tools ${data.tool_calls_ok ? "ok" : "weak"}`;
+          `agents ${r.max_concurrent_agents} | context window ${r.context_tokens} × ${r.max_context_fraction} | ` +
+          `max output ${r.max_tokens} | tools ${data.tool_calls_ok ? "ok" : "weak"}`;
       }
     } else {
       toast(data.error || "Optimize failed", true);
