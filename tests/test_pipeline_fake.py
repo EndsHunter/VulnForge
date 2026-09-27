@@ -70,6 +70,79 @@ def test_recon_enqueues_hunts(tmp_path: Path, toy_sqli: Path):
     db.close()
 
 
+def test_recon_finalize_marks_area_skill_cells_planned(tmp_path: Path, toy_sqli: Path):
+    """Recon-queued area×skill cells use last_depth=planned, same as manual enqueue.
+
+    Sink rows stay planned too. The matrix must not depend on them: an empty
+    coverage_facts.last_depth paints the cell blank even when sinks say planned.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "evidence").mkdir()
+    db = Database.create(run_dir / "harness.db")
+    db.insert_run("r1", str(toy_sqli), "code_static", "pin", {})
+    db.enqueue_task("recon", {})
+    task = db.lease_next_task("w", 60)
+    arch_args = {
+        "summary": "Toy app",
+        "trust_boundaries": ["user input"],
+        "components": [{"name": "app", "path_hints": ["app.py"]}],
+        "input_surfaces": ["q"],
+        "hunt_focus": [
+            {"area": "app", "class": "injection", "path_hints": ["app.py"]},
+            {"area": "api", "class": "access-control", "path_hints": ["app.py"]},
+        ],
+    }
+    cfg = {
+        "llm": {
+            "fake": True,
+            "fake_responses": [
+                LLMResult(
+                    ok=True,
+                    classification=ResponseClass.OK,
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "1",
+                            "name": "submit_architecture",
+                            "arguments": arch_args,
+                        }
+                    ],
+                    raw=None,
+                    model_id="fake",
+                )
+            ],
+            "max_tool_rounds": 4,
+        },
+        "run": {"ignore_globs": [], "max_tasks": 10},
+        "packet": {},
+        "tools": {},
+    }
+    result = recon.run(task, db, run_dir, cfg)
+    assert result["status"] == "succeeded", result
+    assert result["hunt_enqueued"] == 2
+
+    facts = db.list_coverage_facts()
+    by_cell = {(f["area"], f["attack_class"]): f for f in facts}
+    assert set(by_cell) == {("app", "injection"), ("api", "access-control")}
+    for fact in facts:
+        assert fact["last_depth"] == "planned"
+        assert fact["visit_count"] == 0
+
+    matrix = {(c["area"], c["class"]): c for c in db.coverage_matrix()["cells"]}
+    assert matrix[("app", "injection")]["last_depth"] == "planned"
+    assert matrix[("api", "access-control")]["last_depth"] == "planned"
+
+    sinks = db.list_sink_coverage_facts()
+    assert sinks, "toy_sqli should record seed sinks for these hunts"
+    assert {s["last_depth"] for s in sinks} == {"planned"}
+    assert {(s["area"], s["attack_class"]) for s in sinks} == {
+        ("app", "injection"),
+        ("api", "access-control"),
+    }
+    db.close()
+
+
 def test_hunt_submit_none(tmp_path: Path, toy_sqli: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
