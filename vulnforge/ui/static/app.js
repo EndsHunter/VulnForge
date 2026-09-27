@@ -2918,19 +2918,17 @@ function renderLivePane(data) {
   if (list) {
     list.innerHTML = steps.length
       ? steps
-          .map((step) => {
-            const n = Number(step.round) || 0;
-            const m = Number(step.max_rounds) || maxRounds;
-            const label = m > 0 ? `${n}/${m}` : String(n);
+          .map((step, i) => {
+            const call = Number(step.call) > 0 ? Number(step.call) : i + 1;
             const mark = step.ok === false ? " · failed" : "";
             return `<li>
-              <span class="mono">round ${esc(label)}</span>
+              <span class="mono">call ${esc(String(call))}</span>
               <span class="live-tool">${esc(step.tool || "tool")}${esc(mark)}</span>
               <span class="mono">${esc(step.args_summary || "")}</span>
             </li>`;
           })
           .join("")
-      : `<li><span class="controls-hint">No tool rounds yet.</span></li>`;
+      : `<li><span class="controls-hint">No tool calls yet.</span></li>`;
     list.scrollTop = list.scrollHeight;
   }
   const steer = data.steer || {};
