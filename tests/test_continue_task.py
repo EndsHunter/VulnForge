@@ -548,3 +548,189 @@ def test_registry_discovers_continue_tools():
     names = agent_tool_names()
     assert "continue_hunt" in names
     assert "continue_recon" in names
+
+
+def _on_tool_worker(handler, calls: list[dict]):
+    """Run the stage tool handler on another thread, as Strands does."""
+
+    def wrapped(name, args):
+        box: dict = {}
+
+        def worker() -> None:
+            box["thread"] = threading.get_ident()
+            try:
+                box["out"] = handler(name, args if isinstance(args, dict) else {})
+            except Exception as exc:
+                box["exc"] = exc
+
+        thread = threading.Thread(target=worker, name="vf-tool-worker")
+        thread.start()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert box.get("thread") != threading.get_ident()
+        if "exc" in box:
+            raise box["exc"]
+        out = box.get("out")
+        calls.append(out if isinstance(out, dict) else {"ok": False, "result": out})
+        return out
+
+    return wrapped
+
+
+def _require_queued_handoff_child(
+    db: Database,
+    *,
+    kind: str,
+    parent_id: int,
+    handoff: str,
+    child_id: int | None,
+):
+    """Fail the test when the queued continuation child is missing."""
+    children = []
+    for task in db.list_tasks():
+        payload = task.payload if isinstance(task.payload, dict) else {}
+        if task.kind != kind or task.state != "queued":
+            continue
+        if payload.get("continue_from_task_id") != parent_id:
+            continue
+        if payload.get("continue_handoff") != handoff:
+            continue
+        if payload.get("continue_generation") != 1:
+            continue
+        children.append(task)
+    assert children, (
+        f"queued {kind} continuation child missing for parent #{parent_id} "
+        f"(handoff {handoff!r})"
+    )
+    ids = [task.id for task in children]
+    assert len(children) == 1, (
+        f"expected one queued {kind} handoff child for parent #{parent_id}, found {ids}"
+    )
+    assert child_id == children[0].id, (
+        f"{kind} parent result child id {child_id!r} is not the queued handoff child {ids}"
+    )
+    return children[0]
+
+
+def _stage_cfg(tool_name: str, handoff: str, *, recon: bool = False) -> dict:
+    run = {"ignore_globs": [], "max_continue_depth": 3}
+    if recon:
+        run["max_recon_auto_retries"] = 2
+    return {
+        "llm": {
+            "fake": True,
+            "fake_responses": [
+                LLMResult(
+                    ok=True,
+                    classification=ResponseClass.OK,
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "1",
+                            "name": tool_name,
+                            "arguments": {"handoff": handoff},
+                        }
+                    ],
+                    raw=None,
+                    model_id="fake",
+                )
+            ],
+            "max_tool_rounds": 4,
+        },
+        "run": run,
+        "packet": {},
+        "tools": {},
+    }
+
+
+def _assert_parent_result_names_child(db: Database, task_id: int, result: dict, child_id: int) -> None:
+    assert result.get("status") == "succeeded", result
+    assert result.get("continued") is True
+    assert result.get("child_task_id") == child_id
+    assert db.complete_task(task_id, result, state="succeeded") is True
+    stored = db.get_task(task_id)
+    assert stored is not None
+    assert stored.state == "succeeded"
+    parent_result = stored.result if isinstance(stored.result, dict) else {}
+    assert parent_result.get("child_task_id") == child_id, parent_result
+
+
+def test_hunt_and_recon_worker_handoff_is_parent_result(tmp_path: Path, toy_sqli: Path, monkeypatch):
+    """continue_hunt and continue_recon queue a child the parent result names.
+
+    The tool runs on a worker thread. The test fails if that child is missing.
+    """
+    from vulnforge.stages import hunt as hunt_stage
+    from vulnforge.stages import recon as recon_stage
+
+    hunt_handoff = "Read app.py search_users; child should check helpers.py sinks."
+    recon_handoff = "Mapped app.py routes; child should map workers/ and auth/."
+    tool_calls: list[dict] = []
+
+    def _wrap_builder(real):
+        def builder(ctx):
+            return _on_tool_worker(real(ctx), tool_calls)
+
+        return builder
+
+    monkeypatch.setattr(
+        hunt_stage,
+        "build_tool_handler",
+        _wrap_builder(hunt_stage.build_tool_handler),
+    )
+    monkeypatch.setattr(
+        recon_stage,
+        "build_tool_handler",
+        _wrap_builder(recon_stage.build_tool_handler),
+    )
+
+    hunt_root = tmp_path / "hunt"
+    hunt_root.mkdir()
+    run_dir, db = _run(hunt_root, toy_sqli)
+    db.set_architecture({"summary": "toy", "components": []})
+    db.enqueue_task(
+        "hunt",
+        {"area": "app", "class": "injection", "path_hints": ["app.py"]},
+    )
+    hunt_task = db.lease_next_task("w", 60)
+    assert hunt_task is not None
+    hunt_result = hunt.run(hunt_task, db, run_dir, _stage_cfg("continue_hunt", hunt_handoff))
+    hunt_child = _require_queued_handoff_child(
+        db,
+        kind="hunt",
+        parent_id=hunt_task.id,
+        handoff=hunt_handoff,
+        child_id=hunt_result.get("child_task_id"),
+    )
+    _assert_parent_result_names_child(db, hunt_task.id, hunt_result, hunt_child.id)
+    assert tool_calls and tool_calls[-1].get("ok") is True
+    assert "stop" in str(tool_calls[-1].get("message") or "").lower()
+    assert tool_calls[-1].get("task_id") == hunt_child.id
+    db.close()
+
+    recon_root = tmp_path / "recon"
+    recon_root.mkdir()
+    run_dir, db = _run(recon_root, toy_sqli)
+    db.enqueue_task("recon", {"enqueue_hunts": False})
+    recon_task = db.lease_next_task("w", 60)
+    assert recon_task is not None
+    recon_result = recon.run(
+        recon_task,
+        db,
+        run_dir,
+        _stage_cfg("continue_recon", recon_handoff, recon=True),
+    )
+    recon_child = _require_queued_handoff_child(
+        db,
+        kind="recon",
+        parent_id=recon_task.id,
+        handoff=recon_handoff,
+        child_id=recon_result.get("child_task_id"),
+    )
+    assert recon_child.payload.get("include_prior_architecture") is True
+    assert recon_child.payload.get("merge_with_existing") is True
+    _assert_parent_result_names_child(db, recon_task.id, recon_result, recon_child.id)
+    assert tool_calls[-1].get("ok") is True
+    assert "stop" in str(tool_calls[-1].get("message") or "").lower()
+    assert tool_calls[-1].get("task_id") == recon_child.id
+    db.close()
