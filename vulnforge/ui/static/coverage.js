@@ -311,7 +311,8 @@
     const el = $("#coverage-legend");
     if (!el) return;
     const items = [
-      { cls: "cov-empty", label: "Empty / planned", tip: "Not visited or only enqueued" },
+      { cls: "cov-empty", label: "Empty", tip: "No hunt recorded for this area × skill" },
+      { cls: "cov-planned", label: "Planned", tip: "Enqueued or recon-queued — not run yet" },
       { cls: "cov-shallow", label: "Shallow", tip: "Hunt ended without real read/grep depth" },
       { cls: "cov-none", label: "None", tip: "Honest miss (submit_none) — still not proof of safety" },
       { cls: "cov-aborted", label: "Aborted", tip: "Hunt aborted — re-queue recommended" },
@@ -334,7 +335,6 @@
     if (!allowed.has((covFilter || "all").toLowerCase())) covFilter = "all";
     const ftr = (covFilter || "all").toLowerCase();
     const active = (key) => (ftr === key ? " active" : "");
-    const emptyPlanned = (c.empty || 0) + (c.planned || 0);
     el.innerHTML = `
       <div class="coverage-summary-grid">
         <button type="button" class="stat info stat-link${active("all")}" data-cov-filter="all" title="Show all cells" aria-pressed="${ftr === "all"}">
@@ -349,7 +349,8 @@
       </div>
       <p class="controls-hint coverage-breakdown" title="Breakdown of residual cells (not separate filters)">
         Residual mix:
-        empty/planned ${emptyPlanned}
+        empty ${c.empty}
+        · planned ${c.planned}
         · shallow ${c.shallow}
         · none ${c.none}
         · aborted ${c.aborted}

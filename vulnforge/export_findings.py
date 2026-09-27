@@ -423,7 +423,7 @@ def _md_coverage_section(
     lines = [
         "## Hunts & coverage",
         "",
-        "_Depth: empty/planned = not executed or residual, shallow = no substantial "
+        "_Depth: empty = not visited, planned = enqueued, shallow = no substantial "
         "tools, none = honest miss, candidate/needs_human = filed. "
         "Shallow/aborted ≠ safe._",
         "",

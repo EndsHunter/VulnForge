@@ -763,10 +763,20 @@ button.cov-shallow,
 .cov-shallow { background: rgba(240, 180, 41, 0.15); color: var(--warn); }
 button.cov-none,
 .cov-none { background: rgba(122, 162, 247, 0.12); color: var(--info); }
-button.cov-planned,
-.cov-planned { background: rgba(160, 170, 190, 0.12); color: var(--muted); }
-button.cov-empty,
-.cov-empty { color: var(--muted); }
+button.cov-cell.cov-planned,
+span.cov-cell.cov-planned,
+.cov-planned {
+  background: rgba(206, 214, 228, 0.34);
+  color: #f3f6fb;
+  box-shadow: inset 0 0 0 1px rgba(226, 232, 242, 0.72);
+}
+button.cov-cell.cov-empty,
+span.cov-cell.cov-empty,
+.cov-empty {
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
 button.cov-cell:hover {
   outline: 1px solid var(--accent);
 }
@@ -3447,7 +3457,17 @@ a.cov-class-link:hover {
   font-weight: 650;
   font-variant-numeric: tabular-nums;
 }
-.cov-legend-swatch.cov-empty { background: transparent; opacity: 0.7; }
+.cov-legend-swatch.cov-empty {
+  background: transparent;
+  border-color: rgba(154, 148, 136, 0.55);
+  opacity: 1;
+}
+.cov-legend-swatch.cov-planned {
+  background: rgba(206, 214, 228, 0.62);
+  border-color: rgba(226, 232, 242, 0.75);
+  box-shadow: inset 0 0 0 1px rgba(226, 232, 242, 0.35);
+  opacity: 1;
+}
 .cov-legend-swatch.cov-shallow { background: rgba(240, 180, 41, 0.35); }
 .cov-legend-swatch.cov-none { background: rgba(122, 162, 247, 0.35); }
 .cov-legend-swatch.cov-aborted { background: rgba(240, 113, 120, 0.35); }
