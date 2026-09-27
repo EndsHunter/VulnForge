@@ -47,6 +47,20 @@ def pid_from_lease_owner(owner: str | None) -> int | None:
     return pid if pid > 0 else None
 
 
+# Tasks view prints result_json. An ``error`` key reads as a failure, so a
+# dead-worker reclaim stays ``queued`` and carries this note instead.
+DEAD_LEASE_REQUEUE_MESSAGE = "Worker died; task requeued"
+
+
+def dead_lease_requeue_result() -> dict[str, Any]:
+    """Payload for a lease returned to the queue because its worker PID is gone."""
+    return {
+        "status": "requeued",
+        "message": DEAD_LEASE_REQUEUE_MESSAGE,
+        "worker_died": True,
+    }
+
+
 def process_pid_alive(pid: int) -> bool:
     """Best-effort: True if *pid* appears to be a live process."""
     if pid <= 0:
@@ -854,6 +868,10 @@ class Database:
         worker only sees EXIT_BUSY (lease cap) and spins until TTL expires.
 
         Worker ids are ``vf-{pid}-{hex}`` (see ``cmd_run_once``).
+
+        An empty result is replaced with ``dead_lease_requeue_result()`` (queued,
+        no ``error`` field). A result already stored — including a real task
+        error — is left as-is.
         """
         rows = self.conn.execute(
             "SELECT id, lease_owner FROM tasks WHERE state='leased'"
@@ -870,13 +888,7 @@ class Database:
         if not dead_ids:
             return 0
         now = utc_now_iso()
-        body = json.dumps(
-            {
-                "status": "requeued",
-                "error": "dead_lease_owner",
-                "orphaned_lease_reclaim": True,
-            }
-        )
+        body = json.dumps(dead_lease_requeue_result())
         n = 0
         for tid in dead_ids:
             cur = self.conn.execute(
