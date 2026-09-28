@@ -70,7 +70,7 @@ Linux only. macOS and Windows need a Linux sandbox host. v1 runs the PoC **once*
 
 **Outcomes** (evidence only): `signal_observed` | `signal_absent` | `poc_broken` | `inconclusive` | `build_failed` | `sandbox_unavailable` | `unsafe_skipped`. The UI says “sandbox reproduced” / “signal observed”. That does **not** set `confirmed` and does **not** clear `needs_human` or HITL. PoC failure is not a false positive. `validate_mech` and `validate_llm` (when on) still run.
 
-**Run-start toggle** (`vf init --sandbox-poc`, New audit “Sandbox PoC one-shot”, default off): when the queue is idle, Ralph enqueues one `validate_poc` per harness-ready `needs_human` finding. A missing sandbox writes the same fail-closed enums and the campaign continues.
+**Run-start toggle** (`vf init --sandbox-poc`, New audit “Sandbox PoC one-shot”, default off): init and campaign start refuse when this process cannot use the Docker API or isolation would be `sandbox_unavailable`. After `usermod -aG docker`, log out and back in; `newgrp` does not update the dashboard or Ralph. When the toggle is on and isolation works, idle Ralph enqueues one `validate_poc` per harness-ready `needs_human` finding. A missing sandbox at task time writes the same fail-closed enums and the campaign continues. Operator pack (Arch/Omarchy, `~/Projects/OSSvulnHunting`, restart the dashboard after pull): [docs/harness/validate/SANDBOX_HOST.md](../harness/validate/SANDBOX_HOST.md).
 
 ### Iterate in sandbox
 

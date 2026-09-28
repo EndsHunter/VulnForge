@@ -164,8 +164,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help=(
             "Opt in at run start: queue one sandbox validate_poc per harness-ready "
-            "needs_human finding (microVM or gVisor only). Missing sandbox fails "
-            "closed and does not confirm or clear needs-human."
+            "needs_human finding (microVM or gVisor only). Default off. "
+            "Refuses to create the run when this process cannot use the Docker API "
+            "or select_isolation would be sandbox_unavailable. "
+            "A missing sandbox at task time fails closed and does not confirm."
         ),
     )
     init_p.add_argument(
@@ -434,6 +436,23 @@ def cmd_init(args, cfg: dict) -> int:
         if not docs_path.exists():
             print(f"docs-path not found: {docs_path}", file=sys.stderr)
             return EXIT_CONFIG
+
+    if bool(getattr(args, "sandbox_poc_validate", False)):
+        from vulnforge.poc_runner import sandbox_poc_preflight
+
+        try:
+            pre = sandbox_poc_preflight(cfg)
+        except Exception as e:
+            pre = {
+                "ok": False,
+                "message": f"Sandbox PoC refused: preflight failed ({e})",
+            }
+        if not pre.get("ok"):
+            msg = str(pre.get("message") or "Sandbox PoC refused: isolation unavailable")
+            setattr(args, "init_error", msg)
+            print(msg, file=sys.stderr)
+            return EXIT_CONFIG
+
     runs_root = resolve_runs_root(cfg, getattr(args, "runs_root", None))
     tid = target_id_from_path(target)
     rid = next_run_id(runs_root, tid)

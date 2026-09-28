@@ -458,7 +458,8 @@ def _init_run(args: dict, *, runs_root: Path, project_root: Path) -> dict[str, A
     except Exception as e:
         return {"ok": False, "error": str(e)}
     if code != 0:
-        return {"ok": False, "error": f"init exit {code}"}
+        detail = str(getattr(a, "init_error", "") or "").strip()
+        return {"ok": False, "error": detail or f"init exit {code}"}
 
     # Discover run that matches this target path (never pick an unrelated newest run).
     from vulnforge.ui.store import discover_runs

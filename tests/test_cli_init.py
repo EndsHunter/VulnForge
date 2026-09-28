@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from vulnforge.cli import EXIT_PROGRESS, main
+from vulnforge.cli import EXIT_CONFIG, EXIT_PROGRESS, main
 from vulnforge.db import Database
 
 
@@ -98,8 +98,27 @@ def test_init_no_enqueue_hunts_stores_flag(toy_sqli: Path, tmp_path: Path):
         db.close()
 
 
-def test_init_sandbox_poc_toggle(toy_sqli: Path, tmp_path: Path):
-    """Run-start sandbox one-shot is stored and defaults off."""
+def _healthy_sandbox_probe():
+    return {
+        "docker": True,
+        "docker_cli": True,
+        "docker_error": None,
+        "runtimes": {"runsc": {"path": "runsc"}},
+        "kvm": False,
+        "firecracker_path": None,
+        "firecracker_version": None,
+        "firecracker_patched": False,
+        "jailer_path": None,
+        "jailer_version": None,
+        "jailer_patched": False,
+    }
+
+
+def test_init_sandbox_poc_toggle(toy_sqli: Path, tmp_path: Path, monkeypatch):
+    """Run-start sandbox one-shot is stored when this process can isolate."""
+    import vulnforge.poc_runner as pr
+
+    monkeypatch.setattr(pr, "probe_host", _healthy_sandbox_probe)
     runs = tmp_path / "runs"
     code = main(
         [
@@ -123,6 +142,42 @@ def test_init_sandbox_poc_toggle(toy_sqli: Path, tmp_path: Path):
         assert config["poc_harness"]["sandbox_oneshot"] is True
     finally:
         db.close()
+
+
+def test_init_sandbox_poc_refuses_without_api(toy_sqli: Path, tmp_path: Path, monkeypatch, capsys):
+    import vulnforge.poc_runner as pr
+
+    monkeypatch.setattr(
+        pr,
+        "probe_host",
+        lambda: {
+            "docker": False,
+            "docker_cli": True,
+            "docker_error": "permission denied while trying to connect to the Docker daemon socket",
+            "runtimes": {},
+            "kvm": False,
+            "firecracker_patched": False,
+            "jailer_patched": False,
+        },
+    )
+    monkeypatch.setattr(pr, "effective_lacks_docker_group", lambda: True)
+    runs = tmp_path / "runs"
+    code = main(
+        [
+            "init",
+            "--target",
+            str(toy_sqli),
+            "--runs-root",
+            str(runs),
+            "--no-enqueue-hunts",
+            "--sandbox-poc",
+        ]
+    )
+    assert code == EXIT_CONFIG
+    err = capsys.readouterr().err.lower()
+    assert "sandbox poc refused" in err
+    assert "log out" in err
+    assert not runs.exists() or not any(runs.rglob("harness.db"))
 
 
 def test_init_file_by_file_no_enqueue_hunts(toy_sqli: Path, tmp_path: Path):

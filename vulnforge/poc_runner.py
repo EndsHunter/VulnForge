@@ -13,6 +13,7 @@ Results are evidence (``poc_run.json``) and never set ``confirmed``.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -170,7 +171,109 @@ def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:
 
 
 def docker_available() -> bool:
-    return bool(shutil.which("docker"))
+    """True only when this process can talk to the Docker API."""
+    return bool(_docker_api_probe()["ok"])
+
+
+def effective_lacks_docker_group() -> bool:
+    """True when a ``docker`` group exists and this process's effective GIDs omit it.
+
+    Uses ``os.getgroups()`` / ``getegid()``, not ``/etc/group`` membership.
+    Root is not reported as lacking the group. Hosts without a docker group
+    (or without POSIX groups) return False.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    try:
+        if geteuid is not None and int(geteuid()) == 0:
+            return False
+    except (OSError, TypeError, ValueError):
+        pass
+    try:
+        import grp
+
+        docker = grp.getgrnam("docker")
+    except KeyError:
+        return False
+    except Exception:
+        return False
+    gids: set[int] = set()
+    getgroups = getattr(os, "getgroups", None)
+    if getgroups is not None:
+        try:
+            gids.update(int(g) for g in getgroups())
+        except (OSError, TypeError, ValueError):
+            pass
+    for fn_name in ("getegid", "getgid"):
+        fn = getattr(os, fn_name, None)
+        if fn is None:
+            continue
+        try:
+            gids.add(int(fn()))
+        except (OSError, TypeError, ValueError):
+            pass
+    try:
+        docker_gid = int(docker.gr_gid)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return docker_gid not in gids
+
+
+def _docker_error_is_permission(err: str | None) -> bool:
+    text = (err or "").lower()
+    return "permission denied" in text or "access denied" in text
+
+
+def _first_stderr_line(raw: bytes | None, *, code: int) -> str:
+    text = (raw or b"").decode("utf-8", "replace")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            if len(stripped) > 300:
+                return stripped[:300] + "…"
+            return stripped
+    return f"docker info exited {code}"
+
+
+def _docker_api_probe() -> dict[str, Any]:
+    """One ``docker info`` call. Fail closed unless the API answers.
+
+    ``ok`` is true only when this process is authorized and the daemon
+    returns exit 0 with a JSON runtimes object. Socket permission errors,
+    an inactive daemon, a non-zero exit, a timeout, and unparseable output
+    are all ``ok: False`` with empty runtimes.
+    """
+    cli = bool(shutil.which("docker"))
+    if not cli:
+        return {"ok": False, "cli": False, "runtimes": {}, "error": "docker_cli_missing"}
+    try:
+        proc = subprocess.run(
+            ["docker", "info", "--format", "{{json .Runtimes}}"],
+            capture_output=True,
+            timeout=3,
+            check=False,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "cli": True, "runtimes": {}, "error": "timeout"}
+    except OSError as e:
+        return {"ok": False, "cli": True, "runtimes": {}, "error": f"spawn_error:{e}"}
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "cli": True,
+            "runtimes": {},
+            "error": _first_stderr_line(proc.stderr, code=int(proc.returncode)),
+        }
+    raw = (proc.stdout or b"").decode("utf-8", "replace").strip()
+    if not raw:
+        return {"ok": False, "cli": True, "runtimes": {}, "error": "empty_docker_info"}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {"ok": False, "cli": True, "runtimes": {}, "error": "bad_docker_info"}
+    if not isinstance(data, dict):
+        return {"ok": False, "cli": True, "runtimes": {}, "error": "bad_docker_info"}
+    return {"ok": True, "cli": True, "runtimes": data, "error": None}
 
 
 def parse_version_tuple(text: str | None) -> tuple[int, int, int] | None:
@@ -589,40 +692,22 @@ def _binary_version(path: str) -> tuple[int, int, int] | None:
     return parse_version_tuple(text)
 
 
-def _read_docker_runtimes() -> dict[str, Any]:
-    if not shutil.which("docker"):
-        return {}
-    try:
-        proc = subprocess.run(
-            ["docker", "info", "--format", "{{json .Runtimes}}"],
-            capture_output=True,
-            timeout=3,
-            check=False,
-            shell=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return {}
-    raw = (proc.stdout or b"").decode("utf-8", "replace").strip()
-    if not raw:
-        return {}
-    try:
-        import json
-
-        data = json.loads(raw)
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def probe_host() -> dict[str, Any]:
-    """What this machine can actually isolate. No execution of PoC code."""
-    runtimes = _read_docker_runtimes()
+    """What this machine can actually isolate. No execution of PoC code.
+
+    ``docker`` is true only when this process can use the Docker API.
+    ``docker_cli`` is binary-on-PATH and can be true while ``docker`` is false.
+    """
+    api = _docker_api_probe()
+    runtimes = api["runtimes"] if api["ok"] and isinstance(api.get("runtimes"), dict) else {}
     fc_path = shutil.which("firecracker")
     jail_path = shutil.which("jailer")
     fc_ver = _binary_version(fc_path) if fc_path else None
     jail_ver = _binary_version(jail_path) if jail_path else None
     return {
-        "docker": bool(shutil.which("docker")),
+        "docker": bool(api["ok"]),
+        "docker_cli": bool(api["cli"]),
+        "docker_error": api.get("error"),
         "runtimes": {str(k): v for k, v in runtimes.items()},
         "kvm": Path("/dev/kvm").exists(),
         "firecracker_path": fc_path,
@@ -632,6 +717,100 @@ def probe_host() -> dict[str, Any]:
         "jailer_version": jail_ver,
         "jailer_patched": firecracker_version_patched(jail_ver),
     }
+
+
+_RELOGIN_HINT = (
+    "Effective groups for this process do not include docker. "
+    "After usermod -aG docker, log out and back in completely so the session "
+    "picks up the group. newgrp docker only changes that shell."
+)
+
+
+def sandbox_poc_preflight(cfg: dict | None = None) -> dict[str, Any]:
+    """Check that this process can isolate a sandbox PoC.
+
+    Callers invoke this only when sandbox one-shot is being turned on.
+    Refusal covers an unusable Docker API, a missing ``runsc`` / microVM
+    (``select_isolation`` → ``sandbox_unavailable``), and a permission
+    failure while the effective GID list lacks the docker group.
+    """
+    probe = probe_host()
+    hc = harness_config(cfg)
+    choice = select_isolation(hc, probe=probe)
+    if choice.get("ok"):
+        return {"ok": True, "message": "", "probe": probe, "isolation": choice}
+    message = _sandbox_preflight_message(probe, choice)
+    return {"ok": False, "message": message, "probe": probe, "isolation": choice}
+
+
+def _sandbox_preflight_message(probe: dict[str, Any], choice: dict[str, Any]) -> str:
+    if not probe.get("docker"):
+        err = str(probe.get("docker_error") or "").strip()
+        if not probe.get("docker_cli"):
+            head = (
+                "Sandbox PoC refused: docker is not on PATH, so this process "
+                "cannot use the Docker API."
+            )
+        else:
+            detail = err or "docker info failed"
+            head = (
+                "Sandbox PoC refused: docker is on PATH but this process cannot "
+                f"use the Docker API ({detail})."
+            )
+        if probe.get("docker_cli") and effective_lacks_docker_group() and _docker_error_is_permission(err):
+            return f"{head} {_RELOGIN_HINT}"
+        return head
+    hint = str(choice.get("hint") or "").strip()
+    if hint:
+        return f"Sandbox PoC refused: {hint}"
+    return (
+        "Sandbox PoC refused: select_isolation is sandbox_unavailable. "
+        "Need a microVM runtime or gVisor runsc."
+    )
+
+
+def sandbox_poc_start_block(run_dir: Path) -> str | None:
+    """Refuse campaign start when this run opted into sandbox PoC and isolation is unusable.
+
+    Returns None when the run did not opt in, or when the run config cannot be
+    read (no invented opt-in). Returns an operator message when it did opt in
+    and preflight fails.
+    """
+    cfg = _read_run_config(run_dir)
+    if cfg is None:
+        return None
+    run = cfg.get("run") if isinstance(cfg.get("run"), dict) else {}
+    ph = cfg.get("poc_harness") if isinstance(cfg.get("poc_harness"), dict) else {}
+    if not (run.get("sandbox_poc_validate") or ph.get("sandbox_oneshot")):
+        return None
+    report = sandbox_poc_preflight(cfg)
+    if report.get("ok"):
+        return None
+    return str(report.get("message") or "Sandbox PoC refused: isolation unavailable")
+
+
+def _read_run_config(run_dir: Path) -> dict[str, Any] | None:
+    try:
+        from vulnforge.db import Database
+
+        db_path = Path(run_dir) / "harness.db"
+        if not db_path.is_file():
+            return None
+        db = Database.open(db_path)
+        try:
+            row = db.get_run()
+            raw = row["config_json"] if row and "config_json" in row.keys() else None
+        finally:
+            db.close()
+    except Exception:
+        return None
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _refuse(error: str, verdict: str, hint: str) -> dict[str, Any]:

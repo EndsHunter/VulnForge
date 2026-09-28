@@ -84,7 +84,9 @@ Config: `poc_harness.*` and `stages.validate_poc_referee` in `config/default.yam
 
 Missing Kata/Firecracker/runsc returns `sandbox_unavailable` with an operator hint. It does **not** fall back to the host.
 
-Run-start opt-in: New audit **Sandbox PoC one-shot**, or `vf init --sandbox-poc`. When on, idle Ralph queues one sandbox `validate_poc` per harness-ready `needs_human` finding. A missing sandbox does not block the rest of the run and does not clear HITL.
+Run-start opt-in (default **off**): New audit **Sandbox PoC one-shot**, or `vf init --sandbox-poc`. Init and campaign start refuse when this process cannot use the Docker API or `select_isolation` would be `sandbox_unavailable` (no microVM and no `runsc`). A permission failure while the effective group list lacks `docker` tells you to log out and back in after `usermod -aG docker`. When the opt-in is on and isolation works, idle Ralph queues one sandbox `validate_poc` per harness-ready `needs_human` finding. A missing sandbox at task time does not block the rest of the run and does not clear HITL.
+
+Arch/Omarchy install, the `~/Projects/OSSvulnHunting` path, and the dashboard restart after pull: [SANDBOX_HOST.md](SANDBOX_HOST.md).
 
 Firecracker/jailer, if used, must be patched for CVE-2026-5747 and CVE-2026-1386 (1.14.4–1.14.x or >= 1.15.1) and boot with `pci=off`. See [firecracker-guest-init.sh](firecracker-guest-init.sh).
 

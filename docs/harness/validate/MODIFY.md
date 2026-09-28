@@ -18,6 +18,7 @@
 | Change the HITL report↔responses contract or inbox | `vulnforge/hitl.py`, `db.py` `hitl_*` tables, `ui/static/hitl_inbox.js`; see [HITL.md](HITL.md) |
 | Change Report UI | `vulnforge/ui/static/report.js` |
 | PoC sandbox runner / timeouts / network | `config/default.yaml` → `poc_harness` (microVM → gVisor → refuse, `network: none`); `vulnforge/poc_runner.py` |
+| Docker API probe / sandbox-poc preflight | `probe_host` / `sandbox_poc_preflight` in `poc_runner.py`; `vf init --sandbox-poc` and `ui/runner.start_run`. Host pack: [SANDBOX_HOST.md](SANDBOX_HOST.md) |
 | Iterate session caps / steer | `poc_harness.iterate_max_cycles` (5) and `iterate_wall_ttl_min` (15); Settings → Sandbox iterate; `vulnforge/poc_session.py`; `stages/iterate_poc.py` |
 | validate_poc stage | `vulnforge/stages/validate_poc.py` |
 | Handoff export / readiness | `vulnforge/poc_handoff.py` |

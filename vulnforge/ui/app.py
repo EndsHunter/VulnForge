@@ -1151,16 +1151,21 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 with redirect_stdout(buf):
                     code = cmd_init(args, app.state.config)
                 if code != 0:
+                    detail = (
+                        str(getattr(args, "init_error", "") or "").strip()
+                        or buf.getvalue().strip()
+                        or f"exit={code}"
+                    )
                     progress(
                         {
                             "status": "error",
                             "phase": "failed",
-                            "message": f"init failed exit={code}: {buf.getvalue()}",
-                            "error": buf.getvalue() or f"exit={code}",
+                            "message": detail,
+                            "error": detail,
                             "percent": 100,
                         }
                     )
-                    return {"ok": False, "code": code, "error": buf.getvalue()}
+                    return {"ok": False, "code": code, "error": detail}
                 lines = [ln.strip() for ln in buf.getvalue().splitlines() if ln.strip()]
                 run_dir_s = lines[-1] if lines else ""
                 run_dir = Path(run_dir_s)

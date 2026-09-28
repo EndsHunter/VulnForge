@@ -104,6 +104,8 @@ body contains ASSERT_OK
 def _gvisor_probe() -> dict:
     return {
         "docker": True,
+        "docker_cli": True,
+        "docker_error": None,
         "runtimes": {"runc": {"path": "runc"}, "runsc": {"path": "runsc"}},
         "kvm": False,
         "firecracker_path": None,
@@ -201,6 +203,8 @@ def test_execute_poc_sandbox_missing(tmp_path: Path, monkeypatch):
         finding_id=1,
         probe={
             "docker": True,
+            "docker_cli": True,
+            "docker_error": None,
             "runtimes": {"runc": {"path": "runc"}},
             "kvm": False,
             "firecracker_patched": False,
