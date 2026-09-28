@@ -644,6 +644,27 @@ class ArchitectureRestoreBody(BaseModel):
     note: str = ""
 
 
+class ToolGapsBody(BaseModel):
+    """POST /api/runs/{target}/{run}/tool-gaps. Module scope so OpenAPI can resolve it."""
+
+    mode: Optional[str] = None  # mechanical | llm | hybrid
+
+
+class ToolGapsHomeBody(BaseModel):
+    """POST /api/tool-gaps/analyze. Module scope so OpenAPI can resolve it."""
+
+    mode: Optional[str] = "hybrid"
+    all_runs: bool = True
+    target_id: Optional[str] = None
+    run_id: Optional[str] = None
+
+
+class SkillGeneratorBody(BaseModel):
+    """PUT /api/skill-generator. Module scope so OpenAPI can resolve it."""
+
+    body_md: str = ""
+
+
 def _validate_architecture_body(arch: Any) -> Optional[str]:
     """Basic structure check for manual architecture PUT. Returns error string or None."""
     if not isinstance(arch, dict):
@@ -1654,9 +1675,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(500, f"tool-gaps failed: {e}") from e
 
-    class ToolGapsBody(BaseModel):
-        mode: Optional[str] = None  # mechanical | llm | hybrid
-
     @app.post("/api/runs/{target_id}/{run_id}/tool-gaps")
     def api_tool_gaps_post(
         target_id: str,
@@ -1694,12 +1712,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             )
         except Exception as e:
             raise HTTPException(500, f"tool-gaps aggregate failed: {e}") from e
-
-    class ToolGapsHomeBody(BaseModel):
-        mode: Optional[str] = "hybrid"
-        all_runs: bool = True
-        target_id: Optional[str] = None
-        run_id: Optional[str] = None
 
     @app.post("/api/tool-gaps/analyze")
     def api_tool_gaps_home_analyze(body: Optional[ToolGapsHomeBody] = None):
@@ -2770,9 +2782,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             return reseed_from_package(replace=True)
         except HuntProfileError as e:
             raise HTTPException(400, str(e)) from e
-
-    class SkillGeneratorBody(BaseModel):
-        body_md: str = ""
 
     @app.get("/api/skill-generator")
     def api_skill_generator_get():
