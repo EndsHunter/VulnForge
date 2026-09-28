@@ -58,6 +58,12 @@ def test_grammar_lists_seven_verbs_on_ralph():
     src = Path("vulnforge/control/campaign.py").read_text(encoding="utf-8")
     assert "subprocess" not in src
     assert "Popen" not in src
+    effects = {row["verb"]: row["effect"] for row in doc["verbs"]}
+    assert "kill" not in effects["pause"].lower()
+    assert "reclaim" not in effects["pause"].lower()
+    assert "pausing" in effects["pause"]
+    assert "kill" in effects["stop"].lower()
+    assert "reclaim" in effects["stop"].lower()
 
 
 def test_docs_name_the_grammar_contract():
@@ -73,6 +79,8 @@ def test_docs_name_the_grammar_contract():
         assert f"`{row['verb']}`" in campaign_doc
         symbol = row["wires"].rsplit(".", 1)[-1]
         assert symbol in campaign_doc
+    assert "pausing" in campaign_doc
+    assert "Same worker stop" not in campaign_doc
 
 
 def test_grammar_endpoint_and_bound_home(tmp_path: Path):

@@ -53,8 +53,9 @@ _SPECS: tuple[dict[str, Any], ...] = (
         "legacy": "POST /api/runs/{target_id}/{run_id}/stop",
         "chat": "hard_stop_run",
         "effect": (
-            "Hard stop: write STOP, kill Ralph workers, reclaim leased tasks "
-            "to queued. Records runner_stop_hard. Leaves the run and findings in place."
+            "Hard stop: write STOP, kill the Ralph process tree, reclaim leased "
+            "tasks to queued. In-flight progress may be lost (attempt increments "
+            "on the next lease). Records runner_stop_hard. Leaves the run and findings in place."
         ),
     },
     {
@@ -65,8 +66,10 @@ _SPECS: tuple[dict[str, Any], ...] = (
         "legacy": "POST /api/runs/{target_id}/{run_id}/pause",
         "chat": "pause_run",
         "effect": (
-            "Write STOP, kill Ralph workers, reclaim orphaned leases. "
-            "Queued tasks stay queued. Runner state becomes paused."
+            "Drain-then-pause: write STOP and let Ralph finish the current "
+            "leased task. Workers and that lease stay in place. "
+            "Runner state is pausing while workers are alive, then paused. "
+            "Records runner_pause."
         ),
     },
     {

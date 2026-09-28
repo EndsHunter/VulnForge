@@ -37,19 +37,21 @@ Clears `STOP` and spawns Ralph. Settings `max_tasks` stays the hunt-enqueue plan
 
 ### `stop`
 
-Writes `STOP`, kills Ralph workers, reclaims leased tasks to `queued`, and records `runner_stop_hard`. The run directory and findings stay. Resume clears `STOP` and starts Ralph again.
+Hard stop. Writes `STOP`, kills the Ralph process tree, reclaims every leased task to `queued`, and records `runner_stop_hard`. The kill is tree-wide: Windows `taskkill /T`, and on Linux the Ralph process group created by `start_new_session` plus any descendant and the `run.lock` holder. That stops in-flight `vf run-once` instead of leaving it reparented under the user service manager. Mid-task progress may be lost; the next lease increments `attempt`. The run directory and findings stay. Resume clears `STOP` and starts Ralph again.
+
+The return includes `lock_cleared` (`run.lock` is absent). `ok` is false when a live PID still holds `run.lock` after the kill.
 
 ### `pause`
 
-Same worker stop and lease reclaim as stop, recorded as `runner_pause`. Queued tasks stay queued. With `STOP` present and no live Ralph pid, runner state is `paused`. The Mission card `status` is `paused` while `STOP` is present (the `runs.status` row stays the durable value).
+Drain. Writes `STOP` and returns immediately. Ralph (`scripts/ralph.py`) checks `STOP` between iterations and exits after the current `vf run-once` finishes. Pause does not kill workers and does not call `reclaim_all_leased_tasks`, so a lease held by the live task is kept. Recorded as `runner_pause`. `killed` is false and `reclaimed_leases` is 0. Queued tasks stay queued.
 
-The kill is tree-wide: Windows `taskkill /T`, and on Linux the Ralph process group created by `start_new_session` plus any descendant and the `run.lock` holder. That stops in-flight `vf run-once` instead of leaving it reparented under the user service manager. The return includes `lock_cleared` (`run.lock` is absent). `ok` is false when a live PID still holds `run.lock` after the kill.
+While a Ralph pid is alive and `STOP` is present, `runner_status` is `pausing` (`draining: true`). After that pid exits, state is `paused`. Pause does not wait out the task timeout; the dashboard polls. With no live Ralph pid, writing `STOP` is enough for `paused`. The Mission card `status` is `paused` while `STOP` is present (the `runs.status` row stays the durable value).
 
 ### `resume`
 
 Deletes `STOP`, reclaims stale leases only, and calls `start_run` when Ralph is not already alive. Body knobs match `start`.
 
-If no Ralph worker is alive and a live PID still holds `run.lock`, resume kills that holder (same tree kill as pause). When the holder survives, resume returns not ok, leaves `STOP` in place, and does not spawn Ralph — so the new loop does not exit `EXIT_INFRA` 20 (`run locked`). A Ralph worker that is still alive is not killed; resume only clears `STOP`.
+If no Ralph worker is alive and a live PID still holds `run.lock`, resume kills that holder (same tree kill as hard stop). When the holder survives, resume returns not ok, leaves `STOP` in place, and does not spawn Ralph — so the new loop does not exit `EXIT_INFRA` 20 (`run locked`). A Ralph worker that is still alive is not killed; resume only clears `STOP`.
 
 ### `status`
 

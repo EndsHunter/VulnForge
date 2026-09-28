@@ -177,7 +177,7 @@ Seven verbs drive one campaign. They call the existing Ralph runner and `harness
 |------|------|-------------------|
 | `start` | POST `/api/runs/{target_id}/{run_id}/campaign/start` | `start_run` — clear `STOP`, spawn Ralph (`scripts/ralph.py` → `vf run-once`) |
 | `stop` | POST `.../campaign/stop` | `stop_run_hard` — `STOP`, kill workers, reclaim leases (`hard_stop_run`) |
-| `pause` | POST `.../campaign/pause` | `pause_run` — `STOP`, kill workers, reclaim leases |
+| `pause` | POST `.../campaign/pause` | `pause_run` — write `STOP`; Ralph finishes the current task (no kill, no lease reclaim). State is `pausing`, then `paused` |
 | `resume` | POST `.../campaign/resume` | `resume_run` — clear `STOP`, spawn Ralph if not alive |
 | `status` | GET `.../campaign/status` | `get_status` plus task/finding/lease counts from `harness.db` |
 | `findings` | GET `.../campaign/findings` | `list_findings` (`state`, `class`, `q`, `limit`) |
