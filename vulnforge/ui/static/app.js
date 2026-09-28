@@ -3024,11 +3024,13 @@ function renderLivePane(data) {
           .map((step, i) => {
             const call = Number(step.call) > 0 ? Number(step.call) : i + 1;
             const stepRound = Number(step.round);
-            const roundPrefix =
-              Number.isFinite(stepRound) && stepRound > 0 ? `round ${stepRound} · ` : "";
+            const roundBadge =
+              Number.isFinite(stepRound) && stepRound > 0
+                ? `<span class="live-step-round" title="Round ${esc(String(stepRound))}">round ${esc(String(stepRound))}</span>`
+                : "";
             const mark = step.ok === false ? " · failed" : "";
             return `<li>
-              <span class="mono">${roundPrefix}call ${esc(String(call))}</span>
+              <span class="live-step-meta">${roundBadge}<span class="mono live-step-call">call ${esc(String(call))}</span></span>
               <span class="live-tool">${esc(step.tool || "tool")}${esc(mark)}</span>
               <span class="mono">${esc(step.args_summary || "")}</span>
             </li>`;
