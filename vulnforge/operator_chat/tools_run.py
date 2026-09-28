@@ -189,7 +189,11 @@ def schemas() -> list[dict]:
                 "task_timeout": {"type": "number"},
             },
         ),
-        openai_tool("pause_run", "Pause Ralph (confirm).", {}),
+        openai_tool(
+            "pause_run",
+            "Pause Ralph after the current task finishes (write STOP) (confirm).",
+            {},
+        ),
         openai_tool(
             "resume_run",
             "Resume Ralph (confirm).",

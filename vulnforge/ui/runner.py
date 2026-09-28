@@ -1,11 +1,14 @@
 """
 Background Ralph / run lifecycle for the dashboard.
 
-Start   -  spawn `scripts/ralph.py --run-dir ...` (or init + ralph)
-Pause   -  write STOP, kill the Ralph session (in-flight run-once included),
-           reclaim leases, clear run.lock when the holder is dead
-Resume  -  remove STOP and spawn Ralph again if not already running.
-           A live run.lock holder blocks resume until that process is gone.
+Start     -  spawn `scripts/ralph.py --run-dir ...` (or init + ralph)
+Pause     -  write STOP and return. Ralph finishes the current task, then
+             exits. Does not kill that worker or reclaim its lease.
+             No live Ralph pid: STOP means paused.
+Hard stop -  kill the Ralph session (in-flight run-once included),
+             reclaim leases, clear run.lock when the holder is dead.
+Resume    -  remove STOP and spawn Ralph again if not already running.
+             A live run.lock holder blocks resume until that process is gone.
 """
 
 from __future__ import annotations
@@ -445,7 +448,7 @@ def _pause_result(
     killed_any: bool,
     reclaimed: int,
 ) -> dict[str, Any]:
-    """Honest pause payload: lock_cleared means run.lock is gone.
+    """Hard-stop payload: lock_cleared means run.lock is gone.
 
     ok is false when a live PID still holds the lock after kill attempts.
     A dead holder's file is removed here; resume must not treat a live
@@ -468,11 +471,65 @@ def _pause_result(
     return result
 
 
+def _write_stop(run_dir: Path) -> Optional[str]:
+    try:
+        _stop_path(run_dir).write_text(
+            f"paused_at={utc_now_iso()}\n", encoding="utf-8"
+        )
+    except OSError as e:
+        return str(e)
+    return None
+
+
 def pause_run(run_dir: Path) -> dict[str, Any]:
+    """Drain-then-pause: write STOP and return.
+
+    Ralph checks STOP between iterations and exits after the current
+    ``vf run-once`` finishes. Live workers and their leases stay so a
+    mid-tool call is not reclaimed. Idle (no live Ralph pid): STOP is
+    enough for ``paused``. Does not block on the task timeout.
     """
-    Pause the runner: write STOP, kill Ralph workers and their session
-    (in-flight ``vf run-once`` included), reclaim orphaned leases, clear
-    run.lock when the holder is dead.
+    run_dir = Path(run_dir).resolve()
+    if not (run_dir / "harness.db").is_file():
+        return {"ok": False, "error": "invalid run dir"}
+    err = _write_stop(run_dir)
+    if err:
+        return {"ok": False, "error": err}
+
+    # Dead lock only. A live holder is the in-flight task we are draining.
+    if not _lock_holder_alive(run_dir):
+        _clear_run_lock(run_dir)
+    status = runner_status(run_dir)
+    holder = _lock_holder_alive(run_dir)
+    draining = status["state"] == "pausing"
+    lock_cleared = not (run_dir / "run.lock").is_file()
+    result: dict[str, Any] = {
+        "ok": True,
+        "draining": draining,
+        "killed": False,
+        "reclaimed_leases": 0,
+        "lock_cleared": lock_cleared,
+        "status": status,
+    }
+    if holder is not None:
+        result["lock_holder"] = holder
+    append_event(
+        run_dir,
+        {
+            "source": "ui",
+            "event": "runner_pause",
+            "draining": draining,
+            "killed": False,
+            "reclaimed_leases": 0,
+            "lock_cleared": lock_cleared,
+            "lock_holder": holder,
+        },
+    )
+    return result
+
+
+def _kill_session_and_reclaim(run_dir: Path) -> dict[str, Any]:
+    """Hard stop: STOP, tree-kill workers and the lock holder, reclaim leases.
 
     Linux workers are started with ``start_new_session=True``. Killing only
     the Ralph PID reparents run-once under the user service manager and
@@ -480,19 +537,15 @@ def pause_run(run_dir: Path) -> dict[str, Any]:
     process group, plus any descendant that left the group, plus the
     run.lock holder when that PID is not already in the worker list.
 
-    In-flight LLM calls are terminated so recon handoff cannot leave a leased
-    task forever while the dashboard shows "paused". ``ok`` is false when a
-    live PID still holds ``run.lock`` after those kill attempts.
+    In-flight work can be lost. ``ok`` is false when a live PID still holds
+    ``run.lock`` after those kill attempts.
     """
     run_dir = Path(run_dir).resolve()
     if not (run_dir / "harness.db").is_file():
         return {"ok": False, "error": "invalid run dir"}
-    try:
-        _stop_path(run_dir).write_text(
-            f"paused_at={utc_now_iso()}\n", encoding="utf-8"
-        )
-    except OSError as e:
-        return {"ok": False, "error": str(e)}
+    err = _write_stop(run_dir)
+    if err:
+        return {"ok": False, "error": err}
 
     pids = _read_worker_pids(run_dir)
     lock_pid = _read_lock_pid(run_dir)
@@ -518,19 +571,7 @@ def pause_run(run_dir: Path) -> dict[str, Any]:
     result = _pause_result(
         run_dir, pids=pids, killed_any=killed_any, reclaimed=reclaimed
     )
-
-    append_event(
-        run_dir,
-        {
-            "source": "ui",
-            "event": "runner_pause",
-            "pids": pids,
-            "killed": killed_any,
-            "reclaimed_leases": reclaimed,
-            "lock_cleared": result["lock_cleared"],
-            "lock_holder": result.get("lock_holder"),
-        },
-    )
+    result["pids"] = pids
     return result
 
 
@@ -541,10 +582,11 @@ def resume_run(
     """Remove STOP and start Ralph if not running.
 
     When no Ralph worker is alive, a live ``run.lock`` holder is an orphaned
-    run-once (typical after a Linux pause that only signaled the leader).
-    That holder is killed with the same session/group kill as pause. If it
-    is still alive, resume returns ``ok: false`` and does not spawn Ralph,
-    so the next run-once does not loop on EXIT_INFRA 20 (``run locked``).
+    run-once (hard stop that did not reap the tree, or a worker that died
+    holding the lock). That holder is killed with the same tree kill as
+    hard stop. If it is still alive, resume returns ``ok: false`` and does
+    not spawn Ralph, so the next run-once does not loop on EXIT_INFRA 20
+    (``run locked``).
     A still-running Ralph worker is left alone: its run-once owns the lock
     legitimately, and resume only clears STOP.
     """
@@ -720,22 +762,25 @@ def _kill_pid(pid: int) -> bool:
 
 
 def stop_run_hard(run_dir: Path) -> dict[str, Any]:
-    """
-    Hard stop: same as pause_run (STOP + kill workers + reclaim leases).
+    """Kill Ralph now and reclaim leased tasks. In-flight progress may be lost.
 
-    Kept as a separate API for dashboard "Force stop" actions.
+    Pause is the drain path. This is the dashboard Hard stop path.
     """
     run_dir = Path(run_dir).resolve()
-    result = pause_run(run_dir)
-    append_event(
-        run_dir,
-        {
-            "source": "ui",
-            "event": "runner_stop_hard",
-            "killed": result.get("killed"),
-            "reclaimed_leases": result.get("reclaimed_leases"),
-        },
-    )
+    result = _kill_session_and_reclaim(run_dir)
+    if (run_dir / "harness.db").is_file():
+        append_event(
+            run_dir,
+            {
+                "source": "ui",
+                "event": "runner_stop_hard",
+                "pids": result.get("pids"),
+                "killed": result.get("killed"),
+                "reclaimed_leases": result.get("reclaimed_leases"),
+                "lock_cleared": result.get("lock_cleared"),
+                "lock_holder": result.get("lock_holder"),
+            },
+        )
     return {
         "ok": bool(result.get("ok")),
         "killed": result.get("killed"),

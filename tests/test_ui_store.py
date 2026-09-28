@@ -219,14 +219,76 @@ def test_pause_creates_stop(tmp_path: Path, toy_sqli: Path):
     run_dir = next(next(runs.iterdir()).iterdir())
     r = runctl.pause_run(run_dir)
     assert r["ok"]
+    assert r["killed"] is False
+    assert r["draining"] is False
+    assert r["reclaimed_leases"] == 0
     assert r["lock_cleared"] is True
     assert (run_dir / "STOP").is_file()
     st = runctl.runner_status(run_dir)
     assert st["stop"] is True
+    assert st["state"] == "paused"
+    assert st["alive"] is False
 
 
-def test_pause_reclaims_orphaned_leases(tmp_path: Path, toy_sqli: Path):
-    """Pause kills workers and requeues leased tasks so the queue is not stuck."""
+def test_pause_keeps_live_worker_lease(tmp_path: Path, toy_sqli: Path):
+    """Pause writes STOP and leaves the in-flight lease with the live worker."""
+    import json
+    import subprocess
+    import sys
+
+    runs = tmp_path / "runs"
+    main(["init", "--target", str(toy_sqli), "--runs-root", str(runs)])
+    run_dir = next(next(runs.iterdir()).iterdir())
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        (run_dir / "ralph.pid").write_text(
+            json.dumps({"pid": proc.pid}), encoding="utf-8"
+        )
+        (run_dir / "run.lock").write_text(
+            json.dumps({"pid": proc.pid}), encoding="utf-8"
+        )
+        db = Database.open(run_dir / "harness.db")
+        try:
+            db.enqueue_task("recon", {"agent_ids": ["surface-mapper"]}, priority=11)
+            leased = db.lease_next_task(
+                f"vf-{proc.pid}-drain", ttl_seconds=1800, max_parallel=1
+            )
+            assert leased is not None
+            leased_id = leased.id
+        finally:
+            db.close()
+        r = runctl.pause_run(run_dir)
+        assert r["ok"] is True
+        assert r["killed"] is False
+        assert r["draining"] is True
+        assert r["reclaimed_leases"] == 0
+        assert r["lock_cleared"] is False
+        assert r["lock_holder"] == proc.pid
+        assert r["status"]["state"] == "pausing"
+        assert r["status"]["alive"] is True
+        assert r["status"]["stop"] is True
+        assert runctl._pid_alive(proc.pid) is True
+        assert (run_dir / "ralph.pid").is_file()
+        db = Database.open(run_dir / "harness.db")
+        try:
+            assert db.count_leased_tasks() == 1
+            task = db.get_task(leased_id)
+            assert task is not None
+            assert task.state == "leased"
+            assert task.lease_owner == f"vf-{proc.pid}-drain"
+        finally:
+            db.close()
+    finally:
+        proc.kill()
+        proc.wait(timeout=3)
+
+
+def test_hard_stop_reclaims_orphaned_leases(tmp_path: Path, toy_sqli: Path):
+    """Hard stop requeues leased tasks so the queue is not stuck."""
     runs = tmp_path / "runs"
     main(["init", "--target", str(toy_sqli), "--runs-root", str(runs)])
     run_dir = next(next(runs.iterdir()).iterdir())
@@ -238,7 +300,7 @@ def test_pause_reclaims_orphaned_leases(tmp_path: Path, toy_sqli: Path):
         assert db.count_leased_tasks() == 1
     finally:
         db.close()
-    r = runctl.pause_run(run_dir)
+    r = runctl.stop_run_hard(run_dir)
     assert r["ok"]
     assert r.get("reclaimed_leases", 0) >= 1
     db = Database.open(run_dir / "harness.db")
@@ -451,8 +513,8 @@ def _kill_session(pid: int) -> None:
             pass
 
 
-def test_pause_kills_session_child_and_clears_lock(tmp_path: Path):
-    """Pause must reap a new-session Ralph and the run-once holding run.lock."""
+def test_pause_leaves_session_child_and_lease(tmp_path: Path):
+    """Pause must not reap Ralph or the run-once that holds the live lease."""
     import os
 
     if os.name == "nt":
@@ -468,16 +530,87 @@ def test_pause_kills_session_child_and_clears_lock(tmp_path: Path):
         (run_dir / "ralph.pid").write_text(
             '{"pid": %d}' % proc.pid, encoding="utf-8"
         )
+        db = Database.open(run_dir / "harness.db")
+        try:
+            db.enqueue_task("hunt", {"class": "injection"}, priority=20)
+            leased = db.lease_next_task("vf-drain", ttl_seconds=1800, max_parallel=1)
+            assert leased is not None
+            leased_id = leased.id
+        finally:
+            db.close()
         paused = runctl.pause_run(run_dir)
         assert paused["ok"] is True, paused
-        assert paused["lock_cleared"] is True
-        assert paused["killed"] is True
+        assert paused["killed"] is False
+        assert paused["draining"] is True
+        assert paused["reclaimed_leases"] == 0
+        assert paused["lock_cleared"] is False
+        assert (run_dir / "run.lock").is_file()
+        assert (run_dir / "STOP").is_file()
+        assert runctl._pid_alive(proc.pid) is True
+        assert runctl._pid_alive(child) is True
+        assert paused["status"]["state"] == "pausing"
+        db = Database.open(run_dir / "harness.db")
+        try:
+            task = db.get_task(leased_id)
+            assert task is not None and task.state == "leased"
+        finally:
+            db.close()
+    finally:
+        _kill_session(proc.pid)
+        try:
+            child = int((run_dir / "child.pid").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            child = 0
+        if child:
+            try:
+                os.kill(child, 9)
+            except OSError:
+                pass
+        proc.wait(timeout=3)
+
+
+def test_hard_stop_kills_session_child_and_clears_lock(tmp_path: Path):
+    """Hard stop reaps a new-session Ralph and the run-once holding run.lock."""
+    import os
+
+    if os.name == "nt":
+        pytest.skip("POSIX process-group kill")
+    run_dir = _posix_run_dir(tmp_path)
+    proc = _spawn_session_lock_holder(run_dir)
+    try:
+        _wait_file(run_dir / "parent.ready")
+        _wait_file(run_dir / "run.lock")
+        child = int((run_dir / "child.pid").read_text(encoding="utf-8"))
+        assert child != proc.pid
+        assert os.getpgid(child) != os.getpgid(proc.pid)
+        (run_dir / "ralph.pid").write_text(
+            '{"pid": %d}' % proc.pid, encoding="utf-8"
+        )
+        db = Database.open(run_dir / "harness.db")
+        try:
+            db.enqueue_task("hunt", {"class": "injection"}, priority=20)
+            leased = db.lease_next_task("vf-hard", ttl_seconds=1800, max_parallel=1)
+            assert leased is not None
+            leased_id = leased.id
+        finally:
+            db.close()
+        stopped = runctl.stop_run_hard(run_dir)
+        assert stopped["ok"] is True, stopped
+        assert stopped["lock_cleared"] is True
+        assert stopped["killed"] is True
+        assert stopped["reclaimed_leases"] >= 1
         assert not (run_dir / "run.lock").exists()
         assert runctl._pid_alive(proc.pid) is False
         assert runctl._pid_alive(child) is False
-        status = paused["status"]
+        status = stopped["status"]
         assert status["state"] == "paused"
         assert status["locked"] is False
+        db = Database.open(run_dir / "harness.db")
+        try:
+            task = db.get_task(leased_id)
+            assert task is not None and task.state == "queued"
+        finally:
+            db.close()
     finally:
         _kill_session(proc.pid)
         try:
@@ -549,7 +682,35 @@ def test_resume_refuses_when_lock_holder_survives(
     assert (run_dir / "run.lock").is_file()
 
 
-def test_pause_not_ok_when_lock_holder_survives(
+def test_pause_leaves_live_lock_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Drain does not signal a live lock holder. Hard stop reports that failure."""
+    run_dir = _posix_run_dir(tmp_path)
+    (run_dir / "run.lock").write_text('{"pid": 424242}', encoding="utf-8")
+    monkeypatch.setattr(runctl, "_lock_holder_alive", lambda _d: 424242)
+    monkeypatch.setattr(runctl, "_read_lock_pid", lambda _d: 424242)
+    killed: list[int] = []
+
+    def no_kill(pid: int) -> bool:
+        killed.append(pid)
+        return False
+
+    monkeypatch.setattr(runctl, "_kill_pid", no_kill)
+    paused = runctl.pause_run(run_dir)
+    assert killed == []
+    assert paused["ok"] is True
+    assert paused["killed"] is False
+    assert paused["draining"] is False
+    assert paused["reclaimed_leases"] == 0
+    assert paused["lock_cleared"] is False
+    assert paused["lock_holder"] == 424242
+    assert paused["status"]["state"] == "paused"
+    assert (run_dir / "STOP").is_file()
+    assert (run_dir / "run.lock").is_file()
+
+
+def test_hard_stop_not_ok_when_lock_holder_survives(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     run_dir = _posix_run_dir(tmp_path)
@@ -557,11 +718,11 @@ def test_pause_not_ok_when_lock_holder_survives(
     monkeypatch.setattr(runctl, "_lock_holder_alive", lambda _d: 424242)
     monkeypatch.setattr(runctl, "_read_lock_pid", lambda _d: 424242)
     monkeypatch.setattr(runctl, "_kill_pid", lambda _pid: False)
-    paused = runctl.pause_run(run_dir)
-    assert paused["ok"] is False
-    assert paused["lock_cleared"] is False
-    assert paused["lock_holder"] == 424242
-    assert "424242" in paused["error"]
+    stopped = runctl.stop_run_hard(run_dir)
+    assert stopped["ok"] is False
+    assert stopped["lock_cleared"] is False
+    assert stopped["lock_holder"] == 424242
+    assert "424242" in stopped["error"]
     assert (run_dir / "STOP").is_file()
 
 
