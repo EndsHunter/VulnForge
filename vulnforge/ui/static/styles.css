@@ -3666,6 +3666,40 @@ tr.task-row .task-actions-cell .btn {
 .live-task-round {
   font-variant-numeric: tabular-nums;
 }
+.live-task-now.is-thinking {
+  animation: live-task-wait-pulse 1.8s ease-in-out infinite;
+}
+.live-task-wait {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+.live-task-pulse {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+  animation: live-task-dot 1.2s ease-in-out infinite;
+}
+.live-task-elapsed {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+@keyframes live-task-wait-pulse {
+  0%, 100% { border-color: var(--border); }
+  50% { border-color: var(--accent); }
+}
+@keyframes live-task-dot {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-task-now.is-thinking,
+  .live-task-pulse { animation: none; }
+  .live-task-pulse { opacity: 1; }
+}
 .live-task-steps {
   list-style: none;
   margin: 0 0 0.85rem;

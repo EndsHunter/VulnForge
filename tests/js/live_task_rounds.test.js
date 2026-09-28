@@ -34,6 +34,8 @@ function loadRenderLivePane() {
     Number,
     String,
     Array,
+    Date,
+    globalThis: {},
     esc(s) {
       return String(s ?? "")
         .replace(/&/g, "&amp;")
@@ -119,6 +121,8 @@ describe("renderLivePane round vs tool lines", () => {
     assert.match(steps, /call 3/);
     assert.match(steps, /submit_none · failed/);
     assert.equal((steps.match(/<li>/g) || []).length, 3);
+    assert.equal(nodes.get("#live-task-now").className, "live-task-now");
+    assert.doesNotMatch(header, /Thinking/);
   });
 
   it("numbers legacy steps that still carry a round field", () => {
@@ -136,23 +140,64 @@ describe("renderLivePane round vs tool lines", () => {
     assert.match(steps, /grep/);
   });
 
-  it("keeps the header round when no tool has run", () => {
+  it("shows thinking chrome while a leased round has no tool", () => {
+    const { renderLivePane, nodes } = loadRenderLivePane();
+    const started = new Date(Date.now() - 47000).toISOString();
+    renderLivePane({
+      task_id: 4,
+      kind: "hunt",
+      state: "leased",
+      phase: "thinking",
+      round: 9,
+      max_rounds: 50,
+      tool: null,
+      args_summary: "",
+      wait_started_at: started,
+      updated_at: started,
+      steps: [],
+      steer: {},
+    });
+    const now = nodes.get("#live-task-now");
+    const header = now.innerHTML;
+    const steps = nodes.get("#live-task-steps").innerHTML;
+    assert.equal(now.className, "live-task-now is-thinking");
+    assert.match(header, /Round 9\/50/);
+    assert.match(header, /Thinking…/);
+    assert.match(header, /Waiting for model · \d+s/);
+    assert.doesNotMatch(header, /Waiting for the next tool round/);
+    assert.match(steps, /No tool calls yet/);
+    assert.equal((steps.match(/<li>/g) || []).length, 1);
+    assert.equal((header.match(/Round /g) || []).length, 1);
+  });
+
+  it("keeps prior tool rows and does not invent a thinking step", () => {
     const { renderLivePane, nodes } = loadRenderLivePane();
     renderLivePane({
       task_id: 4,
       kind: "hunt",
       state: "leased",
-      round: 9,
-      max_rounds: 50,
+      phase: "thinking",
+      round: 2,
+      max_rounds: 8,
       tool: null,
-      steps: [],
+      wait_started_at: new Date(Date.now() - 5000).toISOString(),
+      steps: [
+        {
+          round: 1,
+          call: 1,
+          tool: "grep",
+          args_summary: "pattern=SELECT path=app.py",
+          ok: true,
+        },
+      ],
       steer: {},
     });
     const header = nodes.get("#live-task-now").innerHTML;
     const steps = nodes.get("#live-task-steps").innerHTML;
-    assert.match(header, /Round 9\/50/);
-    assert.match(header, /Waiting for the next tool round/);
-    assert.match(steps, /No tool calls yet/);
-    assert.equal((header.match(/Round /g) || []).length, 1);
+    assert.match(header, /Thinking…/);
+    assert.match(header, /Waiting for model/);
+    assert.match(steps, /grep/);
+    assert.doesNotMatch(steps, /Thinking/);
+    assert.equal((steps.match(/<li>/g) || []).length, 1);
   });
 });
