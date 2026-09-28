@@ -3798,11 +3798,11 @@ tr.task-row .task-actions-cell .btn {
   .settings-page-grid {
     grid-template-columns: 1fr 1fr;
     grid-template-areas:
-      "iterate iterate"
       "hosts hosts"
       "catalog catalog"
       "roles roles"
-      "budget budget";
+      "budget budget"
+      "iterate iterate";
   }
   .settings-card-iterate { grid-area: iterate; }
   .settings-card-hosts { grid-area: hosts; }
