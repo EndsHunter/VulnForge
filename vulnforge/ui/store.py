@@ -199,6 +199,16 @@ def _severity_counts(db: Database) -> dict[str, int]:
     return counts
 
 
+def _prune_settled_live(path: Path) -> None:
+    """Drop ended live snapshots once the card is idle and no worker is up."""
+    try:
+        from vulnforge.live_task import prune_live_artifacts
+
+        prune_live_artifacts(path, reason="store_idle")
+    except OSError:
+        return
+
+
 def _campaign_card_status(
     db: Database,
     db_status: Any,
@@ -279,6 +289,9 @@ def run_card(run: RunRef) -> dict[str, Any]:
         card_status = _campaign_card_status(
             db, db_status, has_work=has_work, stop=stop
         )
+        # Success-idle only. STOP (mid-pause) and a live worker keep live files.
+        if not has_work and not stop:
+            _prune_settled_live(run.path)
         return {
             "key": run.key,
             "target_id": run.target_id,

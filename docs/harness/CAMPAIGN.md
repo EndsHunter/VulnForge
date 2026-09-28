@@ -67,6 +67,12 @@ Read of the human gate. `needs_human` is the count of findings that passed mecha
 
 Accept and reject stay on Report review or `vf hitl respond`. A gate read refreshes the HITL projection the same way `GET .../hitl/inbox` does, and it does not set `confirmed`.
 
+## Runner liveness
+
+A campaign is live only when a listed PID still passes `kill -0` (`vulnforge.ui.runner._pid_alive`; zombies do not count). `runner.json` records the last start (`argv`, `workers`, `last_start`) and names `pid` / `pids` while Ralph is running. After those PIDs are gone, `runner_status` rewrites the claim (`pid` null, `pids` empty) and keeps the diagnostics (`last_pid`, `cleared_at`). Do not treat `runner.json` alone as proof the campaign is running. The Ralph process clears its own claim on the way out when it is the primary PID and no sibling worker is still alive.
+
+When Ralph exits idle/complete (`RALPH_IDLE` and no `STOP` file), it deletes `live/task-*.json` and empty `steer/*.lock` files so the live API does not keep serving an ended snapshot. Steer notes (`steer/task-*.json`) stay. Pause (`STOP` / `RALPH_OK`), a still-live sibling, and budget or infra exits do not prune those files. The same prune runs when a dashboard card syncs a finished campaign to idle (no queued work, no `STOP`, no live worker).
+
 ## Honesty
 
 `needs_human` means mechanical gates passed. `confirmed` is human-only. Neither is exploit proof. This grammar does not set `confirmed`.
