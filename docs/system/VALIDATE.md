@@ -41,10 +41,36 @@ stages:
   validate_poc_referee: true
 poc_harness:
   enabled: true
-  runner: docker          # or local_subprocess if Docker is unavailable
+  runner: sandbox          # microVM (Kata / patched Firecracker) → gVisor runsc → refuse
   timeout_s: 60
-  network: none
+  network: none            # allow = isolated bridge for a documented lab; never host
+  docker_image: "python:3.12.8-slim-bookworm"
+  cpus: "1"
+  memory: "512m"
+  pids_limit: 128
+  mount_target_ro: false
+  sandbox_oneshot: false   # per-run opt-in: vf init --sandbox-poc or New audit checkbox
 ```
+
+### Sandbox one-shot (validate_poc)
+
+Linux only. macOS and Windows need a Linux sandbox host. v1 runs the PoC **once** inside:
+
+1. **MicroVM** — Docker runtime `kata-qemu` / `kata-clh` / `kata`, or `kata-fc` only when host `firecracker` and `jailer` are patched, or direct Firecracker+jailer when `firecracker_kernel` and `firecracker_rootfs` are set and `/dev/kvm` is usable.
+2. **gVisor** — Docker runtime `runsc`.
+3. **Refuse** — `sandbox_unavailable` or `unsafe_skipped`. No host exec. No plain runc.
+
+`local_subprocess` and plain Docker/runc are hard failures. There is no silent fallback.
+
+**Network** defaults to none (`--network=none`, no Firecracker NIC). Hub `network: allow` is an isolated bridge for a documented lab. `network: host`, `--privileged`, and `docker.sock` are refused. Mounts are the evidence pack read-only, plus an optional read-only target slice (`mount_target_ro`). Secrets, `~/.aws`, `.env`, and a writable audit target are not mounted. Wall TTL, CPU, memory, and a PID cap apply; timeout kills the process group and `docker rm -f` always runs.
+
+**Firecracker patch bar** (CVE-2026-5747 virtio-pci OOB, CVE-2026-1386 jailer symlink overwrite): accept **1.14.4 through 1.14.x**, or **1.15.1 and later**. Boot with `pci=off`. Direct Firecracker uses a fresh `0700` jail dir and jailer. The guest rootfs must read `vf.cmd=<base64>` from `/proc/cmdline` (see `docs/harness/validate/firecracker-guest-init.sh`).
+
+**Outcomes** (evidence only): `signal_observed` | `signal_absent` | `poc_broken` | `inconclusive` | `build_failed` | `sandbox_unavailable` | `unsafe_skipped`. The UI says “sandbox reproduced” / “signal observed”. That does **not** set `confirmed` and does **not** clear `needs_human` or HITL. PoC failure is not a false positive. `validate_mech` and `validate_llm` (when on) still run.
+
+**Run-start toggle** (`vf init --sandbox-poc`, New audit “Sandbox PoC one-shot”, default off): when the queue is idle, Ralph enqueues one `validate_poc` per harness-ready `needs_human` finding. A missing sandbox writes the same fail-closed enums and the campaign continues.
+
+Pinned image: `python:3.12.8-slim-bookworm` (override with a digest). Pre-pull it on the sandbox host so the wall TTL is not spent on a registry fetch.
 
 `llm.disprove_verifiers` can list `{id, prompt}` pairs. Missing perspective files fall back to the shared `disprove.md` contract only.
 

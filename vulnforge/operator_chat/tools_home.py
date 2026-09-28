@@ -272,6 +272,13 @@ def schemas() -> list[dict]:
                 "operator_notes": {"type": "string"},
                 "start": {"type": "boolean", "description": "Start Ralph after init"},
                 "enqueue_hunts": {"type": "boolean"},
+                "sandbox_poc_validate": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, queue sandbox one-shot validate_poc for harness-ready "
+                        "needs_human findings. Never confirms. Missing sandbox fails closed."
+                    ),
+                },
                 "profile": {
                     "type": "string",
                     "description": "code_static (default; only supported profile)",
@@ -441,6 +448,7 @@ def _init_run(args: dict, *, runs_root: Path, project_root: Path) -> dict[str, A
     a.hunt_skill_mode = str(args.get("hunt_skill_mode") or "all_active")
     a.hunt_skill_ids = None
     a.enqueue_hunts = bool(args.get("enqueue_hunts", True))
+    a.sandbox_poc_validate = bool(args.get("sandbox_poc_validate") or False)
     a.progress = None
     a.job_id = None
 

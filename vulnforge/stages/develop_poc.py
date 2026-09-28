@@ -306,6 +306,19 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         except OSError:
             pass
 
+        sandbox_task_ids: list[int] = []
+        try:
+            from vulnforge.poc_phase import enqueue_sandbox_oneshot_phase
+
+            sandbox_task_ids = enqueue_sandbox_oneshot_phase(
+                db,
+                run_dir,
+                only_finding_id=fid,
+                reason="develop_poc",
+            )
+        except Exception:
+            sandbox_task_ids = []
+
         return {
             "status": "succeeded",
             "finding_id": fid,
@@ -315,6 +328,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "model_id": model_id,
             "transcript": f"task-{task.id}",
             "finding_state": finding.state,
+            "sandbox_oneshot_task_ids": sandbox_task_ids,
             **usage_fields,
         }
     finally:

@@ -19,7 +19,7 @@ Campaign control (start / stop / pause / resume / status / findings / gate) is o
 
 Related (not covered here as full folders): `develop_poc`, `validate_poc`, `generate_skill`, `tool_gaps`, `render`. Near-dup merge is `stages/dedup.py` (not a leased kind).
 
-**Quality upgrades (additive):** sink residual coverage, citation content mech gate, safer PoC defaults (`docker` + `network: none`), `query_flows` reachability tool, L0 fixture recall (`fixtures/ground_truth/`, `scripts/eval_recall.py`).
+**Quality upgrades (additive):** sink residual coverage, citation content mech gate, sandbox PoC one-shot (microVM or gVisor, `network: none`, no host exec), `query_flows` reachability tool, L0 fixture recall (`fixtures/ground_truth/`, `scripts/eval_recall.py`).
 
 ## Honesty (do not weaken)
 

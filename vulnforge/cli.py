@@ -158,6 +158,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hunt skill id when --hunt-skill-mode=explicit (repeatable)",
     )
     init_p.add_argument(
+        "--sandbox-poc",
+        dest="sandbox_poc_validate",
+        action="store_true",
+        default=False,
+        help=(
+            "Opt in at run start: queue one sandbox validate_poc per harness-ready "
+            "needs_human finding (microVM or gVisor only). Missing sandbox fails "
+            "closed and does not confirm or clear needs-human."
+        ),
+    )
+    init_p.add_argument(
         "--no-enqueue-hunts",
         dest="enqueue_hunts",
         action="store_false",
@@ -239,7 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     vp = sub.add_parser(
         "validate-poc",
-        help="Enqueue (or run-once) validate_poc harness for a finding",
+        help="Enqueue or run a sandbox one-shot validate_poc (never host exec, never confirms)",
     )
     vp.add_argument("--finding-id", type=int, required=True)
     vp.add_argument("--run-dir", type=Path, default=None)
@@ -547,6 +558,9 @@ def cmd_init(args, cfg: dict) -> int:
     ][:64]
     # Default True (auto-queue). Explicit False = architecture-only / manual hunts.
     init_enqueue_hunts = bool(getattr(args, "enqueue_hunts", True))
+    init_sandbox_poc = bool(getattr(args, "sandbox_poc_validate", False))
+    poc_harness_store = dict(cfg.get("poc_harness") or {})
+    poc_harness_store["sandbox_oneshot"] = init_sandbox_poc
 
     cfg_store = {
         "llm": cfg.get("llm", {}),
@@ -562,7 +576,9 @@ def cmd_init(args, cfg: dict) -> int:
             "hunt_skill_mode": init_hunt_mode,
             "hunt_skill_ids": init_hunt_ids,
             "enqueue_hunts": init_enqueue_hunts,
+            "sandbox_poc_validate": init_sandbox_poc,
         },
+        "poc_harness": poc_harness_store,
         "stages": cfg.get("stages", {}),
         "packet": cfg.get("packet", {}),
         "tools": cfg.get("tools", {}),
@@ -853,6 +869,35 @@ def cmd_run_once(args, cfg: dict) -> int:
                         run_dir, {"source": "vf", "event": "render_error", "error": str(e)}
                     )
                 # Optional post-idle tool-gap projection (default off)
+                # Sandbox one-shot phase (run-start toggle). Missing sandbox
+                # fails closed inside validate_poc and does not block the run.
+                try:
+                    from vulnforge.poc_phase import enqueue_sandbox_oneshot_phase
+
+                    sandbox_ids = enqueue_sandbox_oneshot_phase(
+                        db, run_dir, reason="run_idle"
+                    )
+                except Exception as e:
+                    sandbox_ids = []
+                    append_event(
+                        run_dir,
+                        {
+                            "source": "vf",
+                            "event": "sandbox_poc_phase_error",
+                            "error": str(e),
+                        },
+                    )
+                if sandbox_ids:
+                    append_event(
+                        run_dir,
+                        {
+                            "source": "vf",
+                            "event": "sandbox_poc_enqueued",
+                            "task_ids": sandbox_ids,
+                            "count": len(sandbox_ids),
+                        },
+                    )
+                    return EXIT_PROGRESS
                 if (cfg.get("run") or {}).get("auto_tool_gaps"):
                     try:
                         from vulnforge.tool_gaps import analyze_run_mode, write_reports

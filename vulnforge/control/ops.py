@@ -2796,17 +2796,16 @@ def get_finding_poc(run_dir: Path, finding_id: int) -> dict[str, Any]:
                 set(code_files) | set(readiness.get("code_files") or [])
             )
         latest_val = body.get("poc_validation_latest")
-        # Surface configured harness defaults (not a security boundary — honesty UI).
+        # Sandbox honesty for the workshop (probe only — does not run the PoC).
         harness_info: dict[str, Any] = {}
         try:
-            from vulnforge.poc_runner import docker_available, harness_config
+            from vulnforge.poc_runner import harness_config, select_isolation
             from vulnforge.settings.load import load_config
 
             try:
                 run_cfg = get_run_config(db) or {}
             except Exception:
                 run_cfg = {}
-            # Package defaults, overridden by run-stored poc_harness when present
             try:
                 pkg_cfg = load_config()
             except Exception:
@@ -2820,14 +2819,26 @@ def get_finding_poc(run_dir: Path, finding_id: int) -> dict[str, Any]:
                 )
                 base_ph.update(run_cfg["poc_harness"])
                 merged["poc_harness"] = base_ph
+            if isinstance(run_cfg, dict) and isinstance(run_cfg.get("run"), dict):
+                merged_run = dict(merged.get("run") or {})
+                merged_run.update(run_cfg["run"])
+                merged["run"] = merged_run
             hc = harness_config(merged if merged else run_cfg)
+            choice = select_isolation(hc)
+            run_block = merged.get("run") if isinstance(merged.get("run"), dict) else {}
             harness_info = {
                 "runner": hc["runner"],
+                "isolation": choice.get("isolation"),
+                "runtime": choice.get("runtime"),
                 "network": hc["network"],
                 "timeout_s": hc["timeout_s"],
                 "docker_image": hc.get("docker_image"),
-                "docker_available": (
-                    docker_available() if hc["runner"] == "docker" else None
+                "image": hc.get("docker_image"),
+                "sandbox_available": bool(choice.get("ok")),
+                "operator_hint": choice.get("hint"),
+                "sandbox_oneshot": bool(
+                    run_block.get("sandbox_poc_validate")
+                    or (merged.get("poc_harness") or {}).get("sandbox_oneshot")
                 ),
                 "enabled": hc["enabled"],
             }

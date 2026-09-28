@@ -754,7 +754,7 @@ flowchart TD
 ### `validate_poc` (PoC harness)
 
 - Trigger: Report **Run in harness**, `vf validate-poc`, or operator chat `enqueue_validate_poc`.
-- Runs pack PoC under `poc_harness` (local_subprocess | docker); writes `poc_run.json`.
+- Runs pack PoC only in a microVM (Kata / patched Firecracker) or gVisor `runsc`; else `sandbox_unavailable`. Writes `poc_run.json`. Never host exec.
 - Optional LLM referee (`stages.validate_poc_referee` / `referee_poc.md`).
 - Export handoff: `vf export-validation-job` → `HANDOFF.md` + zip under `exports/`.
 - Does **not** confirm findings (evidence / annotation only).

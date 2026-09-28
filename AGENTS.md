@@ -62,7 +62,7 @@ Seven verbs — `start`, `stop`, `pause`, `resume`, `status`, `findings`, `gate`
 1. Start Ralph from the mission bar.
 2. **Explorer**: open a file, optionally select lines, pick a hunt class, add notes, **Enqueue hunt**.
 3. **Hunts**: plan area×skill batches, or click residual cells (shallow/aborted/none) → re-queue with notes.
-4. **Report**: open a finding → **Open Evidence**; **Develop POC** opens a **workshop modal** (not a mode tab) — hub is `evidence/<pack>/poc_develop.md`; optional Ralph `develop_poc` writes **runnable** PoC code (not a narrative rewrite); **Run in harness** queues `validate_poc` (writes `poc_run.json`); **Export validation job** builds a handoff zip; **Accept / Reject / Needs review** with optional notes. None of these auto-prove exploitability.
+4. **Report**: open a finding → **Open Evidence**; **Develop POC** opens a **workshop modal** (not a mode tab) — hub is `evidence/<pack>/poc_develop.md`; optional Ralph `develop_poc` writes **runnable** PoC code (not a narrative rewrite); **Run in harness** queues a sandbox one-shot `validate_poc` (microVM or gVisor only; writes `poc_run.json`; does not confirm); **Export validation job** builds a handoff zip; **Accept / Reject / Needs review** with optional notes. None of these auto-prove exploitability. New audit can opt in to the same one-shot as a validation-phase step (**Sandbox PoC one-shot**).
 
 CLI handoff / harness:
 

@@ -46,6 +46,8 @@ def _parse_referee_verdict(content: str) -> dict[str, Any]:
                 "signal_absent",
                 "poc_broken",
                 "inconclusive",
+                "build_failed",
+                "sandbox_unavailable",
                 "unsafe_skipped",
             ):
                 verdict = v
@@ -282,6 +284,13 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         env_extra.update({str(k): str(v) for k, v in payload["env"].items()})
 
     force_cmd = str(payload.get("command") or payload.get("run") or "").strip() or None
+    run_row = db.get_run()
+    target_path = None
+    if run_row is not None:
+        try:
+            target_path = run_row["target_path"] or None
+        except (KeyError, TypeError, IndexError):
+            target_path = None
 
     run_result = execute_poc_for_pack(
         pack_dir,
@@ -291,6 +300,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         finding_body=body,
         finding_id=fid,
         force_command=force_cmd,
+        target_path=target_path,
     )
     run_result["evidence_id"] = eid
     run_result["task_id"] = getattr(task, "id", None)
@@ -308,7 +318,11 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     if payload.get("referee") is False:
         referee_on = False
     referee_info: dict[str, Any] | None = None
-    if referee_on and run_result.get("verdict") not in ("unsafe_skipped",):
+    # Missing sandbox / refused host exec is evidence only — do not spend a referee.
+    if referee_on and run_result.get("verdict") not in (
+        "unsafe_skipped",
+        "sandbox_unavailable",
+    ):
         referee_info = _run_referee(
             task=task,
             db=db,
@@ -371,7 +385,17 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         "signal_matched": run_result.get("signal_matched"),
         "task_id": getattr(task, "id", None),
         "runner": run_result.get("runner"),
+        "isolation": run_result.get("isolation"),
+        "runtime": run_result.get("runtime"),
+        "operator_hint": run_result.get("operator_hint"),
+        "spawn_error": run_result.get("spawn_error"),
         "poc_run_relpath": POC_RUN_RELPATH,
+        # Evidence label only. State / HITL are intentionally not touched.
+        "label": (
+            "sandbox reproduced"
+            if run_result.get("verdict") == "signal_observed"
+            else run_result.get("verdict")
+        ),
     }
     hist = body2.get("poc_validation")
     if not isinstance(hist, list):

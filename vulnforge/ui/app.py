@@ -121,6 +121,8 @@ class InitBody(BaseModel):
     hunt_skill_ids: Optional[list[str]] = None
     # After recon (or at file_by_file init), enqueue hunt tasks. False = map only / manual.
     enqueue_hunts: bool = True
+    # Campaign sandbox one-shot for harness-ready needs_human PoCs. Default off.
+    sandbox_poc_validate: bool = False
 
 
 class ControlBody(BaseModel):
@@ -1062,6 +1064,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         ][:64]
         args.hunt_skill_ids = skill_ids or None
         args.enqueue_hunts = bool(body.enqueue_hunts)
+        args.sandbox_poc_validate = bool(body.sandbox_poc_validate)
 
         profile_n = (args.profile or "code_static").strip().lower()
         if not args.target.exists():
