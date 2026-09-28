@@ -2,7 +2,12 @@
 
 Default model: ``llm.model``. Optional overrides:
   - ``llm.model_recon`` / ``model_hunt`` / ``model_develop_poc``
+  - ``llm.model_validate`` — dedicated validate_llm / PoC referee role
   - ``llm.validate_models`` — list of 1+ models for disprove / PoC referee
+
+Validate slot rule (also :func:`resolve_validate_targets`): a non-empty
+``validate_models`` list is the complete slot set. Otherwise ``model_validate``
+when set. Otherwise the hunt role (``model_hunt``, else the default role).
 
 Consensus (for positive “valid” agreement — reduce false positives):
   - ``all`` — every model must agree on the positive verdict
@@ -22,11 +27,14 @@ STAGE_MODEL_KEYS: dict[str, str] = {
     "recon": "model_recon",
     "hunt": "model_hunt",
     "develop_poc": "model_develop_poc",
-    # validation stages use validate_models list
-    "validate_llm": "validate_models",
-    "validate_poc": "validate_models",
-    "poc_referee": "validate_models",
+    # Single-client binding uses the first resolved validate slot.
+    "validate_llm": "model_validate",
+    "validate_poc": "model_validate",
+    "poc_referee": "model_validate",
 }
+
+# Stages whose client is the validate slot list, not a lone role key.
+_VALIDATE_STAGES = frozenset({"validate_llm", "validate_poc", "poc_referee"})
 
 CONSENSUS_MODES = frozenset({"all", "majority"})
 
@@ -72,24 +80,44 @@ def cfg_with_model(cfg: dict, model: str | None) -> dict:
     return out
 
 
-def resolve_stage_ref(cfg: dict | None, stage: str) -> Any:
-    """Stage role value: a host ref, a legacy model id, or "" when unset.
-
-    An empty stage override falls back to the default role ref, then ``llm.model``.
-    """
+def _explicit_role(llm: dict, key: str) -> Any:
+    """Host ref or legacy model id when ``llm[key]`` is set, else None."""
     from vulnforge.settings.catalog import is_model_ref
 
-    llm = (cfg or {}).get("llm") or {}
-    key = STAGE_MODEL_KEYS.get(stage or "")
-    raw = llm.get(key) if key and key != "validate_models" else None
+    raw = llm.get(key)
     if is_model_ref(raw):
         return {"host_id": str(raw["host_id"]).strip(), "model_id": str(raw["model_id"]).strip()}
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
+    return None
+
+
+def _default_role(llm: dict) -> Any:
+    """Default role ref, else ``llm.model`` (may be empty)."""
+    from vulnforge.settings.catalog import is_model_ref
+
     if is_model_ref(llm.get("model_ref")):
         ref = llm["model_ref"]
         return {"host_id": str(ref["host_id"]).strip(), "model_id": str(ref["model_id"]).strip()}
     return str(llm.get("model") or "").strip()
+
+
+def resolve_stage_ref(cfg: dict | None, stage: str) -> Any:
+    """Stage role value: a host ref, a legacy model id, or "" when unset.
+
+    Recon, hunt, and develop PoC: an empty override falls back to the default
+    role ref, then ``llm.model``. Validate stages return the first slot from
+    :func:`resolve_validate_targets` (list, else dedicated role, else hunt).
+    """
+    llm = (cfg or {}).get("llm") or {}
+    if (stage or "") in _VALIDATE_STAGES:
+        targets = resolve_validate_targets(cfg)
+        return targets[0] if targets else ""
+    key = STAGE_MODEL_KEYS.get(stage or "")
+    explicit = _explicit_role(llm, key) if key else None
+    if explicit:
+        return explicit
+    return _default_role(llm)
 
 
 def resolve_stage_model(cfg: dict | None, stage: str) -> str:
@@ -142,9 +170,16 @@ def lease_model_id(cfg: dict | None, kind: str, payload: dict | None = None) -> 
 
 
 def resolve_validate_targets(cfg: dict | None) -> list[Any]:
-    """Validate slots as host refs when configured, else legacy model id strings.
+    """Validate / PoC referee slots. One rule:
 
-    Empty list falls back to the default role ref, then ``llm.model``.
+    1. Non-empty ``llm.validate_models`` (host refs, or legacy ids) is the
+       complete slot list. A set ``model_validate`` is not prepended.
+    2. Else ``llm.model_validate`` when set — the dedicated referee role.
+    3. Else the hunt role (``model_hunt``, else the default role / ``llm.model``).
+
+    Blank dedicated role and an empty list keep campaigns on the hunt model
+    (the default role when hunt is also blank). Each ref still binds through
+    :func:`bind_role_cfg`; a bare id is not searched on another host.
     """
     from vulnforge.settings.catalog import is_model_ref
 
@@ -161,11 +196,49 @@ def resolve_validate_targets(cfg: dict | None) -> list[Any]:
     models = normalize_model_list(raw)
     if models:
         return models
-    if is_model_ref(llm.get("model_ref")):
-        ref = llm["model_ref"]
-        return [{"host_id": str(ref["host_id"]).strip(), "model_id": str(ref["model_id"]).strip()}]
-    default = str(llm.get("model") or "").strip()
+    dedicated = _explicit_role(llm, "model_validate")
+    if dedicated:
+        return [dedicated]
+    hunt = _explicit_role(llm, "model_hunt")
+    if hunt:
+        return [hunt]
+    default = _default_role(llm)
     return [default] if default else []
+
+
+def _role_pair(ref: Any) -> tuple[str, str]:
+    from vulnforge.settings.catalog import host_id_of, is_model_ref, model_id_of
+
+    if is_model_ref(ref):
+        return host_id_of(ref), model_id_of(ref)
+    return "", model_id_of(ref)
+
+
+def format_model_ref(ref: Any) -> str:
+    """``host/model`` when the ref names a host, else the model id."""
+    host_id, model_id = _role_pair(ref)
+    if not model_id:
+        return "(unset)"
+    if host_id:
+        return f"{host_id}/{model_id}"
+    return model_id
+
+
+def validate_same_as_hunt(cfg: dict | None) -> bool:
+    """True when every resolved validate slot is the hunt role."""
+    targets = resolve_validate_targets(cfg)
+    hunt = _role_pair(resolve_stage_ref(cfg, "hunt"))
+    if not targets:
+        return not hunt[1]
+    return all(_role_pair(item) == hunt for item in targets)
+
+
+def status_model_summary(cfg: dict | None) -> str:
+    """One status line: resolved hunt model and validate slot(s)."""
+    hunt = format_model_ref(resolve_stage_ref(cfg, "hunt"))
+    targets = resolve_validate_targets(cfg)
+    validate = ", ".join(format_model_ref(item) for item in targets) or "(unset)"
+    return f"hunt={hunt} validate={validate}"
 
 
 def resolve_validate_models(cfg: dict | None) -> list[str]:

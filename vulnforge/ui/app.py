@@ -244,6 +244,9 @@ class SettingsBody(BaseModel):
     model_recon: Any = None
     model_hunt: Any = None
     model_develop_poc: Any = None
+    # JSON key model_validate. The Python name avoids BaseModel.model_validate.
+    # Blank → same as hunt. Not the multi-model checkbox list.
+    validate_role: Any = Field(default=None, alias="model_validate")
     # Available refs, or legacy bare strings when no hosts are saved.
     validate_models: Any = None
     validate_consensus: Optional[str] = None  # all | majority
@@ -2491,8 +2494,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
     def api_get_settings():
         from vulnforge.llm_models import (
             normalize_consensus,
-            normalize_model_list,
+            resolve_stage_ref,
             resolve_validate_models,
+            resolve_validate_targets,
         )
         from vulnforge.settings import normalize_api_key
         from vulnforge.stages.hunt_moa import (
@@ -2520,6 +2524,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 "model_recon": llm.get("model_recon") or "",
                 "model_hunt": llm.get("model_hunt") or "",
                 "model_develop_poc": llm.get("model_develop_poc") or "",
+                "model_validate": llm.get("model_validate") or "",
+                "hunt_model": resolve_stage_ref(eff, "hunt"),
+                "validate_targets": resolve_validate_targets(eff),
                 "validate_models": vmodels,
                 "validate_consensus": normalize_consensus(
                     llm.get("validate_consensus") or ui.get("validate_consensus")
@@ -2569,9 +2576,19 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 slot.model_dump() if hasattr(slot, "model_dump") else dict(slot)
                 for slot in raw_slots
             ]
-        for role_key in ("model", "model_recon", "model_hunt", "model_develop_poc", "hosts", "catalog", "available"):
+        for role_key in (
+            "model",
+            "model_recon",
+            "model_hunt",
+            "model_develop_poc",
+            "hosts",
+            "catalog",
+            "available",
+        ):
             if role_key in body.model_fields_set:
                 updates[role_key] = getattr(body, role_key)
+        if "validate_role" in body.model_fields_set:
+            updates["model_validate"] = body.validate_role
         try:
             saved = save_ui_settings(updates)
         except ValueError as e:

@@ -844,6 +844,7 @@ def optimize_ui_settings(
     # Fresh lists — do not share mutable defaults. Keep hunt slots the operator
     # already saved; optimize must not reset them or copy validate_models.
     recommended["validate_models"] = list(DEFAULT_UI_SETTINGS.get("validate_models") or [])
+    recommended["model_validate"] = current.get("model_validate")
     recommended["hunt_moa"] = bool(current.get("hunt_moa", False))
     recommended["hunt_perspectives"] = normalize_hunt_perspectives(
         current.get("hunt_perspectives")

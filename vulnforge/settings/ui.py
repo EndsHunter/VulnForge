@@ -14,6 +14,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
 from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT
+from vulnforge.settings.catalog import STAGE_ROLE_FIELDS
 from vulnforge.util import utc_now_iso
 
 UI_SETTINGS_PATH = CONFIG_ROOT / "ui_settings.json"
@@ -37,6 +38,8 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "model_recon": None,
     "model_hunt": None,
     "model_develop_poc": None,
+    # Blank → same as hunt (model_hunt, else the default role). Not validate_models.
+    "model_validate": None,
     # Refs once hosts exist; legacy bare strings only when hosts is empty.
     "validate_models": [],
     # all | majority — required agreement for positive “valid” signals
@@ -68,7 +71,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "poc_iterate_wall_ttl_min": 15,
 }
 
-_ROLE_KEYS = ("model", "model_recon", "model_hunt", "model_develop_poc")
+_ROLE_KEYS = ("model", *STAGE_ROLE_FIELDS)
 _GLOBAL_KEYS = (
     "validate_consensus",
     "validate_poc_referee",
@@ -411,6 +414,9 @@ def _apply_legacy_connection(current: dict[str, Any], updates: dict[str, Any]) -
             "model_develop_poc": updates.get(
                 "model_develop_poc", current.get("model_develop_poc") or ""
             ),
+            "model_validate": updates.get(
+                "model_validate", current.get("model_validate") or ""
+            ),
             "validate_models": updates.get("validate_models", current.get("validate_models") or []),
             "hunt_perspectives": updates.get(
                 "hunt_perspectives", current.get("hunt_perspectives") or []
@@ -426,6 +432,7 @@ def _apply_legacy_connection(current: dict[str, Any], updates: dict[str, Any]) -
         current["model_recon"] = migrated["model_recon"]
         current["model_hunt"] = migrated["model_hunt"]
         current["model_develop_poc"] = migrated["model_develop_poc"]
+        current["model_validate"] = migrated["model_validate"]
         current["validate_models"] = migrated["validate_models"]
         current["hunt_perspectives"] = migrated["hunt_perspectives"]
         return
@@ -544,6 +551,7 @@ def _validate_roles_against_available(current: dict[str, Any]) -> None:
         ("model_recon", "recon model"),
         ("model_hunt", "hunt model"),
         ("model_develop_poc", "develop PoC model"),
+        ("model_validate", "validate model"),
     ):
         current[key] = require_available_ref(current.get(key), available, label=label)
     refs = []
@@ -745,7 +753,7 @@ def apply_ui_settings_to_cfg(cfg: dict, ui: Optional[dict] = None) -> dict:
     hosts = ui.get("hosts") or []
     if hosts:
         _bind_default_host(llm, ui)
-        for key in ("model_recon", "model_hunt", "model_develop_poc"):
+        for key in STAGE_ROLE_FIELDS:
             ref = ui.get(key)
             llm[key] = ref if isinstance(ref, dict) else ""
         llm["validate_models"] = list(ui.get("validate_models") or [])
@@ -753,7 +761,7 @@ def apply_ui_settings_to_cfg(cfg: dict, ui: Optional[dict] = None) -> dict:
         # Legacy string roles (no host list). Empty lists do not wipe YAML.
         from vulnforge.llm_models import normalize_model_list
 
-        for key in ("model_recon", "model_hunt", "model_develop_poc"):
+        for key in STAGE_ROLE_FIELDS:
             raw = ui.get(key)
             if isinstance(raw, str) and raw.strip():
                 llm[key] = raw.strip()
