@@ -267,6 +267,15 @@ def start_run(
     if st["alive"]:
         return {"ok": False, "error": "already running", "status": st}
 
+    try:
+        from vulnforge.poc_runner import sandbox_poc_start_block
+
+        block = sandbox_poc_start_block(run_dir)
+    except Exception as e:
+        return {"ok": False, "error": f"Sandbox PoC refused: preflight failed ({e})"}
+    if block:
+        return {"ok": False, "error": block}
+
     # clear pause flag
     try:
         _stop_path(run_dir).unlink(missing_ok=True)

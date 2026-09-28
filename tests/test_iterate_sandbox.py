@@ -29,6 +29,8 @@ HUB = "---\nrun: python poc.py\nsuccess_regex: ASSERT_OK\n---\n\n## Expected sig
 def _probe(**overrides):
     base = {
         "docker": True,
+        "docker_cli": True,
+        "docker_error": None,
         "runtimes": {},
         "kvm": True,
         "firecracker_path": "/usr/bin/firecracker",

@@ -23,6 +23,8 @@ Optional for full campaigns: a loaded local model (e.g. Ornith / other coding mo
 
 VulnForge is **source-code analysis only** (`code_static` profile). PE binaries and reverse-engineering tooling are not supported.
 
+Sandbox PoC is off unless you opt in. It needs Docker plus gVisor `runsc` or a microVM on Linux. Arch/Omarchy steps and the `~/Projects/OSSvulnHunting` directory name: [docs/harness/validate/SANDBOX_HOST.md](docs/harness/validate/SANDBOX_HOST.md).
+
 ---
 
 ## Project layout (this tree)
@@ -90,6 +92,8 @@ vf init --target fixtures/toy_sqli
 vf dashboard
 # → http://127.0.0.1:8787
 ```
+
+After `git pull`, stop that dashboard process and start `vf dashboard` again so it loads the new code and static UI.
 
 Leave the dashboard running. Open the new run → **Start** Ralph, or in another terminal:
 

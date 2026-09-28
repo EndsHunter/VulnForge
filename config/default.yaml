@@ -161,7 +161,8 @@ poc_harness:
   # Direct Firecracker (optional). Empty = not usable; Kata/gVisor still apply.
   firecracker_kernel: ""
   firecracker_rootfs: ""
-  # Run-start campaign toggle default. UI / `vf init --sandbox-poc` turns it on per run.
+  # Run-start campaign toggle default (off). UI / `vf init --sandbox-poc` turns it
+  # on per run and refuses when this process cannot use Docker + a sandbox runtime.
   sandbox_oneshot: false
   # Iterate-in-sandbox session caps. Settings → Sandbox iterate overrides these.
   # Hitting either cap ends the session and writes evidence. Never confirms.

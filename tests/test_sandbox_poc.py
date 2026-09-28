@@ -27,6 +27,8 @@ HUB = "---\nrun: python poc.py\nsuccess_regex: ASSERT_OK\n---\n\n## Expected sig
 def _probe(**overrides):
     base = {
         "docker": True,
+        "docker_cli": True,
+        "docker_error": None,
         "runtimes": {},
         "kvm": True,
         "firecracker_path": "/usr/bin/firecracker",
@@ -400,3 +402,215 @@ def test_missing_sandbox_does_not_change_state(tmp_path: Path, toy_sqli: Path, m
     assert result["verdict"] == "sandbox_unavailable"
     assert db.get_finding(fid).state == "needs_human"
     db.close()
+
+
+def _completed(argv, *, code: int, stdout: bytes = b"", stderr: bytes = b""):
+    class _Proc:
+        returncode = code
+        pass
+
+    proc = _Proc()
+    proc.stdout = stdout
+    proc.stderr = stderr
+    proc.args = argv
+    return proc
+
+
+def test_probe_docker_cli_without_api_is_unusable(monkeypatch):
+    import subprocess
+
+    import vulnforge.poc_runner as pr
+
+    def which(name: str):
+        return "/usr/bin/docker" if name == "docker" else None
+
+    def run(argv, **_kwargs):
+        return _completed(
+            argv,
+            code=1,
+            stderr=b"permission denied while trying to connect to the Docker daemon socket",
+        )
+
+    monkeypatch.setattr(pr.shutil, "which", which)
+    monkeypatch.setattr(pr.subprocess, "run", run)
+    info = pr.probe_host()
+    assert info["docker_cli"] is True
+    assert info["docker"] is False
+    assert info["runtimes"] == {}
+    assert pr.docker_available() is False
+    choice = select_isolation(
+        {"runner": "sandbox", "network": "none"},
+        probe=info,
+    )
+    assert choice["ok"] is False
+    assert choice["verdict"] == "sandbox_unavailable"
+
+    def timeout(argv, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=3)
+
+    monkeypatch.setattr(pr.subprocess, "run", timeout)
+    timed = pr.probe_host()
+    assert timed["docker"] is False
+    assert timed["docker_error"] == "timeout"
+    assert timed["runtimes"] == {}
+
+
+def test_probe_api_and_runsc_selects_gvisor(monkeypatch):
+    import vulnforge.poc_runner as pr
+
+    def which(name: str):
+        return "/usr/bin/docker" if name == "docker" else None
+
+    def run(argv, **_kwargs):
+        return _completed(argv, code=0, stdout=b'{"runsc":{"path":"runsc"},"runc":{}}')
+
+    monkeypatch.setattr(pr.shutil, "which", which)
+    monkeypatch.setattr(pr.subprocess, "run", run)
+    monkeypatch.setattr(pr.Path, "exists", lambda self: False)
+    info = pr.probe_host()
+    assert info["docker"] is True
+    assert info["docker_cli"] is True
+    assert "runsc" in info["runtimes"]
+    assert pr.docker_available() is True
+    choice = select_isolation({"runner": "sandbox", "network": "none"}, probe=info)
+    assert choice["ok"] is True
+    assert choice["isolation"] == "gvisor"
+    assert choice["runtime"] == "runsc"
+
+
+def test_probe_ignores_runtimes_json_when_info_fails(monkeypatch):
+    import vulnforge.poc_runner as pr
+
+    def which(name: str):
+        return "/usr/bin/docker" if name == "docker" else None
+
+    def run(argv, **_kwargs):
+        return _completed(argv, code=1, stdout=b'{"runsc":{}}', stderr=b"Cannot connect to the Docker daemon")
+
+    monkeypatch.setattr(pr.shutil, "which", which)
+    monkeypatch.setattr(pr.subprocess, "run", run)
+    info = pr.probe_host()
+    assert info["docker"] is False
+    assert info["runtimes"] == {}
+    choice = select_isolation({"runner": "sandbox", "network": "none"}, probe=info)
+    assert choice["verdict"] == "sandbox_unavailable"
+
+
+def test_preflight_mentions_relogin_when_gid_blocks_api(monkeypatch):
+    import vulnforge.poc_runner as pr
+
+    monkeypatch.setattr(
+        pr,
+        "probe_host",
+        lambda: {
+            "docker": False,
+            "docker_cli": True,
+            "docker_error": "permission denied while trying to connect to the Docker daemon socket",
+            "runtimes": {},
+            "kvm": False,
+            "firecracker_patched": False,
+            "jailer_patched": False,
+        },
+    )
+    monkeypatch.setattr(pr, "effective_lacks_docker_group", lambda: True)
+    report = pr.sandbox_poc_preflight({"poc_harness": {"runner": "sandbox", "network": "none"}})
+    assert report["ok"] is False
+    text = report["message"].lower()
+    assert "docker api" in text
+    assert "log out" in text
+    assert "newgrp" in text
+
+    monkeypatch.setattr(pr, "effective_lacks_docker_group", lambda: False)
+    quiet = pr.sandbox_poc_preflight({"poc_harness": {"runner": "sandbox", "network": "none"}})
+    assert quiet["ok"] is False
+    assert "log out" not in quiet["message"].lower()
+
+
+def test_preflight_refuses_when_runsc_missing(monkeypatch):
+    import vulnforge.poc_runner as pr
+
+    monkeypatch.setattr(
+        pr,
+        "probe_host",
+        lambda: _probe(runtimes={"runc": {}}, kvm=False, firecracker_patched=False, jailer_patched=False),
+    )
+    report = pr.sandbox_poc_preflight({"poc_harness": {"runner": "sandbox", "network": "none"}})
+    assert report["ok"] is False
+    assert report["isolation"]["verdict"] == "sandbox_unavailable"
+    assert "runsc" in report["message"].lower() or "microvm" in report["message"].lower()
+
+
+def test_preflight_accepts_gvisor(monkeypatch):
+    import vulnforge.poc_runner as pr
+
+    monkeypatch.setattr(pr, "probe_host", lambda: _probe(runtimes={"runsc": {}}, kvm=False))
+    report = pr.sandbox_poc_preflight({"poc_harness": {"runner": "sandbox", "network": "none"}})
+    assert report["ok"] is True
+    assert report["isolation"]["isolation"] == "gvisor"
+
+
+def test_start_run_refuses_sandbox_poc_without_spawning(tmp_path: Path, monkeypatch):
+    import vulnforge.poc_runner as pr
+    from vulnforge.ui.runner import start_run
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    db = Database.create(run_dir / "harness.db")
+    db.insert_run(
+        run_id="run-001",
+        target_path=str(tmp_path),
+        profile="code_static",
+        prompt_pin="pin",
+        config={
+            "run": {"sandbox_poc_validate": True},
+            "poc_harness": {"sandbox_oneshot": True, "runner": "sandbox", "network": "none"},
+        },
+    )
+    db.close()
+    monkeypatch.setattr(
+        pr,
+        "probe_host",
+        lambda: {
+            "docker": False,
+            "docker_cli": True,
+            "docker_error": "permission denied while trying to connect to the Docker daemon socket",
+            "runtimes": {},
+            "kvm": False,
+            "firecracker_patched": False,
+            "jailer_patched": False,
+        },
+    )
+    monkeypatch.setattr(pr, "effective_lacks_docker_group", lambda: True)
+
+    def explode(*_a, **_k):
+        raise AssertionError("ralph must not spawn")
+
+    import vulnforge.ui.runner as runner
+
+    monkeypatch.setattr(runner.subprocess, "Popen", explode)
+    result = start_run(run_dir)
+    assert result["ok"] is False
+    assert "log out" in result["error"].lower()
+    assert not (run_dir / "ralph.pid").is_file()
+
+
+def test_start_block_skips_when_sandbox_off(tmp_path: Path, monkeypatch):
+    import vulnforge.poc_runner as pr
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    db = Database.create(run_dir / "harness.db")
+    db.insert_run(
+        run_id="run-001",
+        target_path=str(tmp_path),
+        profile="code_static",
+        prompt_pin="pin",
+        config={"run": {"sandbox_poc_validate": False}, "poc_harness": {"sandbox_oneshot": False}},
+    )
+    db.close()
+
+    def explode():
+        raise AssertionError("probe")
+
+    monkeypatch.setattr(pr, "probe_host", explode)
+    assert pr.sandbox_poc_start_block(run_dir) is None

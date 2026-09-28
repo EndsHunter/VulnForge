@@ -90,3 +90,39 @@ def test_api_init_accepts_single_source_file(tmp_path: Path):
     man = json.loads((run_dir / "target_manifest.json").read_text(encoding="utf-8"))
     assert man.get("kind") == "single_file"
     assert man.get("file_count") == 1
+
+
+def test_api_init_sandbox_poc_refuses_with_message(tmp_path: Path, monkeypatch):
+    import vulnforge.poc_runner as pr
+
+    monkeypatch.setattr(
+        pr,
+        "probe_host",
+        lambda: {
+            "docker": False,
+            "docker_cli": True,
+            "docker_error": "permission denied while trying to connect to the Docker daemon socket",
+            "runtimes": {},
+            "kvm": False,
+            "firecracker_patched": False,
+            "jailer_patched": False,
+        },
+    )
+    monkeypatch.setattr(pr, "effective_lacks_docker_group", lambda: True)
+    src = tmp_path / "lonely.py"
+    src.write_text("print('hello')\n", encoding="utf-8")
+    app = create_app(runs_root=tmp_path / "runs")
+    client = TestClient(app)
+    r = client.post(
+        "/api/runs/init?background=false",
+        json={
+            "target": str(src),
+            "profile": "code_static",
+            "start": False,
+            "enqueue_hunts": False,
+            "sandbox_poc_validate": True,
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "log out" in r.text.lower()
+    assert not any((tmp_path / "runs").rglob("harness.db"))
