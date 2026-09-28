@@ -108,6 +108,9 @@ describe("renderLivePane round vs tool lines", () => {
     assert.deepEqual(roundBadges(steps), []);
     assert.equal((header.match(/Round /g) || []).length, 1);
     assert.doesNotMatch(steps, /round\s+9\/50/i);
+    assert.match(steps, /round 9 · call 1/);
+    assert.match(steps, /round 9 · call 2/);
+    assert.match(steps, /round 9 · call 3/);
     for (const name of ["grep", "read_file", "submit_none"]) {
       assert.match(steps, new RegExp(name));
     }
@@ -127,9 +130,9 @@ describe("renderLivePane round vs tool lines", () => {
     renderLivePane(legacy);
     const steps = nodes.get("#live-task-steps").innerHTML;
     assert.deepEqual(roundBadges(steps), []);
-    assert.match(steps, /call 1/);
-    assert.match(steps, /call 2/);
-    assert.match(steps, /call 3/);
+    assert.match(steps, /round 9 · call 1/);
+    assert.match(steps, /round 9 · call 2/);
+    assert.match(steps, /round 9 · call 3/);
     assert.match(steps, /grep/);
   });
 

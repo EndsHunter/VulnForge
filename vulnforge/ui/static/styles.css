@@ -3605,7 +3605,7 @@ tr.task-row .task-actions-cell .btn {
 }
 .live-task-steps li {
   display: grid;
-  grid-template-columns: 6.2rem minmax(7rem, 11rem) 1fr;
+  grid-template-columns: minmax(11rem, max-content) minmax(7rem, 11rem) 1fr;
   gap: 0.45rem 0.7rem;
   padding: 0.4rem 0.7rem;
   border-bottom: 1px solid var(--border);

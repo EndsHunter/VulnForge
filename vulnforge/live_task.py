@@ -9,11 +9,17 @@ steer live in the run directory:
 Steer is applied at a **round boundary** (before the next model call). It
 does not rewrite a tool the model already chose, and it never confirms or
 rejects findings.
+
+Live snapshot writers (``record_tool_call``, ``note_round_start``, bind /
+unbind) and steer writers share ``_live_lock`` — the same ``fcntl`` flock
+file as steer (``steer/task-<id>.lock``). The lock is reentrant on the
+holding thread so a steer boundary can call a tool that records a step.
 """
 
 from __future__ import annotations
 
 import json
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -56,21 +62,22 @@ def bind_task(run_dir: Path, task_id: int, kind: str, max_rounds: int) -> object
     bind = LiveBind(run_dir, task_id, kind, max_rounds)
     token = _bind.set(bind)
     try:
-        _write_json(
-            _live_path(bind.run_dir, bind.task_id),
-            {
-                "task_id": bind.task_id,
-                "kind": bind.kind,
-                "phase": "running",
-                "round": 0,
-                "max_rounds": bind.max_rounds,
-                "tool": None,
-                "args_summary": "",
-                "ok": None,
-                "steps": [],
-                "updated_at": utc_now_iso(),
-            },
-        )
+        with _live_lock(bind.run_dir, bind.task_id):
+            _write_json(
+                _live_path(bind.run_dir, bind.task_id),
+                {
+                    "task_id": bind.task_id,
+                    "kind": bind.kind,
+                    "phase": "running",
+                    "round": 0,
+                    "max_rounds": bind.max_rounds,
+                    "tool": None,
+                    "args_summary": "",
+                    "ok": None,
+                    "steps": [],
+                    "updated_at": utc_now_iso(),
+                },
+            )
     except OSError:
         pass
     return token
@@ -80,12 +87,13 @@ def unbind_task(token: object) -> None:
     bind = _bind.get()
     if bind is not None:
         try:
-            snap = _read_json(_live_path(bind.run_dir, bind.task_id)) or {}
-            snap["phase"] = "ended"
-            snap["updated_at"] = utc_now_iso()
-            snap.setdefault("task_id", bind.task_id)
-            snap.setdefault("max_rounds", bind.max_rounds)
-            _write_json(_live_path(bind.run_dir, bind.task_id), snap)
+            with _live_lock(bind.run_dir, bind.task_id):
+                snap = _read_json(_live_path(bind.run_dir, bind.task_id)) or {}
+                snap["phase"] = "ended"
+                snap["updated_at"] = utc_now_iso()
+                snap.setdefault("task_id", bind.task_id)
+                snap.setdefault("max_rounds", bind.max_rounds)
+                _write_json(_live_path(bind.run_dir, bind.task_id), snap)
         except OSError:
             pass
     try:
@@ -95,23 +103,34 @@ def unbind_task(token: object) -> None:
 
 
 def note_round_start() -> int:
-    """Count a model round that is about to start. Returns the 1-based index."""
+    """Count a model round that is about to start. Returns the 1-based index.
+
+    Clears the top-level "now" tool fields so the pane does not keep showing
+    a finished tool while the model is thinking. Prior ``steps`` stay.
+    """
     bind = _bind.get()
     if bind is None:
         return 0
-    bind.round_n += 1
+    incremented = False
     try:
-        snap = _read_json(_live_path(bind.run_dir, bind.task_id)) or {}
-        snap["round"] = bind.round_n
-        snap["max_rounds"] = bind.max_rounds
-        snap["phase"] = "running"
-        snap["updated_at"] = utc_now_iso()
-        snap.setdefault("task_id", bind.task_id)
-        snap.setdefault("kind", bind.kind)
-        snap.setdefault("steps", [])
-        _write_json(_live_path(bind.run_dir, bind.task_id), snap)
+        with _live_lock(bind.run_dir, bind.task_id):
+            bind.round_n += 1
+            incremented = True
+            snap = _read_json(_live_path(bind.run_dir, bind.task_id)) or {}
+            snap["round"] = bind.round_n
+            snap["max_rounds"] = bind.max_rounds
+            snap["phase"] = "running"
+            snap["tool"] = None
+            snap["args_summary"] = ""
+            snap["ok"] = None
+            snap["updated_at"] = utc_now_iso()
+            snap.setdefault("task_id", bind.task_id)
+            snap.setdefault("kind", bind.kind)
+            snap.setdefault("steps", [])
+            _write_json(_live_path(bind.run_dir, bind.task_id), snap)
     except OSError:
-        pass
+        if not incremented:
+            bind.round_n += 1
     return bind.round_n
 
 
@@ -154,45 +173,45 @@ def record_tool_call(name: str, args: Any, out: Any) -> None:
     else:
         ok = None
     rnd = bind.round_n if bind.round_n > 0 else 1
-    steps: list[dict[str, Any]] = []
-    snap: dict[str, Any] = {}
-    try:
-        snap = _read_json(_live_path(bind.run_dir, bind.task_id)) or {}
-        steps = [s for s in (snap.get("steps") or []) if isinstance(s, dict)]
-    except OSError:
-        snap = {}
-        steps = []
     # `round` is the model round from note_round_start. `call` numbers the
     # tool line inside that round so the pane does not treat each call as a round.
-    call_n = 1 + sum(1 for s in steps if _step_round(s) == rnd)
-    step = {
-        "call": call_n,
-        "round": rnd,
-        "max_rounds": bind.max_rounds,
-        "tool": tool,
-        "args_summary": summary,
-        "ok": ok,
-        "ts": utc_now_iso(),
-    }
+    # Count and append under the live lock. An unlocked read-modify-write
+    # drops concurrent tools in one model round (last writer wins).
+    call_n = 1
+    step_ts = utc_now_iso()
     try:
-        steps.append(step)
-        if len(steps) > _MAX_STEPS:
-            steps = steps[-_MAX_STEPS:]
-        snap.update(
-            {
-                "task_id": bind.task_id,
-                "kind": bind.kind,
-                "phase": "running",
+        with _live_lock(bind.run_dir, bind.task_id):
+            snap = _read_json(_live_path(bind.run_dir, bind.task_id)) or {}
+            steps = [s for s in (snap.get("steps") or []) if isinstance(s, dict)]
+            call_n = 1 + _max_call_in_round(steps, rnd)
+            step_ts = utc_now_iso()
+            step = {
+                "call": call_n,
                 "round": rnd,
                 "max_rounds": bind.max_rounds,
                 "tool": tool,
                 "args_summary": summary,
                 "ok": ok,
-                "steps": steps,
-                "updated_at": step["ts"],
+                "ts": step_ts,
             }
-        )
-        _write_json(_live_path(bind.run_dir, bind.task_id), snap)
+            steps.append(step)
+            if len(steps) > _MAX_STEPS:
+                steps = steps[-_MAX_STEPS:]
+            snap.update(
+                {
+                    "task_id": bind.task_id,
+                    "kind": bind.kind,
+                    "phase": "running",
+                    "round": rnd,
+                    "max_rounds": bind.max_rounds,
+                    "tool": tool,
+                    "args_summary": summary,
+                    "ok": ok,
+                    "steps": steps,
+                    "updated_at": step_ts,
+                }
+            )
+            _write_json(_live_path(bind.run_dir, bind.task_id), snap)
     except OSError:
         pass
     try:
@@ -497,6 +516,26 @@ def _step_round(step: dict[str, Any]) -> int:
         return 0
 
 
+def _step_call(step: dict[str, Any]) -> int:
+    try:
+        return int(step.get("call") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _max_call_in_round(steps: list[dict[str, Any]], rnd: int) -> int:
+    """Highest call index still stored for ``rnd``.
+
+    Counting remaining rows breaks once ``_MAX_STEPS`` drops the oldest
+    calls: the pane stays full and every new call would reuse the same index.
+    """
+    best = 0
+    for step in steps:
+        if _step_round(step) == rnd:
+            best = max(best, _step_call(step))
+    return best
+
+
 def _live_path(run_dir: Path, task_id: int) -> Path:
     return Path(run_dir) / "live" / f"task-{int(task_id)}.json"
 
@@ -506,7 +545,18 @@ def _steer_path(run_dir: Path, task_id: int) -> Path:
 
 
 def _lock_path(run_dir: Path, task_id: int) -> Path:
+    """One flock file for steer JSON and the live snapshot of this task."""
     return Path(run_dir) / "steer" / f"task-{int(task_id)}.lock"
+
+
+class _LockDepth(threading.local):
+    """Per-thread reentry depth so steer can record a tool without deadlock."""
+
+    def __init__(self) -> None:
+        self.held: dict[tuple[str, int], int] = {}
+
+
+_lock_depth = _LockDepth()
 
 
 def _load_steer(run_dir: Path, task_id: int) -> dict[str, Any]:
@@ -519,17 +569,42 @@ def _load_steer(run_dir: Path, task_id: int) -> dict[str, Any]:
 
 
 @contextmanager
-def _steer_lock(run_dir: Path, task_id: int) -> Iterator[None]:
+def _live_lock(run_dir: Path, task_id: int) -> Iterator[None]:
+    """Exclusive lock for live-snapshot and steer writers of one task.
+
+    Same flock file as historical ``_steer_lock`` (``steer/task-<id>.lock``).
+    Reentrant on the holding thread: ``apply_round_boundary`` calls a tool
+    while the steer lock is held, and that tool records a live step.
+    Other threads and processes block on ``fcntl.flock`` until the outer
+    hold releases.
+    """
     import fcntl
+
+    key = (str(Path(run_dir)), int(task_id))
+    held = _lock_depth.held
+    depth = held.get(key, 0)
+    if depth > 0:
+        held[key] = depth + 1
+        try:
+            yield
+        finally:
+            held[key] = depth
+        return
 
     path = _lock_path(run_dir, task_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        held[key] = 1
         try:
             yield
         finally:
+            held.pop(key, None)
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+# Steer writers keep the old name. It is the same lock as live snapshots.
+_steer_lock = _live_lock
 
 
 def _read_json(path: Path) -> Optional[dict[str, Any]]:
