@@ -33,6 +33,15 @@ FLAT_CONNECTION_KEYS = (
     "model_develop_poc",
 )
 
+# Stage role fields stored on ui_settings and copied onto llm.*.
+# model_validate blank means "same as hunt", not "same as default".
+STAGE_ROLE_FIELDS = (
+    "model_recon",
+    "model_hunt",
+    "model_develop_poc",
+    "model_validate",
+)
+
 MIGRATED_HOST_ID = "default"
 
 # Integers stored on an available row. Token knobs seed from the globals.
@@ -353,7 +362,7 @@ def configured_lease_pairs(source: Any) -> list[tuple[str, str]]:
 
     ref = source.get("model_ref")
     add(ref if is_model_ref(ref) else source.get("model"))
-    for key in ("model_recon", "model_hunt", "model_develop_poc"):
+    for key in STAGE_ROLE_FIELDS:
         add(source.get(key))
     raw_validate = source.get("validate_models")
     if isinstance(raw_validate, list):
@@ -615,7 +624,7 @@ def _collect_flat_model_ids(raw: dict[str, Any]) -> list[str]:
         out.append(text)
 
     add(raw.get("model"))
-    for key in ("model_recon", "model_hunt", "model_develop_poc"):
+    for key in STAGE_ROLE_FIELDS:
         add(raw.get(key))
     for mid in normalize_model_list(raw.get("validate_models")):
         add(mid)
@@ -687,6 +696,7 @@ def migrate_flat_settings(raw: dict[str, Any], *, base: dict[str, Any] | None = 
             "model_recon": _ref_or_none(host["id"], src.get("model_recon")),
             "model_hunt": _ref_or_none(host["id"], src.get("model_hunt")),
             "model_develop_poc": _ref_or_none(host["id"], src.get("model_develop_poc")),
+            "model_validate": _ref_or_none(host["id"], src.get("model_validate")),
             "validate_models": validate_refs,
             "hunt_perspectives": perspectives,
         }

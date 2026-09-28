@@ -68,11 +68,16 @@ llm:
       prompt: hunt_dataflow.md
     - id: authz
       prompt: hunt_authz.md
-  # Per-stage model overrides (blank → llm.model). Owned by Settings UI when present.
+  # Per-stage model overrides. Blank recon / hunt / develop_poc → llm.model.
+  # model_validate blank → same as hunt (model_hunt, else llm.model).
+  # Owned by Settings UI when present. Never auto-confirms.
   model_recon: ""
   model_hunt: ""
   model_develop_poc: ""
-  # Multi-model validation list (1+). Empty → [llm.model]. Disprove + PoC referee.
+  model_validate: ""
+  # Multi-model validation list (1+). Non-empty list is the full slot set
+  # and wins over model_validate. Empty → model_validate, else the hunt role.
+  # Disprove + PoC referee. Demote / annotate only.
   validate_models: []
   # all | majority — agreement required for positive multi-model “valid” signals
   validate_consensus: majority

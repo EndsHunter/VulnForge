@@ -176,14 +176,14 @@
     return out;
   }
 
-  function fillRoleSelect(select, selected, allowEmpty) {
+  function fillRoleSelect(select, selected, allowEmpty, blankLabel) {
     if (!select) return;
     const current = refKey(selected);
     select.replaceChildren();
     if (allowEmpty) {
       const blank = document.createElement("option");
       blank.value = "";
-      blank.textContent = "(default)";
+      blank.textContent = blankLabel || "(default)";
       select.appendChild(blank);
     } else {
       const blank = document.createElement("option");
@@ -319,9 +319,10 @@
 
   function refreshRoleOptions() {
     fillRoleSelect($("#set-model"), parseRefKey($("#set-model")?.value || ""), false);
-    ["set-model-recon", "set-model-hunt", "set-model-develop-poc"].forEach((id) => {
+    ["set-model-recon", "set-model-hunt", "set-model-develop-poc", "set-model-validate"].forEach((id) => {
       const el = document.getElementById(id);
-      fillRoleSelect(el, parseRefKey(el?.value || ""), true);
+      const blank = id === "set-model-validate" ? "(same as hunt)" : "(default)";
+      fillRoleSelect(el, parseRefKey(el?.value || ""), true, blank);
     });
     document.querySelectorAll("#set-hunt-perspectives [data-field=model]").forEach((select) => {
       const current = parseRefKey(select.value);
@@ -368,16 +369,32 @@
     }
   }
 
+  function selectedRoleKey(id) {
+    const el = document.getElementById(id);
+    return refKey(parseRefKey(el?.value || "") || {});
+  }
+
   function updateValidateWarn() {
     const warn = $("#set-validate-models-warn");
     if (!warn) return;
-    const refs = readValidateRefs();
-    const keys = refs.map((ref) => ref.model_id.toLowerCase());
+    const checked = readValidateRefs().map((ref) => refKey(ref)).filter(Boolean);
+    let keys = checked;
+    if (!keys.length) {
+      const dedicated = selectedRoleKey("set-model-validate");
+      if (dedicated) keys = [dedicated];
+    }
+    const huntKey = selectedRoleKey("set-model-hunt") || selectedRoleKey("set-model");
+    if (!keys.length && huntKey) keys = [huntKey];
     const uniq = [...new Set(keys)];
-    if (refs.length === 0 || uniq.length <= 1) {
+    const matchesHunt = keys.length > 0 && !!huntKey && keys.every((key) => key === huntKey);
+    if (!keys.length || matchesHunt) {
       warn.hidden = false;
       warn.textContent =
-        "Same-model disprove is a weak signal. Add a second validation model when you can.";
+        "Validate uses the hunt model — same-model dual disprove is a weak signal. Never auto-confirms.";
+    } else if (uniq.length <= 1) {
+      warn.hidden = false;
+      warn.textContent =
+        "One validation model is a weaker signal than two. Never auto-confirms.";
     } else {
       warn.hidden = true;
       warn.textContent = "";
@@ -555,6 +572,7 @@
       model_recon: parseRefKey($("#set-model-recon")?.value || ""),
       model_hunt: parseRefKey($("#set-model-hunt")?.value || ""),
       model_develop_poc: parseRefKey($("#set-model-develop-poc")?.value || ""),
+      model_validate: parseRefKey($("#set-model-validate")?.value || ""),
       validate_models: readValidateRefs(),
       validate_consensus: $("#set-validate-consensus")?.value || "majority",
       validate_poc_referee: !!$("#set-validate-poc-referee")?.checked,
@@ -583,6 +601,13 @@
     fillRoleSelect($("#set-model-recon"), s.model_recon, true);
     fillRoleSelect($("#set-model-hunt"), s.model_hunt, true);
     fillRoleSelect($("#set-model-develop-poc"), s.model_develop_poc, true);
+    fillRoleSelect($("#set-model-validate"), s.model_validate, true, "(same as hunt)");
+    const validateSel = $("#set-model-validate");
+    if (validateSel) validateSel.onchange = () => updateValidateWarn();
+    const huntSel = $("#set-model-hunt");
+    if (huntSel) huntSel.onchange = () => updateValidateWarn();
+    const defaultSel = $("#set-model");
+    if (defaultSel) defaultSel.onchange = () => updateValidateWarn();
     renderValidatePicks(Array.isArray(s.validate_models) ? s.validate_models.filter((x) => x && typeof x === "object") : []);
     if ($("#set-validate-consensus")) {
       $("#set-validate-consensus").value = s.validate_consensus || "majority";
@@ -632,7 +657,21 @@
     const s = data.settings || {};
     const dash = "-";
     const keyNote = eff.api_key_set ? "api key set" : "no api key";
-    const vList = eff.validate_models && eff.validate_models.length ? eff.validate_models : [eff.model || dash];
+    const targetLabel = (item) => {
+      if (item && typeof item === "object") {
+        const hid = String(item.host_id || "").trim();
+        const mid = String(item.model_id || "").trim();
+        if (hid && mid) return `${hid}/${mid}`;
+        return mid || dash;
+      }
+      const text = String(item || "").trim();
+      return text || dash;
+    };
+    const targets = Array.isArray(eff.validate_targets) && eff.validate_targets.length
+      ? eff.validate_targets
+      : (eff.validate_models && eff.validate_models.length ? eff.validate_models : [eff.model || dash]);
+    const vList = targets.map(targetLabel);
+    const huntShown = targetLabel(eff.hunt_model || eff.model_hunt || eff.model || dash);
     const huntOn = (eff.hunt_moa ?? s.hunt_moa) === true;
     const huntList = eff.hunt_perspectives && eff.hunt_perspectives.length ? eff.hunt_perspectives : [];
     const huntBrief = huntList
@@ -647,7 +686,7 @@
     const hostCount = (s.hosts || []).length;
     el.textContent =
       `Effective: ${eff.base_url || dash} | default ${eff.model || dash} | hosts ${hostCount} | ` +
-      `available ${(s.available || []).length} | validate [${vList.join(", ")}] | ` +
+      `available ${(s.available || []).length} | hunt ${huntShown} | validate [${vList.join(", ")}] | ` +
       `consensus ${eff.validate_consensus || s.validate_consensus || "majority"} | ` +
       `referee ${eff.validate_poc_referee ?? s.validate_poc_referee} | ` +
       `disprove ${eff.validate_llm ?? s.validate_llm} | ` +

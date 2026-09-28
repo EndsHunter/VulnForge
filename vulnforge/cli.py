@@ -158,6 +158,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hunt skill id when --hunt-skill-mode=explicit (repeatable)",
     )
     init_p.add_argument(
+        "--model-validate",
+        default=None,
+        help=(
+            "Dedicated validate_llm / PoC referee model. "
+            "Bare model id when no hosts are saved (ids may contain slashes). "
+            "host_id/model_id when a host catalog is saved — the first slash "
+            "separates the host; a bare id is refused so it cannot match another host. "
+            "Writes Settings and this run's config. Omit to leave the role unchanged "
+            "(blank = same as hunt). Never auto-confirms."
+        ),
+    )
+    init_p.add_argument(
         "--sandbox-poc",
         dest="sandbox_poc_validate",
         action="store_true",
@@ -383,6 +395,41 @@ def resolve_run_dir(args, cfg: dict) -> Path:
     return candidates[0]
 
 
+def parse_model_validate_flag(raw: str, *, hosts: list) -> Any:
+    """Bare model id, or ``host_id/model_id`` when hosts are saved.
+
+    No hosts: the whole string is the model id, including ``org/model``.
+    Hosts saved: the first ``/`` or ``|`` separates host from model. A bare id
+    is refused (no cross-host fallback).
+    """
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("--model-validate is empty")
+    if not hosts:
+        return text
+    sep = "|" if "|" in text else ("/" if "/" in text else "")
+    if not sep:
+        raise ValueError(
+            "--model-validate needs host_id/model_id when hosts are saved "
+            "(refusing a bare id that could match another host)"
+        )
+    host_id, model_id = text.split(sep, 1)
+    host_id, model_id = host_id.strip(), model_id.strip()
+    if not host_id or not model_id:
+        raise ValueError("--model-validate needs host_id/model_id")
+    return {"host_id": host_id, "model_id": model_id}
+
+
+def apply_init_model_validate(cfg: dict, raw: str) -> dict:
+    """Store the Validate / Referee role in Settings and return the merged cfg."""
+    from vulnforge.settings import apply_ui_settings_to_cfg, load_ui_settings, save_ui_settings
+
+    ui = load_ui_settings()
+    ref = parse_model_validate_flag(raw, hosts=list(ui.get("hosts") or []))
+    saved = save_ui_settings({"model_validate": ref})
+    return apply_ui_settings_to_cfg(cfg, saved)
+
+
 def cmd_init(args, cfg: dict) -> int:
     from vulnforge.util import is_pe_file
 
@@ -405,6 +452,14 @@ def cmd_init(args, cfg: dict) -> int:
     if not target.is_dir() and not target.is_file():
         print(f"target not found or not a directory/file: {target}", file=sys.stderr)
         return EXIT_CONFIG
+
+    flag = getattr(args, "model_validate", None)
+    if flag is not None and str(flag).strip():
+        try:
+            cfg = apply_init_model_validate(cfg, str(flag))
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return EXIT_CONFIG
 
     strategy = str(getattr(args, "strategy", None) or "discovery").strip().lower()
     docs_path_arg = getattr(args, "docs_path", None)
@@ -799,15 +854,26 @@ def cmd_status(args, cfg: dict) -> int:
     print(f"tasks:   {s.get('tasks')}")
     print(f"findings:{s.get('findings')}")
     print(f"has_work:{s.get('has_work')}")
+    from vulnforge.llm_models import status_model_summary, validate_same_as_hunt
+
+    summary = status_model_summary(cfg)
+    print(f"models:  {summary}")
     stages = cfg.get("stages") or {}
     if stages.get("validate_llm"):
-        print(
-            "note: stages.validate_llm is ON (default) — after mech pass, dual "
-            "disprove may rejected_llm only (never auto-confirm). Same model "
-            "as hunter is weak signal; set stages.validate_llm: false to skip "
-            "for speed or debug.",
-            file=sys.stderr,
-        )
+        if validate_same_as_hunt(cfg):
+            note = (
+                "note: stages.validate_llm is ON (default) — after mech pass, dual "
+                "disprove may rejected_llm only (never auto-confirm). "
+                f"{summary} — validate matches hunt (weak signal). "
+                "Set stages.validate_llm: false to skip for speed or debug."
+            )
+        else:
+            note = (
+                "note: stages.validate_llm is ON (default) — after mech pass, dual "
+                "disprove may rejected_llm only (never auto-confirm). "
+                f"{summary}."
+            )
+        print(note, file=sys.stderr)
     return EXIT_PROGRESS
 
 

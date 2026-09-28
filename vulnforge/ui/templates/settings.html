@@ -74,7 +74,7 @@
         <section class="card settings-card settings-card-roles" id="settings-roles">
           <h2>Roles</h2>
           <p class="controls-hint" style="margin-top:0">
-            Pick from Available. A blank stage uses the default role. A missing host fails the lease.
+            Pick from Available. A blank stage uses the default role. Validate / Referee blank is (same as hunt). A missing host fails the lease.
           </p>
           <div class="grid-2">
             <div class="field" style="grid-column:1/-1">
@@ -89,16 +89,21 @@
               <label class="field-label" for="set-model-hunt"><span class="label-text">Hunt</span></label>
               <select id="set-model-hunt" class="settings-select"></select>
             </div>
-            <div class="field" style="grid-column:1/-1">
+            <div class="field">
               <label class="field-label" for="set-model-develop-poc"><span class="label-text">Develop PoC</span></label>
               <select id="set-model-develop-poc" class="settings-select"></select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-model-validate"><span class="label-text">Validate / Referee</span></label>
+              <select id="set-model-validate" class="settings-select"></select>
             </div>
           </div>
 
           <h3 class="settings-subhead">Multi-model validation</h3>
           <p class="controls-hint" style="margin-top:0">
-            Checked models argue whether a finding holds. Auto-reject only when every disprove slot rejects.
-            Empty = default role only — <strong>same-model dual disprove is a weak signal</strong>.
+            Checked models are the validation slots when any are checked (they replace the Validate / Referee pick).
+            None checked uses that role, or the hunt role when it is blank.
+            Same model as hunt is a weak signal. Auto-reject only when every disprove slot rejects.
             Never auto-confirms.
           </p>
           <div id="set-validate-models" class="validate-model-picks"></div>
