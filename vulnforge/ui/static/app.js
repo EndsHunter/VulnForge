@@ -2331,7 +2331,8 @@ function renderCampaignStripHtml(vm, snap) {
     .map((k, i) => {
       const sep =
         i > 0 ? `<span class="arch-campaign-sep" aria-hidden="true">·</span>` : "";
-      return `${sep}<button type="button" class="arch-campaign-kpi" data-kpi-idx="${i}" title="${esc(k.hint || k.label)}">
+      const described = [k.label, k.value, k.hint].filter(Boolean).join(". ");
+      return `${sep}<button type="button" class="arch-campaign-kpi" data-kpi-idx="${i}" title="${esc(k.hint || k.label)}" aria-label="${esc(described)}">
         <span class="arch-campaign-kpi-label">${esc(k.label)}</span>
         <span class="arch-campaign-kpi-value mono">${esc(k.value)}</span>
       </button>`;

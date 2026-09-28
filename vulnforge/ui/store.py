@@ -256,6 +256,10 @@ def run_card(run: RunRef) -> dict[str, Any]:
         total_tasks = sum(tasks.values()) or 0
         # Durable terminal states only. failed_infra is an *event* / stage signal;
         # under-cap infra requeues as queued, at-cap becomes deadletter.
+        # progress is finished / tasks known so far. Queued and leased rows sit
+        # in the denominator only. continue_hunt, continue_recon, and any other
+        # mid-run enqueue grow total_tasks immediately, so the fraction can fall
+        # while done_tasks stays flat. Do not clamp or freeze it.
         done = sum(
             tasks.get(k, 0)
             for k in (
