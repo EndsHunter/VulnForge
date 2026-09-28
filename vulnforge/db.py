@@ -501,6 +501,20 @@ class Database:
             "SELECT * FROM runs ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
 
+    def set_run_status(self, status: str) -> None:
+        """Update durable ``runs.status`` on the current run row.
+
+        No-op when the row is missing or already holds ``status``.
+        """
+        row = self.get_run()
+        if row is None or row["status"] == status:
+            return
+        self.conn.execute(
+            "UPDATE runs SET status=? WHERE id=?",
+            (status, row["id"]),
+        )
+        self.conn.commit()
+
     def set_architecture(
         self,
         architecture: dict,

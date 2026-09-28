@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -21,6 +22,7 @@ from vulnforge.live_task import (
     request_abort,
     request_force_submit_none,
     summarize_args,
+    thinking_heartbeat,
     unbind_task,
 )
 from vulnforge.llm import FakeLLMClient, LLMResult, ResponseClass
@@ -150,16 +152,141 @@ def test_note_round_start_clears_current_tool(tmp_path: Path):
         assert note_round_start() == 2
         waiting = read_live_view(run, 1)
         assert waiting["round"] == 2
+        assert waiting["phase"] == "thinking"
         assert waiting["tool"] is None
         assert waiting["args_summary"] == ""
         assert waiting["ok"] is None
+        assert waiting["wait_started_at"]
+        assert waiting["heartbeat_n"] == 0
         assert [s["tool"] for s in waiting["steps"]] == ["grep"]
         assert waiting["steps"][0]["round"] == 1
+        record_tool_call("read_file", {"path": "app.py"}, {"ok": True})
+        running = read_live_view(run, 1)
+        assert running["phase"] == "running"
+        assert running["tool"] == "read_file"
+        assert running["wait_started_at"] is None
+        assert [s["tool"] for s in running["steps"]] == ["grep", "read_file"]
     finally:
         unbind_task(token)
     ended = read_live_view(run, 1)
     assert ended["phase"] == "ended"
-    assert [s["tool"] for s in ended["steps"]] == ["grep"]
+    assert ended["wait_started_at"] is None
+    assert [s["tool"] for s in ended["steps"]] == ["grep", "read_file"]
+
+
+def test_thinking_heartbeat_touches_updated_at_without_steps(tmp_path: Path, monkeypatch):
+    """Heartbeat refreshes liveness metadata and does not invent tools or steps."""
+    monkeypatch.setattr("vulnforge.live_task._HEARTBEAT_INTERVAL_S", 0.05)
+    run = _run(tmp_path)
+    token = bind_task(run, 1, "hunt", 8)
+    try:
+        record_tool_call("grep", {"pattern": "SELECT", "path": "app.py"}, {"ok": True})
+        before = read_live_view(run, 1)
+        assert note_round_start() == 1
+        waiting = read_live_view(run, 1)
+        assert waiting["phase"] == "thinking"
+        assert waiting["tool"] is None
+        assert waiting["wait_started_at"]
+        stamped = waiting["updated_at"]
+        with thinking_heartbeat():
+            deadline = time.time() + 2
+            mid = waiting
+            while time.time() < deadline:
+                mid = read_live_view(run, 1)
+                if mid["heartbeat_n"] >= 1 and mid["updated_at"] != stamped:
+                    break
+                time.sleep(0.02)
+        assert mid["phase"] == "thinking"
+        assert mid["tool"] is None
+        assert mid["args_summary"] == ""
+        assert mid["ok"] is None
+        assert mid["round"] == 1
+        assert mid["heartbeat_n"] >= 1
+        assert mid["updated_at"] != stamped
+        assert [s["tool"] for s in mid["steps"]] == ["grep"]
+        assert mid["steps"] == before["steps"]
+        events = (run / "events.jsonl").read_text(encoding="utf-8")
+        assert events.count('"event": "task_step"') == 1
+        record_tool_call("read_file", {"path": "app.py"}, {"ok": True})
+        done = read_live_view(run, 1)
+        assert done["phase"] == "running"
+        assert done["tool"] == "read_file"
+        assert done["wait_started_at"] is None
+        assert [s["tool"] for s in done["steps"]] == ["grep", "read_file"]
+    finally:
+        unbind_task(token)
+
+
+def test_openai_chat_wait_heartbeats_without_fake_tools(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("vulnforge.live_task._HEARTBEAT_INTERVAL_S", 0.05)
+    run = _run(tmp_path)
+
+    class Slow(FakeLLMClient):
+        def chat(self, messages, tools=None, temperature=0.3, max_tokens=None, timeout=None):
+            time.sleep(0.2)
+            return super().chat(
+                messages,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+
+    client = Slow(
+        responses=[
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="still looking",
+                tool_calls=[],
+                raw=None,
+                model_id="fake",
+            )
+        ]
+    )
+    packet = Packet(system="sys", user="hunt", tools_schema=[])
+    token = bind_task(run, 1, "hunt", 4)
+    try:
+        result = client.run_tool_loop(
+            packet, lambda name, args: {"ok": True}, max_rounds=1, temperature=0
+        )
+    finally:
+        unbind_task(token)
+    assert result.ok is True
+    view = read_live_view(run, 1)
+    assert view["phase"] == "ended"
+    assert view["tool"] is None
+    assert view["steps"] == []
+    assert view["heartbeat_n"] >= 1
+    events = (run / "events.jsonl").read_text(encoding="utf-8") if (run / "events.jsonl").is_file() else ""
+    assert "task_step" not in events
+
+
+def test_strands_before_model_heartbeats_until_tool(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("vulnforge.live_task._HEARTBEAT_INTERVAL_S", 0.05)
+    run = _run(tmp_path)
+    token = bind_task(run, 1, "hunt", 4)
+    try:
+        agent = type("Agent", (), {"messages": [], "cancel": lambda self: None})()
+        apply_steer_before_model(agent, {}, lambda name, args: {"ok": True}, [])
+        waiting = read_live_view(run, 1)
+        assert waiting["phase"] == "thinking"
+        assert waiting["tool"] is None
+        assert waiting["steps"] == []
+        deadline = time.time() + 2
+        while time.time() < deadline and read_live_view(run, 1)["heartbeat_n"] < 1:
+            time.sleep(0.02)
+        mid = read_live_view(run, 1)
+        assert mid["heartbeat_n"] >= 1
+        assert mid["tool"] is None
+        assert mid["steps"] == []
+        record_tool_call("grep", {"pattern": "SELECT"}, {"ok": True})
+        done = read_live_view(run, 1)
+        assert done["phase"] == "running"
+        assert done["wait_started_at"] is None
+        assert [s["tool"] for s in done["steps"]] == ["grep"]
+    finally:
+        unbind_task(token)
 
 
 def test_note_is_injected_once_and_does_not_touch_findings(tmp_path: Path):

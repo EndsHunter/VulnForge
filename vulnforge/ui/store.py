@@ -1,7 +1,8 @@
 """
-Read-only view of runs/ artifacts for the dashboard.
+Dashboard view of runs/ artifacts.
 
 Authority: harness.db + events.jsonl + evidence/ + project/ (projection).
+``run_card`` persists ``runs.status`` between ``active`` and ``idle``.
 """
 
 from __future__ import annotations
@@ -198,6 +199,31 @@ def _severity_counts(db: Database) -> dict[str, int]:
     return counts
 
 
+def _campaign_card_status(
+    db: Database,
+    db_status: Any,
+    *,
+    has_work: bool,
+    stop: bool,
+) -> str:
+    """Card label for Mission/Home. Persists idle ↔ active; never writes paused."""
+    status = "" if db_status is None else str(db_status)
+    if stop:
+        return "paused"
+    if not has_work and status in ("", "active"):
+        if status == "active":
+            db.set_run_status("idle")
+        return "idle"
+    if has_work:
+        if status == "idle":
+            db.set_run_status("active")
+            return "active"
+        if status in ("", "active"):
+            return "active"
+        return status
+    return status
+
+
 def run_card(run: RunRef) -> dict[str, Any]:
     """Compact summary for the home list."""
     locked = (run.path / "run.lock").is_file()
@@ -251,11 +277,12 @@ def run_card(run: RunRef) -> dict[str, Any]:
             or locked
         )
         has_work = bool(s.get("has_work"))
-        # runs.status stays the durable row (insert sets "active" and nothing
-        # pauses it). Mission and campaign status read this card: STOP means
-        # the operator paused the runner, so the card must not keep saying active.
+        # STOP (#120) paints the card paused and does not rewrite the row.
+        # Finished (no work) syncs durable active → idle; new work restores active.
         db_status = run_row.get("status")
-        card_status = "paused" if stop else db_status
+        card_status = _campaign_card_status(
+            db, db_status, has_work=has_work, stop=stop
+        )
         return {
             "key": run.key,
             "target_id": run.target_id,

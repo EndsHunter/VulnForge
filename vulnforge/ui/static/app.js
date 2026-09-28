@@ -300,6 +300,13 @@ function runStatusLabel(r, group) {
   }
   if (st === "paused") return { text: "Paused", cls: "st" };
   if (group === "live") return { text: "Idle", cls: "st" };
+  const cardStatus = String(r.status || "").toLowerCase();
+  if (
+    cardStatus === "idle" ||
+    (group === "settled" && !r.has_work && cardStatus !== "paused")
+  ) {
+    return { text: "Idle", cls: "st" };
+  }
   return { text: "", cls: "st" };
 }
 
@@ -2934,6 +2941,10 @@ function closeLiveTask() {
     clearInterval(livePaneTimer);
     livePaneTimer = null;
   }
+  if (typeof globalThis !== "undefined" && globalThis.__vfLiveThinkTimer) {
+    clearInterval(globalThis.__vfLiveThinkTimer);
+    globalThis.__vfLiveThinkTimer = null;
+  }
   $("#live-task-modal")?.classList.remove("open");
 }
 window.closeLiveTask = closeLiveTask;
@@ -2968,14 +2979,50 @@ function renderLivePane(data) {
   const tool = data.tool ? String(data.tool) : "";
   const args = data.args_summary ? String(data.args_summary) : "";
   const now = $("#live-task-now");
+  function formatLiveWait(iso) {
+    const t = Date.parse(String(iso || ""));
+    if (!Number.isFinite(t)) return "";
+    const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    if (m > 0) return `${m}m ${String(s).padStart(2, "0")}s`;
+    return `${s}s`;
+  }
   if (now) {
     const roundLabel = maxRounds > 0 ? `${round || 0}/${maxRounds}` : String(round || 0);
-    now.innerHTML = tool
-      ? `<div class="live-task-round mono">Round ${esc(roundLabel)}</div>
+    const phase = String(data.phase || "");
+    const thinking = !tool && (phase === "thinking" || leased);
+    now.className = thinking ? "live-task-now is-thinking" : "live-task-now";
+    const g = typeof globalThis !== "undefined" ? globalThis : null;
+    if (g && g.__vfLiveThinkTimer) {
+      clearInterval(g.__vfLiveThinkTimer);
+      g.__vfLiveThinkTimer = null;
+    }
+    if (tool) {
+      now.innerHTML = `<div class="live-task-round mono">Round ${esc(roundLabel)}</div>
          <div><strong class="live-tool">${esc(tool)}</strong></div>
-         <div class="mono">${esc(args || "—")}</div>`
-      : `<div class="live-task-round mono">Round ${esc(roundLabel)}</div>
+         <div class="mono">${esc(args || "—")}</div>`;
+    } else if (thinking) {
+      const started = data.wait_started_at || data.updated_at || "";
+      const elapsed = formatLiveWait(started);
+      const elapsedText = elapsed ? `Waiting for model · ${elapsed}` : "Waiting for model";
+      now.innerHTML = `<div class="live-task-round mono">Round ${esc(roundLabel)}</div>
+         <div class="live-task-wait"><span class="live-task-pulse" aria-hidden="true"></span><strong>Thinking…</strong> <span class="live-task-elapsed" data-wait-start="${esc(started)}" aria-hidden="true">${esc(elapsedText)}</span></div>`;
+      if (g && started && typeof setInterval === "function") {
+        g.__vfLiveThinkTimer = setInterval(() => {
+          const el =
+            typeof document !== "undefined"
+              ? document.querySelector("#live-task-now .live-task-elapsed")
+              : null;
+          if (!el) return;
+          const next = formatLiveWait(el.getAttribute("data-wait-start") || "");
+          el.textContent = next ? `Waiting for model · ${next}` : "Waiting for model";
+        }, 1000);
+      }
+    } else {
+      now.innerHTML = `<div class="live-task-round mono">Round ${esc(roundLabel)}</div>
          <div>Waiting for the next tool round.</div>`;
+    }
   }
   const list = $("#live-task-steps");
   const steps = Array.isArray(data.steps) ? data.steps : [];
@@ -2985,11 +3032,13 @@ function renderLivePane(data) {
           .map((step, i) => {
             const call = Number(step.call) > 0 ? Number(step.call) : i + 1;
             const stepRound = Number(step.round);
-            const roundPrefix =
-              Number.isFinite(stepRound) && stepRound > 0 ? `round ${stepRound} · ` : "";
+            const roundBadge =
+              Number.isFinite(stepRound) && stepRound > 0
+                ? `<span class="live-step-round" title="Round ${esc(String(stepRound))}">round ${esc(String(stepRound))}</span>`
+                : "";
             const mark = step.ok === false ? " · failed" : "";
             return `<li>
-              <span class="mono">${roundPrefix}call ${esc(String(call))}</span>
+              <span class="live-step-meta">${roundBadge}<span class="mono live-step-call">call ${esc(String(call))}</span></span>
               <span class="live-tool">${esc(step.tool || "tool")}${esc(mark)}</span>
               <span class="mono">${esc(step.args_summary || "")}</span>
             </li>`;

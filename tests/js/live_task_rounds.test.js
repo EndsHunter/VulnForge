@@ -34,6 +34,8 @@ function loadRenderLivePane() {
     Number,
     String,
     Array,
+    Date,
+    globalThis: {},
     esc(s) {
       return String(s ?? "")
         .replace(/&/g, "&amp;")
@@ -107,18 +109,58 @@ describe("renderLivePane round vs tool lines", () => {
     assert.deepEqual(roundBadges(header), ["Round 9/50"]);
     assert.deepEqual(roundBadges(steps), []);
     assert.equal((header.match(/Round /g) || []).length, 1);
-    assert.doesNotMatch(steps, /round\s+9\/50/i);
-    assert.match(steps, /round 9 · call 1/);
-    assert.match(steps, /round 9 · call 2/);
-    assert.match(steps, /round 9 · call 3/);
+    assert.doesNotMatch(steps, /round\s+\d+\s*\/\s*\d+/i);
+    assert.equal((steps.match(/class="live-step-round"/g) || []).length, 3);
+    assert.match(steps, /class="live-step-round"[^>]*>round 9</);
     for (const name of ["grep", "read_file", "submit_none"]) {
       assert.match(steps, new RegExp(name));
     }
-    assert.match(steps, /call 1/);
-    assert.match(steps, /call 2/);
-    assert.match(steps, /call 3/);
+    assert.match(steps, /class="mono live-step-call">call 1</);
+    assert.match(steps, /class="mono live-step-call">call 2</);
+    assert.match(steps, /class="mono live-step-call">call 3</);
     assert.match(steps, /submit_none · failed/);
     assert.equal((steps.match(/<li>/g) || []).length, 3);
+    assert.equal(nodes.get("#live-task-now").className, "live-task-now");
+    assert.doesNotMatch(header, /Thinking/);
+  });
+
+  it("badges each step with its own round", () => {
+    const { renderLivePane, nodes } = loadRenderLivePane();
+    renderLivePane({
+      ...sample,
+      round: 3,
+      max_rounds: 12,
+      steps: [
+        { round: 2, call: 1, tool: "read_file", args_summary: "path=a.py", ok: true },
+        { round: 2, call: 2, tool: "grep", args_summary: "pattern=q", ok: true },
+        { round: 3, call: 1, tool: "read_file", args_summary: "path=b.py", ok: true },
+      ],
+    });
+    const header = nodes.get("#live-task-now").innerHTML;
+    const steps = nodes.get("#live-task-steps").innerHTML;
+    assert.deepEqual(roundBadges(header), ["Round 3/12"]);
+    assert.deepEqual(roundBadges(steps), []);
+    assert.equal((header.match(/Round /g) || []).length, 1);
+    assert.doesNotMatch(steps, /round\s+\d+\s*\/\s*\d+/i);
+    assert.match(steps, /class="live-step-round"[^>]*>round 2</);
+    assert.match(steps, /class="live-step-round"[^>]*>round 3</);
+    assert.equal((steps.match(/class="live-step-round"[^>]*>round 2</g) || []).length, 2);
+    assert.equal((steps.match(/class="live-step-round"[^>]*>round 3</g) || []).length, 1);
+    assert.match(steps, /class="mono live-step-call">call 1</);
+    assert.match(steps, /class="mono live-step-call">call 2</);
+  });
+
+  it("omits the round badge when the step has no round", () => {
+    const { renderLivePane, nodes } = loadRenderLivePane();
+    renderLivePane({
+      ...sample,
+      steps: [{ tool: "grep", args_summary: "pattern=q", ok: true }],
+    });
+    const steps = nodes.get("#live-task-steps").innerHTML;
+    assert.equal((steps.match(/class="live-step-round"/g) || []).length, 0);
+    assert.doesNotMatch(steps, /round\s+\d+/i);
+    assert.match(steps, /class="mono live-step-call">call 1</);
+    assert.match(steps, /grep/);
   });
 
   it("numbers legacy steps that still carry a round field", () => {
@@ -130,29 +172,72 @@ describe("renderLivePane round vs tool lines", () => {
     renderLivePane(legacy);
     const steps = nodes.get("#live-task-steps").innerHTML;
     assert.deepEqual(roundBadges(steps), []);
-    assert.match(steps, /round 9 · call 1/);
-    assert.match(steps, /round 9 · call 2/);
-    assert.match(steps, /round 9 · call 3/);
+    assert.doesNotMatch(steps, /round\s+\d+\s*\/\s*\d+/i);
+    assert.equal((steps.match(/class="live-step-round"[^>]*>round 9</g) || []).length, 3);
+    assert.match(steps, /class="mono live-step-call">call 1</);
+    assert.match(steps, /class="mono live-step-call">call 2</);
+    assert.match(steps, /class="mono live-step-call">call 3</);
     assert.match(steps, /grep/);
   });
 
-  it("keeps the header round when no tool has run", () => {
+  it("shows thinking chrome while a leased round has no tool", () => {
+    const { renderLivePane, nodes } = loadRenderLivePane();
+    const started = new Date(Date.now() - 47000).toISOString();
+    renderLivePane({
+      task_id: 4,
+      kind: "hunt",
+      state: "leased",
+      phase: "thinking",
+      round: 9,
+      max_rounds: 50,
+      tool: null,
+      args_summary: "",
+      wait_started_at: started,
+      updated_at: started,
+      steps: [],
+      steer: {},
+    });
+    const now = nodes.get("#live-task-now");
+    const header = now.innerHTML;
+    const steps = nodes.get("#live-task-steps").innerHTML;
+    assert.equal(now.className, "live-task-now is-thinking");
+    assert.match(header, /Round 9\/50/);
+    assert.match(header, /Thinking…/);
+    assert.match(header, /Waiting for model · \d+s/);
+    assert.doesNotMatch(header, /Waiting for the next tool round/);
+    assert.match(steps, /No tool calls yet/);
+    assert.equal((steps.match(/<li>/g) || []).length, 1);
+    assert.equal((header.match(/Round /g) || []).length, 1);
+  });
+
+  it("keeps prior tool rows and does not invent a thinking step", () => {
     const { renderLivePane, nodes } = loadRenderLivePane();
     renderLivePane({
       task_id: 4,
       kind: "hunt",
       state: "leased",
-      round: 9,
-      max_rounds: 50,
+      phase: "thinking",
+      round: 2,
+      max_rounds: 8,
       tool: null,
-      steps: [],
+      wait_started_at: new Date(Date.now() - 5000).toISOString(),
+      steps: [
+        {
+          round: 1,
+          call: 1,
+          tool: "grep",
+          args_summary: "pattern=SELECT path=app.py",
+          ok: true,
+        },
+      ],
       steer: {},
     });
     const header = nodes.get("#live-task-now").innerHTML;
     const steps = nodes.get("#live-task-steps").innerHTML;
-    assert.match(header, /Round 9\/50/);
-    assert.match(header, /Waiting for the next tool round/);
-    assert.match(steps, /No tool calls yet/);
-    assert.equal((header.match(/Round /g) || []).length, 1);
+    assert.match(header, /Thinking…/);
+    assert.match(header, /Waiting for model/);
+    assert.match(steps, /grep/);
+    assert.doesNotMatch(steps, /Thinking/);
+    assert.equal((steps.match(/<li>/g) || []).length, 1);
   });
 });
