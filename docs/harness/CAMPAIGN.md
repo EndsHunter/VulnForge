@@ -45,7 +45,7 @@ The return includes `lock_cleared` (`run.lock` is absent). `ok` is false when a 
 
 Drain. Writes `STOP` and returns immediately. Ralph (`scripts/ralph.py`) checks `STOP` between iterations and exits after the current `vf run-once` finishes. Pause does not kill workers and does not call `reclaim_all_leased_tasks`, so a lease held by the live task is kept. Recorded as `runner_pause`. `killed` is false and `reclaimed_leases` is 0. Queued tasks stay queued.
 
-While a Ralph pid is alive and `STOP` is present, `runner_status` is `pausing` (`draining: true`). After that pid exits, state is `paused`. Pause does not wait out the task timeout; the dashboard polls. With no live Ralph pid, writing `STOP` is enough for `paused`. The Mission card `status` is `paused` while `STOP` is present (the `runs.status` row stays the durable value).
+While a Ralph pid is alive and `STOP` is present, `runner_status` is `pausing` (`draining: true`). After that pid exits, state is `paused`. Pause does not wait out the task timeout; the dashboard polls. With no live Ralph pid, writing `STOP` is enough for `paused`. The Mission card `status` is `paused` while `STOP` is present (the `runs.status` row stays the durable value, which may still be `active`). When the campaign is finished (`has_work` false and no `STOP`), durable `runs.status` and the card `status` are `idle`. Queued work returns that row to `active`.
 
 ### `resume`
 

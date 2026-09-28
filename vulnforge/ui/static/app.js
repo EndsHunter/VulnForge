@@ -300,6 +300,13 @@ function runStatusLabel(r, group) {
   }
   if (st === "paused") return { text: "Paused", cls: "st" };
   if (group === "live") return { text: "Idle", cls: "st" };
+  const cardStatus = String(r.status || "").toLowerCase();
+  if (
+    cardStatus === "idle" ||
+    (group === "settled" && !r.has_work && cardStatus !== "paused")
+  ) {
+    return { text: "Idle", cls: "st" };
+  }
   return { text: "", cls: "st" };
 }
 

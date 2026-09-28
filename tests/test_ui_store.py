@@ -5,12 +5,19 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from vulnforge.cli import EXIT_PROGRESS, main
 from vulnforge.db import Database
 from vulnforge.ui import runner as runctl
 from vulnforge.ui import store
-from vulnforge.ui.app import ControlBody, control_start_kwargs, incomplete_from_flags, with_runner_flags
+from vulnforge.ui.app import (
+    ControlBody,
+    control_start_kwargs,
+    create_app,
+    incomplete_from_flags,
+    with_runner_flags,
+)
 
 
 def test_discover_and_card(tmp_path: Path, toy_sqli: Path):
@@ -417,6 +424,17 @@ def test_control_start_kwargs_empty_ui_fallbacks():
     assert kw["max_wall_seconds"] is None
 
 
+def _succeed_all_tasks(ref: store.RunRef) -> None:
+    db = Database.open(ref.path / "harness.db")
+    try:
+        db.conn.execute(
+            "UPDATE tasks SET state='succeeded', lease_owner=NULL, lease_until=NULL"
+        )
+        db.conn.commit()
+    finally:
+        db.close()
+
+
 def test_run_card_status_paused_while_stop_present(tmp_path: Path, toy_sqli: Path):
     """Mission card status follows STOP; the durable runs.status row stays active."""
     runs = tmp_path / "runs"
@@ -427,6 +445,83 @@ def test_run_card_status_paused_while_stop_present(tmp_path: Path, toy_sqli: Pat
     card = store.run_card(ref)
     assert card["status"] == "paused"
     assert card["stop"] is True
+    db = Database.open(ref.path / "harness.db")
+    try:
+        assert db.get_run()["status"] == "active"
+    finally:
+        db.close()
+
+
+def test_run_card_status_idle_when_campaign_finished(tmp_path: Path, toy_sqli: Path):
+    """No remaining work and no STOP: card and durable runs.status are idle."""
+    runs = tmp_path / "runs"
+    main(["init", "--target", str(toy_sqli), "--runs-root", str(runs), "--no-enqueue-hunts"])
+    ref = store.discover_runs(runs)[0]
+    _succeed_all_tasks(ref)
+    db = Database.open(ref.path / "harness.db")
+    try:
+        assert db.summary()["has_work"] is False
+        assert db.get_run()["status"] == "active"
+    finally:
+        db.close()
+
+    card = store.run_card(ref)
+    assert card["status"] == "idle"
+    assert card["has_work"] is False
+    assert card["stop"] is False
+    assert card["active"] is False
+    assert card["progress"] == 1.0
+    db = Database.open(ref.path / "harness.db")
+    try:
+        assert db.get_run()["status"] == "idle"
+    finally:
+        db.close()
+    again = store.run_card(ref)
+    assert again["status"] == "idle"
+
+    with TestClient(create_app(runs_root=runs)) as client:
+        listed = client.get("/api/runs")
+        assert listed.status_code == 200
+        body = listed.json()
+        match = next(r for r in body["runs"] if r["run_id"] == ref.run_id)
+        assert match["status"] == "idle"
+        assert match["has_work"] is False
+
+
+def test_run_card_status_active_when_work_returns(tmp_path: Path, toy_sqli: Path):
+    """A finished idle row becomes active again once a task is queued."""
+    runs = tmp_path / "runs"
+    main(["init", "--target", str(toy_sqli), "--runs-root", str(runs), "--no-enqueue-hunts"])
+    ref = store.discover_runs(runs)[0]
+    _succeed_all_tasks(ref)
+    assert store.run_card(ref)["status"] == "idle"
+    db = Database.open(ref.path / "harness.db")
+    try:
+        db.enqueue_task("hunt", {"area": "app"})
+    finally:
+        db.close()
+    card = store.run_card(ref)
+    assert card["has_work"] is True
+    assert card["status"] == "active"
+    db = Database.open(ref.path / "harness.db")
+    try:
+        assert db.get_run()["status"] == "active"
+    finally:
+        db.close()
+
+
+def test_run_card_stop_does_not_rewrite_finished_durable_status(
+    tmp_path: Path, toy_sqli: Path
+):
+    """STOP still paints the card paused and does not store paused on the row."""
+    runs = tmp_path / "runs"
+    main(["init", "--target", str(toy_sqli), "--runs-root", str(runs), "--no-enqueue-hunts"])
+    ref = store.discover_runs(runs)[0]
+    _succeed_all_tasks(ref)
+    (ref.path / "STOP").write_text("paused_at=test\n", encoding="utf-8")
+    card = store.run_card(ref)
+    assert card["status"] == "paused"
+    assert card["has_work"] is False
     db = Database.open(ref.path / "harness.db")
     try:
         assert db.get_run()["status"] == "active"
