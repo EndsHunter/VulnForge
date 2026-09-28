@@ -101,61 +101,116 @@ body contains ASSERT_OK
     assert r1["entry"] == "poc.py"
 
 
-def test_run_poc_local_signal(tmp_path: Path):
+def _gvisor_probe() -> dict:
+    return {
+        "docker": True,
+        "runtimes": {"runc": {"path": "runc"}, "runsc": {"path": "runsc"}},
+        "kvm": False,
+        "firecracker_path": None,
+        "firecracker_version": None,
+        "firecracker_patched": False,
+        "jailer_path": None,
+        "jailer_version": None,
+        "jailer_patched": False,
+    }
+
+
+def _fake_spawn_ok(argv, *, timeout_s):
+    assert argv[argv.index("--runtime") + 1] == "runsc"
+    assert "--network=none" in argv
+    assert "--privileged" not in argv
+    assert not any("docker.sock" in part for part in argv)
+    return {
+        "exit_code": 0,
+        "timed_out": False,
+        "spawn_error": None,
+        "stdout": "ASSERT_OK\n",
+        "stderr": "",
+        "duration_ms": 5,
+        "argv": argv,
+    }
+
+
+def test_run_poc_local_refuses_host(tmp_path: Path, monkeypatch):
+    """local_subprocess must not spawn a host process."""
+    import subprocess
+
+    import vulnforge.poc_runner as pr
+
+    def _boom(*_a, **_k):
+        raise AssertionError("host subprocess invoked")
+
+    monkeypatch.setattr(subprocess, "Popen", _boom)
+    monkeypatch.setattr(subprocess, "run", _boom)
     pack = tmp_path / "pack"
     pack.mkdir()
     (pack / "poc.py").write_text("print('ASSERT_OK')\n", encoding="utf-8")
     raw = run_poc_local(pack, "python poc.py", timeout_s=15)
-    assert raw["exit_code"] == 0
-    assert "ASSERT_OK" in (raw["stdout"] or "")
+    assert raw["spawn_error"] == "host_exec_refused"
+    assert raw["ran"] is False
 
     result = execute_poc_for_pack(
         pack,
         cfg={"poc_harness": {"enabled": True, "runner": "local_subprocess", "timeout_s": 15}},
         hub_text="---\nrun: python poc.py\nsuccess_regex: ASSERT_OK\n---\n\n## Expected signal\nok\n",
         finding_id=1,
+        probe=_gvisor_probe(),
     )
-    assert result["verdict"] == "signal_observed"
-    assert result["signal_matched"] is True
+    assert result["verdict"] == "unsafe_skipped"
+    assert result["spawn_error"] == "host_exec_refused"
+    assert result["signal_matched"] is not True
 
 
 def test_harness_config_safe_defaults():
-    """Default runner is docker with network none (operator may opt into local)."""
+    """Default runner is the sandbox ladder with network none."""
     hc = harness_config(None)
-    assert hc["runner"] == DEFAULT_POC_RUNNER == "docker"
+    assert hc["runner"] == DEFAULT_POC_RUNNER == "sandbox"
     assert hc["network"] == DEFAULT_POC_NETWORK == "none"
     assert hc["enabled"] is True
-    # Explicit local still works
+    assert hc["allow_write_target"] is False
+    assert "3.12.8" in hc["docker_image"]
+    # Legacy docker name means sandbox auto, not plain runc.
+    hc_docker = harness_config({"poc_harness": {"runner": "docker"}})
+    assert hc_docker["runner"] == "sandbox"
+    # Explicit host is recorded so select_isolation can refuse it.
     hc2 = harness_config(
         {"poc_harness": {"runner": "local_subprocess", "network": "allow"}}
     )
     assert hc2["runner"] == "local_subprocess"
     assert hc2["network"] == "allow"
-    # Aliases
     hc3 = harness_config({"poc_harness": {"runner": "local", "network": "bridge"}})
     assert hc3["runner"] == "local_subprocess"
     assert hc3["network"] == "allow"
+    hc4 = harness_config({"poc_harness": {"runner": "runc", "network": "host"}})
+    assert hc4["runner"] == "runc"
+    assert hc4["network"] == "host"
 
 
-def test_execute_poc_docker_missing_skips(tmp_path: Path, monkeypatch):
-    """When runner=docker and docker is absent → unsafe_skipped with operator_hint."""
+def test_execute_poc_sandbox_missing(tmp_path: Path, monkeypatch):
+    """No microVM and no runsc → sandbox_unavailable, no spawn."""
     import vulnforge.poc_runner as pr
 
-    monkeypatch.setattr(pr, "docker_available", lambda: False)
+    monkeypatch.setattr(pr, "spawn_captured", lambda *a, **k: (_ for _ in ()).throw(AssertionError("spawn")))
     pack = tmp_path / "pack"
     pack.mkdir()
     (pack / "poc.py").write_text("print('ASSERT_OK')\n", encoding="utf-8")
     result = execute_poc_for_pack(
         pack,
-        cfg={"poc_harness": {"enabled": True, "runner": "docker", "network": "none"}},
+        cfg={"poc_harness": {"enabled": True, "runner": "sandbox", "network": "none"}},
         hub_text="---\nrun: python poc.py\nsuccess_regex: ASSERT_OK\n---\n\n## Expected signal\nok\n",
         finding_id=1,
+        probe={
+            "docker": True,
+            "runtimes": {"runc": {"path": "runc"}},
+            "kvm": False,
+            "firecracker_patched": False,
+            "jailer_patched": False,
+        },
     )
-    assert result["verdict"] == "unsafe_skipped"
-    assert result["spawn_error"] == "docker_not_found"
+    assert result["verdict"] == "sandbox_unavailable"
+    assert result["spawn_error"] == "sandbox_unavailable"
     assert result.get("operator_hint")
-    assert "local_subprocess" in (result.get("operator_hint") or "")
-    assert result.get("harness", {}).get("runner") == "docker"
+    assert "local_subprocess" not in (result.get("operator_hint") or "")
     assert result.get("network") == "none"
 
 
@@ -227,7 +282,12 @@ def test_export_validation_job(tmp_path: Path, toy_sqli: Path):
     db.close()
 
 
-def test_validate_poc_stage_writes_run_json(tmp_path: Path, toy_sqli: Path):
+def test_validate_poc_stage_writes_run_json(tmp_path: Path, toy_sqli: Path, monkeypatch):
+    import vulnforge.poc_runner as pr
+
+    monkeypatch.setattr(pr, "spawn_captured", _fake_spawn_ok)
+    monkeypatch.setattr(pr, "run_cleanup", lambda argv: None)
+    monkeypatch.setattr(pr, "probe_host", _gvisor_probe)
     run_dir, db = _setup(tmp_path, toy_sqli)
     body = _body()
     body["evidence_id"] = "e2"
@@ -248,7 +308,7 @@ def test_validate_poc_stage_writes_run_json(tmp_path: Path, toy_sqli: Path):
     cfg = {
         "poc_harness": {
             "enabled": True,
-            "runner": "local_subprocess",
+            "runner": "sandbox",
             "timeout_s": 20,
         },
         # Offline unit test: mechanical harness only (no live multi-model referee)
@@ -340,9 +400,13 @@ def test_cli_export_validation_job(tmp_path: Path, toy_sqli: Path, monkeypatch):
     assert exports
 
 
-def test_dispatch_validate_poc(tmp_path: Path, toy_sqli: Path):
+def test_dispatch_validate_poc(tmp_path: Path, toy_sqli: Path, monkeypatch):
+    import vulnforge.poc_runner as pr
     from vulnforge.cli import dispatch_task
 
+    monkeypatch.setattr(pr, "spawn_captured", _fake_spawn_ok)
+    monkeypatch.setattr(pr, "run_cleanup", lambda argv: None)
+    monkeypatch.setattr(pr, "probe_host", _gvisor_probe)
     run_dir, db = _setup(tmp_path, toy_sqli)
     body = _body()
     body["evidence_id"] = "e5"
@@ -360,7 +424,7 @@ def test_dispatch_validate_poc(tmp_path: Path, toy_sqli: Path):
         payload={"finding_id": fid},
     )
     cfg = {
-        "poc_harness": {"enabled": True, "runner": "local_subprocess", "timeout_s": 20},
+        "poc_harness": {"enabled": True, "runner": "sandbox", "timeout_s": 20},
         "stages": {"validate_poc_referee": False},
         "llm": {"fake": True, "fake_responses": []},
         "packet": {},

@@ -206,7 +206,7 @@ def schemas() -> list[dict]:
         ),
         openai_tool(
             "enqueue_validate_poc",
-            "Queue validate_poc harness to run PoC under control (confirm; never auto-confirms).",
+            "Queue sandbox one-shot validate_poc (microVM or gVisor; confirm; never auto-confirms).",
             {
                 "finding_id": {"type": "integer"},
                 "notes": {"type": "string"},

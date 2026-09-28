@@ -135,7 +135,7 @@ init → recon → hunt × N → validate_mech → validate_llm (default on; set
 **Operator-only task kinds** (not the default auto loop):
 
 - **`develop_poc`** — human-queued from Report → Develop POC; writes runnable PoC scripts under `evidence/<pack>/` plus hub `poc_develop.md`. Never sets `confirmed`.
-- **`validate_poc`** — controlled harness run of a pack (`vf validate-poc --execute` or Report **Run in harness**). Writes `poc_run.json`. Never sets `confirmed`.
+- **`validate_poc`** — sandbox one-shot of a pack (`vf validate-poc --execute`, Report **Run in harness**, or run-start **Sandbox PoC one-shot**). MicroVM or gVisor only. Writes `poc_run.json`. Never sets `confirmed` and does not clear needs-human.
 - **`tool_gaps`** — mine transcripts for missing tool signals; also via `vf tool-gaps`.
 
 ## Tools (`code_static`)

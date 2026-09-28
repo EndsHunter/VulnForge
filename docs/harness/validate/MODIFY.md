@@ -17,7 +17,7 @@
 | Change human review API | `control/ops.py` human review helpers + `ui/app.py` Report routes |
 | Change the HITL report↔responses contract or inbox | `vulnforge/hitl.py`, `db.py` `hitl_*` tables, `ui/static/hitl_inbox.js`; see [HITL.md](HITL.md) |
 | Change Report UI | `vulnforge/ui/static/report.js` |
-| PoC harness runner / timeouts / network | `config/default.yaml` → `poc_harness` (default `docker` + `network: none`); `vulnforge/poc_runner.py` `harness_config` |
+| PoC sandbox runner / timeouts / network | `config/default.yaml` → `poc_harness` (microVM → gVisor → refuse, `network: none`); `vulnforge/poc_runner.py` |
 | validate_poc stage | `vulnforge/stages/validate_poc.py` |
 | Handoff export / readiness | `vulnforge/poc_handoff.py` |
 | PoC referee prompt | `seeds/system/referee_poc.md` + `packet.pack_poc_referee` |
@@ -29,7 +29,7 @@ vulnforge/stages/validate_mech.py   # CHECKS list
 vulnforge/stages/validate_llm.py    # optional disprove
 vulnforge/stages/validate_poc.py    # PoC harness execution
 vulnforge/poc_handoff.py            # frontmatter, readiness, export job
-vulnforge/poc_runner.py             # local / docker runner
+vulnforge/poc_runner.py             # microVM / gVisor runner (no host exec)
 vulnforge/packet.py                 # pack_disprove, pack_poc_referee
 vulnforge/findings/                 # severity, stable_key, …
 seeds/system/disprove.md

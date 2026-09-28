@@ -934,6 +934,7 @@
           <button type="button" class="btn btn-primary report-open-book-evidence">Evidence and context</button>
           <button type="button" class="btn btn-primary report-develop-poc" data-fid="${f.id}" title="Open working PoC workshop for this finding">Develop POC</button>
         </div>
+        <p class="controls-hint">Run in harness (inside Develop POC) is a sandbox one-shot. Signal observed does not accept the finding or clear needs-human.</p>
       </div>`;
   }
 
@@ -1253,15 +1254,15 @@
     } else {
       parts.push('<span class="badge warn">Not harness-ready</span>');
     }
-    if (harness.runner || harness.network) {
-      const runLabel = harness.runner || "?";
-      const netLabel = harness.network || "?";
-      let harnessBadge = `<span class="badge info mono" title="poc_harness defaults for this run">${esc(
+    if (harness.runner || harness.network || harness.isolation) {
+      const runLabel = harness.isolation || harness.runtime || harness.runner || "sandbox";
+      const netLabel = harness.network || "none";
+      let harnessBadge = `<span class="badge info mono" title="Sandbox one-shot (microVM or gVisor). Does not confirm.">${esc(
         runLabel
       )} · net=${esc(netLabel)}</span>`;
-      if (harness.runner === "docker" && harness.docker_available === false) {
-        harnessBadge +=
-          ' <span class="badge warn" title="Install Docker or set poc_harness.runner: local_subprocess">Docker missing</span>';
+      if (harness.sandbox_available === false) {
+        const tip = harness.operator_hint || "Install Kata or gVisor runsc. Host exec is refused.";
+        harnessBadge += ` <span class="badge warn" title="${esc(tip)}">Sandbox unavailable</span>`;
       }
       parts.push(harnessBadge);
     }
@@ -1280,9 +1281,13 @@
         latest.operator_hint || latest.spawn_error
           ? ` (${esc(String(latest.operator_hint || latest.spawn_error))})`
           : "";
+      const phrase =
+        String(latest.verdict) === "signal_observed"
+          ? "sandbox reproduced · signal observed"
+          : String(latest.verdict).split("_").join(" ");
       parts.push(
         `<span class="controls-hint">last run: <span class="mono">${esc(
-          String(latest.verdict)
+          phrase
         )}</span>${hint}</span>`
       );
     } else if (latest && latest.action === "enqueue_validate" && latest.task_id) {
@@ -1304,7 +1309,7 @@
       return;
     }
     const notes = buildPocOperatorNotes();
-    setPocStatus("Queuing validate_poc harness…");
+    setPocStatus("Queuing sandbox one-shot…");
     try {
       const r = await api(
         `/api/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}/findings/${encodeURIComponent(fid)}/validate-poc`,
@@ -1318,8 +1323,8 @@
         }
       );
       const msg = r.task_id
-        ? `Queued validate_poc #${r.task_id} — watch Tasks; Reload for poc_run.json`
-        : "validate_poc enqueued";
+        ? `Queued sandbox one-shot #${r.task_id} — evidence only, does not confirm`
+        : "sandbox one-shot enqueued";
       toast(msg);
       setPocStatus(msg);
       if (typeof window.loadRunFull === "function") {

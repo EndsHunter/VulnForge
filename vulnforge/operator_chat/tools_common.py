@@ -873,7 +873,10 @@ def mutation_summary(name: str, args: dict[str, Any]) -> str:
     if name == "enqueue_develop_poc":
         return f"Enqueue develop_poc for finding {args.get('finding_id')}"
     if name == "enqueue_validate_poc":
-        return f"Enqueue validate_poc harness for finding {args.get('finding_id')}"
+        return (
+            f"Enqueue sandbox one-shot validate_poc for finding {args.get('finding_id')} "
+            "(does not confirm)"
+        )
     return f"Execute {name} with {args}"
 
 

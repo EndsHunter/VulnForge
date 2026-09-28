@@ -60,26 +60,31 @@ Controlled **execution** of pack PoCs (separate from static disprove):
 ```text
 enqueue validate_poc (finding_id)
   → read evidence pack + hub frontmatter
-  → run under poc_harness (local_subprocess | docker)
+  → microVM (Kata / patched Firecracker) else gVisor runsc else refuse
   → write evidence/<pack>/poc_run.json
   → optional LLM referee (stages.validate_poc_referee)
-  → update body.poc_validation_latest  (state unchanged)
+  → update body.poc_validation_latest  (state unchanged, HITL unchanged)
 ```
 
-Verdicts: `signal_observed` | `signal_absent` | `poc_broken` | `inconclusive` | `unsafe_skipped`.
-**Never** sets `confirmed`.
+Verdicts: `signal_observed` | `signal_absent` | `poc_broken` | `inconclusive` | `build_failed` | `sandbox_unavailable` | `unsafe_skipped`.
+**Never** sets `confirmed`. UI copy is “sandbox reproduced” / “signal observed”.
 
 Config: `poc_harness.*` and `stages.validate_poc_referee` in `config/default.yaml`.
 
-**Safe defaults (v1):**
+**Sandbox (v1):**
 
 | Key | Default | Notes |
 |-----|---------|--------|
-| `poc_harness.runner` | `docker` | Prefer isolation; set `local_subprocess` if Docker is unavailable |
-| `poc_harness.network` | `none` | Maps to `docker --network=none`; hub frontmatter may set `network: allow` |
-| `allow_write_target` | `false` | Never mounts the audit target |
+| `poc_harness.runner` | `sandbox` | microVM → gVisor `runsc` → refuse. `local_subprocess` and plain runc hard-fail |
+| `poc_harness.network` | `none` | Deny egress. `allow` is an isolated bridge. Never host net |
+| `allow_write_target` | `false` | Not honored. Optional `mount_target_ro` is read-only |
+| `docker_image` | `python:3.12.8-slim-bookworm` | Pin. Linux host required |
 
-Without Docker on PATH, `validate_poc` returns `unsafe_skipped` / `spawn_error: docker_not_found` with an operator hint — it does **not** silently fall back to local.
+Missing Kata/Firecracker/runsc returns `sandbox_unavailable` with an operator hint. It does **not** fall back to the host.
+
+Run-start opt-in: New audit **Sandbox PoC one-shot**, or `vf init --sandbox-poc`. When on, idle Ralph queues one sandbox `validate_poc` per harness-ready `needs_human` finding. A missing sandbox does not block the rest of the run and does not clear HITL.
+
+Firecracker/jailer, if used, must be patched for CVE-2026-5747 and CVE-2026-1386 (1.14.4–1.14.x or >= 1.15.1) and boot with `pci=off`. See [firecracker-guest-init.sh](firecracker-guest-init.sh).
 
 CLI:
 
@@ -89,7 +94,7 @@ vf validate-poc --run-dir runs\<t>\run-001 --finding-id 3          # enqueue
 vf validate-poc --run-dir runs\<t>\run-001 --finding-id 3 --execute # in-process
 ```
 
-Report → Develop POC: **Run in harness** / **Export validation job**. Workshop shows runner · network and a **Docker missing** badge when needed.
+Report → Develop POC: **Run in harness** / **Export validation job**. Workshop shows isolation · network and a **Sandbox unavailable** badge when Kata and gVisor are both missing.
 
 ## Operator surfaces
 

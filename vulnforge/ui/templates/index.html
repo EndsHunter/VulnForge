@@ -278,6 +278,16 @@
               </div>
             </div>
           </div>
+          <div class="field" id="init-sandbox-poc-field">
+            <div class="init-check-row">
+              <label class="init-check">
+                <input type="checkbox" id="init-sandbox-poc" />
+                <span>Sandbox PoC one-shot</span>
+              </label>
+              <button type="button" class="init-help" data-tip="When on, Ralph queues one validate_poc per harness-ready needs-human finding. Runs only in a microVM (Kata or patched Firecracker) or gVisor runsc. Missing sandbox records sandbox_unavailable and the run continues. Never confirms and never clears needs-human." aria-label="Help: Sandbox PoC one-shot">?</button>
+            </div>
+            <p class="controls-hint init-hint">Off by default. Linux microVM or gVisor only. No host exec. Does not confirm.</p>
+          </div>
         </section>
 
         <div class="modal-actions">

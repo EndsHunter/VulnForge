@@ -562,7 +562,7 @@
                 <button type="button" class="btn" id="poc-open-ev">Open pack in Evidence</button>
               </div>
               <div class="report-poc-actions" style="margin-top:0.5rem">
-                <button type="button" class="btn" id="poc-validate" title="Queue validate_poc harness (controlled run; never confirms)">
+                <button type="button" class="btn" id="poc-validate" title="One-shot sandbox run (microVM or gVisor). Writes poc_run.json. Does not confirm or clear needs-human.">
                   Run in harness
                 </button>
                 <button type="button" class="btn" id="poc-export-job" title="Export finding + pack as validation handoff zip">
@@ -570,6 +570,7 @@
                 </button>
               </div>
               <p class="controls-hint" id="poc-readiness" style="margin:0.4rem 0 0"></p>
+              <p class="controls-hint">Sandbox one-shot only. “Signal observed” / “sandbox reproduced” is evidence, not confirmation.</p>
               <p class="controls-hint report-poc-status" id="poc-status" aria-live="polite"></p>
             </section>
 

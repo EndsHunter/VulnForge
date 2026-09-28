@@ -134,21 +134,35 @@ stages:
   # Multi-model PoC referee after harness run (default on; never auto-confirm)
   validate_poc_referee: true
 
-# Controlled PoC execution harness (validate_poc stage / Report workshop).
-# Never writes to the audit target. Never sets confirmed.
-# Safe defaults: docker + network none. Hub frontmatter may set network: allow.
-# Without Docker: set runner: local_subprocess (network not restricted on local).
+# One-shot PoC sandbox (validate_poc / Report "Run in harness" / vf validate-poc).
+# Never host-exec. Never plain runc. Never sets confirmed. Never clears needs_human.
+# Linux sandbox host required (macOS/Windows need a Linux host with Kata or runsc).
+# Order: microVM (Kata; kata-fc only if Firecracker/jailer are patched) →
+# gVisor runsc → refuse (sandbox_unavailable / unsafe_skipped).
+# Firecracker patch bar: CVE-2026-5747 (1.14.4+ or 1.15.1+) and
+# CVE-2026-1386 (1.13.2+ / 1.14.1+). Accepted: 1.14.4–1.14.x or >= 1.15.1.
+# Boot direct Firecracker with pci=off. See docs/system/VALIDATE.md.
 poc_harness:
   enabled: true
-  # docker (preferred) | local_subprocess
-  runner: docker
+  # sandbox (auto ladder) | microvm | firecracker | gvisor
+  # local_subprocess and runc are hard failures (no host fallback).
+  runner: sandbox
   timeout_s: 60
-  # none | allow  (none → docker --network=none; hub frontmatter can override)
+  # none (default, deny egress) | allow (isolated bridge for a documented lab; never host)
   network: none
   allow_write_target: false
-  docker_image: "python:3.12-slim"
-  # blank → sys.executable (local_subprocess only)
-  python: ""
+  # Optional read-only mount of the audit target at /target. Never writable.
+  mount_target_ro: false
+  # Pinned guest image. Prefer a digest pin in production.
+  docker_image: "python:3.12.8-slim-bookworm"
+  cpus: "1"
+  memory: "512m"
+  pids_limit: 128
+  # Direct Firecracker (optional). Empty = not usable; Kata/gVisor still apply.
+  firecracker_kernel: ""
+  firecracker_rootfs: ""
+  # Run-start campaign toggle default. UI / `vf init --sandbox-poc` turns it on per run.
+  sandbox_oneshot: false
 
 # Mechanical codemap (structure scaffold for recon + hunt targeting).
 # Full map (modules + files + symbols) is stored in runs.codemap_json.

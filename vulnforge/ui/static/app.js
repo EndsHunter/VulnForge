@@ -1509,6 +1509,7 @@ async function submitInit(ev) {
   body.hunt_skill_mode = skillPolicy.hunt_skill_mode;
   // Default true when control missing (older cached HTML)
   body.enqueue_hunts = $("#init-enqueue-hunts") ? !!$("#init-enqueue-hunts").checked : true;
+  body.sandbox_poc_validate = !!$("#init-sandbox-poc")?.checked;
   if (skillPolicy.hunt_skill_mode === "explicit" && body.enqueue_hunts) {
     body.hunt_skill_ids = skillPolicy.hunt_skill_ids || [];
     if (!body.hunt_skill_ids.length) {

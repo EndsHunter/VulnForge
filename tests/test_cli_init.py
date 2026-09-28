@@ -98,6 +98,33 @@ def test_init_no_enqueue_hunts_stores_flag(toy_sqli: Path, tmp_path: Path):
         db.close()
 
 
+def test_init_sandbox_poc_toggle(toy_sqli: Path, tmp_path: Path):
+    """Run-start sandbox one-shot is stored and defaults off."""
+    runs = tmp_path / "runs"
+    code = main(
+        [
+            "init",
+            "--target",
+            str(toy_sqli),
+            "--runs-root",
+            str(runs),
+            "--no-enqueue-hunts",
+            "--sandbox-poc",
+        ]
+    )
+    assert code == EXIT_PROGRESS
+    run_dir = next(next(runs.iterdir()).iterdir())
+    db = Database.open(run_dir / "harness.db")
+    try:
+        import json
+
+        config = json.loads(db.get_run()["config_json"] or "{}")
+        assert config["run"]["sandbox_poc_validate"] is True
+        assert config["poc_harness"]["sandbox_oneshot"] is True
+    finally:
+        db.close()
+
+
 def test_init_file_by_file_no_enqueue_hunts(toy_sqli: Path, tmp_path: Path):
     runs = tmp_path / "runs"
     code = main(
