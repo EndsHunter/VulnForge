@@ -83,5 +83,32 @@ def test_mission_needs_review_indicator_not_inbox_card():
     assert "needsReview: needsReviewCount(snap)" in app
     assert "countFindingState," in helpers
 
+
+def test_mission_and_home_token_usage_wired():
+    """Mission strip and Home rows render In/Out/Total from llm_usage."""
+    app = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    html = (PROJECT_ROOT / "vulnforge" / "ui" / "templates" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    css = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+    helpers = HELPERS.read_text(encoding="utf-8")
+    assert 'id="home-stats"' in html
+    assert 'id="mission-usage"' in app
+    assert "Tokens</span>" in app
+    assert "renderTokenCountsHtml" in app
+    assert "run-tok" in app
+    assert "function tokenCountsOf" in helpers
+    assert "function modelUsageRows" in helpers
+    assert "function aggregateRunUsage" in helpers
+    assert ".mission-usage" in css
+    assert ".home-stats" in css
+    assert "prompt_tokens" not in app.split("function renderTokenCountsHtml", 1)[1].split(
+        "function renderHomeStats", 1
+    )[0]
+
     assert ".mission-needs-review" in css
     assert "margin-left: auto" in css.split(".mission-needs-review", 1)[1].split("}", 1)[0]

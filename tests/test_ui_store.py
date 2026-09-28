@@ -583,3 +583,53 @@ def test_pid_alive_false_for_zombie_child():
         time.sleep(0.05)
     assert runctl._pid_alive(proc.pid) is False
     proc.wait(timeout=2)
+
+
+def test_run_card_llm_usage_missing_and_by_model(tmp_path: Path, toy_sqli: Path):
+    """Missing usage is zeros; multi-model summary is attached to the card."""
+    from vulnforge.llm import TokenUsage
+    from vulnforge.usage import record_usage
+
+    runs = tmp_path / "runs"
+    main(["init", "--target", str(toy_sqli), "--runs-root", str(runs)])
+    ref = store.discover_runs(runs)[0]
+    empty = store.run_card(ref)["llm_usage"]
+    assert empty["prompt_tokens"] == 0
+    assert empty["completion_tokens"] == 0
+    assert empty["total_tokens"] == 0
+    assert empty["by_model"] == {}
+
+    (ref.path / "llm_usage_summary.json").write_text("not-json", encoding="utf-8")
+    broken = store.run_card(ref)["llm_usage"]
+    assert broken["total_tokens"] == 0
+    assert broken["by_model"] == {}
+
+    record_usage(
+        ref.path,
+        task_id=1,
+        kind="recon",
+        model_id="grok-4",
+        usage=TokenUsage(
+            prompt_tokens=100, completion_tokens=20, total_tokens=120, source="provider"
+        ),
+    )
+    record_usage(
+        ref.path,
+        task_id=2,
+        kind="hunt:injection",
+        model_id="claude-sonnet-4",
+        usage=TokenUsage(
+            prompt_tokens=50, completion_tokens=10, total_tokens=60, source="provider"
+        ),
+    )
+    used = store.run_card(ref)["llm_usage"]
+    assert used["prompt_tokens"] == 150
+    assert used["completion_tokens"] == 30
+    assert used["total_tokens"] == 180
+    assert used["by_model"]["grok-4"]["prompt_tokens"] == 100
+    assert used["by_model"]["grok-4"]["completion_tokens"] == 20
+    assert used["by_model"]["grok-4"]["total_tokens"] == 120
+    assert used["by_model"]["claude-sonnet-4"]["total_tokens"] == 60
+
+    snap = store.run_snapshot(ref)
+    assert snap["llm_usage"]["by_model"]["grok-4"]["total_tokens"] == 120

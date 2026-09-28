@@ -304,8 +304,10 @@ def _llm_usage_card(run: RunRef) -> dict[str, Any]:
 
         card = llm_usage_for_card(run.path)
         summary = load_usage_summary(run.path)
-        card["by_kind"] = summary.get("by_kind") or {}
-        card["by_model"] = summary.get("by_model") or {}
+        by_kind = summary.get("by_kind") or {}
+        by_model = summary.get("by_model") or {}
+        card["by_kind"] = by_kind if isinstance(by_kind, dict) else {}
+        card["by_model"] = by_model if isinstance(by_model, dict) else {}
         by_task = summary.get("by_task") or {}
         if not by_task:
             # Older runs recorded usage before by_task existed

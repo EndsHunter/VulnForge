@@ -5,6 +5,7 @@ The run workspace is the research cockpit for one `target_id/run_id`. A 48px ico
 ## Sub-features
 
 - `rail-primary` shows Mission, Hunts, Explorer, Report, Tasks as `[data-nav-id]` tabs. Home is a rail href. Tasks uses `data-nav-id="audit"`.
+- `mission-tokens` shows this run’s In / Out / Total plus per-model rows in `#mission-usage` on the campaign strip.
 - `rail-mode` swaps `[data-mode-panel]` and writes `#<mode>/<tab>` (Mission default `#mission/overview`).
 - `rail-explorer-key` focuses Explorer when the operator presses `e` outside an input.
 - `rail-footer` links Settings (`/settings`), Dev (`/dev`), and Tool gaps (`/tool-gaps`).
