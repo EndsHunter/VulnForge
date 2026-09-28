@@ -14,7 +14,6 @@ Nothing here sets ``confirmed`` or clears ``needs_human``.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -25,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from vulnforge.file_lock import open_exclusive
 from vulnforge.languages import POC_CODE_EXTS
 from vulnforge.poc_handoff import (
     POC_DEVELOP_RELPATH,
@@ -87,9 +87,7 @@ def _epoch_iso(epoch: float) -> str:
 
 def _lock(pack_dir: Path):
     pack_dir.mkdir(parents=True, exist_ok=True)
-    fh = open(pack_dir / LOCK_NAME, "a+", encoding="utf-8")
-    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-    return fh
+    return open_exclusive(pack_dir / LOCK_NAME)
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:

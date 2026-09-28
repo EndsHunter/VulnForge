@@ -11,8 +11,8 @@ does not rewrite a tool the model already chose, and it never confirms or
 rejects findings.
 
 Live snapshot writers (``record_tool_call``, ``note_round_start``, bind /
-unbind) and steer writers share ``_live_lock`` — the same ``fcntl`` flock
-file as steer (``steer/task-<id>.lock``). The lock is reentrant on the
+unbind) and steer writers share ``_live_lock`` — an exclusive lock on the
+steer file (``steer/task-<id>.lock``). The lock is reentrant on the
 holding thread so a steer boundary can call a tool that records a step.
 
 Model-wait contract: ``note_round_start`` sets ``phase`` to ``"thinking"``,
@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 from uuid import uuid4
 
+from vulnforge.file_lock import open_exclusive
 from vulnforge.util import append_event, utc_now_iso
 
 _MAX_STEPS = 40
@@ -735,14 +736,11 @@ def _load_steer(run_dir: Path, task_id: int) -> dict[str, Any]:
 def _live_lock(run_dir: Path, task_id: int) -> Iterator[None]:
     """Exclusive lock for live-snapshot and steer writers of one task.
 
-    Same flock file as historical ``_steer_lock`` (``steer/task-<id>.lock``).
+    Same lock file as historical ``_steer_lock`` (``steer/task-<id>.lock``).
     Reentrant on the holding thread: ``apply_round_boundary`` calls a tool
     while the steer lock is held, and that tool records a live step.
-    Other threads and processes block on ``fcntl.flock`` until the outer
-    hold releases.
+    Other threads and processes block until the outer hold releases.
     """
-    import fcntl
-
     key = (str(Path(run_dir)), int(task_id))
     held = _lock_depth.held
     depth = held.get(key, 0)
@@ -756,14 +754,15 @@ def _live_lock(run_dir: Path, task_id: int) -> Iterator[None]:
 
     path = _lock_path(run_dir, task_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    locked = open_exclusive(path)
+    try:
         held[key] = 1
         try:
             yield
         finally:
             held.pop(key, None)
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        locked.close()
 
 
 # Steer writers keep the old name. It is the same lock as live snapshots.
