@@ -136,6 +136,32 @@ def test_one_model_round_keeps_one_round_across_tool_calls(tmp_path: Path):
     assert events.count('"event": "task_step"') == 4
 
 
+def test_note_round_start_clears_current_tool(tmp_path: Path):
+    """A new model round must not keep showing the previous tool as "now"."""
+    run = _run(tmp_path)
+    token = bind_task(run, 1, "hunt", 8)
+    try:
+        assert note_round_start() == 1
+        record_tool_call("grep", {"pattern": "SELECT", "path": "app.py"}, {"ok": True})
+        mid = read_live_view(run, 1)
+        assert mid["tool"] == "grep"
+        assert "SELECT" in mid["args_summary"]
+        assert mid["ok"] is True
+        assert note_round_start() == 2
+        waiting = read_live_view(run, 1)
+        assert waiting["round"] == 2
+        assert waiting["tool"] is None
+        assert waiting["args_summary"] == ""
+        assert waiting["ok"] is None
+        assert [s["tool"] for s in waiting["steps"]] == ["grep"]
+        assert waiting["steps"][0]["round"] == 1
+    finally:
+        unbind_task(token)
+    ended = read_live_view(run, 1)
+    assert ended["phase"] == "ended"
+    assert [s["tool"] for s in ended["steps"]] == ["grep"]
+
+
 def test_note_is_injected_once_and_does_not_touch_findings(tmp_path: Path):
     run = _run(tmp_path)
     before = _finding_state(run)
