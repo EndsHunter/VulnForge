@@ -14,6 +14,13 @@ Live snapshot writers (``record_tool_call``, ``note_round_start``, bind /
 unbind) and steer writers share ``_live_lock`` — the same ``fcntl`` flock
 file as steer (``steer/task-<id>.lock``). The lock is reentrant on the
 holding thread so a steer boundary can call a tool that records a step.
+
+Model-wait contract: ``note_round_start`` sets ``phase`` to ``"thinking"``,
+clears ``tool`` / ``args_summary`` / ``ok``, and stamps ``wait_started_at``.
+While that phase lasts and no tool is current, a heartbeat refreshes
+``updated_at`` and ``heartbeat_n`` only — no steps, no invented tools, no
+round/call changes. ``record_tool_call`` sets ``phase`` back to ``"running"``
+and ``unbind_task`` sets ``"ended"``; both clear ``wait_started_at``.
 """
 
 from __future__ import annotations
@@ -32,6 +39,8 @@ _MAX_STEPS = 40
 _ARGS_SUMMARY_MAX = 180
 _NOTE_MAX = 2000
 _NOTES_CAP = 12
+# Seconds between liveness touches while phase is "thinking". 5–15s.
+_HEARTBEAT_INTERVAL_S = 8.0
 
 _bind: ContextVar[Optional["LiveBind"]] = ContextVar("vf_live_bind", default=None)
 _forcing_submit_none: ContextVar[bool] = ContextVar(
@@ -46,6 +55,8 @@ class LiveBind:
         self.kind = str(kind or "")
         self.max_rounds = max(1, int(max_rounds or 1))
         self.round_n = 0
+        self._hb_stop: Optional[threading.Event] = None
+        self._hb_thread: Optional[threading.Thread] = None
 
 
 def operator_force_active() -> bool:
@@ -90,12 +101,14 @@ def unbind_task(token: object) -> None:
             with _live_lock(bind.run_dir, bind.task_id):
                 snap = _read_json(_live_path(bind.run_dir, bind.task_id)) or {}
                 snap["phase"] = "ended"
+                snap["wait_started_at"] = None
                 snap["updated_at"] = utc_now_iso()
                 snap.setdefault("task_id", bind.task_id)
                 snap.setdefault("max_rounds", bind.max_rounds)
                 _write_json(_live_path(bind.run_dir, bind.task_id), snap)
         except OSError:
             pass
+        _stop_thinking_heartbeat(bind)
     try:
         _bind.reset(token)  # type: ignore[arg-type]
     except (ValueError, LookupError):
@@ -105,8 +118,9 @@ def unbind_task(token: object) -> None:
 def note_round_start() -> int:
     """Count a model round that is about to start. Returns the 1-based index.
 
-    Clears the top-level "now" tool fields so the pane does not keep showing
-    a finished tool while the model is thinking. Prior ``steps`` stay.
+    Enters ``phase="thinking"`` and clears the top-level "now" tool fields so
+    the pane does not keep showing a finished tool while the model is
+    thinking. Prior ``steps`` stay. Starts the liveness heartbeat.
     """
     bind = _bind.get()
     if bind is None:
@@ -116,14 +130,17 @@ def note_round_start() -> int:
         with _live_lock(bind.run_dir, bind.task_id):
             bind.round_n += 1
             incremented = True
+            now = utc_now_iso()
             snap = _read_json(_live_path(bind.run_dir, bind.task_id)) or {}
             snap["round"] = bind.round_n
             snap["max_rounds"] = bind.max_rounds
-            snap["phase"] = "running"
+            snap["phase"] = "thinking"
             snap["tool"] = None
             snap["args_summary"] = ""
             snap["ok"] = None
-            snap["updated_at"] = utc_now_iso()
+            snap["wait_started_at"] = now
+            snap["heartbeat_n"] = 0
+            snap["updated_at"] = now
             snap.setdefault("task_id", bind.task_id)
             snap.setdefault("kind", bind.kind)
             snap.setdefault("steps", [])
@@ -131,7 +148,28 @@ def note_round_start() -> int:
     except OSError:
         if not incremented:
             bind.round_n += 1
+        return bind.round_n
+    _ensure_thinking_heartbeat(bind)
     return bind.round_n
+
+
+@contextmanager
+def thinking_heartbeat() -> Iterator[None]:
+    """Keep the live snapshot warm while a model call blocks.
+
+    Refreshes ``updated_at`` / ``heartbeat_n`` on the interval. Does not append
+    steps or set a tool. No-op when no task is bound. The heartbeat stops when
+    the block exits; ``record_tool_call`` and ``unbind_task`` stop it too.
+    """
+    bind = _bind.get()
+    if bind is None:
+        yield
+        return
+    _ensure_thinking_heartbeat(bind)
+    try:
+        yield
+    finally:
+        _stop_thinking_heartbeat(bind)
 
 
 def summarize_args(args: Any) -> str:
@@ -208,12 +246,14 @@ def record_tool_call(name: str, args: Any, out: Any) -> None:
                     "args_summary": summary,
                     "ok": ok,
                     "steps": steps,
+                    "wait_started_at": None,
                     "updated_at": step_ts,
                 }
             )
             _write_json(_live_path(bind.run_dir, bind.task_id), snap)
     except OSError:
         pass
+    _stop_thinking_heartbeat(bind)
     try:
         append_event(
             bind.run_dir,
@@ -486,6 +526,8 @@ def read_live_view(run_dir: Path, task_id: int) -> dict[str, Any]:
         "args_summary": snap.get("args_summary") or "",
         "ok": snap.get("ok"),
         "steps": steps[-_MAX_STEPS:],
+        "wait_started_at": snap.get("wait_started_at"),
+        "heartbeat_n": _heartbeat_n(snap.get("heartbeat_n")),
         "updated_at": snap.get("updated_at"),
         "steer": {
             "pending_notes": [
@@ -507,6 +549,62 @@ def read_live_view(run_dir: Path, task_id: int) -> dict[str, Any]:
             "abort": steer.get("abort"),
         },
     }
+
+
+def _heartbeat_n(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _ensure_thinking_heartbeat(bind: LiveBind) -> None:
+    """Start one daemon touch loop for this bind. A stopped thread is replaced."""
+    current = bind._hb_thread
+    stop = bind._hb_stop
+    if (
+        current is not None
+        and current.is_alive()
+        and stop is not None
+        and not stop.is_set()
+    ):
+        return
+    stop = threading.Event()
+    bind._hb_stop = stop
+
+    def _loop(stop_event: threading.Event) -> None:
+        while not stop_event.wait(_HEARTBEAT_INTERVAL_S):
+            try:
+                _heartbeat_touch(bind)
+            except OSError:
+                return
+
+    thread = threading.Thread(
+        target=_loop,
+        args=(stop,),
+        name=f"vf-live-heartbeat-{bind.task_id}",
+        daemon=True,
+    )
+    bind._hb_thread = thread
+    thread.start()
+
+
+def _stop_thinking_heartbeat(bind: LiveBind) -> None:
+    stop = bind._hb_stop
+    if stop is not None:
+        stop.set()
+
+
+def _heartbeat_touch(bind: LiveBind) -> None:
+    """Refresh liveness metadata. Leaves steps, tool, round, and call alone."""
+    with _live_lock(bind.run_dir, bind.task_id):
+        path = _live_path(bind.run_dir, bind.task_id)
+        snap = _read_json(path) or {}
+        if snap.get("phase") != "thinking" or snap.get("tool"):
+            return
+        snap["updated_at"] = utc_now_iso()
+        snap["heartbeat_n"] = _heartbeat_n(snap.get("heartbeat_n")) + 1
+        _write_json(path, snap)
 
 
 def _step_round(step: dict[str, Any]) -> int:

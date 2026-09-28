@@ -682,7 +682,11 @@ class FakeLLMClient:
             return res
 
         for round_i in range(max_rounds):
-            from vulnforge.live_task import apply_round_boundary, note_round_start
+            from vulnforge.live_task import (
+                apply_round_boundary,
+                note_round_start,
+                thinking_heartbeat,
+            )
 
             decision = apply_round_boundary(
                 tool_handler, getattr(packet, "tools_schema", None)
@@ -789,7 +793,10 @@ class FakeLLMClient:
                             ),
                         }
                     )
-            last = self.chat(messages, tools=packet.tools_schema, temperature=temperature)
+            with thinking_heartbeat():
+                last = self.chat(
+                    messages, tools=packet.tools_schema, temperature=temperature
+                )
             _accumulate(last)
             if not last.ok:
                 last.transcript = list(messages)
