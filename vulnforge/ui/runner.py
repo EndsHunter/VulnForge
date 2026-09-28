@@ -9,6 +9,11 @@ Hard stop -  kill the Ralph session (in-flight run-once included),
              reclaim leases, clear run.lock when the holder is dead.
 Resume    -  remove STOP and spawn Ralph again if not already running.
              A live run.lock holder blocks resume until that process is gone.
+
+Liveness is ``os.kill(pid, 0)`` via ``_pid_alive`` (zombies do not count).
+``runner.json`` keeps start diagnostics after a worker exits. Its ``pid``
+is not proof a campaign is live: ``runner_status`` clears that claim when
+no listed PID is still alive.
 """
 
 from __future__ import annotations
@@ -105,6 +110,127 @@ def read_pid(run_dir: Path) -> Optional[int]:
             return None
 
 
+def _coerce_pid(value: Any) -> Optional[int]:
+    try:
+        pid = int(value)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    return pid
+
+
+def _meta_claimed_pids(meta: dict[str, Any]) -> list[int]:
+    """PIDs named by runner.json (primary ``pid`` plus ``pids``)."""
+    pids: list[int] = []
+    primary = _coerce_pid(meta.get("pid"))
+    if primary:
+        pids.append(primary)
+    for item in meta.get("pids") or []:
+        pid = _coerce_pid(item)
+        if pid and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def _meta_has_live_claim(meta: dict[str, Any]) -> bool:
+    return bool(_meta_claimed_pids(meta))
+
+
+def _load_meta(run_dir: Path) -> Optional[dict[str, Any]]:
+    mp = _meta_path(run_dir)
+    if not mp.is_file():
+        return None
+    try:
+        data = json.loads(mp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _clear_stale_runner_meta(
+    run_dir: Path,
+    meta: Optional[dict[str, Any]] = None,
+    *,
+    ignore_pids: Optional[set[int]] = None,
+) -> bool:
+    """Drop a dead PID claim from ``runner.json``.
+
+    Missing file is a no-op. Any claimed PID that still passes ``kill -0``
+    (except ``ignore_pids``, used when this process is itself exiting) keeps
+    the file unchanged. Diagnostics (``argv``, ``last_start``, ``workers``,
+    …) stay. ``pid`` becomes null and ``pids`` becomes empty.
+    """
+    run_dir = Path(run_dir)
+    mp = _meta_path(run_dir)
+    if not mp.is_file():
+        return False
+    if meta is None:
+        meta = _load_meta(run_dir)
+        if meta is None:
+            return False
+    if not _meta_has_live_claim(meta):
+        return False
+    ignore = ignore_pids or set()
+    claimed = _meta_claimed_pids(meta)
+    if any(pid not in ignore and _pid_alive(pid) for pid in claimed):
+        return False
+    primary = _coerce_pid(meta.get("pid"))
+    meta["last_pid"] = primary or claimed[0]
+    meta["pid"] = None
+    meta["pids"] = []
+    meta["cleared_at"] = utc_now_iso()
+    try:
+        mp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def release_runner_meta_on_exit(run_dir: Path) -> bool:
+    """Clear ``runner.json`` as this Ralph process exits.
+
+    Only the claimed primary PID may clear the file, and only when every
+    other claimed worker is already gone. A sibling that is still alive
+    (multi-worker STOP drain) keeps the claim.
+    """
+    run_dir = Path(run_dir)
+    meta = _load_meta(run_dir)
+    if meta is None:
+        return False
+    me = os.getpid()
+    if _coerce_pid(meta.get("pid")) != me:
+        return False
+    others = [pid for pid in _meta_claimed_pids(meta) if pid != me]
+    for pid in _read_worker_pids(run_dir):
+        if pid != me and pid not in others:
+            others.append(pid)
+    if any(_pid_alive(pid) for pid in others):
+        return False
+    return _clear_stale_runner_meta(run_dir, meta, ignore_pids={me})
+
+
+def foreign_runner_alive(
+    run_dir: Path,
+    *,
+    ignore_pids: Optional[set[int]] = None,
+) -> bool:
+    """True when some Ralph PID other than ``ignore_pids`` still passes kill -0.
+
+    Checks ``ralph.pid``, ``ralph_workers.json``, and ``runner.json``.
+    """
+    ignore = ignore_pids or set()
+    meta = _load_meta(run_dir) or {}
+    seen: set[int] = set()
+    for pid in [*_read_worker_pids(run_dir), *_meta_claimed_pids(meta)]:
+        if pid in ignore or pid in seen:
+            continue
+        seen.add(pid)
+        if _pid_alive(pid):
+            return True
+    return False
+
+
 def _read_worker_pids(run_dir: Path) -> list[int]:
     """Primary pid + any multi-worker PIDs still listed."""
     pids: list[int] = []
@@ -139,15 +265,9 @@ def runner_status(run_dir: Path) -> dict[str, Any]:
     alive = bool(live_pids)
     stop = _stop_path(run_dir).is_file()
     locked = (run_dir / "run.lock").is_file()
-    meta = {}
-    mp = _meta_path(run_dir)
-    if mp.is_file():
-        try:
-            meta = json.loads(mp.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            meta = {}
+    meta = _load_meta(run_dir) or {}
     if not alive:
-        # stale pid files
+        # stale pid files; runner.json must not keep naming a dead PID
         try:
             _pid_path(run_dir).unlink(missing_ok=True)
         except OSError:
@@ -156,6 +276,8 @@ def runner_status(run_dir: Path) -> dict[str, Any]:
             (run_dir / "ralph_workers.json").unlink(missing_ok=True)
         except OSError:
             pass
+        if meta:
+            _clear_stale_runner_meta(run_dir, meta)
     state = "idle"
     if alive and stop:
         state = "pausing"  # STOP set, waiting for current task to finish

@@ -530,3 +530,85 @@ def test_live_pane_markup_present():
     assert "does not confirm" in js
     assert "Force task #" in js
     assert "Abort task #" in js
+
+
+def test_prune_live_artifacts_removes_ended_ghosts(tmp_path: Path):
+    """Idle prune deletes live JSON and empty locks; steer notes and held locks stay."""
+    from vulnforge.live_task import prune_live_artifacts
+
+    run = _run(tmp_path)
+    token = bind_task(run, 1, "hunt", 8)
+    try:
+        note_round_start()
+        record_tool_call("grep", {"pattern": "SELECT"}, {"ok": True})
+    finally:
+        unbind_task(token)
+    assert read_live_view(run, 1)["phase"] == "ended"
+    (run / "steer" / "task-9.lock").write_text("", encoding="utf-8")
+    (run / "steer" / "task-9.json").write_text(
+        '{"notes":[{"id":"n","text":"later","consumed":false}]}',
+        encoding="utf-8",
+    )
+    (run / "steer" / "busy.lock").write_text("held", encoding="utf-8")
+    result = prune_live_artifacts(run, reason="test-idle")
+    assert result["pruned"] is True
+    assert result["skip"] is None
+    assert "task-1.json" in result["live"]
+    assert not list((run / "live").glob("task-*.json"))
+    assert not (run / "steer" / "task-1.lock").exists()
+    assert not (run / "steer" / "task-9.lock").exists()
+    assert (run / "steer" / "busy.lock").read_text(encoding="utf-8") == "held"
+    assert (run / "steer" / "task-9.json").is_file()
+    view = read_live_view(run, 1)
+    assert view["phase"] == "idle"
+    assert view["steps"] == []
+    assert view["round"] == 0
+
+
+def test_prune_live_artifacts_skips_stop_and_live_runner(tmp_path: Path):
+    """STOP or a live worker retains live JSON and empty locks."""
+    import json
+    import subprocess
+    import sys
+
+    from vulnforge.live_task import prune_live_artifacts
+
+    run = _run(tmp_path)
+    live = run / "live" / "task-4.json"
+    live.parent.mkdir(parents=True)
+    live.write_text(
+        '{"phase":"ended","steps":[{"tool":"grep","round":1}]}',
+        encoding="utf-8",
+    )
+    lock = run / "steer" / "task-4.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("", encoding="utf-8")
+    (run / "STOP").write_text("paused\n", encoding="utf-8")
+    stopped = prune_live_artifacts(run, reason="stop")
+    assert stopped["pruned"] is False
+    assert stopped["skip"] == "stop"
+    assert live.is_file()
+    assert lock.is_file()
+
+    (run / "STOP").unlink()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        (run / "ralph.pid").write_text(json.dumps({"pid": proc.pid}), encoding="utf-8")
+        alive = prune_live_artifacts(run, reason="alive")
+        assert alive["pruned"] is False
+        assert alive["skip"] == "alive"
+        assert live.is_file()
+        assert lock.is_file()
+        ignored = prune_live_artifacts(
+            run, reason="self-exit", ignore_pids={proc.pid}
+        )
+        assert ignored["pruned"] is True
+        assert not live.exists()
+        assert not lock.exists()
+    finally:
+        proc.kill()
+        proc.wait(timeout=3)

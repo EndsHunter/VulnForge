@@ -394,7 +394,39 @@ def invoke_run_once(cfg: RalphConfig) -> int:
 def run_loop(cfg: RalphConfig) -> int:
     """
     Main Ralph loop. Returns process exit code for the loop itself.
+
+    On the way out, drop this process's runner.json PID claim when no
+    sibling worker is still alive. Live snapshots are pruned only after
+    idle/complete (RALPH_IDLE), and not when STOP is set.
     """
+    try:
+        return _run_loop(cfg)
+    finally:
+        _release_own_runner_meta(cfg)
+
+
+def _prune_live_after_idle(cfg: RalphConfig) -> None:
+    if cfg.run_dir is None or stop_requested(cfg):
+        return
+    from vulnforge.live_task import prune_live_artifacts
+
+    prune_live_artifacts(
+        cfg.run_dir,
+        reason="ralph_idle",
+        ignore_pids={os.getpid()},
+    )
+
+
+def _release_own_runner_meta(cfg: RalphConfig) -> None:
+    if cfg.run_dir is None:
+        return
+    from vulnforge.ui.runner import release_runner_meta_on_exit
+
+    release_runner_meta_on_exit(cfg.run_dir)
+
+
+def _run_loop(cfg: RalphConfig) -> int:
+    """Ralph loop body. ``run_loop`` releases the runner.json claim afterward."""
     if cfg.dry_run:
         argv = build_run_once_argv(cfg)
         log(f"dry-run argv: {argv!r}", verbose=True)
@@ -528,6 +560,7 @@ def run_loop(cfg: RalphConfig) -> int:
                 },
             )
             # Idle path already projects inside vf run-once; no extra project needed.
+            _prune_live_after_idle(cfg)
             return RALPH_IDLE
 
         if code == EXIT_INFRA:

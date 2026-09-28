@@ -21,6 +21,11 @@ While that phase lasts and no tool is current, a heartbeat refreshes
 ``updated_at`` and ``heartbeat_n`` only — no steps, no invented tools, no
 round/call changes. ``record_tool_call`` sets ``phase`` back to ``"running"``
 and ``unbind_task`` sets ``"ended"``; both clear ``wait_started_at``.
+
+``prune_live_artifacts`` deletes ``live/task-*.json`` and empty
+``steer/*.lock`` files after a successful idle. It does not delete steer
+JSON. A ``STOP`` file or any other live Ralph PID skips the prune, so a
+pause or a sibling worker keeps its files.
 """
 
 from __future__ import annotations
@@ -507,6 +512,66 @@ def apply_round_boundary(tool_handler, tools_schema) -> dict[str, Any]:
                 "note_text": format_operator_note(pending),
             }
     return empty
+
+
+def prune_live_artifacts(
+    run_dir: Path,
+    *,
+    reason: str = "",
+    ignore_pids: Optional[set[int]] = None,
+) -> dict[str, Any]:
+    """Delete ended live snapshots and empty steer lock files.
+
+    No-op when ``STOP`` is present or a Ralph worker other than
+    ``ignore_pids`` is still alive. Steer JSON is left in place so an
+    unconsumed note survives. Empty-file locks only: a non-empty lock is
+    kept. Call this after idle/complete, not while a task is running.
+    """
+    run_dir = Path(run_dir)
+    skipped: dict[str, Any] = {
+        "ok": True,
+        "pruned": False,
+        "reason": reason,
+        "skip": None,
+        "live": [],
+        "locks": [],
+    }
+    if (run_dir / "STOP").is_file():
+        skipped["skip"] = "stop"
+        return skipped
+    from vulnforge.ui.runner import foreign_runner_alive
+
+    if foreign_runner_alive(run_dir, ignore_pids=ignore_pids):
+        skipped["skip"] = "alive"
+        return skipped
+
+    removed_live: list[str] = []
+    live_dir = run_dir / "live"
+    if live_dir.is_dir():
+        for path in sorted(live_dir.glob("task-*.json")):
+            try:
+                path.unlink()
+                removed_live.append(path.name)
+            except OSError:
+                continue
+    removed_locks: list[str] = []
+    steer_dir = run_dir / "steer"
+    if steer_dir.is_dir():
+        for path in sorted(steer_dir.glob("*.lock")):
+            try:
+                if path.is_file() and path.stat().st_size == 0:
+                    path.unlink()
+                    removed_locks.append(path.name)
+            except OSError:
+                continue
+    return {
+        "ok": True,
+        "pruned": True,
+        "reason": reason,
+        "skip": None,
+        "live": removed_live,
+        "locks": removed_locks,
+    }
 
 
 def read_live_view(run_dir: Path, task_id: int) -> dict[str, Any]:

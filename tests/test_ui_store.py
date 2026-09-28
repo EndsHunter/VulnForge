@@ -963,3 +963,273 @@ def test_run_card_llm_usage_missing_and_by_model(tmp_path: Path, toy_sqli: Path)
 
     snap = store.run_snapshot(ref)
     assert snap["llm_usage"]["by_model"]["grok-4"]["total_tokens"] == 120
+
+
+def _write_runner_meta(run_dir: Path, payload: dict) -> None:
+    import json
+
+    (run_dir / "runner.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _read_runner_meta(run_dir: Path) -> dict:
+    import json
+
+    return json.loads((run_dir / "runner.json").read_text(encoding="utf-8"))
+
+
+def test_runner_status_clears_dead_pid_in_runner_json(tmp_path: Path, monkeypatch):
+    """A finished campaign must not leave a dead PID claim in runner.json."""
+    import json
+
+    run_dir = _posix_run_dir(tmp_path)
+    monkeypatch.setattr(runctl, "_pid_alive", lambda _pid: False)
+    (run_dir / "ralph.pid").write_text(json.dumps({"pid": 111}), encoding="utf-8")
+    (run_dir / "ralph_workers.json").write_text(
+        json.dumps({"pids": [111, 222]}), encoding="utf-8"
+    )
+    _write_runner_meta(
+        run_dir,
+        {
+            "pid": 111,
+            "pids": [111, 222],
+            "argv": ["python", "scripts/ralph.py"],
+            "last_start": "2020-01-01T00:00:00Z",
+            "workers": 2,
+            "task_timeout": 900,
+        },
+    )
+    st = runctl.runner_status(run_dir)
+    assert st["alive"] is False
+    assert st["pid"] is None
+    assert st["pids"] == []
+    assert not (run_dir / "ralph.pid").exists()
+    assert not (run_dir / "ralph_workers.json").exists()
+    meta = _read_runner_meta(run_dir)
+    assert meta.get("pid") in (None, 0)
+    assert not meta.get("pids")
+    assert meta["argv"] == ["python", "scripts/ralph.py"]
+    assert meta["last_start"] == "2020-01-01T00:00:00Z"
+    assert meta["workers"] == 2
+    assert meta["task_timeout"] == 900
+    assert meta["last_pid"] == 111
+    assert meta.get("cleared_at")
+    again = runctl.runner_status(run_dir)
+    assert again["meta"].get("pid") in (None, 0)
+    assert _read_runner_meta(run_dir)["cleared_at"] == meta["cleared_at"]
+
+
+def test_runner_status_keeps_live_pid_in_runner_json(tmp_path: Path, monkeypatch):
+    """A PID that still passes kill -0 is left untouched, including in runner.json."""
+    run_dir = _posix_run_dir(tmp_path)
+    monkeypatch.setattr(runctl, "_pid_alive", lambda pid: int(pid) == 424242)
+    payload = {
+        "pid": 424242,
+        "pids": [424242, 111],
+        "argv": ["ralph"],
+        "last_start": "2020-01-01T00:00:00Z",
+        "workers": 2,
+    }
+    (run_dir / "ralph.pid").write_text('{"pid": 424242}', encoding="utf-8")
+    _write_runner_meta(run_dir, payload)
+    st = runctl.runner_status(run_dir)
+    assert st["alive"] is True
+    assert st["pid"] == 424242
+    assert (run_dir / "ralph.pid").is_file()
+    meta = _read_runner_meta(run_dir)
+    assert meta["pid"] == 424242
+    assert meta["pids"] == [424242, 111]
+    assert "cleared_at" not in meta
+
+
+def test_runner_status_does_not_wipe_live_meta_pid_without_pid_file(
+    tmp_path: Path, monkeypatch
+):
+    """runner.json alone naming a live PID is not rewritten just because pid files are gone."""
+    run_dir = _posix_run_dir(tmp_path)
+    monkeypatch.setattr(runctl, "_pid_alive", lambda pid: int(pid) == 424242)
+    _write_runner_meta(
+        run_dir,
+        {
+            "pid": 424242,
+            "argv": ["ralph"],
+            "last_start": "2020-01-01T00:00:00Z",
+            "workers": 1,
+        },
+    )
+    st = runctl.runner_status(run_dir)
+    assert st["alive"] is False
+    assert _read_runner_meta(run_dir)["pid"] == 424242
+    assert "cleared_at" not in _read_runner_meta(run_dir)
+
+
+def test_release_runner_meta_on_exit_clears_primary_only(tmp_path: Path, monkeypatch):
+    """The exiting primary clears its claim; a live sibling keeps it."""
+    import os
+
+    run_dir = _posix_run_dir(tmp_path)
+    me = os.getpid()
+    sibling = 515151
+    monkeypatch.setattr(
+        runctl, "_pid_alive", lambda pid: int(pid) in (me, sibling)
+    )
+    _write_runner_meta(
+        run_dir,
+        {
+            "pid": me,
+            "pids": [me, sibling],
+            "argv": ["ralph"],
+            "last_start": "2020-01-01T00:00:00Z",
+            "workers": 2,
+        },
+    )
+    assert runctl.release_runner_meta_on_exit(run_dir) is False
+    assert _read_runner_meta(run_dir)["pid"] == me
+
+    _write_runner_meta(
+        run_dir,
+        {
+            "pid": me,
+            "pids": [me],
+            "argv": ["ralph"],
+            "last_start": "2020-01-01T00:00:00Z",
+            "workers": 1,
+        },
+    )
+    monkeypatch.setattr(runctl, "_pid_alive", lambda pid: int(pid) == me)
+    assert runctl.release_runner_meta_on_exit(run_dir) is True
+    meta = _read_runner_meta(run_dir)
+    assert meta.get("pid") in (None, 0)
+    assert meta.get("pids") in ([], None)
+    assert meta["last_pid"] == me
+    assert meta["argv"] == ["ralph"]
+    assert meta.get("cleared_at")
+
+
+def test_hard_stop_clears_runner_json_pid_and_keeps_live_files(tmp_path: Path):
+    """Hard stop drops the meta PID claim and does not prune live artifacts."""
+    import json
+    import subprocess
+    import sys
+
+    run_dir = _posix_run_dir(tmp_path)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    live = run_dir / "live" / "task-1.json"
+    lock = run_dir / "steer" / "task-1.lock"
+    try:
+        (run_dir / "ralph.pid").write_text(
+            json.dumps({"pid": proc.pid}), encoding="utf-8"
+        )
+        _write_runner_meta(
+            run_dir,
+            {
+                "pid": proc.pid,
+                "pids": [proc.pid],
+                "argv": ["ralph"],
+                "last_start": "2020-01-01T00:00:00Z",
+                "workers": 1,
+            },
+        )
+        live.parent.mkdir(parents=True)
+        live.write_text(
+            '{"phase":"ended","steps":[{"tool":"grep"}]}', encoding="utf-8"
+        )
+        lock.parent.mkdir(parents=True)
+        lock.write_text("", encoding="utf-8")
+        stopped = runctl.stop_run_hard(run_dir)
+        assert stopped["ok"] is True, stopped
+        assert runctl._pid_alive(proc.pid) is False
+        assert not (run_dir / "ralph.pid").exists()
+        meta = _read_runner_meta(run_dir)
+        assert meta.get("pid") in (None, 0)
+        assert not meta.get("pids")
+        assert meta["last_pid"] == proc.pid
+        assert live.is_file()
+        assert lock.is_file()
+    finally:
+        proc.kill()
+        proc.wait(timeout=3)
+
+
+def _ghost_live(run_dir: Path) -> tuple[Path, Path]:
+    live = run_dir / "live" / "task-4.json"
+    lock = run_dir / "steer" / "task-4.lock"
+    live.parent.mkdir(parents=True, exist_ok=True)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    live.write_text(
+        '{"phase":"ended","task_id":4,"steps":[{"tool":"grep","round":1}]}',
+        encoding="utf-8",
+    )
+    lock.write_text("", encoding="utf-8")
+    return live, lock
+
+
+def test_run_card_prunes_live_artifacts_when_campaign_idle(
+    tmp_path: Path, toy_sqli: Path
+):
+    """Finished card sync drops ended live snapshots and empty steer locks."""
+    from vulnforge.live_task import read_live_view
+
+    runs = tmp_path / "runs"
+    main(["init", "--target", str(toy_sqli), "--runs-root", str(runs), "--no-enqueue-hunts"])
+    ref = store.discover_runs(runs)[0]
+    _succeed_all_tasks(ref)
+    live, lock = _ghost_live(ref.path)
+    note = ref.path / "steer" / "task-4.json"
+    note.write_text('{"notes":[{"text":"keep"}]}', encoding="utf-8")
+    held = ref.path / "steer" / "busy.lock"
+    held.write_text("held", encoding="utf-8")
+    card = store.run_card(ref)
+    assert card["status"] == "idle"
+    assert card["has_work"] is False
+    assert not live.exists()
+    assert not lock.exists()
+    assert note.is_file()
+    assert held.is_file()
+    view = read_live_view(ref.path, 4)
+    assert view["phase"] == "idle"
+    assert view["steps"] == []
+
+
+def test_run_card_keeps_live_artifacts_when_stopped_or_working(
+    tmp_path: Path, toy_sqli: Path
+):
+    """STOP, queued work, or a live worker keep live files."""
+    import json
+    import subprocess
+    import sys
+
+    runs = tmp_path / "runs"
+    main(["init", "--target", str(toy_sqli), "--runs-root", str(runs), "--no-enqueue-hunts"])
+    ref = store.discover_runs(runs)[0]
+    live, lock = _ghost_live(ref.path)
+    store.run_card(ref)
+    assert live.is_file()
+    assert lock.is_file()
+
+    _succeed_all_tasks(ref)
+    (ref.path / "STOP").write_text("paused_at=test\n", encoding="utf-8")
+    card = store.run_card(ref)
+    assert card["status"] == "paused"
+    assert live.is_file()
+    assert lock.is_file()
+
+    (ref.path / "STOP").unlink()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        (ref.path / "ralph.pid").write_text(
+            json.dumps({"pid": proc.pid}), encoding="utf-8"
+        )
+        store.run_card(ref)
+        assert live.is_file()
+        assert lock.is_file()
+    finally:
+        proc.kill()
+        proc.wait(timeout=3)
