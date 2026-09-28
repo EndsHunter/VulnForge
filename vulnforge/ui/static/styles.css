@@ -2832,6 +2832,21 @@ button.arch-campaign-funnel-step:focus-visible {
   flex-wrap: wrap;
   gap: 0.4rem;
 }
+.poc-session-section {
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.poc-session-log {
+  max-height: 14rem;
+  overflow: auto;
+  margin: 0.35rem 0 0.55rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  font-size: 0.78rem;
+}
 .poc-goal-banner {
   margin: 0.75rem 0 0;
   padding: 0.55rem 0.75rem;
@@ -3783,11 +3798,13 @@ tr.task-row .task-actions-cell .btn {
   .settings-page-grid {
     grid-template-columns: 1fr 1fr;
     grid-template-areas:
+      "iterate iterate"
       "hosts hosts"
       "catalog catalog"
       "roles roles"
       "budget budget";
   }
+  .settings-card-iterate { grid-area: iterate; }
   .settings-card-hosts { grid-area: hosts; }
   .settings-card-catalog { grid-area: catalog; }
   .settings-card-roles { grid-area: roles; }

@@ -110,6 +110,8 @@ _KIND_LEASE_STAGE = {
     "validate_poc": "validate_poc",
     "validate_poc_referee": "poc_referee",
     "poc_referee": "poc_referee",
+    # Rewrite cycles use the Develop PoC role. The session never confirms.
+    "iterate_poc": "develop_poc",
 }
 
 

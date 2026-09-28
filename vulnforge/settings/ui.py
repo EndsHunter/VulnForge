@@ -63,6 +63,9 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "max_tool_rounds": 12,
     "timeout_seconds": 600,
     "max_tasks": 50,
+    # Sandbox iterate session caps. Applied onto poc_harness.
+    "poc_iterate_max_cycles": 5,
+    "poc_iterate_wall_ttl_min": 15,
 }
 
 _ROLE_KEYS = ("model", "model_recon", "model_hunt", "model_develop_poc")
@@ -79,7 +82,17 @@ _GLOBAL_KEYS = (
     "max_tool_rounds",
     "timeout_seconds",
     "max_tasks",
+    "poc_iterate_max_cycles",
+    "poc_iterate_wall_ttl_min",
 )
+
+
+def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
 
 
 def normalize_api_mode(value: Any) -> str:
@@ -334,6 +347,12 @@ def _normalize_ui_settings(current: dict[str, Any]) -> dict[str, Any]:
     current["max_tool_rounds"] = max(1, int(current.get("max_tool_rounds") or 12))
     current["timeout_seconds"] = max(1, int(current.get("timeout_seconds") or 600))
     current["max_tasks"] = max(1, int(current.get("max_tasks") or 50))
+    current["poc_iterate_max_cycles"] = _clamp_int(
+        current.get("poc_iterate_max_cycles"), default=5, lo=1, hi=50
+    )
+    current["poc_iterate_wall_ttl_min"] = _clamp_int(
+        current.get("poc_iterate_wall_ttl_min"), default=15, lo=1, hi=240
+    )
     try:
         current["hosts"] = normalize_hosts(current.get("hosts") or [])
     except ValueError:
@@ -632,6 +651,8 @@ def save_ui_settings(updates: dict[str, Any]) -> dict[str, Any]:
         "max_tool_rounds",
         "timeout_seconds",
         "max_tasks",
+        "poc_iterate_max_cycles",
+        "poc_iterate_wall_ttl_min",
     ):
         if key in updates and updates[key] is not None:
             current[key] = updates[key]
@@ -672,6 +693,16 @@ def _apply_globals(out: dict, ui: dict[str, Any]) -> None:
         ui.get("available"), ui.get("model_concurrent_caps")
     )
     run["max_tasks"] = int(ui.get("max_tasks") or run.get("max_tasks") or 50)
+    harness = out.setdefault("poc_harness", {})
+    if not isinstance(harness, dict):
+        harness = {}
+        out["poc_harness"] = harness
+    harness["iterate_max_cycles"] = _clamp_int(
+        ui.get("poc_iterate_max_cycles"), default=5, lo=1, hi=50
+    )
+    harness["iterate_wall_ttl_min"] = _clamp_int(
+        ui.get("poc_iterate_wall_ttl_min"), default=15, lo=1, hi=240
+    )
 
 
 def _bind_default_host(llm: dict, ui: dict[str, Any]) -> None:

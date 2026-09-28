@@ -137,6 +137,8 @@ def harness_config(cfg: dict | None) -> dict[str, Any]:
     pids = max(16, min(pids, 256))
     cpus = str(raw.get("cpus") or "1").strip() or "1"
     memory = str(raw.get("memory") or "512m").strip() or "512m"
+    cycles = _clamp_int(raw.get("iterate_max_cycles"), default=5, lo=1, hi=50)
+    ttl_min = _clamp_int(raw.get("iterate_wall_ttl_min"), default=15, lo=1, hi=240)
     return {
         "enabled": bool(raw.get("enabled", True)),
         "runner": runner or DEFAULT_POC_RUNNER,
@@ -153,7 +155,18 @@ def harness_config(cfg: dict | None) -> dict[str, Any]:
         "firecracker_kernel": str(raw.get("firecracker_kernel") or "").strip(),
         "firecracker_rootfs": str(raw.get("firecracker_rootfs") or "").strip(),
         "python": "",
+        # Iterate-in-sandbox caps. Settings overrides these via poc_harness.
+        "iterate_max_cycles": cycles,
+        "iterate_wall_ttl_min": ttl_min,
     }
+
+
+def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
 
 
 def docker_available() -> bool:
@@ -394,6 +407,94 @@ def build_docker_argv(
         argv.extend(["-e", f"{key}={value}"])
     argv.append(image)
     argv.extend(["sh", "-c", command])
+    audit_sandbox_argv(argv)
+    return argv
+
+
+# Runtimes a long-lived session may pin. Plain runc is not in this set.
+SESSION_RUNTIMES = frozenset({"kata-fc", "kata-qemu", "kata-clh", "kata", "runsc"})
+
+
+def build_session_docker_argv(
+    *,
+    name: str,
+    workspace: Path,
+    image: str,
+    runtime: str,
+    network: str,
+    cpus: str,
+    memory: str,
+    pids_limit: int,
+    sleep_s: int,
+    target_path: Path | None = None,
+    mount_target_ro: bool = False,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """Detached Kata or runsc container. ``sleep`` holds the guest for the TTL.
+
+    The PoC command is not on this argv. Later cycles use ``docker exec`` into
+    this same container. The workspace is read-only from the guest.
+    """
+    if runtime not in SESSION_RUNTIMES:
+        raise ValueError(f"runtime_refused:{runtime or 'empty'}")
+    if network == "host":
+        raise ValueError("host_network_refused")
+    if mount_forbidden_reason(workspace):
+        raise ValueError("unsafe_mount:workspace")
+    net = "none" if network != "allow" else "bridge"
+    argv = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--runtime",
+        runtime,
+        f"--network={net}",
+        "--read-only",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges:true",
+        f"--cpus={cpus}",
+        f"--memory={memory}",
+        f"--memory-swap={memory}",
+        f"--pids-limit={int(pids_limit)}",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=64m",
+        "-v",
+        f"{workspace.resolve()}:/work:ro",
+        "-w",
+        "/work",
+    ]
+    if mount_target_ro and target_path is not None:
+        reason = mount_forbidden_reason(target_path)
+        if reason:
+            raise ValueError(f"unsafe_mount:target:{reason}")
+        if not target_path.exists():
+            raise ValueError("unsafe_mount:target_missing")
+        argv.extend(["-v", f"{target_path.resolve()}:/target:ro"])
+    guest_env, _dropped = scrub_guest_env(env)
+    for key, value in guest_env.items():
+        argv.extend(["-e", f"{key}={value}"])
+    argv.append(image)
+    argv.extend(["sleep", str(max(1, int(sleep_s)))])
+    audit_sandbox_argv(argv)
+    return argv
+
+
+def build_session_exec_argv(
+    *,
+    name: str,
+    command: str,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """``docker exec`` into an existing session container. Never a host shell."""
+    if not name or not str(name).startswith("vf-poc-sess-"):
+        raise ValueError("session_guest_refused")
+    argv = ["docker", "exec", "-w", "/work"]
+    guest_env, _dropped = scrub_guest_env(env)
+    for key, value in guest_env.items():
+        argv.extend(["-e", f"{key}={value}"])
+    argv.extend([name, "sh", "-c", command])
     audit_sandbox_argv(argv)
     return argv
 

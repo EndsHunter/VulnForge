@@ -250,14 +250,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     vp = sub.add_parser(
         "validate-poc",
-        help="Enqueue or run a sandbox one-shot validate_poc (never host exec, never confirms)",
+        help="Enqueue or run sandbox validate_poc (one-shot, or --iterate; never host exec, never confirms)",
     )
     vp.add_argument("--finding-id", type=int, required=True)
     vp.add_argument("--run-dir", type=Path, default=None)
     vp.add_argument(
         "--execute",
         action="store_true",
-        help="Run validate_poc immediately in-process (else only enqueue)",
+        help="Run immediately in-process (else only enqueue)",
+    )
+    vp.add_argument(
+        "--iterate",
+        action="store_true",
+        help="Keep one microVM/gVisor session and rewrite/re-run until success or caps",
     )
     vp.add_argument(
         "--referee",
@@ -1323,6 +1328,10 @@ def _dispatch_task_kind(task, db: Database, run_dir: Path, cfg: dict) -> dict[st
         from vulnforge.stages import validate_poc
 
         return validate_poc.run(task, db, run_dir, cfg)
+    if kind == "iterate_poc":
+        from vulnforge.stages import iterate_poc
+
+        return iterate_poc.run(task, db, run_dir, cfg)
     if kind == "render":
         from vulnforge.stages import render
 
@@ -1415,6 +1424,7 @@ def cmd_validate_poc(args, cfg: dict) -> int:
         print(str(e), file=sys.stderr)
         return EXIT_CONFIG
     fid = int(args.finding_id)
+    iterate = bool(getattr(args, "iterate", False))
     payload: dict[str, Any] = {
         "finding_id": fid,
         "operator": "cli",
@@ -1434,34 +1444,41 @@ def cmd_validate_poc(args, cfg: dict) -> int:
         if getattr(args, "execute", False):
             from types import SimpleNamespace
 
-            from vulnforge.stages import validate_poc
+            if iterate:
+                from vulnforge.stages import iterate_poc
 
-            task = SimpleNamespace(
-                id=0,
-                kind="validate_poc",
-                payload=payload,
-            )
-            result = validate_poc.run(task, db, run_dir, cfg)
-            print(json.dumps({k: result.get(k) for k in (
-                "status", "finding_id", "verdict", "signal_matched",
-                "exit_code", "evidence_id", "error",
-            ) if k in result or result.get(k) is not None}, indent=2))
+                task = SimpleNamespace(id=0, kind="iterate_poc", payload=payload)
+                result = iterate_poc.run(task, db, run_dir, cfg)
+                print(json.dumps({k: result.get(k) for k in (
+                    "status", "finding_id", "verdict", "end_reason",
+                    "cycles_run", "evidence_id", "error", "finding_state",
+                ) if k in result or result.get(k) is not None}, indent=2))
+            else:
+                from vulnforge.stages import validate_poc
+
+                task = SimpleNamespace(id=0, kind="validate_poc", payload=payload)
+                result = validate_poc.run(task, db, run_dir, cfg)
+                print(json.dumps({k: result.get(k) for k in (
+                    "status", "finding_id", "verdict", "signal_matched",
+                    "exit_code", "evidence_id", "error",
+                ) if k in result or result.get(k) is not None}, indent=2))
             if result.get("status") == "failed_infra":
                 return EXIT_INFRA
             if result.get("status") != "succeeded":
                 return EXIT_CONFIG
             return EXIT_PROGRESS
-        task_id = db.enqueue_task("validate_poc", payload, priority=28)
+        kind = "iterate_poc" if iterate else "validate_poc"
+        task_id = db.enqueue_task(kind, payload, priority=28)
         append_event(
             run_dir,
             {
                 "source": "vf",
-                "event": "poc_validate_enqueued",
+                "event": "poc_iterate_enqueued" if iterate else "poc_validate_enqueued",
                 "finding_id": fid,
                 "task_id": task_id,
             },
         )
-        print(f"enqueued validate_poc task_id={task_id} finding_id={fid}")
+        print(f"enqueued {kind} task_id={task_id} finding_id={fid}")
         return EXIT_PROGRESS
     finally:
         db.close()

@@ -266,6 +266,9 @@ class SettingsBody(BaseModel):
     max_tool_rounds: Optional[int] = None
     timeout_seconds: Optional[int] = None
     max_tasks: Optional[int] = None
+    # Sandbox iterate caps. Defaults 5 cycles and 15 minutes.
+    poc_iterate_max_cycles: Optional[int] = None
+    poc_iterate_wall_ttl_min: Optional[int] = None
 
 
 class VerifyModelBody(BaseModel):
@@ -569,6 +572,22 @@ class FindingValidatePocBody(BaseModel):
     target_url: str = ""
     referee: bool = False
     command: str = ""
+
+
+class FindingIteratePocBody(BaseModel):
+    """Enqueue iterate_poc. Same sandbox session, caps, never confirms."""
+
+    operator: str = "operator"
+    operator_notes: str = ""
+    target_url: str = ""
+    command: str = ""
+
+
+class FindingPocSteerBody(BaseModel):
+    """Human steer into the live sandbox session. Not a host shell."""
+
+    text: str = ""
+    operator: str = "operator"
 
 
 class FindingExportValidationJobBody(BaseModel):
@@ -2264,6 +2283,72 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             )
         return r
 
+    @app.post("/api/runs/{target_id}/{run_id}/findings/{finding_id}/iterate-poc")
+    def api_finding_iterate_poc(
+        target_id: str, run_id: str, finding_id: int, body: FindingIteratePocBody
+    ):
+        """Enqueue iterate_poc. Caps end the session. Never auto-confirms."""
+        run = _get_run(target_id, run_id)
+        r = dashops.enqueue_iterate_poc(
+            run.path,
+            finding_id,
+            operator=body.operator or "operator",
+            operator_notes=body.operator_notes or "",
+            target_url=body.target_url or "",
+            command=body.command or "",
+        )
+        if not r.get("ok"):
+            raise HTTPException(
+                404 if r.get("error") == "finding_not_found" else 400,
+                r.get("error") or "iterate-poc enqueue failed",
+            )
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/findings/{finding_id}/poc-session")
+    def api_finding_poc_session(target_id: str, run_id: str, finding_id: int):
+        """Live or ended sandbox session for this finding. Evidence only."""
+        run = _get_run(target_id, run_id)
+        r = dashops.get_poc_session(run.path, finding_id)
+        if not r.get("ok"):
+            raise HTTPException(
+                404 if r.get("error") == "finding_not_found" else 400,
+                r.get("error") or "poc session failed",
+            )
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/findings/{finding_id}/poc-session/steer")
+    def api_finding_poc_steer(
+        target_id: str, run_id: str, finding_id: int, body: FindingPocSteerBody
+    ):
+        """Append a steer note for the same sandbox session."""
+        run = _get_run(target_id, run_id)
+        r = dashops.steer_poc_session(
+            run.path,
+            finding_id,
+            text=body.text or "",
+            operator=body.operator or "operator",
+        )
+        if not r.get("ok"):
+            code = 404 if r.get("error") == "finding_not_found" else 409 if r.get("error") == "session_ended" else 400
+            raise HTTPException(code, r.get("error") or "steer failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/findings/{finding_id}/poc-session/stop")
+    def api_finding_poc_stop(
+        target_id: str, run_id: str, finding_id: int, body: FindingPocSteerBody
+    ):
+        """Ask the live session to stop. Does not confirm or change HITL."""
+        run = _get_run(target_id, run_id)
+        r = dashops.stop_poc_session(
+            run.path,
+            finding_id,
+            operator=body.operator or "operator",
+        )
+        if not r.get("ok"):
+            code = 404 if r.get("error") == "finding_not_found" else 409 if r.get("error") == "session_ended" else 400
+            raise HTTPException(code, r.get("error") or "stop failed")
+        return r
+
     @app.post(
         "/api/runs/{target_id}/{run_id}/findings/{finding_id}/export-validation-job"
     )
@@ -2444,6 +2529,12 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 "max_tool_rounds": llm.get("max_tool_rounds"),
                 "max_leases_parallel": run.get("max_leases_parallel"),
                 "max_tasks": run.get("max_tasks"),
+                "poc_iterate_max_cycles": (eff.get("poc_harness") or {}).get(
+                    "iterate_max_cycles", ui.get("poc_iterate_max_cycles", 5)
+                ),
+                "poc_iterate_wall_ttl_min": (eff.get("poc_harness") or {}).get(
+                    "iterate_wall_ttl_min", ui.get("poc_iterate_wall_ttl_min", 15)
+                ),
             },
         }
 

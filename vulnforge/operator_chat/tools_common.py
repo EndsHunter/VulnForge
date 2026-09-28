@@ -32,6 +32,7 @@ MUTATE_TOOLS = frozenset(
         "review_finding",
         "enqueue_develop_poc",
         "enqueue_validate_poc",
+        "enqueue_iterate_poc",
     }
 )
 
@@ -877,6 +878,11 @@ def mutation_summary(name: str, args: dict[str, Any]) -> str:
             f"Enqueue sandbox one-shot validate_poc for finding {args.get('finding_id')} "
             "(does not confirm)"
         )
+    if name == "enqueue_iterate_poc":
+        return (
+            f"Enqueue sandbox iterate session for finding {args.get('finding_id')} "
+            "(same microVM or gVisor guest; caps do not confirm)"
+        )
     return f"Execute {name} with {args}"
 
 
@@ -910,6 +916,23 @@ def enqueue_validate_poc_impl(run: RunRef, args: dict) -> dict[str, Any]:
         operator_notes=str(args.get("notes") or args.get("operator_notes") or ""),
         target_url=str(args.get("target_url") or ""),
         referee=bool(args.get("referee")),
+        command=str(args.get("command") or ""),
+    )
+    return {**r, "target_id": run.target_id, "run_id": run.run_id}
+
+
+def enqueue_iterate_poc_impl(run: RunRef, args: dict) -> dict[str, Any]:
+    from vulnforge.control import ops as dashops
+
+    fid, err = coerce_finding_id(args.get("finding_id"))
+    if err or fid is None:
+        return {"ok": False, "error": err or "finding_id required"}
+    r = dashops.enqueue_iterate_poc(
+        run.path,
+        fid,
+        operator=str(args.get("operator") or "operator_chat"),
+        operator_notes=str(args.get("notes") or args.get("operator_notes") or ""),
+        target_url=str(args.get("target_url") or ""),
         command=str(args.get("command") or ""),
     )
     return {**r, "target_id": run.target_id, "run_id": run.run_id}

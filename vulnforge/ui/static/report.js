@@ -13,6 +13,7 @@
   let contextToken = 0;
   /** Finding id open in the Develop POC workshop modal (not a mode tab). */
   let pocFindingId = null;
+  let pocSessionTimer = null;
   let pocChromeBound = false;
   let meta = { target_id: "", run_id: "", target_path: "" };
   /** Multi-member overlap clusters from GET /findings/clusters */
@@ -1173,6 +1174,10 @@
    * @param {{ stayOnReport?: boolean, skipHash?: boolean }} [opts]
    */
   function closeDevelopPoc(opts) {
+    if (pocSessionTimer) {
+      clearInterval(pocSessionTimer);
+      pocSessionTimer = null;
+    }
     const modal = $("#poc-modal");
     if (modal) {
       modal.classList.remove("open");
@@ -1234,6 +1239,15 @@
     $("#poc-validate")?.addEventListener("click", () => {
       if (pocFindingId != null) enqueueValidatePoc(pocFindingId);
     });
+    $("#poc-iterate")?.addEventListener("click", () => {
+      if (pocFindingId != null) enqueueIteratePoc(pocFindingId);
+    });
+    $("#poc-steer-send")?.addEventListener("click", () => {
+      if (pocFindingId != null) sendPocSteer(pocFindingId);
+    });
+    $("#poc-session-stop")?.addEventListener("click", () => {
+      if (pocFindingId != null) stopPocSession(pocFindingId);
+    });
     $("#poc-export-job")?.addEventListener("click", () => {
       if (pocFindingId != null) exportValidationJob(pocFindingId);
     });
@@ -1253,6 +1267,13 @@
       parts.push('<span class="badge ok">Harness ready</span>');
     } else {
       parts.push('<span class="badge warn">Not harness-ready</span>');
+    }
+    if (harness.iterate_max_cycles || harness.iterate_wall_ttl_min) {
+      parts.push(
+        `<span class="controls-hint">iterate cap ${esc(
+          String(harness.iterate_max_cycles || 5)
+        )} cycles · ${esc(String(harness.iterate_wall_ttl_min || 15))} min</span>`
+      );
     }
     if (harness.runner || harness.network || harness.isolation) {
       const runLabel = harness.isolation || harness.runtime || harness.runner || "sandbox";
@@ -1333,6 +1354,161 @@
       }
     } catch (e) {
       setPocStatus(e.message || String(e), true);
+      toast(e.message || String(e), true);
+    }
+  }
+
+  function renderPocSession(view) {
+    const metaEl = $("#poc-session-meta");
+    const logEl = $("#poc-session-log");
+    if (!logEl) return;
+    const session = view && view.session;
+    const steers = (view && view.steers) || [];
+    if (!session) {
+      if (metaEl) metaEl.textContent = steers.length ? "Steer queued" : "No session yet";
+      const queued = steers.map((s) => `steer #${s.seq}: ${s.text}`).join("\n");
+      logEl.textContent = queued || "No sandbox session yet.";
+      return;
+    }
+    const state = session.state || "unknown";
+    const reason = session.end_reason ? ` · ${session.end_reason}` : "";
+    const cap = `${session.cycles_run || 0}/${session.max_cycles || 5}`;
+    const iso = session.isolation || session.runtime || "sandbox";
+    if (metaEl) {
+      metaEl.textContent = `${state}${reason} · ${iso} · cycles ${cap} · ttl ${session.wall_ttl_min || 15}m`;
+    }
+    const lines = [];
+    lines.push(
+      `${iso} guest ${session.guest_id || "—"} · ${session.hold_mode || "session"} · host exec no · confirms no`
+    );
+    (session.cycles || []).forEach((c) => {
+      lines.push(
+        `#${c.n} ${c.verdict || "?"} exit=${c.exit_code == null ? "—" : c.exit_code}` +
+          (c.rewrite_files && c.rewrite_files.length ? ` rewrite ${c.rewrite_files.join(",")}` : "") +
+          (c.steer_seqs && c.steer_seqs.length ? ` steer ${c.steer_seqs.join(",")}` : "")
+      );
+      if (c.stdout_excerpt) lines.push(String(c.stdout_excerpt).slice(0, 500));
+    });
+    if (!session.cycles || !session.cycles.length) {
+      lines.push(session.operator_hint || "Session has no cycles yet.");
+    }
+    steers.forEach((s) => {
+      lines.push(`steer #${s.seq} ${s.operator || ""}: ${s.text}`);
+    });
+    logEl.textContent = lines.join("\n");
+  }
+
+  function startPocSessionPoll() {
+    if (pocSessionTimer) clearInterval(pocSessionTimer);
+    const tick = () => {
+      if (!isPocOpen() || pocFindingId == null) return;
+      refreshPocSession(pocFindingId);
+    };
+    tick();
+    pocSessionTimer = setInterval(tick, 2000);
+  }
+
+  async function refreshPocSession(fid) {
+    const tid = meta.target_id;
+    const rid = meta.run_id;
+    const api = typeof window.api === "function" ? window.api : null;
+    if (!tid || !rid || !api || fid == null) return;
+    try {
+      const r = await api(
+        `/api/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}/findings/${encodeURIComponent(fid)}/poc-session`
+      );
+      renderPocSession(r);
+    } catch {
+      /* session poll is best-effort while the workshop is open */
+    }
+  }
+
+  async function enqueueIteratePoc(fid) {
+    const tid = meta.target_id;
+    const rid = meta.run_id;
+    const api = typeof window.api === "function" ? window.api : null;
+    if (!tid || !rid || !api) {
+      toast("API unavailable", true);
+      return;
+    }
+    const notes = buildPocOperatorNotes();
+    setPocStatus("Queuing sandbox iterate session…");
+    try {
+      const r = await api(
+        `/api/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}/findings/${encodeURIComponent(fid)}/iterate-poc`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operator: "operator", operator_notes: notes }),
+        }
+      );
+      const msg = r.task_id
+        ? `Queued iterate session #${r.task_id} — same sandbox, does not confirm`
+        : "sandbox iterate enqueued";
+      toast(msg);
+      setPocStatus(msg);
+      startPocSessionPoll();
+      if (typeof window.loadRunFull === "function") {
+        await window.loadRunFull();
+        loadPocDraft(fid).catch(() => {});
+      }
+    } catch (e) {
+      setPocStatus(e.message || String(e), true);
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async function sendPocSteer(fid) {
+    const tid = meta.target_id;
+    const rid = meta.run_id;
+    const api = typeof window.api === "function" ? window.api : null;
+    const box = $("#poc-steer");
+    const text = (box && box.value ? box.value : "").trim();
+    if (!text) {
+      toast("Write a steer note first", true);
+      return;
+    }
+    if (!tid || !rid || !api) {
+      toast("API unavailable", true);
+      return;
+    }
+    try {
+      await api(
+        `/api/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}/findings/${encodeURIComponent(fid)}/poc-session/steer`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, operator: "operator" }),
+        }
+      );
+      if (box) box.value = "";
+      toast("Steer queued for this sandbox session");
+      refreshPocSession(fid);
+    } catch (e) {
+      toast(e.message || String(e), true);
+    }
+  }
+
+  async function stopPocSession(fid) {
+    const tid = meta.target_id;
+    const rid = meta.run_id;
+    const api = typeof window.api === "function" ? window.api : null;
+    if (!tid || !rid || !api) {
+      toast("API unavailable", true);
+      return;
+    }
+    try {
+      await api(
+        `/api/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}/findings/${encodeURIComponent(fid)}/poc-session/stop`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operator: "operator" }),
+        }
+      );
+      toast("Stop requested — session ends without confirming");
+      refreshPocSession(fid);
+    } catch (e) {
       toast(e.message || String(e), true);
     }
   }
@@ -1449,6 +1625,7 @@
     pocFindingId = id;
     const f = cache.find((x) => Number(x.id) === id);
     showPocModal();
+    startPocSessionPoll();
     if (!f) {
       setPocStatus("Finding not in cache yet — loading Report data…", true);
       // Still open modal; snap refresh may fill later

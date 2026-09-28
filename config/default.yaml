@@ -163,6 +163,10 @@ poc_harness:
   firecracker_rootfs: ""
   # Run-start campaign toggle default. UI / `vf init --sandbox-poc` turns it on per run.
   sandbox_oneshot: false
+  # Iterate-in-sandbox session caps. Settings → Sandbox iterate overrides these.
+  # Hitting either cap ends the session and writes evidence. Never confirms.
+  iterate_max_cycles: 5
+  iterate_wall_ttl_min: 15
 
 # Mechanical codemap (structure scaffold for recon + hunt targeting).
 # Full map (modules + files + symbols) is stored in runs.codemap_json.

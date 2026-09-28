@@ -10,6 +10,7 @@ from vulnforge.operator_chat.tools_common import (
     browse_target_impl,
     enqueue_develop_poc_impl,
     enqueue_hunt_impl,
+    enqueue_iterate_poc_impl,
     enqueue_validate_poc_impl,
     explain_product_impl,
     get_architecture_impl,
@@ -216,6 +217,17 @@ def schemas() -> list[dict]:
             },
             ["finding_id"],
         ),
+        openai_tool(
+            "enqueue_iterate_poc",
+            "Queue an iterate-in-sandbox PoC session (microVM or gVisor, caps, confirm; never auto-confirms).",
+            {
+                "finding_id": {"type": "integer"},
+                "notes": {"type": "string"},
+                "target_url": {"type": "string"},
+                "command": {"type": "string"},
+            },
+            ["finding_id"],
+        ),
         openai_tool("explain_product", "Short product handbook.", {}),
     ]
 
@@ -286,6 +298,8 @@ def dispatch(
         return enqueue_develop_poc_impl(run, args)
     if name == "enqueue_validate_poc":
         return enqueue_validate_poc_impl(run, args)
+    if name == "enqueue_iterate_poc":
+        return enqueue_iterate_poc_impl(run, args)
     if name == "explain_product":
         return explain_product_impl(args)
     return {"ok": False, "error": f"unknown tool: {name}"}
