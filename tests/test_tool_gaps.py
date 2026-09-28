@@ -131,6 +131,44 @@ def synth_run(tmp_path: Path) -> Path:
     return run
 
 
+def test_fresh_context_nudge_is_not_exec_gap_and_source_is_task_n(tmp_path: Path):
+    """`sh` must not match inside 'fresh', and transcript sources stay task-N."""
+    from vulnforge.agent_runtime.context_watch import nudge_text
+
+    run = tmp_path / "run"
+    run.mkdir()
+    nudge = nudge_text(
+        "continue_hunt", used_tokens=30000, window_tokens=32768, level="must"
+    )
+    assert "fresh context" in nudge.lower()
+    assert "tool" in nudge.lower()
+    messages = [
+        {"role": "user", "content": nudge},
+        {
+            "role": "assistant",
+            "content": "The tool needs a fresh start before execution of the next step.",
+        },
+        {
+            "role": "user",
+            "content": "I wish I could run sh or exec; there is no tool for it.",
+        },
+    ]
+    _write_transcript(run, 2, messages, kind="recon")
+    analysis = analyze_run(run)
+    exec_gaps = [
+        g for g in analysis["gaps"] if g["tool_or_capability"] == "freetext:exec_job"
+    ]
+    assert len(exec_gaps) == 1
+    evidence = exec_gaps[0]["evidence"]
+    assert len(evidence) == 1
+    assert evidence[0]["source"] == "transcript task-2:user"
+    assert "sh" in evidence[0]["snippet"]
+    assert "task-task-" not in evidence[0]["source"]
+    assert "CONTEXT CRITICAL" not in evidence[0]["snippet"]
+    assert "fresh" not in evidence[0]["snippet"].lower()
+    assert analysis["stats"]["freetext_hits"] == 1
+
+
 def test_known_tools_include_static_allowlist():
     for name in (
         "list_dir",

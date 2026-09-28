@@ -22,12 +22,13 @@ from vulnforge.util import utc_now_iso, write_json
 KNOWN_TOOLS: frozenset[str] = frozenset(CodeStaticProfile().allowed_tools())
 
 # Free-text / wishlist keywords -> capability id (not necessarily a tool name).
-# First matching group wins per keyword hit; multiple keywords may map to same cap.
+# Matched as whole tokens/phrases (\b), so "sh" does not hit inside "fresh"
+# and "exec" does not hit inside "execution". Multiple keywords may map to one cap.
 WISHLIST_KEYWORDS: dict[str, str] = {
     # shell / process
     "shell": "exec_job",
     "bash": "exec_job",
-    "sh ": "exec_job",
+    "sh": "exec_job",
     "powershell": "exec_job",
     "cmd.exe": "exec_job",
     "run_shell": "exec_job",
@@ -69,6 +70,27 @@ WISHLIST_KEYWORDS: dict[str, str] = {
     "write_file": "write_target",
     "apply_patch": "write_target",
 }
+
+# Whole-token/phrase match. Keywords are lowercase; callers pass lowered text.
+_WISHLIST_RES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(rf"\b{re.escape(kw.strip())}\b"), cap)
+    for kw, cap in WISHLIST_KEYWORDS.items()
+)
+
+# Harness continue nudges (context_watch.nudge_text), not an agent wishlist.
+_HARNESS_FREETEXT_MARKERS = (
+    "context critical",
+    "ralph will run the child with a fresh context",
+)
+
+
+def _matched_wishlist_caps(low: str) -> set[str]:
+    return {cap for pat, cap in _WISHLIST_RES if pat.search(low)}
+
+
+def _is_harness_freetext(low: str) -> bool:
+    return any(marker in low for marker in _HARNESS_FREETEXT_MARKERS)
+
 
 # Tool result error substrings -> bucket
 _ERROR_BUCKETS = (
@@ -124,11 +146,12 @@ def analyze_run(run_dir: Path) -> dict[str, Any]:
             except (TypeError, ValueError):
                 task_id = None
             kind = str(data.get("kind") or "")
+            # stem is already "task-<id>" (task-*.json); do not prefix again.
             _scan_messages(
                 data.get("messages") or [],
                 gaps_acc,
                 stats,
-                source=f"transcript task-{path.stem}",
+                source=f"transcript {path.stem}",
                 task_id=task_id,
                 task_kind=kind,
             )
@@ -691,10 +714,7 @@ def _scan_note_payload(
         text_bits.append(str(payload))
 
     blob = " ".join(text_bits).lower()
-    matched_caps: set[str] = set()
-    for kw, cap in WISHLIST_KEYWORDS.items():
-        if kw in blob:
-            matched_caps.add(cap)
+    matched_caps = _matched_wishlist_caps(blob)
     # explicit tool-like tokens not in allowlist
     for tok in re.findall(r"\b([a-z][a-z0-9_]{2,32})\b", blob):
         if tok in KNOWN_TOOLS:
@@ -787,6 +807,10 @@ def _scan_freetext(
     task_id: Optional[int],
 ) -> None:
     low = text.lower()
+    # Ralph injects CONTEXT CRITICAL / fresh-context continue prompts as user
+    # turns. Those are harness text, not an agent asking for a shell.
+    if _is_harness_freetext(low):
+        return
     # require toolish context to reduce noise from prompts that mention curl etc.
     context_ok = any(
         c in low
@@ -811,10 +835,7 @@ def _scan_freetext(
             "execute",
         )
     )
-    hits: set[str] = set()
-    for kw, cap in WISHLIST_KEYWORDS.items():
-        if kw in low:
-            hits.add(cap)
+    hits = _matched_wishlist_caps(low)
     if not hits:
         return
     if not context_ok:
