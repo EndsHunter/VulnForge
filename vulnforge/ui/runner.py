@@ -2,8 +2,10 @@
 Background Ralph / run lifecycle for the dashboard.
 
 Start   -  spawn `scripts/ralph.py --run-dir ...` (or init + ralph)
-Pause   -  write STOP so Ralph exits between iterations
-Resume  -  remove STOP and spawn Ralph again if not already running
+Pause   -  write STOP, kill the Ralph session (in-flight run-once included),
+           reclaim leases, clear run.lock when the holder is dead
+Resume  -  remove STOP and spawn Ralph again if not already running.
+           A live run.lock holder blocks resume until that process is gone.
 """
 
 from __future__ import annotations
@@ -373,18 +375,36 @@ def start_run(
     }
 
 
+def _read_lock_pid(run_dir: Path) -> Optional[int]:
+    lock_path = run_dir / "run.lock"
+    if not lock_path.is_file():
+        return None
+    try:
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        return int(data.get("pid", -1))
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        return None
+
+
+def _lock_holder_alive(run_dir: Path) -> Optional[int]:
+    """PID that still owns run.lock, or None when the file is absent or stale."""
+    pid = _read_lock_pid(run_dir)
+    if pid and _pid_alive(pid):
+        return pid
+    return None
+
+
 def _clear_run_lock(run_dir: Path) -> bool:
-    """Remove run.lock when missing, corrupt, or holder PID is dead."""
+    """Remove run.lock when missing, corrupt, or holder PID is dead.
+
+    Returns True only when a lock file was unlinked. A live holder is left
+    in place (caller must kill it first).
+    """
     lock_path = run_dir / "run.lock"
     if not lock_path.is_file():
         return False
-    try:
-        data = json.loads(lock_path.read_text(encoding="utf-8"))
-        pid = int(data.get("pid", -1))
-        if _pid_alive(pid):
-            return False
-    except (OSError, ValueError, json.JSONDecodeError, TypeError):
-        pass
+    if _lock_holder_alive(run_dir):
+        return False
     try:
         lock_path.unlink(missing_ok=True)
         return True
@@ -409,13 +429,51 @@ def _reclaim_leases_on_stop(run_dir: Path) -> int:
         return 0
 
 
+def _pause_result(
+    run_dir: Path,
+    *,
+    pids: list[int],
+    killed_any: bool,
+    reclaimed: int,
+) -> dict[str, Any]:
+    """Honest pause payload: lock_cleared means run.lock is gone.
+
+    ok is false when a live PID still holds the lock after kill attempts.
+    A dead holder's file is removed here; resume must not treat a live
+    holder as a clean start.
+    """
+    if not _lock_holder_alive(run_dir):
+        _clear_run_lock(run_dir)
+    holder = _lock_holder_alive(run_dir)
+    lock_cleared = not (run_dir / "run.lock").is_file()
+    result: dict[str, Any] = {
+        "ok": holder is None,
+        "killed": killed_any,
+        "reclaimed_leases": reclaimed,
+        "lock_cleared": lock_cleared,
+        "status": runner_status(run_dir),
+    }
+    if holder is not None:
+        result["lock_holder"] = holder
+        result["error"] = f"run.lock still held by live pid {holder}"
+    return result
+
+
 def pause_run(run_dir: Path) -> dict[str, Any]:
     """
-    Pause the runner: write STOP, kill Ralph workers (and children), reclaim
-    orphaned leases, clear stale run.lock.
+    Pause the runner: write STOP, kill Ralph workers and their session
+    (in-flight ``vf run-once`` included), reclaim orphaned leases, clear
+    run.lock when the holder is dead.
+
+    Linux workers are started with ``start_new_session=True``. Killing only
+    the Ralph PID reparents run-once under the user service manager and
+    leaves run.lock held. The kill matches Windows ``taskkill /T``: the
+    process group, plus any descendant that left the group, plus the
+    run.lock holder when that PID is not already in the worker list.
 
     In-flight LLM calls are terminated so recon handoff cannot leave a leased
-    task forever while the dashboard shows "paused".
+    task forever while the dashboard shows "paused". ``ok`` is false when a
+    live PID still holds ``run.lock`` after those kill attempts.
     """
     run_dir = Path(run_dir).resolve()
     if not (run_dir / "harness.db").is_file():
@@ -428,6 +486,9 @@ def pause_run(run_dir: Path) -> dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
     pids = _read_worker_pids(run_dir)
+    lock_pid = _read_lock_pid(run_dir)
+    if lock_pid and lock_pid not in pids:
+        pids.append(lock_pid)
     killed_any = False
     for pid in pids:
         if _kill_pid(pid):
@@ -445,7 +506,9 @@ def pause_run(run_dir: Path) -> dict[str, Any]:
     if killed_any:
         time.sleep(0.3)
     reclaimed = _reclaim_leases_on_stop(run_dir)
-    lock_cleared = _clear_run_lock(run_dir)
+    result = _pause_result(
+        run_dir, pids=pids, killed_any=killed_any, reclaimed=reclaimed
+    )
 
     append_event(
         run_dir,
@@ -455,23 +518,42 @@ def pause_run(run_dir: Path) -> dict[str, Any]:
             "pids": pids,
             "killed": killed_any,
             "reclaimed_leases": reclaimed,
-            "lock_cleared": lock_cleared,
+            "lock_cleared": result["lock_cleared"],
+            "lock_holder": result.get("lock_holder"),
         },
     )
-    return {
-        "ok": True,
-        "killed": killed_any,
-        "reclaimed_leases": reclaimed,
-        "status": runner_status(run_dir),
-    }
+    return result
 
 
 def resume_run(
     run_dir: Path,
     **start_kwargs: Any,
 ) -> dict[str, Any]:
-    """Remove STOP and start Ralph if not running."""
+    """Remove STOP and start Ralph if not running.
+
+    When no Ralph worker is alive, a live ``run.lock`` holder is an orphaned
+    run-once (typical after a Linux pause that only signaled the leader).
+    That holder is killed with the same session/group kill as pause. If it
+    is still alive, resume returns ``ok: false`` and does not spawn Ralph,
+    so the next run-once does not loop on EXIT_INFRA 20 (``run locked``).
+    A still-running Ralph worker is left alone: its run-once owns the lock
+    legitimately, and resume only clears STOP.
+    """
     run_dir = Path(run_dir).resolve()
+    workers_alive = bool(runner_status(run_dir)["alive"])
+    if not workers_alive:
+        holder = _lock_holder_alive(run_dir)
+        if holder:
+            _kill_pid(holder)
+            if _lock_holder_alive(run_dir):
+                return {
+                    "ok": False,
+                    "error": f"run.lock held by live pid {holder}",
+                    "lock_cleared": False,
+                    "lock_holder": holder,
+                    "status": runner_status(run_dir),
+                }
+            _clear_run_lock(run_dir)
     try:
         _stop_path(run_dir).unlink(missing_ok=True)
     except OSError as e:
@@ -503,15 +585,114 @@ def resume_run(
     append_event(run_dir, {"source": "ui", "event": "runner_resume"})
     st = runner_status(run_dir)
     if st["alive"]:
-        return {"ok": True, "status": st, "note": "already running; STOP cleared"}
-    return start_run(run_dir, **start_kwargs)
+        return {
+            "ok": True,
+            "status": st,
+            "note": "already running; STOP cleared",
+            "lock_cleared": not (run_dir / "run.lock").is_file(),
+        }
+    started = start_run(run_dir, **start_kwargs)
+    started.setdefault("lock_cleared", not (run_dir / "run.lock").is_file())
+    return started
 
 
 # start_run signature includes workers=  -  resume_run forwards via **start_kwargs
 
 
+def _descendant_pids(pid: int) -> list[int]:
+    """Child processes of ``pid`` via /proc (empty when /proc is unavailable).
+
+    Threads show up as /proc entries but their PPid is the thread-group
+    parent's parent, so they are not walked. Process-group kill covers the
+    threads that share the leader's group.
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return []
+    children: dict[int, list[int]] = {}
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "stat").read_text(encoding="utf-8")
+            rest = raw.rsplit(")", 1)[1].split()
+            ppid = int(rest[1])
+        except (OSError, IndexError, ValueError):
+            continue
+        children.setdefault(ppid, []).append(int(entry.name))
+    out: list[int] = []
+    seen: set[int] = set()
+    stack = list(children.get(pid, []))
+    while stack:
+        child = stack.pop()
+        if child in seen or child <= 1 or child == os.getpid():
+            continue
+        seen.add(child)
+        out.append(child)
+        stack.extend(children.get(child, []))
+    return out
+
+
+def _kill_targets(pid: int) -> tuple[Optional[int], list[int]]:
+    """Process group to signal, plus the leader and descendants.
+
+    Group kill is skipped when the PID shares the caller's group so a
+    dashboard pause cannot signal itself. ``start_new_session=True`` workers
+    have their own group; that group is the Linux equivalent of Windows
+    ``taskkill /T``.
+    """
+    if pid <= 1 or pid == os.getpid():
+        return None, []
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        pgid = None
+    use_group = pgid is not None and pgid > 1 and pgid != os.getpgrp()
+    members: list[int] = []
+    seen: set[int] = set()
+    for member in [pid, *_descendant_pids(pid)]:
+        if member <= 1 or member == os.getpid() or member in seen:
+            continue
+        seen.add(member)
+        members.append(member)
+    return (pgid if use_group else None), members
+
+
+def _signal_targets(pgid: Optional[int], members: list[int], sig: int) -> None:
+    if pgid:
+        try:
+            os.killpg(pgid, sig)
+        except OSError:
+            pass
+    for member in members:
+        try:
+            os.kill(member, sig)
+        except OSError:
+            pass
+
+
+def _wait_pids_dead(pids: list[int], timeout: float = 0.5) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not any(_pid_alive(pid) for pid in pids):
+            return
+        time.sleep(0.05)
+
+
+def _kill_unix_tree(pid: int) -> None:
+    """SIGTERM, then SIGKILL, the process group and any descendants."""
+    pgid, members = _kill_targets(pid)
+    if pgid is None and not members:
+        return
+    _signal_targets(pgid, members, signal.SIGTERM)
+    _wait_pids_dead(members, 0.5)
+    if any(_pid_alive(member) for member in members):
+        _signal_targets(pgid, members, signal.SIGKILL)
+        _wait_pids_dead(members, 0.3)
+
+
 def _kill_pid(pid: int) -> bool:
-    if not pid or not _pid_alive(pid):
+    if not pid or pid == os.getpid() or not _pid_alive(pid):
         return False
     try:
         if os.name == "nt":
@@ -523,10 +704,7 @@ def _kill_pid(pid: int) -> bool:
                 creationflags=tk_flags,
             )
         else:
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(0.5)
-            if _pid_alive(pid):
-                os.kill(pid, signal.SIGKILL)
+            _kill_unix_tree(pid)
         return True
     except OSError:
         return False
@@ -553,6 +731,8 @@ def stop_run_hard(run_dir: Path) -> dict[str, Any]:
         "ok": bool(result.get("ok")),
         "killed": result.get("killed"),
         "reclaimed_leases": result.get("reclaimed_leases"),
+        "lock_cleared": result.get("lock_cleared"),
+        "lock_holder": result.get("lock_holder"),
         "status": result.get("status") or runner_status(run_dir),
         "error": result.get("error"),
     }

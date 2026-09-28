@@ -137,8 +137,16 @@ def test_pause_stop_status_use_runner_and_harness(tmp_path: Path):
         assert "campaign_stop" in events
         assert "runner_stop_hard" in events
         follow = client.get(_url(ref, "/campaign/status"))
-        assert follow.json()["runner"]["state"] == "paused"
-        assert follow.json()["runner"]["stop"] is True
+        body = follow.json()
+        assert body["runner"]["state"] == "paused"
+        assert body["runner"]["stop"] is True
+        # Durable runs.status stays active; the card the Mission strip reads does not.
+        assert body["card"]["status"] == "paused"
+        db = Database.open(ref.path / "harness.db")
+        try:
+            assert db.get_run()["status"] == "active"
+        finally:
+            db.close()
 
 
 def test_start_and_resume_delegate_to_ralph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

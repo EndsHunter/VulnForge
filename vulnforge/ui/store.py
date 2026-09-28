@@ -247,6 +247,11 @@ def run_card(run: RunRef) -> dict[str, Any]:
             or locked
         )
         has_work = bool(s.get("has_work"))
+        # runs.status stays the durable row (insert sets "active" and nothing
+        # pauses it). Mission and campaign status read this card: STOP means
+        # the operator paused the runner, so the card must not keep saying active.
+        db_status = run_row.get("status")
+        card_status = "paused" if stop else db_status
         return {
             "key": run.key,
             "target_id": run.target_id,
@@ -254,7 +259,7 @@ def run_card(run: RunRef) -> dict[str, Any]:
             "path": str(run.path),
             "target_path": run_row.get("target_path"),
             "profile": run_row.get("profile"),
-            "status": run_row.get("status"),
+            "status": card_status,
             "created_at": run_row.get("created_at"),
             "updated_at": last_event.get("ts") if isinstance(last_event, dict) else None,
             "mtime": mtime,
