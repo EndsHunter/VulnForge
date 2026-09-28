@@ -3700,6 +3700,29 @@ tr.task-row .task-actions-cell .btn {
   .live-task-pulse { animation: none; }
   .live-task-pulse { opacity: 1; }
 }
+.live-step-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+.live-step-round {
+  display: inline-flex;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.2;
+  padding: 0.08rem 0.45rem;
+  border-radius: 999px;
+  color: var(--info);
+  border: 1px solid color-mix(in srgb, var(--info) 45%, var(--accent));
+  background: color-mix(in srgb, var(--info) 16%, color-mix(in srgb, var(--accent) 10%, transparent));
+}
+.live-step-call {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 .live-task-steps {
   list-style: none;
   margin: 0 0 0.85rem;
@@ -3711,7 +3734,7 @@ tr.task-row .task-actions-cell .btn {
 }
 .live-task-steps li {
   display: grid;
-  grid-template-columns: minmax(11rem, max-content) minmax(7rem, 11rem) 1fr;
+  grid-template-columns: max-content minmax(7rem, 11rem) 1fr;
   gap: 0.45rem 0.7rem;
   padding: 0.4rem 0.7rem;
   border-bottom: 1px solid var(--border);
