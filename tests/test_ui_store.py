@@ -13,6 +13,80 @@ from vulnforge.ui import store
 from vulnforge.ui.app import ControlBody, control_start_kwargs, incomplete_from_flags, with_runner_flags
 
 
+def test_mission_progress_falls_when_continue_enqueues(tmp_path: Path, toy_sqli: Path):
+    """continue_hunt grows the known total while finished work stays flat.
+
+    Lens shape after the child lands: succeeded 3, leased 1, queued 7 → 3/11.
+    """
+    from vulnforge.tools.continue_task import enqueue_continuation
+
+    runs = tmp_path / "runs"
+    code = main(
+        [
+            "init",
+            "--target",
+            str(toy_sqli),
+            "--runs-root",
+            str(runs),
+            "--no-enqueue-hunts",
+        ]
+    )
+    assert code == EXIT_PROGRESS
+    ref = store.discover_runs(runs)[0]
+    db = Database.open(ref.path / "harness.db")
+    try:
+        recon = next(t for t in db.list_tasks() if t.kind == "recon")
+        leased = db.lease_next_task("w", ttl_seconds=60)
+        assert leased is not None and leased.id == recon.id
+        assert db.complete_task(recon.id, {"status": "succeeded"})
+        for i in range(2):
+            db.enqueue_task("hunt", {"area": f"done{i}", "class": "injection"})
+            done = db.lease_next_task("w", ttl_seconds=60)
+            assert done is not None
+            assert db.complete_task(done.id, {"status": "succeeded"})
+        parent_payload = {
+            "area": "app",
+            "class": "injection",
+            "path_hints": ["app.py"],
+        }
+        parent_id = db.enqueue_task("hunt", parent_payload)
+        for _ in range(6):
+            db.enqueue_task("hunt", {"area": "rest", "class": "injection"})
+        parent = db.lease_next_task("w-live", ttl_seconds=600)
+        assert parent is not None and parent.id == parent_id
+        before = store.run_card(ref)
+        assert before["done_tasks"] == 3
+        assert before["tasks"]["succeeded"] == 3
+        assert before["tasks"]["leased"] == 1
+        assert before["tasks"]["queued"] == 6
+        assert before["total_tasks"] == 10
+        assert before["progress"] == 0.3
+        result = enqueue_continuation(
+            {
+                "db": db,
+                "run_dir": ref.path,
+                "task_id": parent.id,
+                "task_payload": parent.payload,
+                "cfg": {"run": {"max_continue_depth": 3}},
+                "session": {},
+            },
+            kind="hunt",
+            handoff="Inspected app.py; child should check the other sink.",
+            remaining_paths=["other.py"],
+        )
+        assert result.get("ok") is True, result
+        after = store.run_card(ref)
+    finally:
+        db.close()
+    assert after["done_tasks"] == before["done_tasks"] == 3
+    assert after["tasks"]["succeeded"] == 3
+    assert after["tasks"]["leased"] == 1
+    assert after["tasks"]["queued"] == 7
+    assert after["total_tasks"] == 11
+    assert after["progress"] == 0.273
+    assert after["progress"] < before["progress"]
+
+
 def test_discover_and_card(tmp_path: Path, toy_sqli: Path):
     runs = tmp_path / "runs"
     code = main(["init", "--target", str(toy_sqli), "--runs-root", str(runs)])

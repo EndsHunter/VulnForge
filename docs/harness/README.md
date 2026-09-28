@@ -29,6 +29,12 @@ Related (not covered here as full folders): `develop_poc`, `validate_poc`, `gene
 - `confirmed` is **only** set by human review (Report / HITL approval). Automation never auto-confirms. Durable inbox: [validate/HITL.md](validate/HITL.md).
 - Same-model `validate_llm` can only demote/reject; never raise severity or confirm.
 
+## Mission task progress
+
+The Mission **Tasks known** figure is finished work over every task row known so far: `done_tasks / total_tasks`.
+
+Finished states are `succeeded`, `failed_task`, `blocked`, `deadletter`, and `cancelled`. Queued and leased tasks count only in the denominator. `continue_hunt`, `continue_recon`, split children, and operator enqueues insert new rows immediately. The finished count can stay flat while the total grows, so the share can drop (for example 3/10 → 3/11). That drop is new work entering the queue. The share stays live for the whole run: each new task counts as soon as it is queued.
+
 ## Task priority (lower int = sooner)
 
 | Kind | Typical priority | Notes |

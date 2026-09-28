@@ -421,8 +421,14 @@ describe("buildMissionKpis", () => {
       kpis.map((k) => k.id),
       ["tasks", "needs_human", "coverage"]
     );
+    assert.equal(kpis[0].label, "Tasks known");
     assert.equal(kpis[0].value, "3/10");
     assert.equal(kpis[0].barPct, 30);
+    assert.match(
+      kpis[0].hint,
+      /tasks known so far/i
+    );
+    assert.match(kpis[0].hint, /can drop/i);
     assert.equal(kpis[1].value, "1");
     assert.equal(kpis[1].barPct, null);
     assert.equal(kpis[2].value, "50%");
@@ -434,6 +440,25 @@ describe("buildMissionKpis", () => {
       findings: { needs_human: 4, candidate: 2, confirmed: 9 },
     });
     assert.equal(kpis[1].value, "4");
+  });
+
+  it("lets the tasks share fall when a continue grows the known total", () => {
+    const before = buildMissionKpis({
+      done_tasks: 3,
+      total_tasks: 10,
+      progress: 0.3,
+    });
+    const after = buildMissionKpis({
+      done_tasks: 3,
+      total_tasks: 11,
+      progress: 0.273,
+    });
+    assert.equal(before[0].value, "3/10");
+    assert.equal(before[0].barPct, 30);
+    assert.equal(after[0].value, "3/11");
+    assert.equal(after[0].barPct, 27);
+    assert.ok(after[0].barPct < before[0].barPct);
+    assert.equal(after[0].label, before[0].label);
   });
 
   it("leaves coverage bar null when there are no cells", () => {

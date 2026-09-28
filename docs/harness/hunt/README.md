@@ -9,7 +9,9 @@
 3. LLM tool loop (`code_static` tools) → `submit_candidate` or `submit_none`.
    If the conversation nears `llm.continue_context_fraction` of `context_tokens`,
    the harness instructs the model to call `continue_hunt` (child hunt, fresh
-   window). Context overflow also auto-enqueues a continuation.
+   window). Context overflow also auto-enqueues a continuation. The child is a
+   new queued task, so Mission **Tasks known** can fall while finished work
+   stays flat. See [Mission task progress](../README.md#mission-task-progress).
 4. On candidate: insert/upsert finding; may enqueue `validate_mech`; near-dup helpers may annotate merge metadata.
 5. Coverage facts update visit/depth for residual matrix (`continued` when handed off).
 

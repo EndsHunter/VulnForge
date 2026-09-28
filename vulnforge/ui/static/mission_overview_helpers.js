@@ -710,9 +710,10 @@
     return [
       {
         id: "tasks",
-        label: "Tasks",
+        label: "Tasks known",
         value: done + "/" + total,
-        hint: "Done / total tasks",
+        // Live total, not a frozen plan. Continues enqueue into the denominator.
+        hint: "Finished / tasks known so far. Continues add tasks, so this share can drop.",
         barPct: barTasks,
         nav: { mode: "audit", tab: "tasks" },
       },
