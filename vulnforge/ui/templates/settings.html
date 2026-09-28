@@ -34,7 +34,7 @@
       <div>
         <h1>Settings</h1>
         <p>
-          Hosts, verified models, and role assignments.
+          Hosts, verified models, role assignments, agent budget, and sandbox iterate caps.
           Saved to <code>config/ui_settings.json</code> and applied on the next task lease.
         </p>
       </div>
@@ -176,6 +176,25 @@
             </div>
           </div>
         </section>
+
+        <section class="card settings-card settings-card-iterate" id="settings-poc-iterate">
+          <h2>Sandbox iterate</h2>
+          <p class="controls-hint" style="margin-top:0">
+            After a one-shot, or from Iterate in sandbox, the agent rewrites and re-runs inside the same microVM or gVisor session.
+            The human steer box joins that session. Caps end it. They do not confirm a finding or clear needs-human.
+          </p>
+          <div class="grid-2">
+            <div class="field">
+              <label class="field-label" for="set-poc-iterate-cycles"><span class="label-text">Max rewrite cycles</span></label>
+              <input id="set-poc-iterate-cycles" type="number" min="1" max="50" step="1" value="5" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="set-poc-iterate-ttl"><span class="label-text">Session wall TTL (minutes)</span></label>
+              <input id="set-poc-iterate-ttl" type="number" min="1" max="240" step="1" value="15" />
+            </div>
+          </div>
+        </section>
+
       </div>
 
       <div class="card settings-card settings-actions-card">

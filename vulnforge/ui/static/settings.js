@@ -568,6 +568,8 @@
       max_tool_rounds: parseInt($("#set-rounds").value, 10),
       timeout_seconds: parseInt($("#set-timeout").value, 10),
       max_tasks: parseInt($("#set-maxtasks").value, 10),
+      poc_iterate_max_cycles: parseInt($("#set-poc-iterate-cycles")?.value || "5", 10),
+      poc_iterate_wall_ttl_min: parseInt($("#set-poc-iterate-ttl")?.value || "15", 10),
       available: readAvailableBudgets(),
     };
   }
@@ -604,6 +606,12 @@
     if ($("#set-rounds")) $("#set-rounds").value = s.max_tool_rounds || 12;
     if ($("#set-timeout")) $("#set-timeout").value = s.timeout_seconds || 600;
     if ($("#set-maxtasks")) $("#set-maxtasks").value = s.max_tasks || 50;
+    if ($("#set-poc-iterate-cycles")) {
+      $("#set-poc-iterate-cycles").value = s.poc_iterate_max_cycles || 5;
+    }
+    if ($("#set-poc-iterate-ttl")) {
+      $("#set-poc-iterate-ttl").value = s.poc_iterate_wall_ttl_min || 15;
+    }
   }
 
   function capBrief(settings) {
@@ -644,7 +652,9 @@
       `referee ${eff.validate_poc_referee ?? s.validate_poc_referee} | ` +
       `disprove ${eff.validate_llm ?? s.validate_llm} | ` +
       `hunt MoA ${huntOn ? "on" : "off"} [${huntBrief}] | ${keyNote} | ` +
-      `agents ${eff.max_leases_parallel || 1} | pair caps [${capBrief(s)}]`;
+      `agents ${eff.max_leases_parallel || 1} | pair caps [${capBrief(s)}] | ` +
+      `iterate ${eff.poc_iterate_max_cycles ?? s.poc_iterate_max_cycles ?? 5} cycles / ` +
+      `${eff.poc_iterate_wall_ttl_min ?? s.poc_iterate_wall_ttl_min ?? 15} min`;
   }
 
   async function loadSettings() {

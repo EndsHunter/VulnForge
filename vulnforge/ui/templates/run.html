@@ -565,13 +565,33 @@
                 <button type="button" class="btn" id="poc-validate" title="One-shot sandbox run (microVM or gVisor). Writes poc_run.json. Does not confirm or clear needs-human.">
                   Run in harness
                 </button>
+                <button type="button" class="btn" id="poc-iterate" title="Keep one microVM or gVisor session and rewrite/re-run until success or caps. Does not confirm.">
+                  Iterate in sandbox
+                </button>
                 <button type="button" class="btn" id="poc-export-job" title="Export finding + pack as validation handoff zip">
                   Export validation job
                 </button>
               </div>
               <p class="controls-hint" id="poc-readiness" style="margin:0.4rem 0 0"></p>
-              <p class="controls-hint">Sandbox one-shot only. “Signal observed” / “sandbox reproduced” is evidence, not confirmation.</p>
+              <p class="controls-hint">One-shot and iterate stay inside a microVM or gVisor. “Signal observed” is evidence, not confirmation.</p>
               <p class="controls-hint report-poc-status" id="poc-status" aria-live="polite"></p>
+            </section>
+
+            <section class="poc-session-section" id="poc-session" aria-labelledby="poc-session-heading">
+              <div class="poc-section-head">
+                <h3 id="poc-session-heading" class="poc-section-title">Sandbox session</h3>
+                <span class="controls-hint" id="poc-session-meta">No session yet</span>
+              </div>
+              <p class="controls-hint" style="margin:0 0 0.35rem">
+                Human and agent share this session. Steer is a note for the next rewrite inside the guest, not a host terminal.
+              </p>
+              <pre id="poc-session-log" class="mono poc-session-log">No sandbox session yet.</pre>
+              <label class="field-label" for="poc-steer"><span class="label-text">Steer</span></label>
+              <textarea id="poc-steer" class="op-notes" rows="2" placeholder="Direction for the next rewrite in this same sandbox…"></textarea>
+              <div class="report-poc-actions" style="margin-top:0.45rem">
+                <button type="button" class="btn" id="poc-steer-send">Send steer</button>
+                <button type="button" class="btn" id="poc-session-stop">Stop session</button>
+              </div>
             </section>
 
             <section class="poc-hub-section" aria-labelledby="poc-hub-heading">

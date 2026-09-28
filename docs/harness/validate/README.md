@@ -79,6 +79,8 @@ Config: `poc_harness.*` and `stages.validate_poc_referee` in `config/default.yam
 | `poc_harness.network` | `none` | Deny egress. `allow` is an isolated bridge. Never host net |
 | `allow_write_target` | `false` | Not honored. Optional `mount_target_ro` is read-only |
 | `docker_image` | `python:3.12.8-slim-bookworm` | Pin. Linux host required |
+| `iterate_max_cycles` | `5` | Rewrite/re-run cycles per sandbox session. Settings overrides |
+| `iterate_wall_ttl_min` | `15` | Wall TTL minutes per session. Settings overrides |
 
 Missing Kata/Firecracker/runsc returns `sandbox_unavailable` with an operator hint. It does **not** fall back to the host.
 
@@ -94,7 +96,7 @@ vf validate-poc --run-dir runs\<t>\run-001 --finding-id 3          # enqueue
 vf validate-poc --run-dir runs\<t>\run-001 --finding-id 3 --execute # in-process
 ```
 
-Report → Develop POC: **Run in harness** / **Export validation job**. Workshop shows isolation · network and a **Sandbox unavailable** badge when Kata and gVisor are both missing.
+Report → Develop POC: **Run in harness** (one-shot) / **Iterate in sandbox** (same guest, caps) / **Export validation job**. Steer and Stop join that session. Workshop shows isolation · network and a **Sandbox unavailable** badge when Kata and gVisor are both missing. Caps and fail-closed results do not confirm.
 
 ## Operator surfaces
 

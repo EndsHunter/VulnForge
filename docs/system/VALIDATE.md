@@ -50,6 +50,8 @@ poc_harness:
   pids_limit: 128
   mount_target_ro: false
   sandbox_oneshot: false   # per-run opt-in: vf init --sandbox-poc or New audit checkbox
+  iterate_max_cycles: 5    # Settings → Sandbox iterate; rewrite/re-run cycles per session
+  iterate_wall_ttl_min: 15 # Settings → Sandbox iterate; wall TTL per session
 ```
 
 ### Sandbox one-shot (validate_poc)
@@ -69,6 +71,14 @@ Linux only. macOS and Windows need a Linux sandbox host. v1 runs the PoC **once*
 **Outcomes** (evidence only): `signal_observed` | `signal_absent` | `poc_broken` | `inconclusive` | `build_failed` | `sandbox_unavailable` | `unsafe_skipped`. The UI says “sandbox reproduced” / “signal observed”. That does **not** set `confirmed` and does **not** clear `needs_human` or HITL. PoC failure is not a false positive. `validate_mech` and `validate_llm` (when on) still run.
 
 **Run-start toggle** (`vf init --sandbox-poc`, New audit “Sandbox PoC one-shot”, default off): when the queue is idle, Ralph enqueues one `validate_poc` per harness-ready `needs_human` finding. A missing sandbox writes the same fail-closed enums and the campaign continues.
+
+### Iterate in sandbox
+
+`iterate_poc` (Report **Iterate in sandbox**, `vf validate-poc --iterate`, or operator chat `enqueue_iterate_poc`) keeps one session inside the same ladder. Kata and gVisor hold one container and `docker exec` each rewrite/re-run into it. Direct Firecracker pins the same patched jailer policy (no NIC, `pci=off`) and boots one VM per cycle. Host exec and plain runc still refuse.
+
+Defaults: **5** rewrite/re-run cycles and a **15-minute** wall TTL (`poc_harness.iterate_max_cycles`, `poc_harness.iterate_wall_ttl_min`). Settings → **Sandbox iterate** overrides both. Hitting either cap, an operator stop, or a missing sandbox ends the session and writes `poc_session.json` plus a last-cycle `poc_run.json`. That evidence does not set `confirmed`, does not clear `needs_human`, and does not answer HITL.
+
+The workshop **Steer** box appends a note the next cycle reads. It is not a host shell. Human and agent share that session record and, while it is live, the same guest.
 
 Pinned image: `python:3.12.8-slim-bookworm` (override with a digest). Pre-pull it on the sandbox host so the wall TTL is not spent on a registry fetch.
 

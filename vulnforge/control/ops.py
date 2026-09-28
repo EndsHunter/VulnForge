@@ -2629,7 +2629,7 @@ def _list_pack_files(run_dir: Path, eid: str) -> list[str]:
     names: list[str] = []
     try:
         for p in sorted(pack_dir.iterdir()):
-            if p.is_file() and not p.name.endswith(".tmp"):
+            if p.is_file() and not p.name.endswith(".tmp") and p.name != "poc_session.lock":
                 names.append(p.name)
     except OSError:
         return []
@@ -2841,6 +2841,8 @@ def get_finding_poc(run_dir: Path, finding_id: int) -> dict[str, Any]:
                     or (merged.get("poc_harness") or {}).get("sandbox_oneshot")
                 ),
                 "enabled": hc["enabled"],
+                "iterate_max_cycles": hc.get("iterate_max_cycles"),
+                "iterate_wall_ttl_min": hc.get("iterate_wall_ttl_min"),
             }
         except Exception:
             harness_info = {}
@@ -2860,6 +2862,7 @@ def get_finding_poc(run_dir: Path, finding_id: int) -> dict[str, Any]:
             "harness_ready": bool(readiness.get("ready")),
             "harness": harness_info or None,
             "poc_validation_latest": latest_val if isinstance(latest_val, dict) else None,
+            "poc_session": _poc_session_view(pack_dir if pack_dir.is_dir() else None),
         }
     finally:
         db.close()
@@ -3210,6 +3213,191 @@ def enqueue_validate_poc(
             "task_id": task_id,
             "kind": "validate_poc",
         }
+    finally:
+        db.close()
+
+
+def _poc_pack_dir(run_dir: Path, finding) -> tuple[str, Path] | tuple[None, None]:
+    from vulnforge.tools.evidence_write import sanitize_evidence_id
+
+    body = dict(finding.body or {})
+    raw = finding.evidence_id or body.get("evidence_id") or f"human-{finding.id}"
+    try:
+        eid = sanitize_evidence_id(str(raw))
+    except Exception:
+        return None, None
+    return eid, run_dir / "evidence" / eid
+
+
+def _poc_session_view(pack_dir: Path | None) -> dict[str, Any] | None:
+    if pack_dir is None:
+        return None
+    from vulnforge.poc_session import load_session, public_session, read_steers, stop_requested
+
+    session = load_session(pack_dir)
+    if session is None and not (pack_dir / "poc_steer.jsonl").is_file():
+        return None
+    return {
+        "session": public_session(session) if session else None,
+        "steers": read_steers(pack_dir),
+        "stop_requested": stop_requested(pack_dir),
+    }
+
+
+def enqueue_iterate_poc(
+    run_dir: Path,
+    finding_id: int,
+    *,
+    operator: str = "operator",
+    operator_notes: str = "",
+    target_url: str = "",
+    command: str = "",
+    priority: int = 27,
+) -> dict[str, Any]:
+    """Enqueue iterate_poc. Does not change finding state or HITL."""
+    from vulnforge.util import utc_now_iso
+
+    db = _open_db(run_dir)
+    try:
+        finding = db.get_finding(int(finding_id))
+        if not finding:
+            return {"ok": False, "error": "finding_not_found"}
+        body = dict(finding.body or {})
+        eid = finding.evidence_id or body.get("evidence_id") or f"human-{finding.id}"
+        payload: dict[str, Any] = {
+            "finding_id": finding.id,
+            "evidence_id": str(eid),
+            "operator": operator or "operator",
+            "agent": True,
+        }
+        notes = (operator_notes or "").strip()
+        if notes:
+            payload["operator_notes"] = notes[:4000]
+        if target_url:
+            payload["TARGET_URL"] = str(target_url).strip()
+        if command:
+            payload["command"] = str(command).strip()
+        task_id = db.enqueue_task("iterate_poc", payload, priority=int(priority))
+        now = utc_now_iso()
+        entry = {
+            "at": now,
+            "action": "enqueue_iterate",
+            "mode": "iterate",
+            "operator": operator or "operator",
+            "task_id": task_id,
+            "confirms_finding": False,
+        }
+        hist = body.get("poc_validation")
+        if not isinstance(hist, list):
+            hist = []
+        hist.append(entry)
+        body["poc_validation"] = hist[-50:]
+        body["poc_validation_latest"] = entry
+        body["poc_session_latest"] = entry
+        db.conn.execute(
+            "UPDATE findings SET body_json=?, updated_at=? WHERE id=?",
+            (json.dumps(body), now, finding.id),
+        )
+        db.conn.commit()
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "dashboard",
+                    "event": "poc_iterate_enqueued",
+                    "finding_id": finding.id,
+                    "evidence_id": str(eid),
+                    "task_id": task_id,
+                },
+            )
+        except OSError:
+            pass
+        return {
+            "ok": True,
+            "finding_id": finding.id,
+            "state": finding.state,
+            "evidence_id": str(eid),
+            "task_id": task_id,
+            "kind": "iterate_poc",
+        }
+    finally:
+        db.close()
+
+
+def get_poc_session(run_dir: Path, finding_id: int) -> dict[str, Any]:
+    db = _open_db(run_dir)
+    try:
+        finding = db.get_finding(int(finding_id))
+        if not finding:
+            return {"ok": False, "error": "finding_not_found"}
+        eid, pack = _poc_pack_dir(run_dir, finding)
+        if eid is None or pack is None:
+            return {"ok": False, "error": "invalid_evidence_id"}
+        view = _poc_session_view(pack if pack.is_dir() else None) or {
+            "session": None,
+            "steers": [],
+            "stop_requested": False,
+        }
+        return {
+            "ok": True,
+            "finding_id": finding.id,
+            "state": finding.state,
+            "evidence_id": eid,
+            **view,
+        }
+    finally:
+        db.close()
+
+
+def steer_poc_session(
+    run_dir: Path,
+    finding_id: int,
+    *,
+    text: str,
+    operator: str = "operator",
+) -> dict[str, Any]:
+    from vulnforge.poc_session import append_steer
+
+    db = _open_db(run_dir)
+    try:
+        finding = db.get_finding(int(finding_id))
+        if not finding:
+            return {"ok": False, "error": "finding_not_found"}
+        eid, pack = _poc_pack_dir(run_dir, finding)
+        if eid is None or pack is None:
+            return {"ok": False, "error": "invalid_evidence_id"}
+        pack.mkdir(parents=True, exist_ok=True)
+        result = append_steer(pack, text, operator=operator or "operator")
+        result["finding_id"] = finding.id
+        result["state"] = finding.state
+        result["evidence_id"] = eid
+        return result
+    finally:
+        db.close()
+
+
+def stop_poc_session(
+    run_dir: Path,
+    finding_id: int,
+    *,
+    operator: str = "operator",
+) -> dict[str, Any]:
+    from vulnforge.poc_session import request_stop
+
+    db = _open_db(run_dir)
+    try:
+        finding = db.get_finding(int(finding_id))
+        if not finding:
+            return {"ok": False, "error": "finding_not_found"}
+        eid, pack = _poc_pack_dir(run_dir, finding)
+        if eid is None or pack is None:
+            return {"ok": False, "error": "invalid_evidence_id"}
+        pack.mkdir(parents=True, exist_ok=True)
+        result = request_stop(pack, operator=operator or "operator")
+        result["finding_id"] = finding.id
+        result["state"] = finding.state
+        result["evidence_id"] = eid
+        return result
     finally:
         db.close()
 
