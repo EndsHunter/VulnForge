@@ -41,11 +41,15 @@ Writes `STOP`, kills Ralph workers, reclaims leased tasks to `queued`, and recor
 
 ### `pause`
 
-Same worker stop and lease reclaim as stop, recorded as `runner_pause`. Queued tasks stay queued. With `STOP` present and no live Ralph pid, runner state is `paused`.
+Same worker stop and lease reclaim as stop, recorded as `runner_pause`. Queued tasks stay queued. With `STOP` present and no live Ralph pid, runner state is `paused`. The Mission card `status` is `paused` while `STOP` is present (the `runs.status` row stays the durable value).
+
+The kill is tree-wide: Windows `taskkill /T`, and on Linux the Ralph process group created by `start_new_session` plus any descendant and the `run.lock` holder. That stops in-flight `vf run-once` instead of leaving it reparented under the user service manager. The return includes `lock_cleared` (`run.lock` is absent). `ok` is false when a live PID still holds `run.lock` after the kill.
 
 ### `resume`
 
 Deletes `STOP`, reclaims stale leases only, and calls `start_run` when Ralph is not already alive. Body knobs match `start`.
+
+If no Ralph worker is alive and a live PID still holds `run.lock`, resume kills that holder (same tree kill as pause). When the holder survives, resume returns not ok, leaves `STOP` in place, and does not spawn Ralph — so the new loop does not exit `EXIT_INFRA` 20 (`run locked`). A Ralph worker that is still alive is not killed; resume only clears `STOP`.
 
 ### `status`
 

@@ -219,6 +219,7 @@ def test_pause_creates_stop(tmp_path: Path, toy_sqli: Path):
     run_dir = next(next(runs.iterdir()).iterdir())
     r = runctl.pause_run(run_dir)
     assert r["ok"]
+    assert r["lock_cleared"] is True
     assert (run_dir / "STOP").is_file()
     st = runctl.runner_status(run_dir)
     assert st["stop"] is True
@@ -352,6 +353,216 @@ def test_control_start_kwargs_empty_ui_fallbacks():
     assert kw["task_timeout"] == 900
     assert kw["max_iterations"] == 10_000
     assert kw["max_wall_seconds"] is None
+
+
+def test_run_card_status_paused_while_stop_present(tmp_path: Path, toy_sqli: Path):
+    """Mission card status follows STOP; the durable runs.status row stays active."""
+    runs = tmp_path / "runs"
+    main(["init", "--target", str(toy_sqli), "--runs-root", str(runs)])
+    ref = store.discover_runs(runs)[0]
+    assert store.run_card(ref)["status"] == "active"
+    (ref.path / "STOP").write_text("paused_at=test\n", encoding="utf-8")
+    card = store.run_card(ref)
+    assert card["status"] == "paused"
+    assert card["stop"] is True
+    db = Database.open(ref.path / "harness.db")
+    try:
+        assert db.get_run()["status"] == "active"
+    finally:
+        db.close()
+
+
+def _posix_run_dir(tmp_path: Path) -> Path:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    Database.create(run_dir / "harness.db").close()
+    return run_dir
+
+
+def _spawn_session_lock_holder(run_dir: Path) -> "subprocess.Popen[bytes]":
+    """Session leader plus a child that left the group and holds run.lock.
+
+    Mirrors Ralph (`start_new_session=True`) and a run-once that would survive
+    a leader-only SIGTERM. The child calls setpgrp so group-kill alone is not
+    enough; the tree walk has to find it.
+    """
+    import subprocess
+    import sys
+
+    script = run_dir / "_hold_lock.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os, sys, time, subprocess",
+                "from pathlib import Path",
+                "run = Path(sys.argv[1])",
+                "role = sys.argv[2]",
+                "if role == 'child':",
+                "    os.setpgrp()",
+                "    payload = {'pid': os.getpid(), 'ts': time.time()}",
+                "    (run / 'run.lock').write_text(json.dumps(payload))",
+                "    (run / 'child.pid').write_text(str(os.getpid()))",
+                "    time.sleep(120)",
+                "else:",
+                "    subprocess.Popen([sys.executable, sys.argv[0], sys.argv[1], 'child'])",
+                "    for _ in range(100):",
+                "        if (run / 'child.pid').is_file():",
+                "            break",
+                "        time.sleep(0.05)",
+                "    else:",
+                "        raise SystemExit(2)",
+                "    (run / 'parent.ready').write_text(str(os.getpid()))",
+                "    time.sleep(120)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return subprocess.Popen(
+        [sys.executable, str(script), str(run_dir), "parent"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _wait_file(path: Path, timeout: float = 5.0) -> None:
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.is_file() and path.stat().st_size > 0:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {path}")
+
+
+def _kill_session(pid: int) -> None:
+    import os
+    import signal
+
+    if os.name == "nt" or pid <= 1:
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def test_pause_kills_session_child_and_clears_lock(tmp_path: Path):
+    """Pause must reap a new-session Ralph and the run-once holding run.lock."""
+    import os
+
+    if os.name == "nt":
+        pytest.skip("POSIX process-group kill")
+    run_dir = _posix_run_dir(tmp_path)
+    proc = _spawn_session_lock_holder(run_dir)
+    try:
+        _wait_file(run_dir / "parent.ready")
+        _wait_file(run_dir / "run.lock")
+        child = int((run_dir / "child.pid").read_text(encoding="utf-8"))
+        assert child != proc.pid
+        assert os.getpgid(child) != os.getpgid(proc.pid)
+        (run_dir / "ralph.pid").write_text(
+            '{"pid": %d}' % proc.pid, encoding="utf-8"
+        )
+        paused = runctl.pause_run(run_dir)
+        assert paused["ok"] is True, paused
+        assert paused["lock_cleared"] is True
+        assert paused["killed"] is True
+        assert not (run_dir / "run.lock").exists()
+        assert runctl._pid_alive(proc.pid) is False
+        assert runctl._pid_alive(child) is False
+        status = paused["status"]
+        assert status["state"] == "paused"
+        assert status["locked"] is False
+    finally:
+        _kill_session(proc.pid)
+        try:
+            child = int((run_dir / "child.pid").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            child = 0
+        if child:
+            try:
+                os.kill(child, 9)
+            except OSError:
+                pass
+        proc.wait(timeout=3)
+
+
+def test_resume_kills_orphan_lock_then_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A live lock with no Ralph worker is killed before resume spawns Ralph."""
+    import os
+
+    if os.name == "nt":
+        pytest.skip("POSIX process-group kill")
+    run_dir = _posix_run_dir(tmp_path)
+    (run_dir / "STOP").write_text("paused\n", encoding="utf-8")
+    proc = _spawn_session_lock_holder(run_dir)
+    started: list[Path] = []
+
+    def fake_start(path, **kwargs):
+        started.append(Path(path))
+        return {"ok": True, "pid": 99, "status": {"state": "running", "alive": True}}
+
+    monkeypatch.setattr(runctl, "start_run", fake_start)
+    try:
+        _wait_file(run_dir / "run.lock")
+        child = int((run_dir / "child.pid").read_text(encoding="utf-8"))
+        resumed = runctl.resume_run(run_dir)
+        assert resumed["ok"] is True, resumed
+        assert resumed["lock_cleared"] is True
+        assert started == [run_dir.resolve()]
+        assert not (run_dir / "STOP").exists()
+        assert not (run_dir / "run.lock").exists()
+        assert runctl._pid_alive(child) is False
+    finally:
+        _kill_session(proc.pid)
+        proc.wait(timeout=3)
+
+
+def test_resume_refuses_when_lock_holder_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Do not report a clean resume while a live PID still owns run.lock."""
+    run_dir = _posix_run_dir(tmp_path)
+    (run_dir / "STOP").write_text("paused\n", encoding="utf-8")
+    (run_dir / "run.lock").write_text('{"pid": 424242}', encoding="utf-8")
+    monkeypatch.setattr(runctl, "_lock_holder_alive", lambda _d: 424242)
+
+    def no_kill(_pid: int) -> bool:
+        return False
+
+    def no_start(*_a, **_k):
+        raise AssertionError("start_run must not run while the lock is held")
+
+    monkeypatch.setattr(runctl, "_kill_pid", no_kill)
+    monkeypatch.setattr(runctl, "start_run", no_start)
+    resumed = runctl.resume_run(run_dir)
+    assert resumed["ok"] is False
+    assert resumed["lock_cleared"] is False
+    assert resumed["lock_holder"] == 424242
+    assert "424242" in resumed["error"]
+    assert (run_dir / "STOP").is_file()
+    assert (run_dir / "run.lock").is_file()
+
+
+def test_pause_not_ok_when_lock_holder_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    run_dir = _posix_run_dir(tmp_path)
+    (run_dir / "run.lock").write_text('{"pid": 424242}', encoding="utf-8")
+    monkeypatch.setattr(runctl, "_lock_holder_alive", lambda _d: 424242)
+    monkeypatch.setattr(runctl, "_read_lock_pid", lambda _d: 424242)
+    monkeypatch.setattr(runctl, "_kill_pid", lambda _pid: False)
+    paused = runctl.pause_run(run_dir)
+    assert paused["ok"] is False
+    assert paused["lock_cleared"] is False
+    assert paused["lock_holder"] == 424242
+    assert "424242" in paused["error"]
+    assert (run_dir / "STOP").is_file()
 
 
 def test_pid_alive_false_for_zombie_child():
