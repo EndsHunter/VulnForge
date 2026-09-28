@@ -65,10 +65,10 @@ Use the feature map. Stable handles beat CSS position.
 | Handle | Where |
 | --- | --- |
 | `body[data-page="home"]` | Home |
-| `#btn-new-run`, `#home-search`, `#run-list`, `a.run-row` | Home actions and run rows |
+| `#btn-new-run`, `#home-search`, `#home-stats`, `#run-list`, `a.run-row` | Home actions, token strip, and run rows |
 | `#btn-settings` `/settings`, `#btn-open-dev` `/dev`, `#btn-open-tool-gaps` `/tool-gaps` | Home dock icons |
 | `#ai-fab`, `#ai-sheet`, `#operator-chat-root` | Ask bubble on Home and run |
-| `body[data-page="run"]`, `[data-run-rail]`, `[data-nav-id]`, `[data-mode-panel]`, `#run-switch` | Run workspace |
+| `body[data-page="run"]`, `[data-run-rail]`, `[data-nav-id]`, `[data-mode-panel]`, `#run-switch`, `#mission-usage` | Run workspace |
 | `body[data-page="settings"]`, `#settings-form`, `#settings-save` | Settings page |
 | `body[data-page="dev"]`, `[data-dev-tab]`, `#dev-profiles-body` | Dev dashboard |
 

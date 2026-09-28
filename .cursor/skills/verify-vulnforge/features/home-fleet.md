@@ -6,6 +6,7 @@ Home is the run list. Search and New live in the list column. Settings, Dev, and
 
 - `home-empty` shows the empty fleet copy when no runs exist yet.
 - `home-list` renders a run row after `vf init` (or New audit) writes a run under the disposable root.
+- `home-tokens` shows fleet In / Out / Total in `#home-stats` and the same three fields on each `a.run-row` (by-model is a tooltip).
 - `home-search` filters rows by target id, run id, or path. A miss is `No runs match.` plus Clear when a query is set.
 - `home-open` follows a run row into `/runs/{target_id}/{run_id}`.
 - `home-new-audit` opens the New audit dialog. Do not submit it with Start Ralph checked.

@@ -315,11 +315,17 @@ function renderRunRow(r, group) {
   if (group === "settled" && accepted > 0) metaBits.push(`${accepted} accepted`);
   const status = runStatusLabel(r, group);
   const age = shortAge(r.updated_at || r.created_at || r.mtime);
+  const usage = llmUsageOf(r);
+  const tokTitle = modelUsageTooltipSafe(usage);
   return `
       <a class="run-row" href="/runs/${encodeURIComponent(r.target_id)}/${encodeURIComponent(r.run_id)}" title="${esc(runLabel)}">
         <span>
           <div class="title">${esc(runLabel)}</div>
           <div class="meta">${esc(metaBits.join(" · "))}</div>
+          ${renderTokenCountsHtml(usage, {
+            className: "tok-counts run-tok",
+            title: tokTitle,
+          })}
         </span>
         <span class="right">
           ${status.text ? `<span class="${status.cls}">${esc(status.text)}</span>` : ""}
@@ -332,6 +338,8 @@ function renderRunRow(r, group) {
 /* ---------- Home ---------- */
 
 function fmtTokens(n) {
+  const helpers = globalThis.MissionOverviewHelpers;
+  if (helpers?.formatTokenCount) return helpers.formatTokenCount(n);
   const v = Number(n) || 0;
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 10_000) return `${Math.round(v / 1000)}k`;
@@ -340,25 +348,61 @@ function fmtTokens(n) {
 }
 
 function llmUsageOf(r) {
-  return r?.llm_usage || {};
+  return (r && r.llm_usage) || {};
+}
+
+function tokenCountsSafe(usage) {
+  const helpers = globalThis.MissionOverviewHelpers;
+  if (helpers?.tokenCountsOf) return helpers.tokenCountsOf(usage);
+  return { input: 0, output: 0, total: 0, calls: 0 };
+}
+
+function modelUsageTooltipSafe(usage) {
+  const helpers = globalThis.MissionOverviewHelpers;
+  if (!helpers?.modelUsageRows || !helpers.modelUsageTooltip) return "";
+  return helpers.modelUsageTooltip(helpers.modelUsageRows(usage));
+}
+
+function renderTokenCountsHtml(usageOrCounts, opts) {
+  const counts = tokenCountsSafe(usageOrCounts);
+  const cls = (opts && opts.className) || "tok-counts";
+  const title = (opts && opts.title) || "";
+  const titleAttr = title ? ` title="${esc(title)}"` : "";
+  const bits = [
+    ["In", counts.input],
+    ["Out", counts.output],
+    ["Total", counts.total],
+  ];
+  const inner = bits
+    .map(
+      ([lab, n]) =>
+        `<span class="tok-k"><span class="tok-lab">${lab}</span><span class="tok-val mono">${esc(fmtTokens(n))}</span></span>`
+    )
+    .join("");
+  return `<div class="${cls}"${titleAttr}>${inner}</div>`;
 }
 
 function renderHomeStats(runs) {
   const box = $("#home-stats");
   if (!box) return;
-  const ok = runs.filter((r) => !r.error);
-  const running = ok.filter((r) => ["running", "busy", "pausing"].includes(statusChip(r))).length;
-  const incomplete = ok.filter((r) => r.incomplete).length;
-  const confirmed = ok.reduce((a, r) => a + ((r.findings || {}).confirmed || 0), 0);
-  const tokens = ok.reduce((a, r) => a + (llmUsageOf(r).total_tokens || 0), 0);
-  const calls = ok.reduce((a, r) => a + (llmUsageOf(r).llm_calls || 0), 0);
-  box.style.display = "grid";
+  const ok = (runs || []).filter((r) => !r.error);
+  if (!ok.length) {
+    box.hidden = true;
+    box.removeAttribute("title");
+    box.innerHTML = "";
+    return;
+  }
+  const helpers = globalThis.MissionOverviewHelpers;
+  const agg = helpers?.aggregateRunUsage
+    ? helpers.aggregateRunUsage(ok)
+    : { input: 0, output: 0, total: 0, models: [] };
+  const tip = helpers?.modelUsageTooltip ? helpers.modelUsageTooltip(agg.models || []) : "";
+  box.hidden = false;
+  if (tip) box.title = tip;
+  else box.removeAttribute("title");
   box.innerHTML = `
-    <div class="stat info"><div class="label">Runs</div><div class="value">${ok.length}</div></div>
-    <div class="stat good"><div class="label">Running</div><div class="value">${running}</div></div>
-    <div class="stat warn"><div class="label">Incomplete</div><div class="value">${incomplete}</div></div>
-    <div class="stat good"><div class="label">Confirmed</div><div class="value">${confirmed}</div></div>
-    <div class="stat info" title="${calls} LLM calls"><div class="label">LLM tokens</div><div class="value">${fmtTokens(tokens)}</div></div>
+    <span class="tok-strip-label">Tokens</span>
+    ${renderTokenCountsHtml(agg, { className: "tok-counts" })}
   `;
 }
 
@@ -2102,7 +2146,7 @@ function missionTargetLabel() {
 function missionCampaignVm(snap) {
   const helpers = globalThis.MissionOverviewHelpers;
   if (!helpers?.buildMissionCockpit) {
-    return { kpis: [], pipeline: [], events: [], validateLlmOn: false };
+    return { kpis: [], pipeline: [], events: [], validateLlmOn: false, usage: { input: 0, output: 0, total: 0, models: [] } };
   }
   return helpers.buildMissionCockpit(snap, {
     recentEvents: missionEventRing.snapshot(),
@@ -2315,6 +2359,23 @@ function renderCampaignStripHtml(vm, snap) {
 
   const funnelHtml = renderFindingFunnelHtml((vm && vm.funnel) || []);
   const presenceHtml = renderPresenceHtml(vm && vm.presence);
+  const usage = (vm && vm.usage) || tokenCountsSafe(snap && snap.llm_usage);
+  const models = Array.isArray(usage.models)
+    ? usage.models
+    : (globalThis.MissionOverviewHelpers?.modelUsageRows?.(snap && snap.llm_usage) || []);
+  const modelRows = models
+    .map(
+      (m) => `<li class="mission-usage-model">
+        <span class="mission-usage-model-id mono">${esc(m.id)}</span>
+        ${renderTokenCountsHtml(m, { className: "tok-counts" })}
+      </li>`
+    )
+    .join("");
+  const usageHtml = `<div class="mission-usage" id="mission-usage" aria-label="Token usage">
+    <span class="tok-strip-label">Tokens</span>
+    ${renderTokenCountsHtml(usage, { className: "tok-counts" })}
+    ${modelRows ? `<ul class="mission-usage-models">${modelRows}</ul>` : ""}
+  </div>`;
 
   return `<div class="arch-campaign-strip${fail ? " is-failed" : ""}">
     ${banner}
@@ -2325,6 +2386,7 @@ function renderCampaignStripHtml(vm, snap) {
     </div>
     ${funnelHtml}
     ${presenceHtml}
+    ${usageHtml}
   </div>`;
 }
 

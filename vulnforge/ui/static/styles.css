@@ -477,6 +477,53 @@ table.data td.mono, .mono { font-family: var(--mono); font-size: 12px; }
   color: var(--text-faint);
   padding: 12px 8px 4px;
 }
+.home-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  padding: 0 8px 10px;
+  max-width: 760px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.home-stats[hidden] {
+  display: none;
+}
+.tok-strip-label {
+  color: var(--text-faint);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+.tok-counts {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.15rem 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+.tok-k {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+.tok-lab {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.tok-val {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 12px;
+}
+.run-row .run-tok {
+  margin-top: 2px;
+}
+.run-row .run-tok .tok-val {
+  font-size: 11px;
+  font-weight: 500;
+}
 .home-dock {
   display: flex;
   gap: 8px;
@@ -1493,6 +1540,31 @@ button.arch-campaign-funnel-step:focus-visible {
 }
 .arch-campaign-presence-bit[data-tip] {
   cursor: help;
+}
+.mission-usage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.75rem;
+  min-width: 0;
+}
+.mission-usage-models {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.85rem;
+}
+.mission-usage-model {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.55rem;
+}
+.mission-usage-model-id {
+  color: var(--text-soft);
+  font-size: 11px;
 }
 .arch-campaign-presence-bit:focus-visible {
   outline: 2px solid var(--accent);

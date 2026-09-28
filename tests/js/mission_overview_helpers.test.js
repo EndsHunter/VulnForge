@@ -20,7 +20,13 @@ const {
   buildMissionPresence,
   buildArchitectureBrief,
   buildMissionCockpit,
+  buildMissionUsage,
   countMissionTaskActivity,
+  formatTokenCount,
+  tokenCountsOf,
+  modelUsageRows,
+  modelUsageTooltip,
+  aggregateRunUsage,
   isHuntKind,
   huntTaskLabel,
   summarizeHuntQueue,
@@ -696,5 +702,116 @@ describe("buildMissionCockpit", () => {
     assert.equal(brief.componentCount, 0);
     assert.equal(brief.snippet.includes("Cloudflare"), false);
     assert.equal(brief.snippet.includes("PHP"), false);
+  });
+});
+
+describe("tokenCountsOf / modelUsageRows", () => {
+  it("maps prompt/completion onto input/output/total", () => {
+    const c = tokenCountsOf({
+      prompt_tokens: 12000,
+      completion_tokens: 3100,
+      total_tokens: 15100,
+      llm_calls: 4,
+    });
+    assert.deepEqual(c, { input: 12000, output: 3100, total: 15100, calls: 4 });
+  });
+
+  it("treats missing usage as zeros and does not throw", () => {
+    assert.deepEqual(tokenCountsOf(null), { input: 0, output: 0, total: 0, calls: 0 });
+    assert.deepEqual(tokenCountsOf(undefined), { input: 0, output: 0, total: 0, calls: 0 });
+    assert.deepEqual(tokenCountsOf("nope"), { input: 0, output: 0, total: 0, calls: 0 });
+    assert.deepEqual(tokenCountsOf([]), { input: 0, output: 0, total: 0, calls: 0 });
+    assert.equal(modelUsageRows(null).length, 0);
+    assert.equal(modelUsageRows({ by_model: null }).length, 0);
+    assert.equal(modelUsageRows({ by_model: [] }).length, 0);
+    assert.equal(modelUsageRows({}).length, 0);
+  });
+
+  it("returns per-model input/output/total and hides empty models", () => {
+    const rows = modelUsageRows({
+      by_model: {
+        "grok-4": { prompt_tokens: 12000, completion_tokens: 3100, total_tokens: 15100 },
+        "claude-sonnet-4": {
+          prompt_tokens: 8400,
+          completion_tokens: 1900,
+          total_tokens: 10300,
+        },
+        unused: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      },
+    });
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].id, "claude-sonnet-4");
+    assert.equal(rows[0].input, 8400);
+    assert.equal(rows[0].output, 1900);
+    assert.equal(rows[0].total, 10300);
+    assert.equal(rows[1].id, "grok-4");
+    assert.equal(rows[1].total, 15100);
+  });
+
+  it("formats compact token counts", () => {
+    assert.equal(formatTokenCount(0), "0");
+    assert.equal(formatTokenCount(999), "999");
+    assert.equal(formatTokenCount(1200), "1.2k");
+    assert.equal(formatTokenCount(20400), "20k");
+    assert.equal(formatTokenCount(1500000), "1.5M");
+  });
+});
+
+describe("aggregateRunUsage / buildMissionUsage", () => {
+  it("sums multi-model runs for Home and does not crash on a zero run", () => {
+    const agg = aggregateRunUsage([
+      {
+        llm_usage: {
+          prompt_tokens: 20400,
+          completion_tokens: 5000,
+          total_tokens: 25400,
+          by_model: {
+            "grok-4": { prompt_tokens: 12000, completion_tokens: 3100, total_tokens: 15100 },
+            "claude-sonnet-4": {
+              prompt_tokens: 8400,
+              completion_tokens: 1900,
+              total_tokens: 10300,
+            },
+          },
+        },
+      },
+      { llm_usage: {} },
+      {},
+      { error: "bad", llm_usage: null },
+    ]);
+    assert.equal(agg.input, 20400);
+    assert.equal(agg.output, 5000);
+    assert.equal(agg.total, 25400);
+    assert.equal(agg.models.length, 2);
+    assert.equal(agg.models[0].id, "claude-sonnet-4");
+    assert.equal(agg.models[0].total, 10300);
+    assert.equal(agg.models[1].id, "grok-4");
+    const tip = modelUsageTooltip(agg.models);
+    assert.equal(tip.includes("In "), true);
+    assert.equal(tip.includes("Out "), true);
+    assert.equal(tip.includes("Total "), true);
+    assert.equal(tip.includes("prompt"), false);
+  });
+
+  it("builds Mission usage from snap.llm_usage", () => {
+    const u = buildMissionUsage({
+      llm_usage: {
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        total_tokens: 12,
+        by_model: { "m-1": { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },
+      },
+    });
+    assert.equal(u.input, 10);
+    assert.equal(u.output, 2);
+    assert.equal(u.total, 12);
+    assert.equal(u.models.length, 1);
+    assert.equal(u.models[0].id, "m-1");
+    const empty = buildMissionUsage({});
+    assert.equal(empty.total, 0);
+    assert.equal(empty.models.length, 0);
+    const vm = buildMissionCockpit({});
+    assert.equal(vm.usage.total, 0);
+    assert.equal(vm.usage.models.length, 0);
   });
 });

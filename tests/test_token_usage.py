@@ -17,6 +17,46 @@ from vulnforge.packet import Packet
 from vulnforge.usage import load_usage_summary, record_usage, usage_fields_for_result
 
 
+def test_record_usage_by_model_multi(tmp_path: Path):
+    record_usage(
+        tmp_path,
+        task_id=1,
+        kind="recon",
+        model_id="grok-4",
+        usage=TokenUsage(
+            prompt_tokens=12000,
+            completion_tokens=3100,
+            total_tokens=15100,
+            source="provider",
+            llm_calls=4,
+        ),
+    )
+    record_usage(
+        tmp_path,
+        task_id=2,
+        kind="hunt:injection",
+        model_id="claude-sonnet-4",
+        usage=TokenUsage(
+            prompt_tokens=8400,
+            completion_tokens=1900,
+            total_tokens=10300,
+            source="provider",
+            llm_calls=3,
+        ),
+    )
+    summary = load_usage_summary(tmp_path)
+    assert summary["prompt_tokens"] == 20400
+    assert summary["completion_tokens"] == 5000
+    assert summary["total_tokens"] == 25400
+    grok = summary["by_model"]["grok-4"]
+    claude = summary["by_model"]["claude-sonnet-4"]
+    assert grok["prompt_tokens"] == 12000
+    assert grok["completion_tokens"] == 3100
+    assert grok["total_tokens"] == 15100
+    assert claude["prompt_tokens"] == 8400
+    assert claude["total_tokens"] == 10300
+
+
 def test_parse_openai_usage():
     body = {
         "choices": [

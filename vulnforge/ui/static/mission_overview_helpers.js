@@ -775,6 +775,108 @@
     };
   }
 
+  function asTokenInt(n) {
+    const v = Number(n);
+    return Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0;
+  }
+
+  /** Compact display for token counts (In / Out / Total). */
+  function formatTokenCount(n) {
+    const v = asTokenInt(n);
+    if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + "M";
+    if (v >= 10_000) return Math.round(v / 1000) + "k";
+    if (v >= 1000) return (v / 1000).toFixed(1) + "k";
+    return String(v);
+  }
+
+  /**
+   * Map durable usage (`prompt_tokens` / `completion_tokens` / `total_tokens`)
+   * onto UI fields input / output / total. Missing usage is zeros.
+   */
+  function tokenCountsOf(usage) {
+    const u = usage && typeof usage === "object" && !Array.isArray(usage) ? usage : {};
+    const input = asTokenInt(
+      u.prompt_tokens != null
+        ? u.prompt_tokens
+        : u.input_tokens != null
+          ? u.input_tokens
+          : u.input
+    );
+    const output = asTokenInt(
+      u.completion_tokens != null
+        ? u.completion_tokens
+        : u.output_tokens != null
+          ? u.output_tokens
+          : u.output
+    );
+    const total = asTokenInt(u.total_tokens != null ? u.total_tokens : input + output);
+    const calls = asTokenInt(u.llm_calls);
+    return { input, output, total, calls };
+  }
+
+  /** Per-model rows; empty / malformed by_model is hidden (no crash). */
+  function modelUsageRows(usage) {
+    const u = usage && typeof usage === "object" ? usage : {};
+    const by = u.by_model;
+    if (!by || typeof by !== "object" || Array.isArray(by)) return [];
+    return Object.keys(by)
+      .filter((id) => String(id || "").trim())
+      .sort((a, b) => a.localeCompare(b))
+      .map((id) => {
+        const counts = tokenCountsOf(by[id]);
+        return { id: String(id), ...counts };
+      })
+      .filter((row) => row.input || row.output || row.total || row.calls);
+  }
+
+  function modelUsageTooltip(models) {
+    if (!models || !models.length) return "";
+    return models
+      .map(
+        (m) =>
+          m.id +
+          ": In " +
+          formatTokenCount(m.input) +
+          " · Out " +
+          formatTokenCount(m.output) +
+          " · Total " +
+          formatTokenCount(m.total)
+      )
+      .join("\n");
+  }
+
+  /** Fleet rollup for Home. Per-run usage stays the source of truth. */
+  function aggregateRunUsage(runs) {
+    const totals = { input: 0, output: 0, total: 0, calls: 0 };
+    const byModel = {};
+    for (const r of Array.isArray(runs) ? runs : []) {
+      const usage = r && r.llm_usage;
+      const c = tokenCountsOf(usage);
+      totals.input += c.input;
+      totals.output += c.output;
+      totals.total += c.total;
+      totals.calls += c.calls;
+      for (const row of modelUsageRows(usage)) {
+        const cur = byModel[row.id] || { input: 0, output: 0, total: 0, calls: 0 };
+        cur.input += row.input;
+        cur.output += row.output;
+        cur.total += row.total;
+        cur.calls += row.calls;
+        byModel[row.id] = cur;
+      }
+    }
+    const models = Object.keys(byModel)
+      .sort((a, b) => a.localeCompare(b))
+      .map((id) => ({ id, ...byModel[id] }));
+    return { ...totals, models };
+  }
+
+  function buildMissionUsage(snap) {
+    const usage = snap && snap.llm_usage;
+    const counts = tokenCountsOf(usage);
+    return { ...counts, models: modelUsageRows(usage) };
+  }
+
   function buildMissionCockpit(snap, opts) {
     const s = snap || {};
     const events = opts && Array.isArray(opts.recentEvents) ? opts.recentEvents.slice() : [];
@@ -786,6 +888,7 @@
       events,
       architecture: buildArchitectureBrief(s),
       validateLlmOn: !!s.validate_llm_on,
+      usage: buildMissionUsage(s),
     };
   }
 
@@ -801,6 +904,7 @@
     buildMissionKpis,
     buildArchitectureBrief,
     buildMissionCockpit,
+    buildMissionUsage,
     countMissionTaskActivity,
     isHuntKind,
     huntTaskLabel,
@@ -808,6 +912,11 @@
     listNeedsHumanFindings,
     countFindingState,
     summarizeCoverageResidual,
+    formatTokenCount,
+    tokenCountsOf,
+    modelUsageRows,
+    modelUsageTooltip,
+    aggregateRunUsage,
     PIPELINE_DONE_STATES,
     PIPELINE_ACTIVE_STATES,
     PIPELINE_QUEUED_STATES,
