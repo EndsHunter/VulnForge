@@ -12,6 +12,8 @@
 4. Mechanical **codemap** (`runs.codemap_json`) is structure-only (modules/entrypoints) — separate from the LLM architecture map.
 5. Optionally **plan hunt tasks** from the map (`enqueue_hunts`) using the run’s hunt skill mode.
 
+When recon **omits** `hunt_focus` (shy, thin, binary-only, or low confidence), planning enqueues the **active** profile set. That path is the intentional **B0 hybrid fallback** until live A2, not a bug. When surfaces are clear, `default-map` must emit a small path-backed `hunt_focus`, including justified inactive class ids. Prefer Active is only a tie-break among equally fitting classes.
+
 ## Operator surfaces
 
 | Surface | Action |

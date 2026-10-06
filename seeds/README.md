@@ -24,6 +24,10 @@ seeds/
 Do **not** treat `seeds/` as the operator collection. Reseed overwrites runtime bodies
 from these seeds; runtime collections can diverge intentionally.
 
+### `default-map` hunt focus (B0 hybrid)
+
+When recon **omits** `hunt_focus` because inventory is shy, thin, binary-only, or low confidence, the harness enqueues the **active** hunt profile set. That omit is the intentional **B0 hybrid fallback** until live A2, not a bug. When surfaces are clear, `default-map` must emit a small path-backed `hunt_focus`, including justified inactive class ids. This planner rule does not change collection `active` flags.
+
 ### Override convention
 
 1. **System stage markdown** (`preamble.md`, `PRINCIPLES.md`, `disprove.md`, …): put a file with the **same basename** under `config/prompts/overrides/`. `load_prompt_slice` prefers it over `seeds/system/` for top-level basenames only (no path separators).
