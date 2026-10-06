@@ -33,7 +33,7 @@
 
 - **Runtime authority:** `config/hunt_profiles/` (Dev collection).
 - **Package seeds:** `seeds/hunt_classes/` (Reseed only).
-- Active ids drive recon `active_fallback`, Hunts “all”, and file-by-file planning.
+- Active ids drive recon `active_fallback`, Hunts “all”, and file-by-file planning. When recon **omits** `hunt_focus` (shy, thin, binary-only, or low confidence), that fallback enqueues the active set — the intentional **B0 hybrid fallback** until live A2, not a bug. When surfaces are clear, `default-map` must emit a small path-backed `hunt_focus`, including justified inactive ids.
 
 ## Priority
 
