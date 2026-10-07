@@ -7,6 +7,8 @@ description: >-
   v-html, postMessage origin checks, CORS+credentials, WebSocket auth, open
   redirects, clickjacking of state-changing frames, or prototype pollution with
   a security gadget. Prefer victim impact over “no CSP header.”
+  Activation: surface-triggered via hunt_focus when SPA/DOM/HTML-XSS/CORS/
+  clickjack surfaces exist (e.g. Juice Shop–style) — inactive under B0 hybrid.
 ---
 
 # Hunt class: client-side
@@ -15,9 +17,10 @@ description: >-
 
 - **Prefer evidence over pre-training.** Cite source and sink you actually traced in JS/HTML.
 - **Be certain.** Framework auto-escape may neutralize — read the full path including opt-outs.
-- **Provide evidence.** Source→sink citations; victim context; session/data impact.
+- **Provide evidence.** Source→sink citations with `start_line` on the executing sink; victim context; session/data impact.
 - **Correctness over completeness.** One reflected XSS with a victim browser beats CSP checklist.
 - Honest `submit_none` when HTML/DOM sinks are encoded end-to-end.
+- **Planner:** include this class when browser/HTML/DOM/CORS/clickjack surfaces exist (inactive-ok).
 
 ## When to use
 
@@ -25,6 +28,19 @@ description: >-
 - SPAs, extensions, webviews, DOM sinks, CORS with credentials, WebSockets
 - postMessage weak origin; clickjacking surfaces; client open redirect
 - Prototype pollution **with** security gadget; DOM clobbering into sinks
+
+### Activation criteria (planner / Juice Shop–style)
+
+**Include `client-side` in `hunt_focus` when ANY of:**
+
+- Server templates or handlers reflecting request data into HTML (`res.send`/`echo`/`render`/`<%=` with query/body)
+- SPA/DOM sinks: `innerHTML`, `dangerouslySetInnerHTML`, `v-html`, `bypassSecurityTrust*`, `document.write`
+- CORS middleware reflecting Origin / `null` **with** credentials
+- postMessage handlers without strict origin allowlist touching sensitive state
+- State-changing GET forms/pages framable under missing XFO / `ALLOWALL` / `*` / weak CSP `frame-ancestors`
+- Lab/challenge maps listing XSS, DOM XSS, CSP bypass, video/header XSS (Juice Shop family)
+
+**Collection:** keep `active: false` under hybrid; surface-triggered via focus (not blanket-on).
 
 ## When not to use / Scope
 
@@ -38,11 +54,12 @@ description: >-
 
 ```
 1. Grep HTML/DOM sinks first (res.send/echo/innerHTML/render), walk args to request data
-2. Name controllable SOURCE and executing SINK
+2. Name controllable SOURCE and executing SINK (cite start_line on sink)
 3. Impact hits a VICTIM BROWSER (script in HTML), session, or cross-origin data?
 4. Framework escape hatches (dangerouslySetInnerHTML, v-html, bypassSecurityTrust*)?
 5. postMessage/WS origin auth; CORS reflection + credentials
-6. Sinks encoded end-to-end → submit_none
+6. Clickjack: framable GET of state-changing UI (ALLOWALL/* = no deny)
+7. Sinks encoded end-to-end → submit_none
 ```
 
 ## Rules quick reference
@@ -51,7 +68,7 @@ description: >-
 |------|---------|
 | Victim required | Attacker’s own page only is not the finding |
 | Server HTML XSS | `res.send('<h1>'+q)` / `echo $_GET[x]` is in-scope reflected XSS |
-| Source→sink | Both ends cited; transforms noted |
+| Source→sink | Both ends cited; transforms noted; `start_line` on sink |
 | Escape hatches | React/Vue/Angular unsafe APIs are prime |
 | postMessage | Origin allowlist; no `*` with sensitive handlers |
 | CORS+creds | Reflected origin or null + credentials is impact |
@@ -60,6 +77,7 @@ description: >-
 | Clickjack | Framable GET of a state-changing form. `ALLOWALL`/`*` counts as no XFO |
 | Redirect | Client open redirect with token/session impact |
 | CSP alone | Missing CSP is hardening, not a finding |
+| Surface trigger | Planner includes class when XSS/CORS/DOM/clickjack inventory exists |
 
 ## Focus
 
@@ -72,9 +90,9 @@ description: >-
 
 ## Hunt workflow
 
-1. **Inventory** — grep HTML response sinks and DOM sinks, postMessage, CORS, WS
+1. **Inventory** — grep HTML response sinks and DOM sinks, postMessage, CORS, WS, frame headers
 2. **Trace** — sink → source; framework escape hatches; origin checks
-3. **Prove** — victim/cross-origin impact; pollution gadget if claimed
+3. **Prove** — victim/cross-origin impact; pollution gadget if claimed; clickjack framability
 4. **Evidence** — source→sink + victim context; `write_evidence`
 5. **Submit or none** — `weakness_class: client-side`, or honest `submit_none`
 
@@ -94,7 +112,14 @@ X-Frame-Options|ALLOWALL|frame-ancestors|Content-Security-Policy
 
 ## Required evidence
 
-- Source→sink citations; victim context; impact (session theft, CSRF-like action, data leak)
+- **Source and sink citations** with `start_line` on the executing sink (`innerHTML`/`res.send`/`echo`/…), not only a template string assignment
+- **Victim context:** how a victim browser/session is reached (link, stored page, framed GET, cross-origin read)
+- **Impact named:** session theft, CSRF-like state change, cross-origin data leak, account action — not “XSS exists”
+- **Transforms noted:** encoding/sanitizer bypass or missing context encode
+- For CORS: reflected/null Origin **and** credentials (or equivalent data impact)
+- For clickjack: framability proof (missing/ALLOWALL/`*` / weak frame-ancestors) **and** state-changing UI
+- For pollution: recursive write **and** reachable security gadget
+- `write_evidence` before `submit_candidate`
 
 ## False positives
 
@@ -102,6 +127,8 @@ X-Frame-Options|ALLOWALL|frame-ancestors|Content-Security-Policy
 - Missing CSP/XFO alone; postMessage with strict origin allowlist
 - Pollution without reachable gadget
 - Tabnabbing/XS-Leaks without extreme confidence
+- Self-XSS without victim delivery path
+- “XFO is set” when value is ALLOWALL/`*` (not a deny)
 
 ## Anti-patterns
 
@@ -113,6 +140,7 @@ X-Frame-Options|ALLOWALL|frame-ancestors|Content-Security-Policy
 | Client authz | Server is authority |
 | Pollution theory | No gadget = no impact |
 | Ignoring sanitizers | False positives on cleaned paths |
+| Omitting class on Juice Shop–like XSS maps | B0 inactive miss; planner must name client-side |
 
 ## Submit checklist
 
@@ -121,5 +149,5 @@ X-Frame-Options|ALLOWALL|frame-ancestors|Content-Security-Policy
 - **Good:** *“`req.query.name` concatenated into `res.send` HTML; victim browser executes markup.”*
 - **Good:** *“`#` fragment → `innerHTML` in `app.js:210`; non-HttpOnly session cookie steals via victim link.”*
 - **Good:** *“GET form POSTs `to`/`n` and sets `X-Frame-Options: ALLOWALL`; victim can be framed into transferring funds.”*
-- **Bad:** *“No CSP header.” / “This is server-side so I submit_none.”* / *“XFO is set so no clickjack”* (ALLOWALL/`*` is not a deny).
+- **Bad:** *“No CSP header.”* / *“This is server-side so I submit_none.”* / *“XFO is set so no clickjack”* (ALLOWALL/`*` is not a deny).
 - Or honest `submit_none`
