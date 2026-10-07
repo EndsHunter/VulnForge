@@ -33,6 +33,8 @@
     return `/api/runs/${encodeURIComponent(rk.target_id)}/${encodeURIComponent(rk.run_id)}/chat`;
   }
 
+  let paneSeq = 1;
+
   const state = {
     scope: "home",
     sessionId: null,
@@ -45,9 +47,13 @@
     fab: null,
     sheet: null,
     scopeKey: "",
-    restoreToken: 0,
-    restorePromise: null,
+    panes: [],
+    activeId: null,
+    sessionList: [],
+    listToken: 0,
   };
+
+  const PANE_IDS = ["oc-messages", "oc-chips", "oc-confirm", "oc-input", "oc-send"];
 
   function currentScopeKey() {
     if (document.body.getAttribute("data-page") === "run") {
@@ -56,16 +62,30 @@
     return "fleet";
   }
 
+  function activePane() {
+    return state.panes.find((p) => p.id === state.activeId) || null;
+  }
+
+  function messagesEl(pane) {
+    return pane && pane.el ? pane.el.querySelector(".oc-messages") : null;
+  }
+
   function syncBadge() {
     const badge = state.fab && state.fab.querySelector(".ai-badge");
     if (!badge) return;
-    badge.hidden = !state.pending;
+    const pending = state.panes.some((p) => p.pending);
+    badge.hidden = !pending;
+    state.pending = (activePane() && activePane().pending) || null;
   }
 
   function resetSession() {
     state.sessionId = null;
     state.pending = null;
+    state.busy = false;
     state.mounted = false;
+    state.panes = [];
+    state.activeId = null;
+    state.sessionList = [];
     const root = document.getElementById("operator-chat-root");
     if (root) {
       delete root.dataset.ready;
@@ -136,7 +156,7 @@
     const maxed = !!(state.sheet && state.sheet.classList.contains("is-max"));
     const maxBtn = document.getElementById("ai-max");
     if (maxBtn) {
-      const label = maxed ? "Restore" : "Expand";
+      const label = maxed ? "Minimize" : "Expand";
       maxBtn.textContent = label;
       maxBtn.setAttribute("aria-pressed", maxed ? "true" : "false");
       maxBtn.setAttribute("aria-label", label);
@@ -189,6 +209,109 @@
     return !!(state.sheet && state.sheet.classList.contains("is-max"));
   }
 
+  function shellHtml() {
+    const ctx =
+      state.scope === "run"
+        ? `Run ${escapeHtml(document.body.getAttribute("data-run-key") || "")}`
+        : "Home — all runs";
+    return `
+      <div class="oc-shell">
+        <div class="oc-layout">
+          <aside class="oc-sidebar" aria-label="Previous chats">
+            <button type="button" class="btn btn-ghost" id="oc-new">New chat</button>
+            <ul class="oc-sessions" id="oc-sessions"></ul>
+          </aside>
+          <div class="oc-stage">
+            <div class="oc-toolbar">
+              <span class="oc-context mono">${ctx}</span>
+            </div>
+            <div class="oc-tabs" id="oc-tabs" role="tablist" aria-label="Open chats"></div>
+            <div class="oc-panes" id="oc-panes"></div>
+          </div>
+        </div>
+        <div class="oc-toasts" id="oc-toasts" aria-live="polite"></div>
+      </div>`;
+  }
+
+  function paneHtml(pane) {
+    return `
+      <section class="oc-pane pane-${pane.id}" data-pane-id="${pane.id}">
+        <div class="oc-messages" role="log" aria-live="polite"></div>
+        <div class="oc-chips"></div>
+        <div class="oc-confirm" hidden></div>
+        <div class="oc-composer">
+          <textarea class="oc-input" rows="2" placeholder="Ask about runs, hunts, findings…" aria-label="Chat message"></textarea>
+          <button type="button" class="btn btn-primary oc-send">Send</button>
+        </div>
+        <p class="controls-hint oc-hint">Mutating tools (start, enqueue, stop) require Confirm. needs_human ≠ exploit proof.</p>
+      </section>`;
+  }
+
+  function claimPaneIds(active) {
+    for (const pane of state.panes) {
+      const on = pane === active;
+      pane.el.classList.toggle("is-active", on);
+      for (const id of PANE_IDS) {
+        const el = pane.el.querySelector("." + id);
+        if (!el) continue;
+        if (on) {
+          el.id = id;
+          if (el.attrs) el.attrs.id = id;
+        } else if (el.id === id) {
+          el.id = "";
+          if (el.attrs) delete el.attrs.id;
+          if (typeof el.removeAttribute === "function") el.removeAttribute("id");
+        }
+      }
+    }
+  }
+
+  function noteSession(pane, id) {
+    if (!id) return;
+    pane.sessionId = id;
+    if (pane.id === state.activeId) {
+      state.sessionId = id;
+      writeStoredSessionId(id);
+    }
+  }
+
+  function createPane(opts) {
+    const pane = {
+      id: "p" + paneSeq++,
+      sessionId: opts?.sessionId || null,
+      busy: false,
+      pending: null,
+      preview: opts?.preview || "",
+      restoreToken: 0,
+      restorePromise: null,
+      el: null,
+    };
+    const wrap = state.root.querySelector("#oc-panes");
+    wrap.insertAdjacentHTML("beforeend", paneHtml(pane));
+    const found = wrap.querySelectorAll(".oc-pane");
+    pane.el = found[found.length - 1];
+    state.panes.push(pane);
+    bindPane(pane);
+    renderMessages(pane, []);
+    return pane;
+  }
+
+  function activate(pane) {
+    if (!pane) return;
+    state.activeId = pane.id;
+    state.sessionId = pane.sessionId || null;
+    writeStoredSessionId(pane.sessionId || "");
+    claimPaneIds(pane);
+    renderChromeLists();
+    const input = pane.el.querySelector(".oc-input");
+    if (input) setTimeout(() => input.focus(), 50);
+  }
+
+  function newChat() {
+    const pane = createPane({});
+    activate(pane);
+  }
+
   function mount(root, opts) {
     if (!root) return;
     state.root = root;
@@ -196,40 +319,68 @@
     if (document.body.getAttribute("data-page") === "run") state.scope = "run";
     if (document.body.getAttribute("data-page") === "chat") state.scope = "home";
     state.chips = opts?.chips || defaultChips(state.scope);
+    state.panes = [];
+    state.activeId = null;
     state.mounted = true;
     root.innerHTML = shellHtml();
-    bind(root);
-    renderMessages([]);
+    const pane = createPane({ sessionId: state.sessionId });
+    const neu = root.querySelector("#oc-new");
+    if (neu) neu.addEventListener("click", () => newChat());
+    activate(pane);
+    restorePane(pane);
+    refreshSessions();
   }
 
-  function restoreSession(token) {
-    const id = state.sessionId;
-    if (!id || !state.root) {
-      state.restorePromise = null;
+  function restorePane(pane) {
+    const id = pane.sessionId;
+    const token = ++pane.restoreToken;
+    if (!id || !pane.el) {
+      pane.restorePromise = null;
       return Promise.resolve();
     }
     const p = (async () => {
       try {
         const res = await fetch(apiBase(state.scope) + "/sessions/" + encodeURIComponent(id));
-        if (token !== state.restoreToken) return;
+        if (token !== pane.restoreToken) return;
         if (!res.ok) {
-          if (state.sessionId === id) {
-            state.sessionId = null;
-            writeStoredSessionId("");
+          if (pane.sessionId === id) {
+            pane.sessionId = null;
+            if (pane.id === state.activeId) {
+              state.sessionId = null;
+              writeStoredSessionId("");
+            }
           }
           return;
         }
         const data = await res.json();
-        if (token !== state.restoreToken || state.sessionId !== id || !state.root) return;
+        if (token !== pane.restoreToken || pane.sessionId !== id || !pane.el) return;
         const msgs = (Array.isArray(data.messages) ? data.messages : []).filter(
           (m) => m && m.role !== "system"
         );
-        renderMessages(msgs);
+        const firstUser = msgs.find((m) => m.role === "user" && m.content);
+        if (firstUser && !pane.preview) pane.preview = String(firstUser.content).slice(0, 120);
+        renderMessages(pane, msgs);
+        renderChromeLists();
       } catch (_) {
         /* keep the shell; a later send still uses the stored id */
       }
     })();
-    state.restorePromise = p;
+    pane.restorePromise = p;
+    return p;
+  }
+
+  function refreshSessions() {
+    const token = ++state.listToken;
+    const scope = state.scope;
+    const p = (async () => {
+      try {
+        const res = await fetch(apiBase(scope) + "/sessions");
+        if (token !== state.listToken || scope !== state.scope) return;
+        const data = await res.json().catch(() => ({}));
+        state.sessionList = Array.isArray(data.sessions) ? data.sessions : [];
+        renderChromeLists();
+      } catch (_) {}
+    })();
     return p;
   }
 
@@ -237,7 +388,7 @@
     const root = document.getElementById("operator-chat-root");
     if (!root) return;
     adoptStoredSession();
-    if (state.mounted && root.dataset.ready === "1" && state.root === root) {
+    if (state.mounted && root.dataset.ready === "1" && state.root === root && state.panes.length) {
       const input = root.querySelector("#oc-input");
       if (input) setTimeout(() => input.focus(), 50);
       return;
@@ -246,10 +397,6 @@
     const scope = page === "run" ? "run" : "home";
     mount(root, { scope, chips: defaultChips(scope) });
     root.dataset.ready = "1";
-    const token = ++state.restoreToken;
-    restoreSession(token);
-    const input = root.querySelector("#oc-input");
-    if (input) setTimeout(() => input.focus(), 50);
   }
 
   /**
@@ -299,64 +446,117 @@
     ];
   }
 
-  function shellHtml() {
-    const ctx =
-      state.scope === "run"
-        ? `Run ${escapeHtml(document.body.getAttribute("data-run-key") || "")}`
-        : "Home — all runs";
-    return `
-      <div class="oc-shell">
-        <div class="oc-toolbar">
-          <span class="oc-context mono">${ctx}</span>
-          <button type="button" class="btn btn-ghost" id="oc-new">New chat</button>
-        </div>
-        <div class="oc-messages" id="oc-messages" role="log" aria-live="polite"></div>
-        <div class="oc-chips" id="oc-chips"></div>
-        <div class="oc-confirm" id="oc-confirm" hidden></div>
-        <div class="oc-composer">
-          <textarea id="oc-input" rows="2" placeholder="Ask about runs, hunts, findings…" aria-label="Chat message"></textarea>
-          <button type="button" class="btn btn-primary" id="oc-send">Send</button>
-        </div>
-        <p class="controls-hint oc-hint">Mutating tools (start, enqueue, stop) require Confirm. needs_human ≠ exploit proof.</p>
-      </div>`;
-  }
-
-  function bind(root) {
-    $("#oc-send", root)?.addEventListener("click", () => send());
-    $("#oc-new", root)?.addEventListener("click", () => {
-      state.restoreToken += 1;
-      state.sessionId = null;
-      state.pending = null;
-      writeStoredSessionId("");
-      renderMessages([]);
-      hideConfirm();
-    });
-    const input = $("#oc-input", root);
+  function bindPane(pane) {
+    const root = pane.el;
+    root.querySelector(".oc-send")?.addEventListener("click", () => send(pane));
+    const input = root.querySelector(".oc-input");
     input?.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        send();
+        send(pane);
       }
     });
-    const chips = $("#oc-chips", root);
+    const chips = root.querySelector(".oc-chips");
     if (chips) {
       chips.innerHTML = state.chips
         .map((c) => `<button type="button" class="chip oc-chip">${escapeHtml(c)}</button>`)
         .join("");
       chips.querySelectorAll(".oc-chip").forEach((btn) => {
         btn.addEventListener("click", () => {
-          const inputEl = $("#oc-input", root);
+          const inputEl = root.querySelector(".oc-input");
           if (inputEl) {
             inputEl.value = btn.textContent || "";
-            send();
+            send(pane);
           }
         });
       });
     }
   }
 
-  function renderMessages(msgs) {
-    const box = state.root && $("#oc-messages", state.root);
+  function paneLabel(pane) {
+    if (pane.preview) return String(pane.preview).slice(0, 42);
+    if (!pane.sessionId) return "New chat";
+    const row = (state.sessionList || []).find((s) => s && s.id === pane.sessionId);
+    return (row && row.preview) || "Chat";
+  }
+
+  function renderChromeLists() {
+    renderSidebar();
+    renderTabs();
+    syncBadge();
+    state.busy = state.panes.some((p) => p.busy);
+  }
+
+  function renderSidebar() {
+    const ul = state.root && state.root.querySelector("#oc-sessions");
+    if (!ul) return;
+    const seen = new Set();
+    const rows = [];
+    for (const pane of state.panes) {
+      if (pane.sessionId) seen.add(pane.sessionId);
+      const busy = pane.busy ? " is-busy" : "";
+      const active = pane.id === state.activeId ? " is-active" : "";
+      const sid = escapeHtml(pane.sessionId || "");
+      rows.push(
+        `<li><button type="button" class="oc-session${busy}${active}" data-pane-id="${pane.id}" data-session-id="${sid}" aria-busy="${pane.busy ? "true" : "false"}"><span class="oc-busy-dot" aria-hidden="true"></span><span class="oc-session-label">${escapeHtml(paneLabel(pane))}</span></button></li>`
+      );
+    }
+    for (const s of state.sessionList || []) {
+      if (!s || !s.id || seen.has(s.id)) continue;
+      const sid = escapeHtml(s.id);
+      const label = s.preview || "Chat";
+      rows.push(
+        `<li><button type="button" class="oc-session" data-session-id="${sid}" aria-busy="false"><span class="oc-busy-dot" aria-hidden="true"></span><span class="oc-session-label">${escapeHtml(label)}</span></button></li>`
+      );
+    }
+    ul.innerHTML = rows.join("");
+    ul.querySelectorAll(".oc-session").forEach((btn) => {
+      btn.addEventListener("click", () => openFromSidebar(btn));
+    });
+  }
+
+  function renderTabs() {
+    const host = state.root && state.root.querySelector("#oc-tabs");
+    if (!host) return;
+    host.innerHTML = state.panes
+      .map((pane) => {
+        const busy = pane.busy ? " is-busy" : "";
+        const active = pane.id === state.activeId ? " is-active" : "";
+        return `<button type="button" class="oc-tab${busy}${active}" data-pane-id="${pane.id}" role="tab" aria-selected="${pane.id === state.activeId ? "true" : "false"}" aria-busy="${pane.busy ? "true" : "false"}"><span class="oc-busy-dot" aria-hidden="true"></span><span class="oc-tab-label">${escapeHtml(paneLabel(pane))}</span></button>`;
+      })
+      .join("");
+    host.querySelectorAll(".oc-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const pane = state.panes.find((p) => p.id === btn.getAttribute("data-pane-id"));
+        if (pane) activate(pane);
+      });
+    });
+  }
+
+  function openFromSidebar(btn) {
+    const paneId = btn.getAttribute("data-pane-id");
+    if (paneId) {
+      const pane = state.panes.find((p) => p.id === paneId);
+      if (pane) {
+        activate(pane);
+        return;
+      }
+    }
+    const sid = btn.getAttribute("data-session-id");
+    if (!sid) return;
+    const existing = state.panes.find((p) => p.sessionId === sid);
+    if (existing) {
+      activate(existing);
+      return;
+    }
+    const label = (btn.querySelector(".oc-session-label") || {}).textContent || "";
+    const pane = createPane({ sessionId: sid, preview: String(label || "").slice(0, 120) });
+    activate(pane);
+    restorePane(pane);
+  }
+
+  function renderMessages(pane, msgs) {
+    const box = messagesEl(pane);
     if (!box) return;
     if (!msgs.length) {
       box.innerHTML = `<div class="oc-empty">Ask anything about ${
@@ -368,16 +568,25 @@
     box.scrollTop = box.scrollHeight;
   }
 
-  function appendMessages(msgs) {
-    const box = state.root && $("#oc-messages", state.root);
+  function appendMessages(pane, msgs) {
+    const box = messagesEl(pane);
     if (!box) return;
     if (box.querySelector(".oc-empty")) box.innerHTML = "";
     box.insertAdjacentHTML("beforeend", msgs.map(renderOne).join(""));
     box.scrollTop = box.scrollHeight;
   }
 
+  function clearThinking(pane) {
+    const box = messagesEl(pane);
+    if (!box) return;
+    for (const el of box.querySelectorAll(".oc-thinking")) el.remove();
+  }
+
   function renderOne(m) {
     const role = m.role || "assistant";
+    if (m.thinking) {
+      return `<div class="oc-msg oc-assistant oc-thinking"><div class="oc-bubble">…thinking</div></div>`;
+    }
     if (role === "user") {
       return `<div class="oc-msg oc-user"><div class="oc-bubble">${simpleMarkdown(m.content)}</div></div>`;
     }
@@ -395,16 +604,22 @@
         </details>
       </div>`;
     }
+    if (role === "assistant" && Array.isArray(m.tool_calls) && !(m.content || "").trim()) {
+      const names = m.tool_calls
+        .map((tc) => (tc && tc.function && tc.function.name) || (tc && tc.name) || "tool")
+        .join(", ");
+      return `<div class="oc-msg oc-assistant oc-live"><div class="oc-bubble">Calling ${escapeHtml(names)}…</div></div>`;
+    }
     if (!(m.content || "").trim() && m.tool_calls) {
       return "";
     }
     return `<div class="oc-msg oc-assistant"><div class="oc-bubble">${simpleMarkdown(m.content)}</div></div>`;
   }
 
-  function showConfirm(pending) {
-    const el = state.root && $("#oc-confirm", state.root);
+  function showConfirm(pane, pending) {
+    const el = pane && pane.el && pane.el.querySelector(".oc-confirm");
     if (!el || !pending) return;
-    state.pending = pending;
+    pane.pending = pending;
     el.hidden = false;
     el.innerHTML = `
       <div class="oc-confirm-card">
@@ -415,10 +630,10 @@
           <button type="button" class="btn btn-ghost" id="oc-confirm-no">Cancel</button>
         </div>
       </div>`;
-    $("#oc-confirm-yes", el)?.addEventListener("click", () => doConfirm());
-    $("#oc-confirm-no", el)?.addEventListener("click", () => {
-      hideConfirm();
-      appendMessages([
+    el.querySelector("#oc-confirm-yes")?.addEventListener("click", () => doConfirm(pane));
+    el.querySelector("#oc-confirm-no")?.addEventListener("click", () => {
+      hideConfirm(pane);
+      appendMessages(pane, [
         {
           role: "assistant",
           content: "Cancelled. No action was taken.",
@@ -428,9 +643,9 @@
     syncBadge();
   }
 
-  function hideConfirm() {
-    state.pending = null;
-    const el = state.root && $("#oc-confirm", state.root);
+  function hideConfirm(pane) {
+    if (pane) pane.pending = null;
+    const el = pane && pane.el && pane.el.querySelector(".oc-confirm");
     if (el) {
       el.hidden = true;
       el.innerHTML = "";
@@ -438,66 +653,177 @@
     syncBadge();
   }
 
-  async function send() {
-    if (state.restorePromise) {
-      try {
-        await state.restorePromise;
-      } catch (_) {}
-    }
-    if (state.busy || !state.root) return;
-    state.restoreToken += 1;
-    const input = $("#oc-input", state.root);
-    const text = (input?.value || "").trim();
-    if (!text) return;
-    input.value = "";
-    state.busy = true;
-    setSendEnabled(false);
-    appendMessages([{ role: "user", content: text }]);
-    appendMessages([{ role: "assistant", content: "…thinking" }]);
-    try {
-      const res = await fetch(apiBase(state.scope), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, session_id: state.sessionId }),
-      });
-      const data = await res.json().catch(() => ({}));
-      // remove thinking
-      const box = $("#oc-messages", state.root);
-      const last = box?.querySelector(".oc-msg.oc-assistant:last-child");
-      if (last && last.textContent?.includes("…thinking")) last.remove();
-
-      if (!res.ok) {
-        appendMessages([
-          { role: "assistant", content: data.detail || data.error || `Error ${res.status}` },
-        ]);
-        return;
-      }
-      if (data.session_id) {
-        state.sessionId = data.session_id;
-        writeStoredSessionId(data.session_id);
-      }
-      const msgs = (data.messages || []).filter((m) => m.role !== "user");
-      appendMessages(msgs);
-      if (data.pending_confirm) showConfirm(data.pending_confirm);
-      applyHints(data.ui_hints);
-    } catch (e) {
-      const box = $("#oc-messages", state.root);
-      const last = box?.querySelector(".oc-msg.oc-assistant:last-child");
-      if (last && last.textContent?.includes("…thinking")) last.remove();
-      appendMessages([{ role: "assistant", content: `Request failed: ${e}` }]);
-    } finally {
-      state.busy = false;
-      setSendEnabled(true);
+  function showToast(text, opts) {
+    const host = state.root && state.root.querySelector("#oc-toasts");
+    if (!host) return;
+    const failed = !!(opts && opts.ok === false);
+    const cls = failed ? "oc-toast oc-toast-err" : "oc-toast";
+    const role = failed ? "alert" : "status";
+    host.insertAdjacentHTML(
+      "beforeend",
+      `<div class="${cls}" role="${role}">${escapeHtml(text)}</div>`
+    );
+    const nodes = Array.prototype.slice.call(host.querySelectorAll(".oc-toast"));
+    while (nodes.length > 3) {
+      const old = nodes.shift();
+      if (old && old.remove) old.remove();
     }
   }
 
-  async function doConfirm() {
-    if (!state.pending || state.busy) return;
-    state.busy = true;
-    setSendEnabled(false);
-    const token = state.pending.token;
-    const sessionId = state.sessionId;
-    hideConfirm();
+  function finishPane(pane, ok) {
+    const succeeded = ok !== false;
+    pane.busy = false;
+    setSendEnabled(pane, true);
+    renderChromeLists();
+    const label = paneLabel(pane);
+    showToast((succeeded ? "Done · " : "Failed · ") + label, { ok: succeeded });
+    refreshSessions();
+  }
+
+  function applyStreamEvent(pane, ev) {
+    if (!ev || typeof ev !== "object") return;
+    if (ev.event === "session") {
+      noteSession(pane, ev.session_id);
+      renderChromeLists();
+      return;
+    }
+    if (ev.event === "message" && ev.message) {
+      clearThinking(pane);
+      if (ev.message.role === "user") return;
+      appendMessages(pane, [ev.message]);
+      return;
+    }
+    if (ev.event === "error") {
+      clearThinking(pane);
+      const text = String(ev.error || "Error");
+      const box = messagesEl(pane);
+      if (!box || !String(box.textContent || "").includes(text)) {
+        appendMessages(pane, [{ role: "assistant", content: text }]);
+      }
+      return;
+    }
+    if (ev.event === "done") {
+      clearThinking(pane);
+      noteSession(pane, ev.session_id);
+      if (ev.pending_confirm) showConfirm(pane, ev.pending_confirm);
+      applyHints(ev.ui_hints);
+      finishPane(pane, ev.ok !== false);
+    }
+  }
+
+  function isNdjson(res) {
+    let ctype = "";
+    if (res && res.headers && typeof res.headers.get === "function") {
+      ctype = res.headers.get("content-type") || "";
+    }
+    return (
+      String(ctype).toLowerCase().includes("application/x-ndjson") &&
+      res.body &&
+      typeof res.body.getReader === "function"
+    );
+  }
+
+  async function readNdjson(pane, res) {
+    const reader = res.body.getReader();
+    const decoder = typeof TextDecoder === "function" ? new TextDecoder() : null;
+    let buf = "";
+    let sawDone = false;
+    const orig = applyStreamEvent;
+    const wrapped = (p, ev) => {
+      if (ev && ev.event === "done") sawDone = true;
+      orig(p, ev);
+    };
+    while (true) {
+      const step = await reader.read();
+      if (step.done) break;
+      if (typeof step.value === "string") buf += step.value;
+      else if (decoder) buf += decoder.decode(step.value, { stream: true });
+      else buf += String(step.value || "");
+      let nl = buf.indexOf("\n");
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        nl = buf.indexOf("\n");
+        if (!line) continue;
+        try {
+          wrapped(pane, JSON.parse(line));
+        } catch (_) {
+          appendMessages(pane, [{ role: "assistant", content: "Unreadable stream event." }]);
+        }
+      }
+    }
+    if (!sawDone) {
+      clearThinking(pane);
+      appendMessages(pane, [{ role: "assistant", content: "Stream ended before done." }]);
+      finishPane(pane, false);
+    }
+  }
+
+  async function applyJson(pane, res) {
+    const data = await res.json().catch(() => ({}));
+    clearThinking(pane);
+    if (!res.ok) {
+      appendMessages(pane, [
+        { role: "assistant", content: data.detail || data.error || `Error ${res.status}` },
+      ]);
+      finishPane(pane, false);
+      return;
+    }
+    noteSession(pane, data.session_id);
+    const msgs = (data.messages || []).filter((m) => m.role !== "user");
+    appendMessages(pane, msgs);
+    if (data.pending_confirm) showConfirm(pane, data.pending_confirm);
+    applyHints(data.ui_hints);
+    finishPane(pane, data.ok !== false);
+  }
+
+  async function send(pane) {
+    pane = pane || activePane();
+    if (!pane || !pane.el) return;
+    if (pane.restorePromise) {
+      try {
+        await pane.restorePromise;
+      } catch (_) {}
+    }
+    if (pane.busy) return;
+    const input = pane.el.querySelector(".oc-input");
+    const text = (input?.value || "").trim();
+    if (!text) return;
+    input.value = "";
+    pane.preview = text.slice(0, 120);
+    pane.busy = true;
+    setSendEnabled(pane, false);
+    renderChromeLists();
+    appendMessages(pane, [{ role: "user", content: text }]);
+    appendMessages(pane, [{ role: "assistant", thinking: true }]);
+    try {
+      // The JSON handler returns one object after the tool loop. Asking for
+      // NDJSON makes the server emit session/message/done while that loop runs.
+      const res = await fetch(apiBase(state.scope), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/x-ndjson",
+        },
+        body: JSON.stringify({ message: text, session_id: pane.sessionId }),
+      });
+      if (isNdjson(res)) await readNdjson(pane, res);
+      else await applyJson(pane, res);
+    } catch (e) {
+      clearThinking(pane);
+      appendMessages(pane, [{ role: "assistant", content: `Request failed: ${e}` }]);
+      finishPane(pane, false);
+    }
+  }
+
+  async function doConfirm(pane) {
+    if (!pane || !pane.pending || pane.busy) return;
+    pane.busy = true;
+    setSendEnabled(pane, false);
+    renderChromeLists();
+    const token = pane.pending.token;
+    const sessionId = pane.sessionId;
+    hideConfirm(pane);
     try {
       const res = await fetch(apiBase(state.scope) + "/confirm", {
         method: "POST",
@@ -506,28 +832,27 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        appendMessages([
+        appendMessages(pane, [
           { role: "assistant", content: data.detail || data.error || "Confirm failed" },
         ]);
         return;
       }
-      appendMessages(data.messages || []);
+      appendMessages(pane, data.messages || []);
       applyHints(data.ui_hints);
     } catch (e) {
-      appendMessages([{ role: "assistant", content: `Confirm failed: ${e}` }]);
+      appendMessages(pane, [{ role: "assistant", content: `Confirm failed: ${e}` }]);
     } finally {
-      state.busy = false;
-      setSendEnabled(true);
+      pane.busy = false;
+      setSendEnabled(pane, true);
+      renderChromeLists();
     }
   }
 
   function applyHints(hints) {
     if (!hints) return;
     if (hints.navigate && typeof hints.navigate === "string") {
-      // same-origin relative
       if (hints.navigate.startsWith("/")) {
-        // soft: offer is enough; auto-nav can surprise — only if home scope open_run
-        // keep as no auto for now
+        // Offer only. Auto-nav surprises the operator.
       }
     }
     if (hints.refresh_run && typeof window.refreshSnapshot === "function") {
@@ -537,10 +862,10 @@
     }
   }
 
-  function setSendEnabled(on) {
-    const btn = state.root && $("#oc-send", state.root);
+  function setSendEnabled(pane, on) {
+    const btn = pane && pane.el && pane.el.querySelector(".oc-send");
     if (btn) btn.disabled = !on;
-    const input = state.root && $("#oc-input", state.root);
+    const input = pane && pane.el && pane.el.querySelector(".oc-input");
     if (input) input.disabled = !on;
   }
 

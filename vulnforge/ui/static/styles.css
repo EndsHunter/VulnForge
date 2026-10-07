@@ -6060,6 +6060,19 @@ button.cov-click .cov-moa-chip {
   border-radius: 0;
   background: transparent;
 }
+.ai-sheet .oc-layout {
+  min-height: 0;
+}
+.ai-sheet.is-max .oc-sidebar {
+  width: 14rem;
+  flex-basis: 14rem;
+}
+@media (max-width: 640px) {
+  .ai-sheet.is-max .oc-sidebar {
+    width: 6.75rem;
+    flex-basis: 6.75rem;
+  }
+}
 
 /* ---- Operator AI chat ---- */
 .operator-chat-root,
@@ -6177,6 +6190,117 @@ button.cov-click .cov-moa-chip {
   color: inherit;
 }
 .oc-hint { padding: 0 0.75rem 0.55rem; margin: 0; }
+.oc-shell { position: relative; }
+.oc-layout {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+}
+.oc-sidebar {
+  width: 7.5rem;
+  flex: 0 0 7.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.45rem;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+.oc-sidebar #oc-new { width: 100%; }
+.oc-sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.oc-session,
+.oc-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 0.75rem;
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0.28rem 0.35rem;
+  cursor: pointer;
+}
+.oc-session.is-active,
+.oc-tab.is-active {
+  background: rgba(122, 162, 247, 0.16);
+  border-color: rgba(122, 162, 247, 0.35);
+}
+.oc-session-label,
+.oc-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-busy-dot {
+  display: none;
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #e0a040;
+  box-shadow: 0 0 0 2px rgba(224, 160, 64, 0.28);
+}
+.oc-session.is-busy .oc-busy-dot,
+.oc-tab.is-busy .oc-busy-dot { display: inline-block; }
+.oc-stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+.oc-tabs {
+  display: flex;
+  gap: 0.25rem;
+  overflow-x: auto;
+  padding: 0.35rem 0.5rem 0;
+}
+.oc-tab { width: auto; max-width: 11rem; flex: 0 0 auto; }
+.oc-panes {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.oc-pane { display: none; min-height: 0; flex: 1; flex-direction: column; }
+.oc-pane.is-active { display: flex; }
+.oc-toasts {
+  position: absolute;
+  left: 0.6rem;
+  right: 0.6rem;
+  bottom: 0.6rem;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  pointer-events: none;
+}
+.oc-toast {
+  pointer-events: auto;
+  align-self: flex-start;
+  max-width: 100%;
+  background: rgba(16, 22, 32, 0.96);
+  border: 1px solid rgba(80, 200, 120, 0.45);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+}
+.oc-toast.oc-toast-err {
+  border-color: rgba(255, 120, 100, 0.55);
+}
 .ai-mode-shell { padding: 0.25rem 0 1rem; }
 .ai-mode-header { margin-bottom: 0.5rem; }
 
