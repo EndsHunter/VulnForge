@@ -43,6 +43,7 @@ def run_operator_loop_strands(
     scope: str,
     run_key: Optional[str] = None,
     temperature: float = 0.3,
+    on_event: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> dict[str, Any]:
     """Strands-backed operator chat; returns same shape as ``run_operator_loop``."""
     if isinstance(client, FakeLLMClient):
@@ -112,8 +113,34 @@ def run_operator_loop_strands(
         messages=strands_hist or None,
         callback_handler=None,
     )
+    # History is already on the agent. Only messages added during this turn
+    # are streamed. MessageAddedEvent / AfterToolCallEvent call the same flush
+    # the FakeLLM loop uses, so tool calls are not held until agent() returns.
+    emitted = {"n": len(list(agent.messages or []))}
+
+    def flush_new_messages() -> None:
+        if on_event is None:
+            return
+        try:
+            msgs = list(agent.messages or [])
+        except Exception:
+            return
+        if len(msgs) <= emitted["n"]:
+            return
+        fresh = msgs[emitted["n"] :]
+        emitted["n"] = len(msgs)
+        pending_now = state.get("pending")
+        for raw in strands_messages_to_openaiish(fresh):
+            ui = _ui_message_from_openaiish(raw, pending_now)
+            if not ui or ui.get("role") == "user":
+                continue
+            try:
+                on_event({"event": "message", "message": ui})
+            except Exception:
+                logger.debug("operator chat on_event failed", exc_info=True)
 
     def after_tool(event: Any) -> None:
+        flush_new_messages()
         if state.get("pending") is not None:
             try:
                 agent.cancel()
@@ -131,6 +158,7 @@ def run_operator_loop_strands(
                 strip_reasoning_from_strands_messages(list(agent.messages))
             except Exception:
                 pass
+            flush_new_messages()
 
         agent.hooks.add_callback(MessageAddedEvent, on_msg)
     except Exception:
@@ -140,7 +168,14 @@ def run_operator_loop_strands(
         result = agent(user_message, limits={"turns": limit})
     except Exception as e:
         err = str(e)
-        new_ui.append({"role": "assistant", "content": f"LLM error: {err}", "error": True})
+        flush_new_messages()
+        err_msg = {"role": "assistant", "content": f"LLM error: {err}", "error": True}
+        new_ui.append(err_msg)
+        if on_event is not None:
+            try:
+                on_event({"event": "message", "message": err_msg})
+            except Exception:
+                pass
         return {
             "ok": False,
             "messages": new_ui,
@@ -153,6 +188,7 @@ def run_operator_loop_strands(
 
     stop = getattr(result, "stop_reason", None)
     model_id = getattr(result, "model_id", None) or model_id
+    flush_new_messages()
 
     # Build UI deltas from full agent transcript relative to history length
     openaiish = strands_messages_to_openaiish(list(agent.messages))
@@ -168,15 +204,19 @@ def run_operator_loop_strands(
 
     pending: Optional[PendingMutation] = state.get("pending")
     if pending is not None:
-        new_ui.append(
-            {
-                "role": "assistant",
-                "content": (
-                    f"This action needs your confirmation: **{pending.summary}**.\n"
-                    "Click Confirm to run it, or Cancel."
-                ),
-            }
-        )
+        confirm_msg = {
+            "role": "assistant",
+            "content": (
+                f"This action needs your confirmation: **{pending.summary}**.\n"
+                "Click Confirm to run it, or Cancel."
+            ),
+        }
+        new_ui.append(confirm_msg)
+        if on_event is not None:
+            try:
+                on_event({"event": "message", "message": confirm_msg})
+            except Exception:
+                pass
         return {
             "ok": True,
             "messages": new_ui,
@@ -192,12 +232,16 @@ def run_operator_loop_strands(
         m.get("role") == "assistant" and isinstance(m.get("content"), str) and m.get("content")
         for m in new_ui
     ):
-        new_ui.append(
-            {
-                "role": "assistant",
-                "content": "Stopped after max tool rounds. Try a more specific question.",
-            }
-        )
+        stop_msg = {
+            "role": "assistant",
+            "content": "Stopped after max tool rounds. Try a more specific question.",
+        }
+        new_ui.append(stop_msg)
+        if on_event is not None:
+            try:
+                on_event({"event": "message", "message": stop_msg})
+            except Exception:
+                pass
 
     return {
         "ok": True,
@@ -225,6 +269,40 @@ def _merge_hints(ui_hints: dict[str, Any], out: dict[str, Any]) -> None:
         ui_hints["refresh_run"] = True
 
 
+def _ui_message_from_openaiish(
+    m: dict[str, Any],
+    pending: Optional[PendingMutation],
+) -> Optional[dict[str, Any]]:
+    """One OpenAI-ish transcript row → one UI message, or None to skip."""
+    role = m.get("role")
+    if role == "assistant":
+        content = m.get("content") or ""
+        entry: dict[str, Any] = {"role": "assistant", "content": content}
+        if m.get("tool_calls"):
+            entry["tool_calls"] = m["tool_calls"]
+        if str(content).strip() or m.get("tool_calls"):
+            return entry
+        return None
+    if role == "tool":
+        raw = m.get("content")
+        payload: Any = raw
+        if isinstance(raw, str):
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                payload = {"text": raw}
+        entry = {
+            "role": "tool",
+            "name": m.get("name"),
+            "tool_call_id": m.get("tool_call_id") or "call",
+            "content": payload if isinstance(payload, dict) else {"text": str(payload)},
+        }
+        if isinstance(payload, dict) and payload.get("pending_confirm") and pending:
+            entry["pending_confirm"] = pending.to_public()
+        return entry
+    return None
+
+
 def _ui_from_strands_turn(
     openaiish: list[dict[str, Any]],
     *,
@@ -240,30 +318,7 @@ def _ui_from_strands_turn(
         if m.get("role") == "user" and m.get("content") == user_message:
             start = i + 1
     for m in openaiish[start:]:
-        role = m.get("role")
-        if role == "assistant":
-            content = m.get("content") or ""
-            entry: dict[str, Any] = {"role": "assistant", "content": content}
-            if m.get("tool_calls"):
-                entry["tool_calls"] = m["tool_calls"]
-            # Keep tool-call-only assistants in history; UI skips empty bubbles.
-            if content.strip() or m.get("tool_calls"):
-                new_ui.append(entry)
-        elif role == "tool":
-            raw = m.get("content")
-            payload: Any = raw
-            if isinstance(raw, str):
-                try:
-                    payload = json.loads(raw)
-                except json.JSONDecodeError:
-                    payload = {"text": raw}
-            entry = {
-                "role": "tool",
-                "name": m.get("name"),
-                "tool_call_id": m.get("tool_call_id") or "call",
-                "content": payload if isinstance(payload, dict) else {"text": str(payload)},
-            }
-            if isinstance(payload, dict) and payload.get("pending_confirm") and pending:
-                entry["pending_confirm"] = pending.to_public()
+        entry = _ui_message_from_openaiish(m, pending)
+        if entry:
             new_ui.append(entry)
     return new_ui

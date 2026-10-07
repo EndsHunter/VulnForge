@@ -307,6 +307,13 @@ function boot(opts) {
     clearTimeout,
     console,
     location,
+    TextDecoder: class {
+      decode(value) {
+        if (value == null) return "";
+        if (typeof value === "string") return value;
+        return Buffer.from(value).toString("utf8");
+      }
+    },
     __calls: calls,
     __payload: opts.payload || {
       id: "abc",
@@ -349,8 +356,9 @@ describe("bubble sheet maximize", () => {
     assert.equal(chat.isSheetOpen(), true);
     assert.equal(document.getElementById("ai-sheet").hidden, false);
     assert.match(box.textContent, /persisted hi/);
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     assert.match(calls[0], /\/api\/chat\/sessions\/abc$/);
+    assert.match(calls[1], /\/api\/chat\/sessions$/);
     input.value = "keep this draft";
     const beforeRoot = root.innerHTML ? root : root;
     assert.equal(root.dataset.ready, "1");
@@ -358,13 +366,13 @@ describe("bubble sheet maximize", () => {
     document.getElementById("ai-max").click();
     assert.equal(chat.isMaximized(), true);
     assert.equal(document.getElementById("ai-sheet").classList.contains("is-max"), true);
-    assert.equal(document.getElementById("ai-max").textContent, "Restore");
+    assert.equal(document.getElementById("ai-max").textContent, "Minimize");
     assert.equal(input.value, "keep this draft");
     assert.equal(document.getElementById("oc-input"), input);
     assert.match(document.getElementById("oc-messages").textContent, /persisted hi/);
     assert.equal(document.getElementById("operator-chat-root"), root);
     assert.equal(root.dataset.ready, "1");
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     assert.deepEqual(navigated, []);
     assert.equal(beforeRoot, root);
 
@@ -373,7 +381,7 @@ describe("bubble sheet maximize", () => {
     assert.equal(document.getElementById("ai-max").textContent, "Expand");
     assert.equal(input.value, "keep this draft");
     assert.match(document.getElementById("oc-messages").textContent, /persisted hi/);
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     assert.deepEqual(navigated, []);
   });
 
@@ -386,11 +394,131 @@ describe("bubble sheet maximize", () => {
     sandbox.VulnForgeChat.openSheet();
     await wait(30);
     assert.match(calls[0], /\/api\/runs\/toy\/run-001\/chat\/sessions\/runsess$/);
+    assert.match(calls[1], /\/api\/runs\/toy\/run-001\/chat\/sessions$/);
     assert.match(document.getElementById("oc-messages").textContent, /run status/);
     const root = document.getElementById("operator-chat-root");
     sandbox.VulnForgeChat.toggleMaximize();
     sandbox.VulnForgeChat.toggleMaximize();
     assert.equal(document.getElementById("operator-chat-root"), root);
     assert.match(document.getElementById("oc-messages").textContent, /run status/);
+  });
+});
+
+function jsonResponse(data, status) {
+  return {
+    ok: status ? status < 400 : true,
+    status: status || 200,
+    headers: { get: () => "application/json" },
+    json: () => Promise.resolve(data),
+  };
+}
+
+function ndjsonResponse(lines, hold) {
+  let i = 0;
+  const encoded = lines.map((line) => Buffer.from(JSON.stringify(line) + "\n"));
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: (h) => (String(h).toLowerCase() === "content-type" ? "application/x-ndjson" : "") },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (hold && i === hold.at) await hold.gate;
+            if (i >= encoded.length) return { done: true, value: undefined };
+            return { done: false, value: encoded[i++] };
+          },
+        };
+      },
+    },
+    json: () => Promise.resolve({}),
+  };
+}
+
+describe("history sidebar, parallel panes, live stream", () => {
+  it("lists previous chats and restores one without dropping the open pane", async () => {
+    const { sandbox, document } = boot({
+      storage: { "vf-chat:fleet": "abc" },
+    });
+    const payloads = {
+      "/api/chat/sessions": {
+        sessions: [
+          { id: "abc", preview: "persisted hi" },
+          { id: "older", preview: "older topic" },
+        ],
+      },
+      "/api/chat/sessions/abc": {
+        id: "abc",
+        messages: [{ role: "user", content: "persisted hi" }],
+      },
+      "/api/chat/sessions/older": {
+        id: "older",
+        messages: [{ role: "assistant", content: "older body" }],
+      },
+    };
+    sandbox.fetch = (url) => {
+      const data = payloads[String(url)] || { sessions: [] };
+      return Promise.resolve(jsonResponse(data, data.missing ? 404 : 200));
+    };
+    sandbox.VulnForgeChat.openSheet();
+    await wait(40);
+    const listed = document.querySelectorAll(".oc-session");
+    const older = listed.find((btn) => btn.getAttribute("data-session-id") === "older");
+    assert.ok(older, "older session is in the sidebar");
+    assert.equal(document.getElementById("oc-new").textContent, "New chat");
+    older.click();
+    await wait(40);
+    const panes = document.querySelectorAll(".oc-pane");
+    assert.equal(panes.length, 2);
+    assert.match(panes[0].textContent, /persisted hi/);
+    assert.match(document.querySelector(".oc-pane.is-active").textContent, /older body/);
+  });
+
+  it("streams tool calls before done, keeps the busy pane, and toasts when unfocused", async () => {
+    const { sandbox, document } = boot({});
+    let release;
+    const hold = { at: 2, gate: new Promise((resolve) => { release = resolve; }) };
+    const lines = [
+      { event: "session", session_id: "live1" },
+      { event: "message", message: { role: "assistant", content: "looking at the fleet" } },
+      { event: "message", message: { role: "tool", name: "list_runs", content: { ok: true, count: 1 } } },
+      { event: "message", message: { role: "assistant", content: "final answer here" } },
+      { event: "done", ok: true, session_id: "live1", pending_confirm: null, ui_hints: {} },
+    ];
+    const seen = [];
+    sandbox.fetch = (url, opts) => {
+      const u = String(url);
+      seen.push({ url: u, accept: opts && opts.headers && opts.headers.Accept });
+      if (opts && opts.method === "POST") return Promise.resolve(ndjsonResponse(lines, hold));
+      if (u.endsWith("/sessions")) return Promise.resolve(jsonResponse({ sessions: [] }));
+      return Promise.resolve(jsonResponse({ id: "live1", messages: [] }));
+    };
+    sandbox.VulnForgeChat.openSheet();
+    await wait(20);
+    const input = document.getElementById("oc-input");
+    input.value = "list runs please";
+    document.getElementById("oc-send").click();
+    await wait(30);
+    const first = document.querySelectorAll(".oc-pane")[0];
+    assert.match(first.textContent, /looking at the fleet/);
+    assert.doesNotMatch(first.textContent, /final answer here/);
+    assert.equal(document.querySelectorAll(".oc-session.is-busy").length, 1);
+    assert.equal(document.querySelector(".oc-tab.is-busy").getAttribute("aria-busy"), "true");
+    assert.equal(seen.find((row) => row.accept).accept, "application/x-ndjson");
+
+    document.getElementById("oc-new").click();
+    assert.equal(document.querySelectorAll(".oc-pane").length, 2);
+    assert.match(document.querySelectorAll(".oc-pane")[0].textContent, /looking at the fleet/);
+    assert.doesNotMatch(document.querySelector(".oc-pane.is-active").textContent, /looking at the fleet/);
+    assert.equal(document.querySelectorAll(".oc-session.is-busy").length, 1);
+
+    release();
+    await wait(40);
+    const panes = document.querySelectorAll(".oc-pane");
+    assert.match(panes[0].textContent, /tool: list_runs/);
+    assert.match(panes[0].textContent, /final answer here/);
+    assert.doesNotMatch(document.querySelector(".oc-pane.is-active").textContent, /final answer here/);
+    assert.equal(document.querySelectorAll(".oc-session.is-busy").length, 0);
+    assert.match(document.querySelector(".oc-toast").textContent, /Done/);
   });
 });

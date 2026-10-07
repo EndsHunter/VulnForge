@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from vulnforge.llm import LLMClient
 from vulnforge.operator_chat import session as sess
@@ -45,6 +45,15 @@ def delete_session(
     return sess.delete_session(scope, session_id, project_root=project_root, run_dir=run_dir)
 
 
+def _emit(on_event: Optional[Callable[[dict[str, Any]], None]], payload: dict[str, Any]) -> None:
+    if on_event is None:
+        return
+    try:
+        on_event(payload)
+    except Exception:
+        pass
+
+
 def handle_turn(
     *,
     scope: str,
@@ -56,15 +65,26 @@ def handle_turn(
     run: Optional[RunRef] = None,
     client: Any = None,
     max_tool_rounds: Optional[int] = None,
+    on_event: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> dict[str, Any]:
-    """Process one user message (or empty message not allowed)."""
+    """Process one user message (or empty message not allowed).
+
+    ``on_event`` receives ``session``, ``message``, ``done``, and ``error``
+    while the tool loop is still running. Omit it for the one-shot JSON body.
+    """
     msg = (message or "").strip()
     if not msg:
-        return {"ok": False, "error": "empty message"}
+        err = {"ok": False, "error": "empty message"}
+        _emit(on_event, {"event": "error", "error": "empty message"})
+        _emit(on_event, {"event": "done", **err, "session_id": session_id, "messages": []})
+        return err
 
     run_dir = run.path if run else None
     if scope == "run" and run is None:
-        return {"ok": False, "error": "run required for run scope"}
+        err = {"ok": False, "error": "run required for run scope"}
+        _emit(on_event, {"event": "error", "error": err["error"]})
+        _emit(on_event, {"event": "done", **err, "session_id": session_id, "messages": []})
+        return err
 
     data = None
     if session_id:
@@ -119,6 +139,8 @@ def handle_turn(
         # inherit llm.max_tool_rounds from hunt/recon agent settings.
         rounds = max_tool_rounds  # None = unlimited
 
+        _emit(on_event, {"event": "session", "session_id": data["id"]})
+
         result = run_operator_loop(
             client=client,
             system=system,
@@ -130,6 +152,7 @@ def handle_turn(
             session_id=str(data["id"]),
             scope=scope,
             run_key=run_key,
+            on_event=on_event,
         )
 
         # persist: append new_ui messages
@@ -140,7 +163,7 @@ def handle_turn(
         data["model_id"] = result.get("model_id")
         sess.save_session(data, project_root=project_root, run_dir=run_dir)
 
-        return {
+        payload = {
             "ok": bool(result.get("ok", True)),
             "session_id": data["id"],
             "messages": result.get("messages") or [],
@@ -149,6 +172,28 @@ def handle_turn(
             "error": result.get("error"),
             "model_id": result.get("model_id"),
         }
+        if not payload["ok"]:
+            _emit(
+                on_event,
+                {
+                    "event": "error",
+                    "error": payload.get("error") or "error",
+                    "session_id": data["id"],
+                },
+            )
+        _emit(
+            on_event,
+            {
+                "event": "done",
+                "ok": payload["ok"],
+                "session_id": payload["session_id"],
+                "pending_confirm": payload["pending_confirm"],
+                "ui_hints": payload["ui_hints"],
+                "error": payload.get("error"),
+                "model_id": payload.get("model_id"),
+            },
+        )
+        return payload
     finally:
         if own_client and hasattr(client, "close"):
             try:

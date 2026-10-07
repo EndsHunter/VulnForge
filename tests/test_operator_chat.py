@@ -594,3 +594,169 @@ def test_persisted_chat_history_keeps_tool_call_ids(tmp_path: Path, toy_sqli: Pa
                 results.append(b["toolResult"].get("toolUseId"))
     assert uses == ["c1"]
     assert results == ["c1"]
+
+
+def test_handle_turn_emits_events_during_tool_loop(tmp_path: Path, toy_sqli: Path):
+    """Tool message is emitted before the next model round, not with the final blob."""
+    runs_root = tmp_path / "runs"
+    _make_run(runs_root, "app-a", "run-001", target_path=toy_sqli)
+    project_root = tmp_path
+    (project_root / "config").mkdir(exist_ok=True)
+    events: list[dict] = []
+
+    class Probe(FakeLLMClient):
+        def chat(self, messages, tools=None, temperature=0.3, max_tokens=None, timeout=None):
+            if self._i == 1:
+                roles = [
+                    e["message"]["role"]
+                    for e in events
+                    if e.get("event") == "message" and isinstance(e.get("message"), dict)
+                ]
+                assert "tool" in roles, events
+                assert all(e.get("event") != "done" for e in events)
+            return super().chat(
+                messages,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+
+    fake = Probe(
+        responses=[
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="Checking runs.",
+                tool_calls=[{"id": "c1", "name": "list_runs", "arguments": {"filter": "all"}}],
+                raw=None,
+                model_id="fake",
+            ),
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="You have at least one run listed.",
+                tool_calls=[],
+                raw=None,
+                model_id="fake",
+            ),
+        ]
+    )
+    r = handle_turn(
+        scope="home",
+        message="List my runs",
+        project_root=project_root,
+        runs_root=runs_root,
+        cfg={"llm": {"model": "fake"}},
+        client=fake,
+        on_event=events.append,
+    )
+    assert r["ok"]
+    kinds = [e.get("event") for e in events]
+    assert kinds[0] == "session"
+    assert kinds[-1] == "done"
+    assert "error" not in kinds
+    contents = [
+        e["message"].get("content")
+        for e in events
+        if e.get("event") == "message" and e["message"].get("role") == "assistant"
+    ]
+    assert any("run listed" in str(c) for c in contents)
+    tool_at = next(i for i, e in enumerate(events) if e.get("event") == "message" and e["message"].get("role") == "tool")
+    final_at = next(
+        i
+        for i, e in enumerate(events)
+        if e.get("event") == "message" and "run listed" in str(e["message"].get("content") or "")
+    )
+    assert tool_at < final_at
+    assert events[-1]["session_id"] == r["session_id"]
+    assert events[-1]["ok"] is True
+
+
+def test_api_chat_ndjson_stream_and_json_default(tmp_path: Path, toy_sqli: Path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from vulnforge.ui.app import create_app
+
+    runs_root = tmp_path / "runs"
+    _make_run(runs_root, "app-a", "run-001", target_path=toy_sqli)
+    app = create_app(runs_root=runs_root)
+    app.state.project_root = tmp_path
+    (tmp_path / "config").mkdir(exist_ok=True)
+
+    fake = FakeLLMClient(
+        responses=[
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="",
+                tool_calls=[{"id": "c1", "name": "list_runs", "arguments": {}}],
+                raw=None,
+                model_id="fake",
+            ),
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="Listed from the stream.",
+                tool_calls=[],
+                raw=None,
+                model_id="fake",
+            ),
+            LLMResult(
+                ok=True,
+                classification=ResponseClass.OK,
+                content="plain json reply",
+                tool_calls=[],
+                raw=None,
+                model_id="fake",
+            ),
+        ]
+    )
+
+    import vulnforge.operator_chat as oc
+    import vulnforge.operator_chat.service as svc
+
+    real = svc.handle_turn
+
+    def _wrapped(**kwargs):
+        kwargs["client"] = fake
+        return real(**kwargs)
+
+    monkeypatch.setattr(svc, "handle_turn", _wrapped)
+    monkeypatch.setattr(oc, "handle_turn", _wrapped)
+
+    client = TestClient(app)
+    streamed = client.post(
+        "/api/chat",
+        json={"message": "list"},
+        headers={"Accept": "application/x-ndjson"},
+    )
+    assert streamed.status_code == 200
+    assert "application/x-ndjson" in streamed.headers["content-type"]
+    lines = [__import__("json").loads(line) for line in streamed.text.splitlines() if line.strip()]
+    kinds = [line["event"] for line in lines]
+    assert kinds[0] == "session"
+    assert kinds[-1] == "done"
+    roles = [line["message"]["role"] for line in lines if line["event"] == "message"]
+    assert "tool" in roles
+    assert any(
+        line["event"] == "message" and "Listed from the stream" in str(line["message"].get("content") or "")
+        for line in lines
+    )
+    tool_at = next(i for i, line in enumerate(lines) if line["event"] == "message" and line["message"]["role"] == "tool")
+    final_at = next(
+        i
+        for i, line in enumerate(lines)
+        if line["event"] == "message" and "Listed from the stream" in str(line["message"].get("content") or "")
+    )
+    assert tool_at < final_at
+
+    plain = client.post("/api/chat", json={"message": "hello"})
+    assert plain.status_code == 200
+    assert "application/json" in plain.headers["content-type"]
+    assert "ndjson" not in plain.headers["content-type"]
+    body = plain.json()
+    assert body["session_id"]
+    assert any("plain json reply" in str(m.get("content") or "") for m in body["messages"])
+
+    empty = client.post("/api/chat", json={"message": "  "}, headers={"Accept": "application/x-ndjson"})
+    assert empty.status_code == 400

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -157,6 +159,64 @@ class ChatTurnBody(BaseModel):
 class ChatConfirmBody(BaseModel):
     token: str
     session_id: str
+
+
+def _wants_ndjson(request: Request) -> bool:
+    accept = (request.headers.get("accept") or "").lower()
+    return "application/x-ndjson" in accept
+
+
+def _chat_turn_response(request: Request, **kwargs: Any):
+    """JSON body by default. NDJSON only when the client asks for it.
+
+    The tool loop used to finish before any byte was written, so the UI
+    dumped thinking and tool calls in one paint. NDJSON writes each event
+    as ``handle_turn`` emits it.
+    """
+    from vulnforge.operator_chat import handle_turn
+
+    if not _wants_ndjson(request):
+        r = handle_turn(**kwargs)
+        if not r.get("ok") and r.get("error") == "empty message":
+            raise HTTPException(400, r["error"])
+        return r
+
+    msg = (kwargs.get("message") or "").strip()
+    if not msg:
+        raise HTTPException(400, "empty message")
+
+    events: queue.Queue = queue.Queue()
+    saw_done = {"ok": False}
+
+    def on_event(ev: dict) -> None:
+        if isinstance(ev, dict) and ev.get("event") == "done":
+            saw_done["ok"] = True
+        events.put(ev)
+
+    def worker() -> None:
+        try:
+            handle_turn(**kwargs, on_event=on_event)
+        except Exception as exc:
+            if not saw_done["ok"]:
+                events.put({"event": "error", "error": str(exc)})
+                events.put({"event": "done", "ok": False, "error": str(exc)})
+        finally:
+            events.put(None)
+
+    threading.Thread(target=worker, name="vf-chat-ndjson", daemon=True).start()
+
+    def gen():
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            yield json.dumps(item, ensure_ascii=False, default=str) + "\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def control_start_kwargs(body: ControlBody, ui: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -876,11 +936,10 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/chat")
-    def api_chat_home(body: ChatTurnBody):
-        from vulnforge.operator_chat import handle_turn
-
+    def api_chat_home(request: Request, body: ChatTurnBody):
         cfg = load_config()
-        r = handle_turn(
+        return _chat_turn_response(
+            request,
             scope="home",
             message=body.message,
             session_id=body.session_id,
@@ -888,9 +947,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             runs_root=Path(app.state.runs_root),
             cfg=cfg,
         )
-        if not r.get("ok") and r.get("error") == "empty message":
-            raise HTTPException(400, r["error"])
-        return r
 
     @app.post("/api/chat/confirm")
     def api_chat_home_confirm(body: ChatConfirmBody):
@@ -953,12 +1009,11 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/runs/{target_id}/{run_id}/chat")
-    def api_chat_run(target_id: str, run_id: str, body: ChatTurnBody):
-        from vulnforge.operator_chat import handle_turn
-
+    def api_chat_run(request: Request, target_id: str, run_id: str, body: ChatTurnBody):
         run = _get_run(target_id, run_id)
         cfg = load_config()
-        r = handle_turn(
+        return _chat_turn_response(
+            request,
             scope="run",
             message=body.message,
             session_id=body.session_id,
@@ -967,9 +1022,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             cfg=cfg,
             run=run,
         )
-        if not r.get("ok") and r.get("error") == "empty message":
-            raise HTTPException(400, r["error"])
-        return r
 
     @app.post("/api/runs/{target_id}/{run_id}/chat/confirm")
     def api_chat_run_confirm(target_id: str, run_id: str, body: ChatConfirmBody):

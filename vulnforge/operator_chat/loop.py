@@ -30,11 +30,16 @@ def run_operator_loop(
     scope: str,
     run_key: Optional[str] = None,
     temperature: float = 0.3,
+    on_event: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> dict[str, Any]:
     """
     Run LLM + tools until final assistant text or pending mutation confirm.
 
     Production clients use Strands. FakeLLM uses the scripted chat loop below.
+
+    ``on_event`` fires once per UI message inside the loop. Callers that wait
+    for this function to return only see the finished blob — that is why a
+    JSON ``POST /api/chat`` paints thinking and tool calls at the end.
 
     max_rounds:
       None  — no operator-facing tool limit (safety ceiling SAFETY_MAX_TOOL_ROUNDS)
@@ -62,6 +67,7 @@ def run_operator_loop(
             scope=scope,
             run_key=run_key,
             temperature=temperature,
+            on_event=on_event,
         )
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
@@ -77,6 +83,17 @@ def run_operator_loop(
     messages.append({"role": "user", "content": user_message})
 
     new_ui: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
+
+    def push_ui(msg: dict[str, Any]) -> None:
+        """Record a UI message and emit it before the next model round."""
+        new_ui.append(msg)
+        if on_event is None or msg.get("role") == "user":
+            return
+        try:
+            on_event({"event": "message", "message": msg})
+        except Exception:
+            pass
+
     pending: Optional[PendingMutation] = None
     ui_hints: dict[str, Any] = {"navigate": None, "refresh_run": False}
     last: Optional[LLMResult] = None
@@ -97,7 +114,7 @@ def run_operator_loop(
                 "content": f"LLM error: {err}",
                 "error": True,
             }
-            new_ui.append(msg)
+            push_ui(msg)
             messages.append({"role": "assistant", "content": msg["content"]})
             return {
                 "ok": False,
@@ -136,7 +153,7 @@ def run_operator_loop(
                 "content": asst_content,
                 "tool_calls": asst_msg["tool_calls"],
             }
-            new_ui.append(ui_asst)
+            push_ui(ui_asst)
 
             stop_for_confirm = False
             for i, tc in enumerate(last.tool_calls):
@@ -176,7 +193,7 @@ def run_operator_loop(
                             "content": tool_result_content(tool_payload),
                         }
                     )
-                    new_ui.append(
+                    push_ui(
                         {
                             "role": "tool",
                             "name": name,
@@ -198,7 +215,7 @@ def run_operator_loop(
                         "content": tool_result_content(out),
                     }
                 )
-                new_ui.append(
+                push_ui(
                     {
                         "role": "tool",
                         "name": name,
@@ -210,7 +227,7 @@ def run_operator_loop(
 
             if stop_for_confirm:
                 # One short assistant line about confirm
-                new_ui.append(
+                push_ui(
                     {
                         "role": "assistant",
                         "content": (
@@ -233,7 +250,7 @@ def run_operator_loop(
         # final text
         text = last.content or ""
         messages.append({"role": "assistant", "content": text})
-        new_ui.append({"role": "assistant", "content": text})
+        push_ui({"role": "assistant", "content": text})
         return {
             "ok": True,
             "messages": new_ui,
@@ -244,7 +261,7 @@ def run_operator_loop(
             "model_messages": messages,
         }
 
-    new_ui.append(
+    push_ui(
         {
             "role": "assistant",
             "content": "Stopped after max tool rounds. Try a more specific question.",
