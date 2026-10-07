@@ -285,6 +285,32 @@ def _sort_key_for(row: dict[str, Any], sort: str) -> Any:
     return str(row.get("started_at") or "")
 
 
+def _member_parent_started(rows: list[dict[str, Any]]) -> dict[str, str]:
+    """Map member run id → suite parent's ``started_at``.
+
+    Built only from suite parents in this listing. Two parents that list the
+    same member resolve to the lexicographically smaller parent id.
+    """
+    best: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        if not is_suite_run(row):
+            continue
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        members = metrics.get("member_run_ids")
+        if not isinstance(members, list):
+            continue
+        parent_id = str(row.get("id") or "")
+        parent_started = str(row.get("started_at") or "")
+        for raw_id in members:
+            child_id = str(raw_id or "").strip()
+            if not child_id or child_id == parent_id:
+                continue
+            prev = best.get(child_id)
+            if prev is None or parent_id < prev[0]:
+                best[child_id] = (parent_id, parent_started)
+    return {cid: started for cid, (_pid, started) in best.items()}
+
+
 def list_runs(
     *,
     def_id: str | None = None,
@@ -307,7 +333,10 @@ def list_runs(
 
     Sort: started_at|finished_at|recall|status|def_id (default started_at).
     Order: asc|desc (default desc — newest first for started_at).
-    Equal timestamps put suite parents before their children.
+    On started_at, a suite parent and its ``metrics.member_run_ids`` share the
+    parent's started_at, then the parent is listed before those children
+    (asc and desc), even when a child timestamp is later. Other sorts still
+    put a suite parent before non-parents when the sort key ties.
     """
     root = runs_root()
     if not root.is_dir():
@@ -359,13 +388,30 @@ def list_runs(
         if suite is False and is_suite_run(row):
             continue
         out.append(row)
-    # reverse=True on (ts, rank) would put children first when ts ties.
-    # Rank 0 = suite parent. Flip the rank with the time order.
-    out.sort(
-        key=lambda r: (
-            _sort_key_for(r, sort_key),
-            (0 if is_suite_run(r) else 1) * (-1 if reverse else 1),
-        ),
-        reverse=reverse,
-    )
+    # Rank 0 = suite parent. Flip the rank with the time order so
+    # reverse=True still lists the parent before members.
+    rank_sign = -1 if reverse else 1
+    if sort_key == "started_at":
+        grouped = _member_parent_started(out)
+
+        def _started_sort_key(r: dict[str, Any]) -> tuple[str, int, str]:
+            rid = str(r.get("id") or "")
+            # Members borrow the parent's started_at so a later child stays
+            # in the parent's group. The parent keeps its own timestamp.
+            if rid in grouped and not is_suite_run(r):
+                group = grouped[rid]
+            else:
+                group = str(r.get("started_at") or "")
+            rank = (0 if is_suite_run(r) else 1) * rank_sign
+            return (group, rank, rid)
+
+        out.sort(key=_started_sort_key, reverse=reverse)
+    else:
+        out.sort(
+            key=lambda r: (
+                _sort_key_for(r, sort_key),
+                (0 if is_suite_run(r) else 1) * rank_sign,
+            ),
+            reverse=reverse,
+        )
     return out[: max(1, int(limit))]
