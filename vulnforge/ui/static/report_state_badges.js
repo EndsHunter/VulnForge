@@ -12,6 +12,17 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  /** Report Accept control. Server review_finding uses the same sentence. */
+  const ACCEPT_PENDING_COPY =
+    "Dual disprove still running — Accept after it settles, or Reject now.";
+
+  function acceptBlockedByPendingLlm(finding) {
+    const body =
+      finding && finding.body && typeof finding.body === "object" ? finding.body : {};
+    const mech = body.validation_mech;
+    return !!(mech && typeof mech === "object" && mech.pending_llm);
+  }
+
   const TIPS = {
     proposed:
       "Proposed candidate from a hunt. Mechanical gates have not passed. Not confirmed.",
@@ -28,7 +39,8 @@
     disproveWait:
       "Dual LLM disprove has not run. A later stand would not confirm. Confirmed is human-only.",
     disprovePending:
-      "Dual LLM disprove is still running. Pending is not confirmed. Only an all-slot reject sets rejected (disprove). The harness never auto-confirms.",
+      "Dual LLM disprove is still running. Pending is not confirmed. Only an all-slot reject sets rejected (disprove). The harness never auto-confirms. " +
+      ACCEPT_PENDING_COPY,
     disproveIncomplete:
       "Dual disprove stopped before a verdict. Not a stand and not confirmed. A human still has to accept.",
     disproveStood:
@@ -402,6 +414,8 @@
 
   return {
     TIPS: TIPS,
+    ACCEPT_PENDING_COPY: ACCEPT_PENDING_COPY,
+    acceptBlockedByPendingLlm: acceptBlockedByPendingLlm,
     findingStateTrail: findingStateTrail,
     findingStateTrailHtml: findingStateTrailHtml,
     llmSignal: llmSignal,

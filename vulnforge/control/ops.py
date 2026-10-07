@@ -2421,6 +2421,17 @@ _REVIEWABLE_STATES = frozenset(
     }
 )
 
+# Same sentence as Report Accept (report_state_badges.js ACCEPT_PENDING_COPY).
+# Hard block: no force override. Reject is unchanged.
+ACCEPT_BLOCKED_WHILE_PENDING_LLM = (
+    "Dual disprove still running — Accept after it settles, or Reject now."
+)
+
+
+def _pending_llm(body: dict) -> bool:
+    mech = body.get("validation_mech") if isinstance(body, dict) else None
+    return isinstance(mech, dict) and bool(mech.get("pending_llm"))
+
 
 def review_finding(
     run_dir: Path,
@@ -2465,11 +2476,20 @@ def review_finding(
                 "error": f"finding state {finding.state!r} is not reviewable",
             }
 
+        body = dict(finding.body or {})
+        # Confirm while dual disprove is still queued skips the kill signal.
+        # Reject stays available. There is no force override.
+        if new_state == "confirmed" and _pending_llm(body):
+            return {
+                "ok": False,
+                "error": ACCEPT_BLOCKED_WHILE_PENDING_LLM,
+                "code": "pending_llm",
+            }
+
         from vulnforge.util import utc_now_iso
 
         now = utc_now_iso()
         prev = finding.state
-        body = dict(finding.body or {})
         history = body.get("human_review")
         if not isinstance(history, list):
             history = []

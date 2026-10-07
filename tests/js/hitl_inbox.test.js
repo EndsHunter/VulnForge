@@ -100,3 +100,42 @@ describe("inbox contract helpers", () => {
     assert.equal(hitl.renderInbox({ items: [] }), '<p class="controls-hint hitl-empty">No items awaiting review.</p>');
   });
 });
+
+describe("accept while pending_llm", () => {
+  it("exports the same Accept block copy as Report", () => {
+    assert.equal(
+      hitl.ACCEPT_PENDING_COPY,
+      "Dual disprove still running — Accept after it settles, or Reject now."
+    );
+    assert.equal(hitl.acceptBlocked({ pending_llm: true }), true);
+    assert.equal(hitl.acceptBlocked({ pending_llm: false }), false);
+    assert.equal(hitl.acceptBlocked({}), false);
+  });
+
+  it("disables Accept and keeps Reject while pending_llm", () => {
+    const html = hitl.renderInbox({
+      items: [{ ...findingItem, pending_llm: true }],
+    });
+    assert.match(html, /Dual disprove still running — Accept after it settles, or Reject now\./);
+    assert.match(html, /class="controls-hint hitl-accept-pending"/);
+    const accept = html.match(/<button[^>]*data-value="approved"[^>]*>/);
+    const reject = html.match(/<button[^>]*data-value="changes-requested"[^>]*>/);
+    assert.ok(accept);
+    assert.ok(reject);
+    assert.match(accept[0], /disabled/);
+    assert.match(accept[0], /aria-disabled="true"/);
+    assert.match(accept[0], /data-accept-blocked="1"/);
+    assert.doesNotMatch(reject[0], /disabled/);
+    assert.match(html, /Open in Report/);
+  });
+
+  it("leaves Accept enabled when pending_llm is false or absent", () => {
+    for (const item of [{ ...findingItem, pending_llm: false }, findingItem]) {
+      const html = hitl.renderInbox({ items: [item] });
+      const accept = html.match(/<button[^>]*data-value="approved"[^>]*>/);
+      assert.ok(accept);
+      assert.doesNotMatch(accept[0], /disabled/);
+      assert.doesNotMatch(html, /hitl-accept-pending/);
+    }
+  });
+});

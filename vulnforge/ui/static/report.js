@@ -936,8 +936,9 @@
             <input type="checkbox" id="report-review-write-ev-${f.id}" checked />
             Write notes into evidence pack as human_review_*.md
           </label>
+          ${acceptPendingHintHtml(f)}
           <div class="report-review-actions">
-            <button type="button" class="btn btn-good report-review-btn" data-action="confirm" data-fid="${f.id}">Accept (confirmed)</button>
+            <button type="button" class="btn btn-good report-review-btn" data-action="confirm" data-fid="${f.id}"${acceptButtonAttrs(f)}>Accept (confirmed)</button>
             <button type="button" class="btn btn-bad report-review-btn" data-action="reject" data-fid="${f.id}">Reject</button>
             <button type="button" class="btn report-review-btn" data-action="needs_human" data-fid="${f.id}">Needs human review</button>
           </div>
@@ -951,7 +952,47 @@
       </div>`;
   }
 
+  /** Same sentence as report_state_badges.js ACCEPT_PENDING_COPY. */
+  const ACCEPT_PENDING_COPY =
+    "Dual disprove still running — Accept after it settles, or Reject now.";
+
+  function acceptPendingCopy() {
+    const H = window.ReportStateBadges;
+    if (H && typeof H.ACCEPT_PENDING_COPY === "string" && H.ACCEPT_PENDING_COPY) {
+      return H.ACCEPT_PENDING_COPY;
+    }
+    return ACCEPT_PENDING_COPY;
+  }
+
+  function acceptBlockedByPending(f) {
+    const H = window.ReportStateBadges;
+    if (H && typeof H.acceptBlockedByPendingLlm === "function") {
+      return !!H.acceptBlockedByPendingLlm(f);
+    }
+    const b = bodyOf(f);
+    return !!(b.validation_mech && b.validation_mech.pending_llm);
+  }
+
+  function acceptPendingHintHtml(f) {
+    if (!acceptBlockedByPending(f)) return "";
+    return `<p class="controls-hint report-accept-pending" role="status">${esc(acceptPendingCopy())}</p>`;
+  }
+
+  function acceptButtonAttrs(f) {
+    if (!acceptBlockedByPending(f)) return "";
+    return ` disabled aria-disabled="true" title="${esc(acceptPendingCopy())}"`;
+  }
+
   async function submitReview(fid, action, root) {
+    const finding = cache.find((x) => Number(x.id) === Number(fid));
+    if (
+      (action === "confirm" || action === "accept") &&
+      finding &&
+      acceptBlockedByPending(finding)
+    ) {
+      toast(acceptPendingCopy(), true);
+      return;
+    }
     const notesEl = root.querySelector(`#report-review-notes-${fid}`);
     const writeEl = root.querySelector(`#report-review-write-ev-${fid}`);
     const notes = notesEl ? notesEl.value : "";
@@ -1847,6 +1888,7 @@
     root.querySelectorAll(".report-review-btn").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
+        if (btn.disabled || btn.getAttribute("aria-disabled") === "true") return;
         const fid = Number(btn.getAttribute("data-fid"));
         const action = btn.getAttribute("data-action");
         if (!fid || !action) return;

@@ -109,6 +109,8 @@ def test_mech_publishes_awaiting_review_and_does_not_confirm(tmp_path: Path, toy
     assert inbox["count"] == 1
     assert inbox["items"][0]["id"] == report_id
     assert inbox["items"][0]["status"] == "awaiting-review"
+    assert packet["pending_llm"] is False
+    assert inbox["items"][0]["pending_llm"] is False
     assert db.get_finding(fid).state == "needs_human"
     db.close()
 
@@ -119,7 +121,28 @@ def test_pending_llm_still_needs_human_with_empty_responses(tmp_path: Path, toy_
     assert db.get_finding(fid).state == "needs_human"
     packet = db.get_hitl_report(f"finding-{fid}")["packet"]
     assert packet["status"] == "awaiting-review"
+    assert packet["pending_llm"] is True
+    on_disk = json.loads(
+        (run_dir / "hitl" / "reports" / f"finding-{fid}.json").read_text(encoding="utf-8")
+    )
+    assert on_disk["pending_llm"] is True
+    inbox = list_inbox(db, run_dir)
+    assert inbox["items"][0]["pending_llm"] is True
     _approval_absent(responses_document(db, run_dir), fid)
+
+    finding = db.get_finding(fid)
+    body = dict(finding.body)
+    body["validation_mech"]["pending_llm"] = False
+    db.conn.execute(
+        "UPDATE findings SET body_json=?, updated_at=? WHERE id=?",
+        (json.dumps(body), utc_now_iso(), fid),
+    )
+    db.conn.commit()
+    published = publish_finding(db, run_dir, fid)
+    assert published["report"]["pending_llm"] is False
+    cleared = list_inbox(db, run_dir)
+    assert cleared["items"][0]["pending_llm"] is False
+    assert db.get_finding(fid).state == "needs_human"
     db.close()
 
 
@@ -473,4 +496,52 @@ def test_api_inbox_page_and_respond(tmp_path: Path, toy_sqli: Path):
 
     db2 = Database.open(run_dir / "harness.db")
     assert db2.get_finding(fid).state == "confirmed"
+    db2.close()
+
+
+def test_api_inbox_pending_llm_blocks_accept_keeps_reject(tmp_path: Path, toy_sqli: Path):
+    """Inbox payload exposes pending_llm. Accept 400s. Reject still records."""
+    runs_root = tmp_path / "runs"
+    run_dir, db = _setup(runs_root, toy_sqli)
+    fid = _pass_mech(run_dir, db, toy_sqli, {"stages": {"validate_llm": True}})
+    db.close()
+    app = create_app(runs_root=runs_root)
+    with TestClient(app) as client:
+        base = "/api/runs/toy/run-001"
+        inbox = client.get(f"{base}/hitl/inbox")
+        assert inbox.status_code == 200, inbox.text
+        item = inbox.json()["items"][0]
+        assert item["id"] == f"finding-{fid}"
+        assert item["pending_llm"] is True
+
+        acc = client.post(
+            f"{base}/hitl/reports/finding-{fid}/respond",
+            json={
+                "block_id": approval_block_id(fid),
+                "value": "approved",
+                "note": "too early",
+                "operator": "ada",
+            },
+        )
+        assert acc.status_code == 400, acc.text
+        assert "Dual disprove still running" in acc.json()["detail"]
+        still = client.get(f"{base}/hitl/inbox")
+        assert still.json()["count"] == 1
+        assert still.json()["items"][0]["pending_llm"] is True
+
+        rej = client.post(
+            f"{base}/hitl/reports/finding-{fid}/respond",
+            json={
+                "block_id": approval_block_id(fid),
+                "value": "changes-requested",
+                "note": "reject while disprove runs",
+                "operator": "ada",
+            },
+        )
+        assert rej.status_code == 200, rej.text
+        assert rej.json()["to_state"] == "rejected_human"
+        assert client.get(f"{base}/hitl/inbox").json()["count"] == 0
+
+    db2 = Database.open(run_dir / "harness.db")
+    assert db2.get_finding(fid).state == "rejected_human"
     db2.close()

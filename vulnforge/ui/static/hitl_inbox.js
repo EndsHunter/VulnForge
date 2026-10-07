@@ -14,6 +14,13 @@
 
   var SCHEMA = "vulnforge/hitl-report@1";
   var INTERACTIVE = { ask: 1, decision: 1, approval: 1 };
+  /** Same sentence as Report and review_finding. */
+  var ACCEPT_PENDING_COPY =
+    "Dual disprove still running — Accept after it settles, or Reject now.";
+
+  function acceptBlocked(item) {
+    return !!(item && item.pending_llm);
+  }
 
   function esc(s) {
     return String(s == null ? "" : s)
@@ -99,9 +106,10 @@
     );
   }
 
-  function btn(reportId, blockId, value, label, extraClass) {
+  function btn(reportId, blockId, value, label, extraClass, extraAttrs) {
     return (
       '<button type="button" class="btn ' + (extraClass || "") + '" ' +
+      (extraAttrs || "") +
       'data-hitl-action="respond" data-report="' + esc(reportId) + '" ' +
       'data-block="' + esc(blockId) + '" data-value="' + esc(value) + '">' +
       esc(label) +
@@ -115,9 +123,20 @@
     var saved = responseFor(responses, block.id);
     var actions = "";
     if (block.type === "approval") {
+      var blocked = acceptBlocked(item);
+      var acceptAttrs = blocked
+        ? 'disabled aria-disabled="true" data-accept-blocked="1" title="' +
+          esc(ACCEPT_PENDING_COPY) +
+          '" '
+        : "";
+      var pendingHint = blocked
+        ? '<p class="controls-hint hitl-accept-pending" role="status">' +
+          esc(ACCEPT_PENDING_COPY) +
+          "</p>"
+        : "";
       actions =
         '<div class="hitl-item-actions">' +
-        btn(reportId, block.id, "approved", "Accept (confirmed)", "btn-good") +
+        btn(reportId, block.id, "approved", "Accept (confirmed)", "btn-good", acceptAttrs) +
         btn(reportId, block.id, "changes-requested", "Reject", "btn-bad") +
         (item.source && item.source.kind === "finding"
           ? '<button type="button" class="btn" data-hitl-action="open" data-finding="' +
@@ -129,6 +148,7 @@
         '<div class="hitl-block" data-hitl-block="' + esc(block.id) + '">' +
         '<p class="hitl-prompt">' + esc(block.prompt || "") + "</p>" +
         savedLine(saved) +
+        pendingHint +
         noteField(reportId, block.id) +
         actions +
         "</div>"
@@ -225,6 +245,14 @@
     var button = ev.target && ev.target.closest ? ev.target.closest("[data-hitl-action]") : null;
     if (!button) return;
     var action = button.getAttribute("data-hitl-action");
+    if (
+      button.hasAttribute("disabled") ||
+      button.getAttribute("aria-disabled") === "true" ||
+      button.getAttribute("data-accept-blocked") === "1"
+    ) {
+      if (handlers.onError) handlers.onError(ACCEPT_PENDING_COPY);
+      return;
+    }
     if (action === "open") {
       if (handlers.onOpenFinding) handlers.onOpenFinding(button.getAttribute("data-finding"));
       return;
@@ -286,6 +314,8 @@
 
   return {
     SCHEMA: SCHEMA,
+    ACCEPT_PENDING_COPY: ACCEPT_PENDING_COPY,
+    acceptBlocked: acceptBlocked,
     esc: esc,
     interactiveBlocks: interactiveBlocks,
     responseFor: responseFor,
