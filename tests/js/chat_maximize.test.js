@@ -521,4 +521,56 @@ describe("history sidebar, parallel panes, live stream", () => {
     assert.equal(document.querySelectorAll(".oc-session.is-busy").length, 0);
     assert.match(document.querySelector(".oc-toast").textContent, /Done/);
   });
+
+  it("toasts Failed (not Done) when done.ok is false and clears busy", async () => {
+    const { sandbox, document } = boot({});
+    const lines = [
+      { event: "session", session_id: "err1" },
+      { event: "message", message: { role: "assistant", content: "partial" } },
+      { event: "error", error: "tool blew up" },
+      { event: "done", ok: false, session_id: "err1", pending_confirm: null, ui_hints: {}, error: "tool blew up" },
+    ];
+    sandbox.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === "POST") return Promise.resolve(ndjsonResponse(lines));
+      if (u.endsWith("/sessions")) return Promise.resolve(jsonResponse({ sessions: [] }));
+      return Promise.resolve(jsonResponse({ id: "err1", messages: [] }));
+    };
+    sandbox.VulnForgeChat.openSheet();
+    await wait(20);
+    document.getElementById("oc-input").value = "cause failure";
+    document.getElementById("oc-send").click();
+    await wait(50);
+    const toast = document.querySelector(".oc-toast");
+    assert.ok(toast, "failure toast present");
+    assert.match(toast.textContent, /Failed/);
+    assert.doesNotMatch(toast.textContent, /Done/);
+    assert.ok(toast.classList.contains("oc-toast-err"), "error toast class");
+    assert.equal(toast.getAttribute("role"), "alert");
+    assert.equal(document.querySelectorAll(".oc-session.is-busy").length, 0);
+    assert.equal(document.querySelectorAll(".oc-tab.is-busy").length, 0);
+    assert.match(document.querySelector(".oc-pane").textContent, /tool blew up/);
+  });
+
+  it("toasts Failed when the request throws", async () => {
+    const { sandbox, document } = boot({});
+    sandbox.fetch = (url, opts) => {
+      const u = String(url);
+      if (opts && opts.method === "POST") return Promise.reject(new Error("network down"));
+      if (u.endsWith("/sessions")) return Promise.resolve(jsonResponse({ sessions: [] }));
+      return Promise.resolve(jsonResponse({ sessions: [] }));
+    };
+    sandbox.VulnForgeChat.openSheet();
+    await wait(20);
+    document.getElementById("oc-input").value = "offline";
+    document.getElementById("oc-send").click();
+    await wait(50);
+    const toast = document.querySelector(".oc-toast");
+    assert.ok(toast);
+    assert.match(toast.textContent, /Failed/);
+    assert.doesNotMatch(toast.textContent, /^Done/);
+    assert.ok(toast.classList.contains("oc-toast-err"));
+    assert.equal(document.querySelectorAll(".oc-session.is-busy").length, 0);
+    assert.match(document.querySelector(".oc-pane").textContent, /Request failed/);
+  });
 });

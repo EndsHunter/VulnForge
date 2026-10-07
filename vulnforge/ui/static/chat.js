@@ -653,12 +653,15 @@
     syncBadge();
   }
 
-  function showToast(text) {
+  function showToast(text, opts) {
     const host = state.root && state.root.querySelector("#oc-toasts");
     if (!host) return;
+    const failed = !!(opts && opts.ok === false);
+    const cls = failed ? "oc-toast oc-toast-err" : "oc-toast";
+    const role = failed ? "alert" : "status";
     host.insertAdjacentHTML(
       "beforeend",
-      `<div class="oc-toast" role="status">${escapeHtml(text)}</div>`
+      `<div class="${cls}" role="${role}">${escapeHtml(text)}</div>`
     );
     const nodes = Array.prototype.slice.call(host.querySelectorAll(".oc-toast"));
     while (nodes.length > 3) {
@@ -668,10 +671,12 @@
   }
 
   function finishPane(pane, ok) {
+    const succeeded = ok !== false;
     pane.busy = false;
     setSendEnabled(pane, true);
     renderChromeLists();
-    showToast("Done · " + paneLabel(pane));
+    const label = paneLabel(pane);
+    showToast((succeeded ? "Done · " : "Failed · ") + label, { ok: succeeded });
     refreshSessions();
   }
 
