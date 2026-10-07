@@ -359,3 +359,84 @@ def test_api_suite_true_without_def_id():
         assert run["metrics"].get("suite") is True
         ids = [m["def_id"] for m in run["metrics"]["members"]]
         assert "toy_sqli_finding_report" in ids
+
+
+def test_list_runs_started_at_parent_before_later_children():
+    """Child started_at one second later still lists after the suite parent."""
+    import json
+
+    from vulnforge.benchmarks import create_run, runs_root, update_run
+
+    parent = create_run(
+        def_id="all-recon", version=1, types_run=["recon"], status="passed"
+    )
+    early_child = create_run(
+        def_id="toy_a", version=1, types_run=["recon"], status="passed"
+    )
+    late_child = create_run(
+        def_id="toy_b", version=1, types_run=["recon"], status="passed"
+    )
+    between = create_run(
+        def_id="toy_mid", version=1, types_run=["hunt"], status="passed"
+    )
+    newer = create_run(
+        def_id="toy_sqli", version=1, types_run=["hunt"], status="passed"
+    )
+    update_run(
+        parent["id"],
+        metrics={
+            "suite": True,
+            "member_run_ids": [early_child["id"], late_child["id"]],
+        },
+    )
+    stamps = {
+        parent["id"]: "2026-01-01T00:00:00Z",
+        early_child["id"]: "2026-01-01T00:00:01Z",
+        between["id"]: "2026-01-01T00:00:03Z",
+        late_child["id"]: "2026-01-01T00:00:05Z",
+        newer["id"]: "2026-01-02T00:00:00Z",
+    }
+    root = runs_root()
+    for rid, ts in stamps.items():
+        path = root / rid / "result.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["started_at"] = ts
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+    children_asc = sorted([early_child["id"], late_child["id"]])
+    children_desc = list(reversed(children_asc))
+    asc_ids = [
+        parent["id"],
+        *children_asc,
+        between["id"],
+        newer["id"],
+    ]
+    desc_ids = [
+        newer["id"],
+        between["id"],
+        parent["id"],
+        *children_desc,
+    ]
+    assert [r["id"] for r in list_runs(sort="started_at", order="asc")] == asc_ids
+    assert [r["id"] for r in list_runs(sort="started_at", order="desc")] == desc_ids
+
+    # suite filter still drops the parent or the children; ungrouped children
+    # fall back to their own started_at.
+    assert [r["id"] for r in list_runs(suite=True, sort="started_at", order="asc")] == [
+        parent["id"]
+    ]
+    assert [r["id"] for r in list_runs(suite=False, sort="started_at", order="asc")] == [
+        early_child["id"],
+        between["id"],
+        late_child["id"],
+        newer["id"],
+    ]
+
+    app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
+    with TestClient(app) as client:
+        listed = client.get(
+            "/api/benchmarks/runs",
+            params={"sort": "started_at", "order": "desc"},
+        )
+        assert listed.status_code == 200
+        assert [r["id"] for r in listed.json()["runs"]] == desc_ids
