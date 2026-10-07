@@ -6,6 +6,8 @@ description: >-
   proxies/gateways, custom parsers, token issue→verify→refresh, redirect_uri/PKCE,
   cache deception, or smuggling with dual-parser evidence in-repo. Prefer exact
   bytes/claims and victim effect over “JWTs are dangerous.”
+  Activation: surface-triggered via hunt_focus when JWT/OAuth/session/Host/
+  smuggling surfaces exist — inactive under B0 hybrid.
 ---
 
 # Hunt class: web-protocol-auth
@@ -18,6 +20,7 @@ description: >-
 - **Correctness over completeness.** One Host-poisoned reset beats protocol style nits.
 - Honest `submit_none` when alg/claims pin and Host is not trusted.
 - **Known findings are per-path.** Skip re-file only when Known findings already lists **this** `path_hints` file. Another file with the same class (second open redirect, second Host builder) is a new candidate. Do not `submit_none` as a duplicate of a different path.
+- **Planner:** include when JWT/OAuth/session/Host/smuggling inventory exists (inactive-ok).
 
 ## When to use
 
@@ -26,6 +29,20 @@ description: >-
 - Unallowlisted server 3xx (`header("Location:")`, `res.redirect`) of request data
 - Cache poisoning / cache deception; CRLF in forwarded headers
 - OAuth redirect_uri, state/PKCE, id_token checks, mix-up; SAML wrapping/XXE
+
+### Activation criteria (planner)
+
+**Include `web-protocol-auth` in `hunt_focus` when ANY of:**
+
+- JWT/JOSE libraries with issue → store → transmit → verify → refresh → revoke paths (`jsonwebtoken`, `jose`, `PyJWT`, `jjwt`, …)
+- OAuth/OIDC/SAML client or IdP wiring (`redirect_uri`, PKCE, `id_token`, Assertion consumers)
+- Session create/regenerate/fixation surfaces; password-reset / magic-link URL builders
+- Host / `X-Forwarded-*` / `X-Real-IP` used to build emails, redirects, or trust decisions
+- In-repo reverse proxy / gateway / dual HTTP parsers (smuggling / desync candidates)
+- Cache key / CDN surrogate logic with unkeyed attacker input
+- Lab maps listing forged JWT, OAuth login bugs, CSRF-on-auth, 2FA storage, password reset ATO (Juice Shop family)
+
+**Collection:** keep `active: false` under hybrid; surface-triggered via focus.
 
 ## When not to use / Scope
 
@@ -60,6 +77,7 @@ description: >-
 | Reset tokens | Entropy, single-use, binding to user/intent |
 | Dual-file ban | Same JWT forge not under protocol + crypto |
 | In-tree | Components not in tree → notes, not confirmed |
+| Surface trigger | Planner includes class when JWT/OAuth/session/Host inventory exists |
 
 ## Focus
 
@@ -94,7 +112,12 @@ Location:|header\(\s*[\"']Location|res\.redirect|HttpResponseRedirect
 
 ## Required evidence
 
-- Exact bytes/claims and victim effect; dual-parser or missing verify citation
+- **Exact bytes/claims:** token fields, Host header value, Location target, or dual-parser inputs — cited at verify/build/parse sites with `start_line`
+- **Missing control named:** no signature verify; alg not pinned; redirect prefix match; Host trusted for links; session not regenerated; reset token not bound/single-use
+- **Victim effect:** ATO, session fixation, smuggled request prefix, poisoned cache serving victim, OAuth code/token theft — cross-user where applicable
+- **Smuggling:** name **both** components in-repo and the divergent parse; deployment-only → note, not candidate
+- **Dual-file:** same JWT forge story not also under `cryptography`
+- `write_evidence` before `submit_candidate`
 
 ## False positives
 
@@ -102,6 +125,8 @@ Location:|header\(\s*[\"']Location|res\.redirect|HttpResponseRedirect
 - Redirect allowlist exact match (not prefix bugs)
 - SameSite/HttpOnly missing without sensitive cookie or CSRF path
 - “OAuth implicit flow exists” without steal/misbind path
+- Smuggling theory without dual-parser evidence in audit tree
+- Cookie flag nits alone
 
 ## Anti-patterns
 
@@ -113,6 +138,7 @@ Location:|header\(\s*[\"']Location|res\.redirect|HttpResponseRedirect
 | Cookie flag nits alone | Need sensitive cookie or CSRF path |
 | Smuggling theory | No dual-parser evidence |
 | Dual-file crypto | Same forge under two classes |
+| Leaving class off when JWT/OAuth surfaces clear | B0/A1 residual miss on Juice Shop–like labs |
 
 ## Submit checklist
 
@@ -121,5 +147,6 @@ Location:|header\(\s*[\"']Location|res\.redirect|HttpResponseRedirect
 - **Good:** *“Password reset builds link from raw Host (`reset.py:33`); attacker poisons Host → token to attacker; ATO.”*
 - **Good:** *“`header('Location: '.$_GET['go'])` has no allowlist; victim 3xx to attacker origin.”*
 - **Good:** *“`res.redirect(encodeURI(req.query.u))` — encodeURI is not an allowlist; file this path even if another file already has an open redirect.”*
-- **Bad:** *“JWTs are dangerous.” / “Same class as a known finding on another file, none.”*
+- **Good:** *“JWT verify accepts `alg=none` / skips signature (`auth.js:90`); attacker forges `sub` → ATO.”*
+- **Bad:** *“JWTs are dangerous.”* / *“Same class as a known finding on another file, none.”*
 - Or honest `submit_none`
