@@ -1,8 +1,8 @@
 # VulnForge
 
-Local, model-agnostic vulnerability discovery harness for LM Studio (or any OpenAI-compatible endpoint) and coding agents.
+Local, model-agnostic vulnerability discovery harness for [LM Studio](https://lmstudio.ai/) (or any OpenAI-compatible endpoint) and coding agents.
 
-It runs a durable audit loop: **recon → hunt → mechanical validation → LLM disprove (on by default) → human review**, with a research-cockpit dashboard for steering live campaigns. LLM tool-use stages use the **[Strands Agents](https://strandsagents.com/)** runtime.
+**One loop:** recon → hunt → mechanical validation → LLM disprove (on by default) → human review — steered from a research-cockpit dashboard. LLM tool-use stages run on the [Strands Agents](https://strandsagents.com/) runtime.
 
 | Label | Meaning |
 |-------|---------|
@@ -11,113 +11,85 @@ It runs a durable audit loop: **recon → hunt → mechanical validation → LLM
 
 Automation never auto-confirms. Prefer honest `submit_none` over inventing findings.
 
+![Mission Overview on a fresh toy_sqli run, idle with recon queued](docs/images/home-runs.png)
+
 ---
 
 ## Prerequisites
 
 - **Python 3.11+** (`python3 --version`)
-- An **OpenAI-compatible chat API** (typical: [LM Studio](https://lmstudio.ai/) on `http://127.0.0.1:1234/v1`)
-- ~ few GB free disk for runs, transcripts, and evidence packs
+- An **OpenAI-compatible chat API** (typical: LM Studio on `http://127.0.0.1:1234/v1`)
+- A few GB free disk for runs, transcripts, and evidence packs
 
-Optional for full campaigns: a loaded local model (e.g. Ornith / other coding model). The dashboard works without a model; recon/hunt tasks need one.
+The dashboard works without a loaded model; recon/hunt tasks need one.
 
-VulnForge is **source-code analysis only** (`code_static` profile). PE binaries and reverse-engineering tooling are not supported.
-
-Sandbox PoC is off unless you opt in. It needs Docker plus gVisor `runsc` or a microVM on Linux. Arch/Omarchy steps and the `~/Projects/OSSvulnHunting` directory name: [docs/harness/validate/SANDBOX_HOST.md](docs/harness/validate/SANDBOX_HOST.md).
+**Scope:** source-code analysis only (`code_static`). PE binaries and reverse-engineering tooling are not supported. Sandbox PoC is **off** unless you opt in (Docker + gVisor `runsc` or a microVM on Linux) — see [docs/harness/validate/SANDBOX_HOST.md](docs/harness/validate/SANDBOX_HOST.md).
 
 ---
 
-## Project layout (this tree)
+## Quickstart
 
 Run commands from the **repo root** (the directory that contains `vulnforge/` and `seeds/`):
-
-```text
-.
-├── vulnforge/           # Python package (control plane, stages, UI)
-├── seeds/               # Package seed library (system + hunt_classes + recon_agents)
-├── config/              # default.yaml, hunt_profiles/, recon_agents/ (runtime)
-├── scripts/ralph.py     # Outer loop
-├── docs/                # LAYOUT.md, internal maps / plans
-├── fixtures/            # Toy targets for tests / first run
-├── skill/SKILL.md       # Optional agent skill for coding agents
-├── tests/
-└── pyproject.toml
-```
-
-If you only cloned the package folder, copy or extract `seeds/`, `config/`, `scripts/`, `fixtures/`, and `pyproject.toml` next to `vulnforge/` so `PROJECT_ROOT` resolves correctly. See [`docs/LAYOUT.md`](docs/LAYOUT.md) and [`seeds/README.md`](seeds/README.md).
-
----
-
-## Setup (macOS / Linux)
 
 ```bash
 cd /path/to/this/repo   # directory with pyproject.toml + vulnforge/
 
-# 1. Virtualenv
 python3 -m venv .venv
 source .venv/bin/activate
 
-# 2. Install VulnForge (editable) + test extras
 python -m pip install -U pip
 pip install -e ".[dev]"
 
-# 3. Confirm CLI
 vf --help
 ```
 
-### First-time config
+Point `config/default.yaml` at your LLM (`llm.base_url`, exact `llm.model` from `GET /v1/models`, `llm.api_mode` — usually `chat_completions` for LM Studio). Or use Dashboard **Settings**: add a host → Refresh catalog → Verify → assign roles → Save (`config/ui_settings.json` overrides YAML). Env overrides: `VF_BASE_URL`, `VF_MODEL`, `VF_HOST`+`VF_PORT`.
 
-1. Open **`config/default.yaml`** and set:
-   - `llm.base_url` — LM Studio (or proxy) base, usually `http://127.0.0.1:1234/v1`
-   - `llm.model` — **exact** id from `GET /v1/models` (e.g. `ornith-1.0-35b`, not a `models/…` path)
-   - `llm.api_mode` — `chat_completions` (LM Studio default), or `responses` / `messages` if needed
-   - For AI tool generation: keep `llm.max_tokens` / `llm.toolgen_max_tokens` high (reasoning models burn tokens on chain-of-thought first)
-2. Start your local model server and load a model (recommended: **LM Studio + Ornith** on `:1234`).
-3. Dashboard **Settings**: add a host (URL, API mode, API key), **Refresh catalog**, **Verify** the model, then assign roles from Available. **Optimize AI settings** fills global token budgets for the default role's host. Save writes `config/ui_settings.json` and overrides YAML. With no hosts saved, YAML `llm.*` still applies.
-4. Env overrides: `VF_BASE_URL`, `VF_MODEL`, `VF_HOST`+`VF_PORT`, `VF_RECON_ORCHESTRATOR`.
-
-**Ornith notes:** Toolgen (Dev → Generate tool) is JSON text generation. Recon/hunt need reliable **tool_calls**. Optimize’s tool probe warns if the model ignores tools. Prefer LM Studio on `:1234` for VulnForge. Alternate mlx servers often cap tokens too low for toolgen JSON. See `toolgen.md`.
-
-### Smoke test (no long campaign)
+Smoke the toy fixture and open the cockpit:
 
 ```bash
-# Optional: unit tests
-pytest -q
-
-# Init a run against the toy fixture
 vf init --target fixtures/toy_sqli
-# prints something like: runs/<target_id>/run-001
+# → runs/<target_id>/run-001
 
-# Dashboard (research cockpit)
 vf dashboard
 # → http://127.0.0.1:8787
 ```
 
-After `git pull`, stop that dashboard process and start `vf dashboard` again so it loads the new code and static UI.
-
-Leave the dashboard running. Open the new run → **Start** Ralph, or in another terminal:
+Leave the dashboard running. Open the new run and **Start** Ralph, or in another terminal:
 
 ```bash
 python scripts/ralph.py --run-dir runs/<target_id>/run-001 --max-tasks 20
 ```
 
+After `git pull`, restart `vf dashboard` so it loads the new UI.
+
+Windows PowerShell install notes: [docs/README.md](docs/README.md) (operator path) — same `vf init` / `vf dashboard` once the venv is active.
+
 ---
 
-## Setup (Windows PowerShell)
+## How a run looks
 
-```powershell
-cd C:\path\to\this\repo
+A **run** is one durable audit against a target tree. Ralph drains the queue: recon → hunts → validate. Mission shows progress, the findings queue, and what still needs a human.
 
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-pip install -e ".[dev]"
+![Mission Overview — pipeline and needs-human queue](docs/images/mission-overview.png)
 
-vf --help
-vf init --target fixtures\toy_sqli
-vf dashboard
-# → http://127.0.0.1:8787
-```
+What the strip is telling you:
+
+- **Needs Human** — mechanical gates passed; open **Report** to accept or reject. Neither state is exploit proof.
+- **Confirmed / Rejected** — only change when a human acts in Report. The LLM may **disprove** (reject path); it never auto-confirms.
+- **Pipeline** — stage state from task kinds on this run (`Recon → hunt → validate (mech, then LLM disprove)`).
+
+Steer from **Explorer** (enqueue hunts), **Hunts** (residual cells), and **Report** (accept / reject / develop PoC).
+
+---
+
+## Architecture map
+
+Mission → **Architecture** is the LLM recon map for the run (components, surfaces, trust boundaries, hunt focus). It is stored in the run DB — use Hunts and Explorer to drive work, not the diagram alone.
+
+![Mission Architecture — LLM recon map](docs/images/mission-architecture.png)
+
+Mechanical structure (codemap) lives separately in the run database; it does not replace this high-level view.
 
 ---
 
@@ -125,15 +97,14 @@ vf dashboard
 
 | Step | Command / UI |
 |------|----------------|
-| New audit | Dashboard **New audit**, or `vf init --target PATH` |
-| Drive queue | Dashboard **Start**, or `python scripts/ralph.py --run-dir DIR` |
-| One task only | `vf run-once --run-dir DIR` |
-| Status | `vf status --run-dir DIR`, Mission strip, or `GET .../campaign/status` |
-| Campaign verbs | `GET /api/campaign/grammar` — `start` `stop` `pause` `resume` `status` `findings` `gate` ([docs/harness/CAMPAIGN.md](docs/harness/CAMPAIGN.md)) |
-| Steer | Explorer (enqueue hunts), Hunts (residual cells), Report (accept/reject) |
-| Dev tools | Home → **Dev** — hunt skills + recon agents; generate custom skills |
+| New audit | Dashboard **New**, or `vf init --target PATH` |
+| Drive queue | Dashboard **Start** / **Resume**, or `python scripts/ralph.py --run-dir DIR` |
+| One task | `vf run-once --run-dir DIR` |
+| Status | `vf status --run-dir DIR`, Mission strip |
+| Campaign verbs | `start` `stop` `pause` `resume` `status` `findings` `gate` — [docs/harness/CAMPAIGN.md](docs/harness/CAMPAIGN.md) |
+| Steer | Explorer, Hunts, Report |
+| Dev tools | Home → **Dev** (hunt skills, recon agents) |
 | Tool gaps | `vf tool-gaps --run-dir DIR` or Home **Tool gaps** |
-| Regenerate docs | `vf project --run-dir DIR` |
 
 ### Useful CLI
 
@@ -143,11 +114,10 @@ vf dashboard
 | `vf run-once --run-dir DIR` | Lease + execute one task |
 | `vf status --run-dir DIR` | Task/finding summary |
 | `vf project --run-dir DIR` | Regenerate `project/*` |
-| `vf apply-candidate --file …` | Apply inbox candidate JSON |
 | `vf tool-gaps --run-dir DIR` | Mine transcripts for tool gaps |
 | `vf dashboard` | Research cockpit (`--host` / `--port` optional) |
-| `vf export-validation-job --finding-id N` | Zip a finding + evidence for handoff |
-| `vf validate-poc --finding-id N [--execute]` | Enqueue or run the PoC harness |
+| `vf export-validation-job --finding-id N` | Zip finding + evidence for handoff |
+| `vf validate-poc --finding-id N [--execute]` | Enqueue or run PoC harness (opt-in sandbox) |
 | `vf delete-run --run-dir DIR` | Permanently delete a run |
 | `python scripts/ralph.py --run-dir DIR` | Outer loop until idle / STOP / budget |
 
@@ -157,25 +127,39 @@ Default dashboard: **http://127.0.0.1:8787**
 vf dashboard --host 127.0.0.1 --port 8787
 ```
 
----
-
-## What you get in the dashboard
+### Dashboard surfaces
 
 | Surface | Purpose |
 |---------|---------|
 | **Home** | All runs, progress, LLM token rollups |
-| **Mission** | Architecture map, compact campaign strip, operator recon re-run |
-| **Hunts** | Plan area×skill batches and the residual-risk matrix; re-queue cells |
+| **Mission** | Architecture map, campaign strip, operator recon re-run |
+| **Hunts** | Plan area×skill batches; residual-risk matrix |
 | **Explorer** | Browse target; enqueue class×path hunts |
 | **Report** | Findings review (accept / reject / develop PoC) |
 | **Evidence** | On-disk evidence packs |
 | **Tasks** | Queue, transcripts, event timeline |
 | **AI** | Run-bound co-pilot (mutating tools need Confirm) |
-| **Dev** | Hunt skills, recon agents, generate custom hunt skills (Home → `/dev`) |
+| **Dev** | Hunt skills, recon agents, generate custom skills |
+| **Benchmarks** | Mechanical L0 suites (no live model required on Run); live LLM optional |
 
-Token usage (when the model returns `usage`, or estimated) appears on Home.
+---
 
-The bench desk at `/benchmarks/run` has two hunt paths. Mechanical L0 needs no model. It scores sink preindex hits against the oracle and returns a terminal BenchmarkRun from one `POST /api/benchmarks/runs`. Live hunts use the Settings LLM (`llm.base_url` and `llm.model`). They init a throwaway harness under `.audit/benchmarks/eval_runs/<br-id>/`, never `runs/`, enqueue path and class only, and poll the same run id until Ralph is idle. `passed` means recall > 0. Automation never sets `confirmed`.
+## Project layout
+
+```text
+.
+├── vulnforge/           # Python package (control plane, stages, UI)
+├── seeds/               # Package seed library
+├── config/              # default.yaml, hunt_profiles/, recon_agents/
+├── scripts/ralph.py     # Outer loop
+├── docs/                # LAYOUT.md, harness docs, images/
+├── fixtures/            # Toy targets for tests / first run
+├── skill/SKILL.md       # Optional agent skill for coding agents
+├── tests/
+└── pyproject.toml
+```
+
+If you only cloned the package folder, place `seeds/`, `config/`, `scripts/`, `fixtures/`, and `pyproject.toml` next to `vulnforge/` so `PROJECT_ROOT` resolves. See [`docs/LAYOUT.md`](docs/LAYOUT.md) and [`seeds/README.md`](seeds/README.md).
 
 ---
 
@@ -184,22 +168,31 @@ The bench desk at `/benchmarks/run` has two hunt paths. Mechanical L0 needs no m
 | Problem | Fix |
 |---------|-----|
 | `vf: command not found` | Activate `.venv` and `pip install -e .` from repo root |
-| Dashboard import errors | Reinstall from repo root: `pip install -e .` (FastAPI is a core dependency). `.[dev]` adds pytest only. |
+| Dashboard import errors | Reinstall from repo root: `pip install -e .` (FastAPI is core). `.[dev]` adds pytest. |
 | Recon/hunt fail with transport | Start LM Studio; check `config/default.yaml` `base_url` / `model` |
 | Empty / truncated answers | Raise `llm.max_tokens` (reasoning models need headroom) |
 | Wrong prompts path | Run from repo root; ensure `seeds/system/` exists beside `vulnforge/` |
 | Port in use | `vf dashboard --port 8788` |
 
+Model-specific notes (Ornith toolgen vs tool_calls, mlx token caps): see `toolgen.md` and Dashboard **Settings → Optimize AI settings**.
+
 ---
 
 ## Docs
 
-- [`docs/README.md`](docs/README.md) — which file to open  
-- [`PROTOCOL.md`](PROTOCOL.md) — authority model, labels, apply-candidate contract  
-- [`AGENTS.md`](AGENTS.md) — extending tools, profiles, and the cockpit  
-- [`docs/LAYOUT.md`](docs/LAYOUT.md) — where is X? (seeds, tools, config)  
-- [`skill/SKILL.md`](skill/SKILL.md) — optional skill for coding agents using this harness  
+- [`docs/README.md`](docs/README.md) — which file to open
+- [`PROTOCOL.md`](PROTOCOL.md) — authority model, labels, apply-candidate contract
+- [`AGENTS.md`](AGENTS.md) — extending tools, profiles, and the cockpit
+- [`docs/LAYOUT.md`](docs/LAYOUT.md) — where is X? (seeds, tools, config)
+- [`skill/SKILL.md`](skill/SKILL.md) — optional skill for coding agents using this harness
 
 ## License
 
 MIT
+
+---
+
+## Authorized use
+
+VulnForge is for **authorized** defensive review of codebases you own or have permission to audit. Do not point it at systems or trees outside that scope.
+
