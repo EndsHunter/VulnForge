@@ -1,8 +1,19 @@
 # Dual LLM Disprove Verify — Design
 
 **Date:** 2026-07-18  
-**Status:** Approved for implementation  
+**Status:** Implemented (historical)  
 **Scope:** VulnForge `validate_llm` stage + Report tab
+
+This file is the 2026-07-18 design record. It is not the live operator contract. Canonical prompts are `seeds/system/disprove.md`, `seeds/system/disprove_threat.md`, and `seeds/system/disprove_code.md`. Current behavior is [docs/harness/validate/README.md](../../harness/validate/README.md) and [docs/system/VALIDATE.md](../../system/VALIDATE.md). Paths below that say `prompts/v1/disprove*.md` are the layout this design assumed.
+
+## Follow-up status
+
+| Follow-up | Status |
+|-----------|--------|
+| Multi-model validation in Settings (`llm.validate_models`, Roles checkboxes) | **Done** |
+| Operator UI to choose a model per verifier slot | Open |
+| Parallel dual chat (wall-clock) | Open |
+| Optional third verifier or configurable N | Open |
 
 ## Problem
 
@@ -219,8 +230,10 @@ UI: manual check or minimal static test if the project has none for report.js (n
 3. Report badge + detail.
 4. Tests + fix regressions.
 
-## Open follow-ups (explicitly later)
+## Open follow-ups
 
-- Operator UI to choose model per verifier slot.
+Multi-model Settings (`llm.validate_models`) shipped. Still open:
+
+- Operator UI to choose a model per verifier slot.
 - Optional third verifier or configurable N.
 - Parallel dual chat for wall-clock latency.

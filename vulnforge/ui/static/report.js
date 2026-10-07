@@ -226,9 +226,21 @@
       : m.stood <= 0
         ? "disprove rejected"
         : "disprove stood";
+    const badges = window.ReportStateBadges;
+    const sameModel =
+      badges && typeof badges.sameModelOnBothPerspectives === "function"
+        ? badges.sameModelOnBothPerspectives(m.verifiers)
+        : false;
+    const weakNote = sameModel
+      ? `<p class="controls-hint" data-llm-weak-signal="same-model">${esc(
+          badges.SAME_MODEL_WEAK_SIGNAL ||
+            "Same model on both perspectives — weak signal; not exploit proof."
+        )}</p>`
+      : "";
     return `<div class="report-llm-verify">
       <h4>LLM disprove <span class="badge llm-verify">${esc(m.label)} ${esc(word)}</span></h4>
       <p class="controls-hint">Each verifier tries to <strong>disprove</strong> the finding. Score = how many returned <span class="mono">stand</span> (could not kill). All slots must <span class="mono">reject</span> for auto <span class="mono">rejected_llm</span>. Not exploit proof. Stand is not confirmed — confirmed is human-only.</p>
+      ${weakNote}
       ${rows}
     </div>`;
   }

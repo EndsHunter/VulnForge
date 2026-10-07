@@ -382,11 +382,31 @@
     return { word: word, tone: tone, title: title, label: llm.label || (counts ? counts.stood + "/" + counts.total : "") };
   }
 
+  /** True when every verifier slot records the same non-empty model_id. */
+  function sameModelOnBothPerspectives(verifiers) {
+    if (!Array.isArray(verifiers) || verifiers.length < 2) return false;
+    const ids = [];
+    for (let i = 0; i < verifiers.length; i++) {
+      const id = String((verifiers[i] && verifiers[i].model_id) || "").trim();
+      if (!id) return false;
+      ids.push(id);
+    }
+    for (let i = 1; i < ids.length; i++) {
+      if (ids[i] !== ids[0]) return false;
+    }
+    return true;
+  }
+
+  const SAME_MODEL_WEAK_SIGNAL =
+    "Same model on both perspectives — weak signal; not exploit proof.";
+
   return {
     TIPS: TIPS,
     findingStateTrail: findingStateTrail,
     findingStateTrailHtml: findingStateTrailHtml,
     llmSignal: llmSignal,
     llmAllReject: llmAllReject,
+    sameModelOnBothPerspectives: sameModelOnBothPerspectives,
+    SAME_MODEL_WEAK_SIGNAL: SAME_MODEL_WEAK_SIGNAL,
   };
 });

@@ -9,6 +9,8 @@ const {
   findingStateTrail,
   findingStateTrailHtml,
   llmSignal,
+  sameModelOnBothPerspectives,
+  SAME_MODEL_WEAK_SIGNAL,
 } = require(
   path.join(__dirname, "..", "..", "vulnforge", "ui", "static", "report_state_badges.js")
 );
@@ -308,6 +310,47 @@ describe("findingStateTrail", () => {
     assert.equal(badges.some((b) => b.cls.includes("confirmed")), false);
     assert.equal(badges.some((b) => /confirmed/i.test(b.text)), false);
     assert.equal(html.includes('class="badge report-state-step confirmed'), false);
+  });
+});
+
+describe("same-model disprove note", () => {
+  it("flags one model_id on every verifier and ignores mixed or missing ids", () => {
+    assert.equal(SAME_MODEL_WEAK_SIGNAL, "Same model on both perspectives — weak signal; not exploit proof.");
+    assert.equal(
+      sameModelOnBothPerspectives([
+        { id: "threat_model", model_id: "ornith" },
+        { id: "code_mitigation", model_id: "ornith" },
+      ]),
+      true
+    );
+    assert.equal(
+      sameModelOnBothPerspectives([
+        { model_id: "a" },
+        { model_id: "a" },
+        { model_id: "a" },
+        { model_id: "a" },
+      ]),
+      true
+    );
+    assert.equal(
+      sameModelOnBothPerspectives([
+        { model_id: "a" },
+        { model_id: "b" },
+      ]),
+      false
+    );
+    assert.equal(
+      sameModelOnBothPerspectives([{ model_id: "only-one" }]),
+      false
+    );
+    assert.equal(
+      sameModelOnBothPerspectives([
+        { model_id: "a" },
+        { model_id: "" },
+      ]),
+      false
+    );
+    assert.equal(sameModelOnBothPerspectives(null), false);
   });
 });
 
