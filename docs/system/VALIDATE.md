@@ -82,7 +82,7 @@ The workshop **Steer** box appends a note the next cycle reads. It is not a host
 
 Pinned image: `python:3.12.8-slim-bookworm` (override with a digest). Pre-pull it on the sandbox host so the wall TTL is not spent on a registry fetch.
 
-`llm.disprove_verifiers` can list `{id, prompt}` pairs. Missing perspective files fall back to the shared `disprove.md` contract only.
+`llm.disprove_verifiers` can list `{id, prompt}` pairs. Missing perspective files fall back to the shared `disprove.md` contract only. `llm.validate_consensus` annotates multi-model stand only; auto-reject still needs every model×perspective slot to return `reject` ([validate README](../harness/validate/README.md)).
 
 **When to disable validate_llm:** campaign speed, debugging hunt output without LLM filter, or same-model disprove is pure noise. Still never auto-confirms when on.
 

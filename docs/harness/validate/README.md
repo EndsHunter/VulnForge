@@ -43,6 +43,8 @@ Default: `stages.validate_llm: true`. Set **false** to skip for speed, debug, or
 
 **Recommended multi-model:** assign 2+ verified `(host, model)` pairs in Settings → Roles (validation checkboxes). A non-empty list is the complete slot set. When the list is empty, the Validate / Referee role is the single slot; blank means the hunt role (or the default role when hunt is also blank). Rejection still requires **all** slots (model × perspective) to return `reject`. A pair that is not Available fails that slot; VulnForge does not substitute the same model id from another host. Disprove stays demote-only. The PoC referee only annotates.
 
+**`llm.validate_consensus`** (`majority` default, or `all`) is a multi-model **stand** annotation on disprove. It fills `validation_llm.multi_model` (`stand_consensus`, `consensus_mode`, and the “N/M models stand” label). It does not change finding state. Auto-reject (`rejected_llm`) still requires **every** model×perspective slot to return `reject`. A majority of stands, or `validate_consensus: majority`, does not drop a dissenting `reject` slot and does not confirm. The same key also gates positive agreement on the PoC referee; that path only annotates.
+
 ## Quality recipe (better severity / impact results)
 
 | Lever | What to do |

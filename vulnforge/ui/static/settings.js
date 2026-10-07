@@ -211,6 +211,7 @@
       empty.className = "controls-hint";
       empty.textContent = "Verify a model to add it here.";
       box.appendChild(empty);
+      updateValidateWarn();
       return;
     }
     available.forEach((ref) => {
