@@ -62,6 +62,19 @@ def notes_block_id(finding_id: int) -> str:
     return f"finding-{int(finding_id)}-notes"
 
 
+def finding_pending_llm(finding) -> bool:
+    """True while dual disprove is still armed on the finding body.
+
+    Source is ``validation_mech.pending_llm``. Missing or non-dict mech is false.
+    The flag is not an approval and never means confirmed.
+    """
+    body = getattr(finding, "body", None) or {}
+    if not isinstance(body, dict):
+        return False
+    mech = body.get("validation_mech")
+    return isinstance(mech, dict) and bool(mech.get("pending_llm"))
+
+
 def parse_finding_report_id(report_id: str) -> Optional[int]:
     m = _FINDING_REPORT_RE.fullmatch(str(report_id or ""))
     if not m:
@@ -263,6 +276,8 @@ def build_finding_packet(
             "id": str(fid),
             "state": str(finding.state or ""),
         },
+        # Copied so inbox UI can disable Accept without reading the finding body.
+        "pending_llm": finding_pending_llm(finding),
         "blocks": [
             {"type": "prose", "title": "Finding", "markdown": markdown},
             {
@@ -733,6 +748,7 @@ def list_inbox(db: Database, run_dir: Path) -> dict[str, Any]:
                 "updated": packet.get("updated"),
                 "blocks": packet.get("blocks") or [],
                 "responses": subset,
+                "pending_llm": bool(packet.get("pending_llm")),
             }
         )
     return {

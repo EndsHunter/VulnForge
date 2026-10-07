@@ -31,6 +31,8 @@ Interactive prompts are keyed by a stable `id`:
 
 Finding packets use ids `finding-{n}`, `finding-{n}-review` (approval), and `finding-{n}-notes` (ask/text). A note alone does not accept the finding. `approved` on a finding approval block is the explicit review that sets `confirmed` (`review_finding`). `changes-requested` sets `rejected_human`.
 
+Finding packets and inbox items carry `pending_llm` (bool), copied from the finding body `validation_mech.pending_llm`. While it is true, `review_finding` refuses Accept and the inbox renderer disables Accept. Reject stays available. The flag is not an approval. Explicit gate packets omit it; the inbox lists them as `pending_llm: false`.
+
 ## Where it lives
 
 | Store | Role |

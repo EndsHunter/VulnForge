@@ -62,6 +62,22 @@ def test_report_rows_show_current_state_only():
     assert "llm survived" not in report
     assert "wireReportStateTips(" in report
     assert "data-tip=" in report
+    accept_copy = (
+        "Dual disprove still running — Accept after it settles, or Reject now."
+    )
+    assert accept_copy in (HELPERS.read_text(encoding="utf-8"))
+    assert accept_copy in report
+    assert "function acceptPendingHintHtml(" in report
+    assert "function acceptButtonAttrs(" in report
+    assert 'class="controls-hint report-accept-pending"' in report
+    assert 'data-action="confirm"' in report
+    assert "disabled aria-disabled=\"true\"" in report
+    reject_btn = (
+        '<button type="button" class="btn btn-bad report-review-btn" '
+        'data-action="reject"'
+    )
+    assert reject_btn in report
+    assert "disabled" not in report.split(reject_btn, 1)[1].split("</button>", 1)[0]
 
     assert "Confirmed is human-only" in app
     assert "never auto-confirms" in app

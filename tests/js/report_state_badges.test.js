@@ -6,6 +6,8 @@ const path = require("node:path");
 
 const {
   TIPS,
+  ACCEPT_PENDING_COPY,
+  acceptBlockedByPendingLlm,
   findingStateTrail,
   findingStateTrailHtml,
   llmSignal,
@@ -360,5 +362,27 @@ describe("tips", () => {
     assert.match(TIPS.humanAccepted, /never auto-confirms/);
     assert.match(TIPS.disproveStood, /not confirmed/i);
     assert.match(TIPS.disprovePending, /never auto-confirms/);
+    assert.match(TIPS.disprovePending, /Dual disprove still running/);
+  });
+});
+
+describe("accept while pending_llm", () => {
+  const copy =
+    "Dual disprove still running — Accept after it settles, or Reject now.";
+
+  it("exports the Accept block copy and treats pending_llm as a hard block", () => {
+    assert.equal(ACCEPT_PENDING_COPY, copy);
+    const pending = {
+      state: "needs_human",
+      body: { validation_mech: { status: "passed", pending_llm: true } },
+    };
+    const settled = {
+      state: "needs_human",
+      body: { validation_mech: { status: "passed", pending_llm: false } },
+    };
+    assert.equal(acceptBlockedByPendingLlm(pending), true);
+    assert.equal(acceptBlockedByPendingLlm(settled), false);
+    assert.equal(acceptBlockedByPendingLlm({ state: "needs_human", body: {} }), false);
+    assert.match(findingStateTrail(pending)[2].title, /Accept after it settles/);
   });
 });
