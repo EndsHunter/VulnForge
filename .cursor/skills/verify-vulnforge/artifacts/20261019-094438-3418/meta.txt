@@ -1,0 +1,17 @@
+feature=gate-chain
+entry=vf init --strategy file_by_file --no-enqueue-hunts; vf apply-candidate; vf run-once; POST review; vf hitl respond
+run_id=20261019-094438-3418
+target_id=toy_sqli-a8ea3b04
+run=run-001
+finding_id=1
+
+executed:
+- mech-pending PASS (needs_human, validation_mech.pending_llm true, validate_llm left queued)
+- accept-blocked PASS (HTTP 400, detail is the pending_llm sentence, force ignored, state stayed needs_human)
+- hitl-accept-blocked PASS (exit 30, code pending_llm, no approval stored)
+- reject-open PASS (HTTP 200, to_state rejected_human)
+- disprove-inconclusive NOT RUN (no scripted disprove client; validate_llm still queued). Not a pass.
+
+not this drive: validate-poc, canary-evidence, path-contract.
+
+driver note: the first apply in this same instance failed because the candidate file was not written. doctor was re-run (ok true) and the same empty run was driven once. run-once was not repeated after the mechanical gate.

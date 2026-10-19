@@ -226,9 +226,7 @@ def doctor_report(inst: dict) -> tuple[bool, dict]:
     checks.append({"id": "cmdline_dashboard", "ok": cmd_ok, "detail": cmd})
     health_ok = False
     health = None
-    home_ok = False
-    settings_ok = False
-    dev_ok = False
+    runs_ok = False
     try:
         status, body = http_get(f"{url}/api/health")
         health = json.loads(body) if body else None
@@ -249,23 +247,23 @@ def doctor_report(inst: dict) -> tuple[bool, dict]:
     except (ConnectionError, json.JSONDecodeError, TimeoutError) as e:
         checks.append({"id": "health", "ok": False, "detail": str(e)})
     try:
-        status, body = http_get(f"{url}/")
-        home_ok = status == 200 and 'data-page="home"' in body
-        checks.append({"id": "home_html", "ok": home_ok, "detail": f"status={status}"})
-    except (ConnectionError, TimeoutError) as e:
-        checks.append({"id": "home_html", "ok": False, "detail": str(e)})
-    try:
-        status, body = http_get(f"{url}/settings")
-        settings_ok = status == 200 and 'data-page="settings"' in body
-        checks.append({"id": "settings_html", "ok": settings_ok, "detail": f"status={status}"})
-    except (ConnectionError, TimeoutError) as e:
-        checks.append({"id": "settings_html", "ok": False, "detail": str(e)})
-    try:
-        status, body = http_get(f"{url}/dev")
-        dev_ok = status == 200 and 'data-page="dev"' in body
-        checks.append({"id": "dev_html", "ok": dev_ok, "detail": f"status={status}"})
-    except (ConnectionError, TimeoutError) as e:
-        checks.append({"id": "dev_html", "ok": False, "detail": str(e)})
+        status, body = http_get(f"{url}/api/runs")
+        runs = json.loads(body) if body else None
+        runs_ok = (
+            status == 200
+            and isinstance(runs, dict)
+            and isinstance(runs.get("runs"), list)
+            and isinstance(runs.get("count"), int)
+        )
+        checks.append(
+            {
+                "id": "api_runs",
+                "ok": runs_ok,
+                "detail": {"status": status, "count": None if not isinstance(runs, dict) else runs.get("count")},
+            }
+        )
+    except (ConnectionError, json.JSONDecodeError, TimeoutError) as e:
+        checks.append({"id": "api_runs", "ok": False, "detail": str(e)})
     ok = all(c["ok"] for c in checks)
     return ok, {"ok": ok, "instance": inst, "checks": checks, "health": health}
 

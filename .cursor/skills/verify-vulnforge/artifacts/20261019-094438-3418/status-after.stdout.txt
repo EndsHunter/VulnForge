@@ -1,0 +1,8 @@
+run_dir: /tmp/vf-verify-20261019-094438-3418/runs/toy_sqli-a8ea3b04/run-001
+target:  /workspace/fixtures/toy_sqli
+profile: code_static
+prompt:  46e3c11f383ed6dd975ec6193ba145ae55c2898a78a2c109e7fb8da4dedc456b
+tasks:   {'queued': 1, 'succeeded': 1}
+findings:{'rejected_human': 1}
+has_work:True
+models:  hunt=ornith-1.0-35b validate=ornith-1.0-35b

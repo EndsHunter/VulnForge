@@ -1,13 +1,13 @@
 ---
 name: verify-vulnforge
-description: Drive VulnForge on the FastAPI research-cockpit dashboard and the vf CLI the way an operator does. Use for /verify-vulnforge, "verify in the app", "drive the cockpit", or UI/CLI proof of Home, the run workspace, Settings, Dev, or vf init and status.
+description: Drive VulnForge through the vf CLI, the dashboard HTTP API, and the PoC harness. Use for /verify-vulnforge, "verify the gate", or proof of mechanical validation, disprove, Accept, validate_poc, canary evidence, or the source-to-sink path contract.
 ---
 
 # Verify VulnForge
 
-Drive the operator cockpit and `vf`. Do not treat Ralph or live LLM hunts as the target.
+Drive `vf`, the dashboard HTTP API, and the PoC harness. Do not drive the GUI. Do not treat Ralph or a live model call as the target.
 
-Read [features/README.md](features/README.md), then the matching feature file. Prove one mapped feature end to end. HTTP GET of HTML is a doctor or ready check and a secondary assertion. A mapped UI feature still needs a browser drive when a browser exists.
+Read [features/README.md](features/README.md), then the matching feature file. Prove one mapped feature end to end. `GET /api/health` is a doctor check. It is not the proof.
 
 ## Launch
 
@@ -19,7 +19,7 @@ python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
 
-Start an isolated dashboard. Never use the operator `runs/` tree. Never attach to a dashboard you did not start.
+Start an isolated dashboard so the HTTP API has a disposable runs root. Never use the operator `runs/` tree. Never attach to a dashboard you did not start.
 
 ```bash
 .cursor/skills/verify-vulnforge/scripts/vf-verify launch
@@ -52,39 +52,40 @@ Pass only if `doctor --write` prints `"ok": true`. The helper requires all of th
 - Recorded pid is alive and its cmdline contains `dashboard`.
 - `GET $VF_VERIFY_URL/api/health` is `ok: true` and `runs_root` matches the recorded directory.
 - `project_root` matches this repo.
-- `GET $VF_VERIFY_URL/` contains `data-page="home"`.
-- `GET $VF_VERIFY_URL/settings` contains `data-page="settings"`.
-- `GET $VF_VERIFY_URL/dev` contains `data-page="dev"`.
+- `GET $VF_VERIFY_URL/api/runs` returns HTTP 200 and JSON with a `runs` array and a numeric `count`.
 
-Refuse to drive on failure. Do not fall back to port 8787 or `pgrep`.
+Refuse to drive on failure. Do not fall back to port 8787 or `pgrep`. Do not open a browser to decide health.
 
 ## Drive
 
-Use the feature map. Stable handles beat CSS position.
+Use the feature map. Stable HTTP paths and `vf` flags beat the GUI.
 
 | Handle | Where |
 | --- | --- |
-| `body[data-page="home"]` | Home |
-| `#btn-new-run`, `#home-search`, `#home-stats`, `#run-list`, `a.run-row` | Home actions, token strip, and run rows |
-| `#btn-settings` `/settings`, `#btn-open-dev` `/dev`, `#btn-open-tool-gaps` `/tool-gaps` | Home dock icons |
-| `#ai-fab`, `#ai-sheet`, `#operator-chat-root` | Ask bubble on Home and run |
-| `body[data-page="run"]`, `[data-run-rail]`, `[data-nav-id]`, `[data-mode-panel]`, `#run-switch`, `#mission-usage` | Run workspace |
-| `body[data-page="settings"]`, `#settings-form`, `#settings-save` | Settings page |
-| `body[data-page="dev"]`, `[data-dev-tab]`, `#dev-profiles-body` | Dev dashboard |
+| `GET /api/health` | Ready check |
+| `GET /api/runs` | Fleet list for this runs root |
+| `GET /api/runs/{target_id}/{run_id}` | Run snapshot, tasks, finding bodies |
+| `GET /api/runs/{target_id}/{run_id}/hitl/inbox` | Awaiting-review packets, including `pending_llm` |
+| `POST /api/runs/{target_id}/{run_id}/findings/{id}/review` | Accept (`confirm`) or Reject (`reject`) |
+| `POST /api/runs/{target_id}/{run_id}/findings/{id}/validate-poc` | Enqueue harness one-shot |
+| `vf init`, `vf status`, `vf apply-candidate`, `vf run-once` | CLI run and mechanical gate |
+| `vf hitl inbox`, `vf hitl show`, `vf hitl respond` | Durable review inbox |
+| `vf validate-poc` | Enqueue or `--execute` the harness |
 
-In a browser with browser-use or CDP, first navigation is `new_tab($VF_VERIFY_URL + path)`. Keep one tab. Click ids and `data-nav-id` values. Press `e` on a run page only when focus is not in an input.
-
-CLI:
+CLI shape:
 
 ```bash
-.venv/bin/vf init --target fixtures/toy_sqli --runs-root "$VF_VERIFY_RUNS_ROOT" --no-enqueue-hunts
+.venv/bin/vf init --target fixtures/toy_sqli --runs-root "$VF_VERIFY_RUNS_ROOT" --strategy file_by_file --no-enqueue-hunts
 .venv/bin/vf status --run-dir "$VF_VERIFY_RUNS_ROOT"/<target_id>/<run_id>
-.venv/bin/vf --help
+.venv/bin/vf apply-candidate --run-dir <run-dir> --file <candidate.json>
+.venv/bin/vf run-once --run-dir <run-dir>
+.venv/bin/vf hitl inbox --run-dir <run-dir>
+.venv/bin/vf validate-poc --run-dir <run-dir> --finding-id <id>
 ```
 
-`vf init` prints the run directory and exits 0. It does not start Ralph. Use `--no-enqueue-hunts` when you only need a listed run.
+`vf init` prints the run directory and exits 0. It does not start Ralph. `--strategy file_by_file --no-enqueue-hunts` creates the run with an empty queue so the next `run-once` is the task you just enqueued.
 
-Do not click **Start**, **Resume**, **Hard stop**, or **Delete run**. Do not submit **New audit** with **Start Ralph after create** checked. Do not click **Save settings**. Do not **Reseed**, **Import setup**, or toggle Active on Dev. Those writes leave this repo's `config/` and the operator collection.
+Do not run a second `run-once` after mechanical validation while a `validate_llm` task is queued. That task calls a model. Do not pass `--referee` on `validate-poc`. Do not set `stages.validate_llm` false to make Accept succeed. Do not click through the dashboard.
 
 ## Evidence
 
@@ -95,15 +96,17 @@ Capture the action and the resulting state.
 | Kind | Capture |
 | --- | --- |
 | Launch or doctor | helper stdout, `health.json`, `doctor.json` from `doctor --write` |
-| CLI | command, stdout, stderr, exit code, and a second read via `vf status` or `GET /api/runs` |
-| UI | screenshot plus a DOM or ARIA snapshot that shows the id you clicked and the heading or run row that changed |
-| Home list | `GET /api/runs` body and the visible `a.run-row` for that `target_id` |
+| CLI | command, stdout, stderr, exit code, and a second read via `vf status` or `GET /api/runs/{target_id}/{run_id}` |
+| API | method, path, request JSON, status code, response body |
+| Harness | `evidence/<pack>/poc_run.json` when a PoC run wrote one, plus the finding `state` after the run |
+| Gate | finding `state`, `validation_mech.pending_llm`, and the review response |
 
 Proof standards:
 
-- Exercise the operator path. CLI init plus Home listing is a real path. Internal DB inserts are not.
-- Side effects live on disk under `$VF_VERIFY_RUNS_ROOT/<target_id>/<run_id>/`. Read `harness.db` and `target_manifest.json`.
+- Exercise the operator path. `vf init`, `vf apply-candidate`, `vf run-once`, `vf hitl`, and the review API are real paths. A direct row insert is not.
+- Side effects live on disk under `$VF_VERIFY_RUNS_ROOT/<target_id>/<run_id>/`. Read `harness.db` through `vf status` or the run API, and read `evidence/` files before cleanup.
 - Record the feature id and entry point on the artifact. Use the filename or a one-line `meta.txt`.
+- A feature that states a fixed contract fails when the observed body does not meet that contract. Do not rewrite the feature to match a weaker result.
 
 ## Cleanup
 
@@ -133,4 +136,4 @@ Executable: `.cursor/skills/verify-vulnforge/scripts/vf-verify`
 
 `launch` records pid, port, url, and runs-root under `/tmp/vf-verify-$RUN_ID/instance.json` and points `/tmp/vf-verify-latest` at that id. `doctor` and `stop` read that record, or `VF_VERIFY_RUN_ID` when set. `env` prints `export VF_VERIFY_*` lines.
 
-Keep the map honest with `/maintain-verification-skill` when Home, the run rail, Settings, Dev, or `vf init`/`status` change.
+Keep the map honest with `/maintain-verification-skill` when the gate chain, `validate_poc`, canary evidence, or the path contract change.

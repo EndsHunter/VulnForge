@@ -1,0 +1,19 @@
+{
+  "title": "SQL injection in search_users",
+  "summary": "User input is concatenated into a SQL query.",
+  "weakness_class": "injection",
+  "threat_model": {
+    "attacker": "unauthenticated user",
+    "boundary": "HTTP query parameter to SQL engine",
+    "impact": "read or modify arbitrary rows via sql injection"
+  },
+  "citations": [
+    {
+      "path": "app.py",
+      "start_line": 9,
+      "symbol": "search_users"
+    }
+  ],
+  "evidence_id": "e-gate",
+  "severity_claim": "HIGH"
+}

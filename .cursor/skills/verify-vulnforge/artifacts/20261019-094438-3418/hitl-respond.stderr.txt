@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error": "Dual disprove still running \u2014 Accept after it settles, or Reject now.",
+  "code": "pending_llm"
+}

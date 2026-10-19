@@ -1,0 +1,1 @@
+note: stages.validate_llm is ON (default) — after mech pass, dual disprove may rejected_llm only (never auto-confirm). hunt=ornith-1.0-35b validate=ornith-1.0-35b — validate matches hunt (weak signal). Set stages.validate_llm: false to skip for speed or debug.

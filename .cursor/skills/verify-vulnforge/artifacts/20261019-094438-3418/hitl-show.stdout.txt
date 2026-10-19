@@ -1,0 +1,40 @@
+{
+  "ok": true,
+  "schema": "vulnforge/hitl-report@1",
+  "report": {
+    "schema": "vulnforge/hitl-report@1",
+    "id": "finding-1",
+    "project": "toy_sqli-a8ea3b04",
+    "harness": "vulnforge",
+    "title": "SQL injection in search_users",
+    "kind": "finding-review",
+    "status": "awaiting-review",
+    "created": "2026-10-19T09:45:12Z",
+    "updated": "2026-10-19T09:45:23Z",
+    "source": {
+      "kind": "finding",
+      "id": "1",
+      "state": "needs_human"
+    },
+    "pending_llm": true,
+    "blocks": [
+      {
+        "type": "prose",
+        "title": "Finding",
+        "markdown": "**State:** `needs_human`\n\nUser input is concatenated into a SQL query.\n\n- Attacker: unauthenticated user\n- Boundary: HTTP query parameter to SQL engine\n- Impact: read or modify arbitrary rows via sql injection\n\n`needs_human` means mechanical gates passed. `confirmed` is an explicit human accept and is not exploit proof."
+      },
+      {
+        "type": "approval",
+        "id": "finding-1-review",
+        "prompt": "Accept this finding? approved records an explicit human accept (confirmed). changes-requested records an explicit human reject. Neither value is exploit proof."
+      },
+      {
+        "type": "ask",
+        "id": "finding-1-notes",
+        "prompt": "Reviewer notes. A note alone does not accept the finding.",
+        "mode": "text"
+      }
+    ]
+  },
+  "responses": {}
+}
