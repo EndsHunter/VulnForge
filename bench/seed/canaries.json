@@ -1,0 +1,109 @@
+{
+  "tree": "pairs/pair-sqli/vulnerable",
+  "oracle": {
+    "path": "query.py",
+    "line": 3,
+    "symbol": "lookup_user",
+    "quote": "conn.execute(sql)",
+    "cwe": "CWE-89"
+  },
+  "cases": [
+    {
+      "id": "true-sink",
+      "role": "true",
+      "expect": {
+        "formed": true,
+        "reproduced": true,
+        "oracle_hit": true,
+        "poc_signal": false,
+        "path_contract_valid": true
+      },
+      "finding": {
+        "path": "query.py",
+        "line": 3,
+        "symbol": "lookup_user",
+        "cwe": "CWE-89",
+        "confidence": 0.9,
+        "evidence": "conn.execute(sql)",
+        "path_contract": ["lookup_user"],
+        "severity": "high"
+      }
+    },
+    {
+      "id": "fake-cite",
+      "role": "bad",
+      "expect": {
+        "formed": false,
+        "reproduced": false,
+        "oracle_hit": false,
+        "poc_signal": false
+      },
+      "finding": {
+        "path": "missing.py",
+        "line": 1,
+        "symbol": "lookup_user",
+        "cwe": "CWE-89",
+        "confidence": 0.8,
+        "evidence": "conn.execute(sql)",
+        "path_contract": ["lookup_user"]
+      }
+    },
+    {
+      "id": "wrong-line",
+      "role": "bad",
+      "expect": {
+        "formed": false,
+        "reproduced": false,
+        "oracle_hit": false
+      },
+      "finding": {
+        "path": "query.py",
+        "line": 99,
+        "symbol": "lookup_user",
+        "cwe": "CWE-89",
+        "confidence": 0.8,
+        "evidence": "conn.execute(sql)",
+        "path_contract": ["lookup_user"]
+      }
+    },
+    {
+      "id": "dead-poc",
+      "role": "bad",
+      "expect": {
+        "formed": true,
+        "reproduced": false,
+        "oracle_hit": false,
+        "poc_signal": true
+      },
+      "finding": {
+        "path": "poc/note.py",
+        "line": 2,
+        "symbol": "SAMPLE",
+        "cwe": "CWE-89",
+        "confidence": 0.7,
+        "evidence": "SELECT id FROM users WHERE name = '",
+        "path_contract": ["SAMPLE"]
+      }
+    },
+    {
+      "id": "overclaimed-severity",
+      "role": "bad",
+      "expect": {
+        "formed": true,
+        "reproduced": false,
+        "oracle_hit": true,
+        "poc_signal": false
+      },
+      "finding": {
+        "path": "query.py",
+        "line": 3,
+        "symbol": "lookup_user",
+        "cwe": "CWE-787",
+        "confidence": 0.99,
+        "evidence": "conn.execute(sql)",
+        "path_contract": ["lookup_user"],
+        "severity": "critical"
+      }
+    }
+  ]
+}

@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "label_source": "hand-verified-oracle",
+  "difficulty_levels": ["L0", "L1"],
+  "tasks": [
+    {
+      "id": "pair-sqli",
+      "kind": "pair",
+      "cwe": "CWE-89",
+      "component": "query",
+      "disclosure_date": "2018-06-12",
+      "split": "train",
+      "vulnerable": "pairs/pair-sqli/vulnerable",
+      "fixed": "pairs/pair-sqli/fixed",
+      "oracle": {
+        "path": "query.py",
+        "line": 3,
+        "symbol": "lookup_user",
+        "quote": "conn.execute(sql)"
+      }
+    },
+    {
+      "id": "pair-cmd",
+      "kind": "pair",
+      "cwe": "CWE-78",
+      "component": "archive",
+      "disclosure_date": "2019-11-04",
+      "split": "train",
+      "vulnerable": "pairs/pair-cmd/vulnerable",
+      "fixed": "pairs/pair-cmd/fixed",
+      "oracle": {
+        "path": "archive.py",
+        "line": 5,
+        "symbol": "unpack",
+        "quote": "os.system(\"tar xf \" + filename)"
+      }
+    },
+    {
+      "id": "pair-buf",
+      "kind": "pair",
+      "cwe": "CWE-120",
+      "component": "parser",
+      "disclosure_date": "2023-01-09",
+      "split": "train",
+      "vulnerable": "pairs/pair-buf/vulnerable",
+      "fixed": "pairs/pair-buf/fixed",
+      "oracle": {
+        "path": "parse.c",
+        "line": 4,
+        "symbol": "copy_name",
+        "quote": "strcpy(dst, src);"
+      }
+    },
+    {
+      "id": "pair-path",
+      "kind": "pair",
+      "cwe": "CWE-22",
+      "component": "files",
+      "disclosure_date": "2021-02-17",
+      "split": "dev",
+      "vulnerable": "pairs/pair-path/vulnerable",
+      "fixed": "pairs/pair-path/fixed",
+      "oracle": {
+        "path": "files.py",
+        "line": 7,
+        "symbol": "read_doc",
+        "quote": "os.path.join(ROOT, name)"
+      }
+    },
+    {
+      "id": "pair-xss",
+      "kind": "pair",
+      "cwe": "CWE-79",
+      "component": "http",
+      "disclosure_date": "2022-05-20",
+      "split": "dev",
+      "vulnerable": "pairs/pair-xss/vulnerable",
+      "fixed": "pairs/pair-xss/fixed",
+      "oracle": {
+        "path": "http.py",
+        "line": 2,
+        "symbol": "render_name",
+        "quote": "+ name +"
+      }
+    },
+    {
+      "id": "pair-int",
+      "kind": "pair",
+      "cwe": "CWE-190",
+      "component": "alloc",
+      "disclosure_date": "2025-04-18",
+      "split": "dev",
+      "vulnerable": "pairs/pair-int/vulnerable",
+      "fixed": "pairs/pair-int/fixed",
+      "oracle": {
+        "path": "alloc.c",
+        "line": 4,
+        "symbol": "make_table",
+        "quote": "n * width"
+      }
+    },
+    {
+      "id": "pair-auth",
+      "kind": "pair",
+      "cwe": "CWE-287",
+      "component": "auth",
+      "disclosure_date": "2024-09-15",
+      "split": "held_out",
+      "vulnerable": "pairs/pair-auth/vulnerable",
+      "fixed": "pairs/pair-auth/fixed",
+      "oracle": {
+        "path": "auth.py",
+        "line": 2,
+        "symbol": "allow",
+        "quote": "supplied == \"\""
+      }
+    },
+    {
+      "id": "pair-ssrf",
+      "kind": "pair",
+      "cwe": "CWE-918",
+      "component": "fetch",
+      "disclosure_date": "2024-12-01",
+      "split": "held_out",
+      "vulnerable": "pairs/pair-ssrf/vulnerable",
+      "fixed": "pairs/pair-ssrf/fixed",
+      "oracle": {
+        "path": "fetch.py",
+        "line": 5,
+        "symbol": "fetch",
+        "quote": "urllib.request.urlopen(url)"
+      }
+    },
+    {
+      "id": "benign-param",
+      "kind": "benign",
+      "cwe": null,
+      "component": "query",
+      "disclosure_date": null,
+      "split": "train",
+      "tree": "benign/benign-param"
+    },
+    {
+      "id": "benign-copy",
+      "kind": "benign",
+      "cwe": null,
+      "component": "parser",
+      "disclosure_date": null,
+      "split": "dev",
+      "tree": "benign/benign-copy"
+    },
+    {
+      "id": "benign-path",
+      "kind": "benign",
+      "cwe": null,
+      "component": "files",
+      "disclosure_date": null,
+      "split": "dev",
+      "tree": "benign/benign-path"
+    },
+    {
+      "id": "benign-escape",
+      "kind": "benign",
+      "cwe": null,
+      "component": "http",
+      "disclosure_date": null,
+      "split": "held_out",
+      "tree": "benign/benign-escape"
+    }
+  ]
+}

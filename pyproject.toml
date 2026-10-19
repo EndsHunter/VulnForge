@@ -40,15 +40,17 @@ messages = ["anthropic>=0.40"]
 
 [project.scripts]
 vf = "vulnforge.cli:main"
+bench = "bench.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["vulnforge*"]
+include = ["vulnforge*", "bench*"]
 
 [tool.setuptools.package-data]
 vulnforge = ["ui/templates/*", "ui/static/*"]
+bench = ["*.yaml", "seed/**/*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "bench"]
 pythonpath = ["."]
 addopts = ["--basetemp=.pytest_tmp"]
 markers = [

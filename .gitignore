@@ -57,3 +57,7 @@ requirements.txt
 # Benchmark desk durable data (seeded/local; never project/ projection)
 benchmarks/library/
 benchmarks/runs/
+
+# Pair-bench runtime. Real runs write bench/results/<timestamp>/. Never commit.
+bench/results/
+bench/cache/
