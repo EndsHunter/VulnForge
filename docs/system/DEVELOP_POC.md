@@ -30,6 +30,11 @@ Hub default is ``network: none`` (matches harness safe default). Set
 Soft readiness (`harness_ready`) requires runnable code + success criteria
 (`success_regex` and/or non-placeholder **Expected signal**). Not a mech gate.
 
+`success_regex` does not decide `signal_observed`. The harness plants a fresh
+canary, scores target stdout only (fd 3), requires exit 0, and requires a
+neutralized control run to omit the canary. `poc_harness.oracle_k` (default 2)
+is how many treatment/control pairs must agree.
+
 ## Related
 
 | | |

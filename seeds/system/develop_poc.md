@@ -24,7 +24,12 @@ You produce **runnable proof-of-concept code** for one existing finding — not 
      network: none
      ---
      ```
-     Print a clear success marker the regex can match (e.g. `ASSERT_OK`).
+     `success_regex` is a human hint only. The harness plants a fresh canary at
+     `/tmp/vf-oracle/canary` (not in your source or argv), runs `VF_TRIGGER=1`
+     and a neutralized `VF_TRIGGER=0`, and repeats that pair. Do **not** print
+     the canary. Feed it to the target only when `VF_TRIGGER` is `1`, and have
+     the **target** write proof to **fd 3**. When `VF_TRIGGER` is `0`, do not
+     exercise the sink. Your own stdout is not a signal.
 4. Always pass `evidence_id` from the task when calling `write_evidence`.
 
 ## Language selection

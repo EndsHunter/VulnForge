@@ -173,6 +173,9 @@ poc_harness:
   # Hitting either cap ends the session and writes evidence. Never confirms.
   iterate_max_cycles: 5
   iterate_wall_ttl_min: 15
+  # Treatment/control pairs required before signal_observed. Each pair plants a
+  # fresh canary the PoC cannot know ahead of time.
+  oracle_k: 2
 
 # Mechanical codemap (structure scaffold for recon + hunt targeting).
 # Full map (modules + files + symbols) is stored in runs.codemap_json.

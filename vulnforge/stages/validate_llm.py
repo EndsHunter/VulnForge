@@ -8,15 +8,17 @@ try to kill the finding. Can only demote/reject. Never create findings. Never
 raise severity. Never auto-confirm. Same-model dual disprove is weak signal.
 
 Aggregation:
-  - both reject → rejected_llm
-  - any stand / needs_human / parse fail → needs_human
-  - stood = count of VERDICT=stand; Report shows stood/total llm verified
+  - both reject (every slot a parsed reject) → rejected_llm
+  - any parsed stand / needs_human, with no slot error → needs_human
+  - zero parsed verdicts, slot errors, or timeouts → inconclusive
+  - stood = count of VERDICT=stand among settled slots
 
-When the flag is **off** (opt out for speed/debug), a leased validate_llm task
-(e.g. enqueued while the flag was on, then config flipped) treats mech as
-terminal for automation: promote still-open findings that already passed
-validate_mech to ``needs_human`` (never auto-``confirmed`` — that is a human
-decision).
+Inconclusive does not clear ``pending_llm``. Accept stays blocked.
+A missing or unparseable reply is not a verdict. ``VERDICT=`` / JSON only.
+
+When the flag is **off**, a leased validate_llm task does not invent a
+disprove. Findings still marked ``pending_llm`` stay inconclusive and
+Accept stays blocked (never auto-``confirmed``).
 """
 
 from __future__ import annotations
@@ -123,7 +125,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     Adversarial dual-disprove pass.
 
     Behavior:
-      - flag off + open finding (mech already passed / pending_llm) -> needs_human
+      - flag off + open finding still pending_llm -> inconclusive, Accept blocked
       - flag off + missing/terminal finding -> succeeded skip (no mutation)
       - flag on + missing/invalid finding -> failed_task (never raise / never confirm)
       - flag on + terminal finding -> succeeded skip
@@ -626,6 +628,110 @@ def _stamp_partial_llm(
     db.conn.commit()
 
 
+def _parsed_disprove_slots(verifier_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Slots that actually parsed a VERDICT tag or JSON verdict."""
+    parsed: list[dict[str, Any]] = []
+    for vr in verifier_results:
+        if vr.get("llm_failed"):
+            continue
+        reason = str(vr.get("parse_reason") or "")
+        if reason in {"tag", "json"}:
+            parsed.append(vr)
+    return parsed
+
+
+def _disprove_settled(verifier_results: list[dict[str, Any]]) -> bool:
+    """True only when every slot parsed and none errored or timed out."""
+    if not verifier_results:
+        return False
+    if any(vr.get("llm_failed") for vr in verifier_results):
+        return False
+    return len(_parsed_disprove_slots(verifier_results)) == len(verifier_results)
+
+
+def _stamp_disprove_inconclusive(
+    task,
+    db,
+    run_dir: Path,
+    fid: int,
+    finding,
+    *,
+    verifier_results: list[dict[str, Any]],
+    model_id: str | None,
+    reason: str,
+) -> dict[str, Any]:
+    """Zero parsed verdicts / errors / timeouts. Leave pending_llm set.
+
+    Accept stays blocked. The finding is not rejected and not confirmed.
+    """
+    body = dict(finding.body or {})
+    mech_meta = body.get("validation_mech")
+    if isinstance(mech_meta, dict):
+        mech_meta = dict(mech_meta)
+        mech_meta["pending_llm"] = True
+        mech_meta["resolved"] = "inconclusive"
+        body["validation_mech"] = mech_meta
+    parsed_n = len(_parsed_disprove_slots(verifier_results))
+    total = len(verifier_results)
+    label = f"0 valid of {total}"
+    body["validation_llm"] = {
+        "status": "inconclusive",
+        "verdict": "inconclusive",
+        "parsed": parsed_n,
+        "total": total,
+        "label": label,
+        "aggregate": "inconclusive",
+        "parse_reason": reason,
+        "model_id": model_id,
+        "verifiers": verifier_results,
+        "at": utc_now_iso(),
+        "residual_risk": (
+            "No settled disprove verdict. Errors, timeouts, and unparsed "
+            "replies do not clear pending_llm. Accept stays blocked."
+        ),
+    }
+    body["needs_human"] = True
+    db.conn.execute(
+        "UPDATE findings SET body_json=?, updated_at=? WHERE id=?",
+        (json.dumps(body), utc_now_iso(), fid),
+    )
+    db.conn.commit()
+    _publish_hitl(db, run_dir, fid)
+    _emit_event(
+        run_dir,
+        {
+            "source": "vf",
+            "event": "validate_llm_done",
+            "task_id": getattr(task, "id", None),
+            "finding_id": fid,
+            "verdict": "inconclusive",
+            "parsed": parsed_n,
+            "total": total,
+            "label": label,
+            "finding_state": finding.state,
+            "parse_reason": reason,
+            "model_id": model_id,
+            "pending_llm": True,
+        },
+    )
+    return {
+        "status": "succeeded",
+        "verdict": "inconclusive",
+        "parsed": parsed_n,
+        "total": total,
+        "label": label,
+        "finding_id": fid,
+        "finding_state": finding.state,
+        "parse_reason": reason,
+        "model_id": model_id,
+        "confirmed": False,
+        "rejected": False,
+        "needs_human": finding.state == "needs_human",
+        "pending_llm": True,
+        "accept_blocked": True,
+    }
+
+
 def _apply_dual_verdict(
     task,
     db,
@@ -657,18 +763,22 @@ def _apply_dual_verdict(
             "finding_state": finding.state,
         }
 
-    if not verifier_results:
-        verifier_results = [
-            {
-                "id": "none",
-                "prompt": "",
-                "verdict": "needs_human",
-                "parse_reason": "no_verifiers",
-                "model_id": model_id,
-                "reasoning": "",
-                "at": utc_now_iso(),
-            }
-        ]
+    if not _disprove_settled(verifier_results):
+        reason = (
+            "llm_error_or_timeout"
+            if any(vr.get("llm_failed") for vr in verifier_results)
+            else "no_parsed_verdicts"
+        )
+        return _stamp_disprove_inconclusive(
+            task,
+            db,
+            run_dir,
+            fid,
+            finding,
+            verifier_results=verifier_results,
+            model_id=model_id,
+            reason=reason,
+        )
 
     agg = aggregate_disprove_verdicts(verifier_results)
     top_verdict = agg["verdict"]
@@ -855,12 +965,10 @@ def _flag_off_skip_or_confirm(
     fid_err: str | None,
 ) -> dict[str, Any]:
     """
-    LLM stage disabled â†’ mech is terminal for findings that already passed mech.
+    LLM stage disabled. No disprove verdicts were parsed.
 
-    Stale validate_llm tasks (enqueued while flag was on) promote findings that
-    carry ``validation_mech.pending_llm`` (set by validate_mech) so they are not
-    stuck forever as candidate. Bare candidates without that stamp are not
-    promoted (would bypass mech).
+    Findings still marked ``pending_llm`` stay inconclusive and Accept stays
+    blocked. Bare candidates without that stamp are not mutated.
     """
     if fid is None:
         _emit_event(
@@ -956,16 +1064,23 @@ def _flag_off_skip_or_confirm(
             "promoted": False,
         }
 
-    # Mech already passed -> needs_human (LLM stage off; human is still the confirm gate).
+    # Flag off produced zero disprove verdicts. Do not clear pending_llm.
     if isinstance(mech_meta, dict):
         mech_meta = dict(mech_meta)
-        mech_meta["pending_llm"] = False
-        mech_meta["resolved"] = "needs_human_llm_disabled"
+        mech_meta["pending_llm"] = True
+        mech_meta["resolved"] = "inconclusive_llm_disabled"
         body["validation_mech"] = mech_meta
     body["validation_llm"] = {
-        "status": "disabled_after_enqueue",
+        "status": "inconclusive",
+        "verdict": "inconclusive",
+        "parsed": 0,
+        "total": 0,
+        "label": "0 valid of 0",
         "reason": "validate_llm_disabled",
-        "note": "LLM stage off -> mech is terminal for automation; awaiting human review",
+        "note": (
+            "LLM stage off with no parsed disprove verdicts. "
+            "Accept stays blocked until disprove settles."
+        ),
         "at": utc_now_iso(),
     }
     body["needs_human"] = True
@@ -984,16 +1099,19 @@ def _flag_off_skip_or_confirm(
             "finding_id": fid,
             "reason": "validate_llm_disabled",
             "finding_state": "needs_human",
-            "verdict": "needs_human",
-            "promoted": True,
+            "verdict": "inconclusive",
+            "promoted": False,
+            "pending_llm": True,
         },
     )
     return {
         "status": "succeeded",
         "skipped": True,
         "reason": "validate_llm_disabled",
-        "verdict": "needs_human",
-        "promoted": True,
+        "verdict": "inconclusive",
+        "promoted": False,
+        "pending_llm": True,
+        "accept_blocked": True,
         "finding_id": fid,
         "finding_state": "needs_human",
     }

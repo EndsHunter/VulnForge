@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -64,6 +65,35 @@ VERDICTS = frozenset(
 
 DEFAULT_POC_RUNNER = "sandbox"
 DEFAULT_POC_NETWORK = "none"
+# Treatment + neutralized control, repeated. A single self-printed marker is not a signal.
+DEFAULT_ORACLE_K = 2
+CANARY_ENV = "VF_CANARY"
+TRIGGER_ENV = "VF_TRIGGER"
+ORACLE_MARK_ENV = "VF_ORACLE_MARK"
+POC_COMMAND_ENV = "VF_POC_COMMAND"
+
+# Guest script. The canary and the PoC command arrive only as env, never as literals.
+# Scored bytes are fd 3 (target stdout). The PoC's own stdout/stderr are framed after
+# a per-run mark and are not a signal. The canary file is planted on every phase so
+# an unconditional copy shows up on the neutralized control.
+ORACLE_WRAPPER = """mark=$VF_ORACLE_MARK
+can=$VF_CANARY
+cmd=$VF_POC_COMMAND
+unset VF_CANARY
+unset VF_ORACLE_MARK
+d=/tmp/vf-oracle
+mkdir -p "$d"
+printf '%s' "$can" > "$d/canary"
+: > "$d/target.stdout"
+sh -c "$cmd" 3>"$d/target.stdout" >"$d/poc.stdout" 2>"$d/poc.stderr"
+ec=$?
+cat "$d/target.stdout"
+printf '\\n%s\\n' "$mark"
+cat "$d/poc.stdout"
+printf '\\n%sERR\\n' "$mark"
+cat "$d/poc.stderr"
+exit "$ec"
+"""
 
 _HOST_RUNNERS = frozenset({"local_subprocess", "local", "subprocess", "host"})
 _PLAIN_RUNNERS = frozenset({"runc", "docker-runc", "plain", "default-runc"})
@@ -140,6 +170,7 @@ def harness_config(cfg: dict | None) -> dict[str, Any]:
     memory = str(raw.get("memory") or "512m").strip() or "512m"
     cycles = _clamp_int(raw.get("iterate_max_cycles"), default=5, lo=1, hi=50)
     ttl_min = _clamp_int(raw.get("iterate_wall_ttl_min"), default=15, lo=1, hi=240)
+    oracle_k = _clamp_int(raw.get("oracle_k"), default=DEFAULT_ORACLE_K, lo=1, hi=5)
     return {
         "enabled": bool(raw.get("enabled", True)),
         "runner": runner or DEFAULT_POC_RUNNER,
@@ -159,6 +190,7 @@ def harness_config(cfg: dict | None) -> dict[str, Any]:
         # Iterate-in-sandbox caps. Settings overrides these via poc_harness.
         "iterate_max_cycles": cycles,
         "iterate_wall_ttl_min": ttl_min,
+        "oracle_k": oracle_k,
     }
 
 
@@ -356,15 +388,16 @@ def _split_command(cmd: str) -> list[str]:
 
 
 def _match_signal(stdout: str, stderr: str, success_regex: str | None) -> bool | None:
+    """Match on stdout only. stderr is ignored so a traceback cannot quote a hit."""
+    del stderr
     if not success_regex:
         return None
+    text = stdout or ""
     try:
         pat = re.compile(success_regex, re.MULTILINE | re.DOTALL)
     except re.error:
-        blob = stdout + "\n" + stderr
-        return success_regex in blob
-    blob = stdout + "\n" + stderr
-    return bool(pat.search(blob))
+        return success_regex in text
+    return bool(pat.search(text))
 
 
 def scrub_guest_env(env: dict[str, str] | None) -> tuple[dict[str, str], list[str]]:
@@ -403,13 +436,246 @@ def classify_run_result(
         return "poc_broken"
     if not ran:
         return "poc_broken"
+    # A marker on a non-zero exit is not a reproduction.
     if signal_matched is True:
-        return "signal_observed"
+        if exit_code == 0 and not timed_out:
+            return "signal_observed"
+        return "inconclusive"
     if signal_matched is False:
         return "signal_absent"
     if exit_code == 0:
         return "inconclusive"
     return "poc_broken"
+
+
+def mint_canary() -> str:
+    """Fresh secret for one harness invocation. The PoC cannot know it ahead of time."""
+    return secrets.token_hex(16)
+
+
+def mint_oracle_mark() -> str:
+    """Framing token so PoC stdout cannot be mistaken for target stdout."""
+    return "VF_MARK_" + secrets.token_hex(8)
+
+
+def marker_in_poc_or_args(marker: str, pack_dir: Path, command: str) -> str | None:
+    """Return a reason if the harness marker is already in the PoC or its command."""
+    if not marker:
+        return None
+    if marker in (command or ""):
+        return "marker_in_args"
+    root = Path(pack_dir)
+    if not root.is_dir():
+        return None
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > 200_000 or size == 0:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if marker in text:
+            return "marker_in_poc_source"
+    return None
+
+
+def split_oracle_capture(stdout: str, mark: str) -> tuple[str, str, str]:
+    """Split wrapper output into target stdout, PoC stdout, PoC stderr.
+
+    Missing framing means the scored channel was not produced. Those bytes are
+    treated as PoC output, not a target signal.
+    """
+    text = stdout or ""
+    if not mark:
+        return "", text, ""
+    token = f"\n{mark}\n"
+    err_token = f"\n{mark}ERR\n"
+    if token not in text:
+        return "", text, ""
+    target, rest = text.split(token, 1)
+    if err_token in rest:
+        poc_out, poc_err = rest.split(err_token, 1)
+    else:
+        poc_out, poc_err = rest, ""
+    return target, poc_out, poc_err
+
+
+def _shows_canary(text: str, canary: str) -> bool:
+    return bool(canary) and canary in (text or "")
+
+
+def _trial_from_capture(phase: str, captured: dict[str, Any], mark: str) -> dict[str, Any]:
+    target, poc_out, poc_err = split_oracle_capture(captured.get("stdout") or "", mark)
+    return {
+        "phase": phase,
+        "exit_code": captured.get("exit_code"),
+        "timed_out": bool(captured.get("timed_out")),
+        "spawn_error": captured.get("spawn_error"),
+        "ran": bool(captured.get("ran")),
+        "target_stdout": target,
+        "poc_stdout": poc_out,
+        "poc_stderr": poc_err,
+        "raw_stderr": captured.get("stderr") or "",
+        "stdout": captured.get("stdout") or "",
+        "stderr": captured.get("stderr") or "",
+        "duration_ms": captured.get("duration_ms"),
+        "argv": captured.get("argv"),
+        "capture": captured,
+    }
+
+
+def judge_oracle_trials(
+    trials: list[dict[str, Any]],
+    *,
+    canary: str,
+    k: int,
+) -> dict[str, Any]:
+    """Decide signal_observed only from a differential canary oracle.
+
+    Requirements, all of them:
+    - k treatment runs and k control runs
+    - canary on target stdout only (not PoC stdout/stderr, not raw stderr)
+    - treatment exit 0
+    - neutralized control does not show the canary
+    """
+    k = max(1, int(k))
+
+    def _infra(trial: dict[str, Any]) -> str | None:
+        err = str(trial.get("spawn_error") or "")
+        if err.startswith("unsafe_mount") or "host_network" in err:
+            return "unsafe_skipped"
+        if _looks_like_build_failure(trial):
+            return "build_failed"
+        if _looks_like_missing_runtime(trial) or _docker_binary_missing(trial):
+            return "sandbox_unavailable"
+        if err == "sandbox_unavailable":
+            return "sandbox_unavailable"
+        return None
+
+    for trial in trials:
+        infra = _infra(trial)
+        if infra:
+            return {
+                "verdict": infra,
+                "signal_matched": None,
+                "reason": trial.get("spawn_error") or infra,
+            }
+
+    if not trials or any(
+        trial.get("spawn_error") or trial.get("timed_out") or not trial.get("ran")
+        for trial in trials
+    ):
+        return {
+            "verdict": "poc_broken",
+            "signal_matched": None,
+            "reason": "spawn_failed",
+        }
+
+    treatment = [t for t in trials if t.get("phase") == "treatment"]
+    control = [t for t in trials if t.get("phase") == "control"]
+    if len(treatment) < k or len(control) < k:
+        return {
+            "verdict": "inconclusive",
+            "signal_matched": False,
+            "reason": "short_run",
+        }
+
+    def _poc_leaked(trial: dict[str, Any]) -> bool:
+        return (
+            _shows_canary(str(trial.get("poc_stdout") or ""), canary)
+            or _shows_canary(str(trial.get("poc_stderr") or ""), canary)
+            or _shows_canary(str(trial.get("raw_stderr") or ""), canary)
+        )
+
+    if any(_poc_leaked(t) for t in trials):
+        return {
+            "verdict": "inconclusive",
+            "signal_matched": False,
+            "reason": "marker_on_poc_stream",
+        }
+
+    control_hits = sum(
+        1 for t in control if _shows_canary(str(t.get("target_stdout") or ""), canary)
+    )
+    if control_hits:
+        return {
+            "verdict": "inconclusive",
+            "signal_matched": False,
+            "reason": "control_showed_canary",
+            "control_hits": control_hits,
+        }
+
+    hits = 0
+    for trial in treatment:
+        showed = _shows_canary(str(trial.get("target_stdout") or ""), canary)
+        if showed and trial.get("exit_code") != 0:
+            return {
+                "verdict": "inconclusive",
+                "signal_matched": False,
+                "reason": "nonzero_exit",
+            }
+        if showed and trial.get("exit_code") == 0:
+            hits += 1
+    if hits == k and len(treatment) == k:
+        return {
+            "verdict": "signal_observed",
+            "signal_matched": True,
+            "reason": "differential_ok",
+            "treatment_hits": hits,
+            "control_hits": 0,
+        }
+    if hits == 0:
+        if any(t.get("exit_code") != 0 for t in treatment):
+            return {
+                "verdict": "poc_broken",
+                "signal_matched": False,
+                "reason": "nonzero_exit",
+                "treatment_hits": 0,
+                "control_hits": 0,
+            }
+        return {
+            "verdict": "signal_absent",
+            "signal_matched": False,
+            "reason": "canary_absent",
+            "treatment_hits": 0,
+            "control_hits": 0,
+        }
+    return {
+        "verdict": "inconclusive",
+        "signal_matched": False,
+        "reason": "flaky",
+        "treatment_hits": hits,
+        "control_hits": 0,
+    }
+
+
+def _redact_marker(value: Any, markers: list[str]) -> Any:
+    if isinstance(value, str):
+        out = value
+        for marker in markers:
+            if marker:
+                out = out.replace(marker, "<redacted>")
+        return out
+    if isinstance(value, list):
+        return [_redact_marker(item, markers) for item in value]
+    return value
+
+
+def _shell_exports(env: dict[str, str]) -> str:
+    parts: list[str] = []
+    for key, value in env.items():
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(key)):
+            continue
+        parts.append(f"{key}={shlex.quote(str(value))}")
+    if not parts:
+        return ""
+    return "export " + " ".join(parts) + "; "
 
 
 def _empty_result(runner: str, spawn_error: str) -> dict[str, Any]:
@@ -1108,13 +1374,16 @@ def run_sandbox_firecracker(
     jail_bin: str,
     memory: str,
     timeout_s: int,
+    env_extra: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     work = Path(tempfile.mkdtemp(prefix="vf-poc-fc-"))
     os.chmod(work, 0o700)
+    guest_env, _dropped = scrub_guest_env(env_extra)
+    guest_command = _shell_exports(guest_env) + command
     try:
         plan = build_firecracker_plan(
             pack_dir=pack_dir,
-            command=command,
+            command=guest_command,
             kernel=kernel,
             rootfs=rootfs,
             fc_bin=fc_bin,
@@ -1160,6 +1429,7 @@ def run_isolated(
             jail_bin=str(choice.get("jailer_path") or ""),
             memory=hc["memory"],
             timeout_s=int(hc["timeout_s"]),
+            env_extra=env_extra,
         )
     return run_sandbox_docker(
         pack_dir,
@@ -1222,7 +1492,21 @@ def execute_poc_for_pack(
     if network in ("host", "hostnet", "host-net"):
         network = "host"
     hc["network"] = network
+    # Frontmatter success_regex is not the oracle. A PoC that prints its own
+    # marker cannot certify signal_observed.
     success_regex = str(meta.get("success_regex") or readiness.get("success_regex") or "").strip() or None
+    oracle_k = int(hc.get("oracle_k") or DEFAULT_ORACLE_K)
+    canary = ""
+    oracle_mark = ""
+    oracle_meta: dict[str, Any] = {
+        "k": oracle_k,
+        "reason": None,
+        "stdout_only": True,
+        "exit_required": 0,
+        "planted": False,
+        "runs": 0,
+    }
+    trials: list[dict[str, Any]] = []
 
     env_merged: dict[str, str] = {}
     if isinstance(meta.get("env"), dict):
@@ -1251,63 +1535,91 @@ def execute_poc_for_pack(
         operator_hint = "Add runnable PoC code under the evidence pack (e.g. poc.py)."
         verdict_override = "poc_broken"
     else:
-        choice = select_isolation(hc, probe=probe)
-        if not choice.get("ok"):
-            skipped_reason = str(choice.get("error") or "sandbox_unavailable")
-            operator_hint = str(choice.get("hint") or SANDBOX_MISSING_HINT)
-            verdict_override = str(choice.get("verdict") or "sandbox_unavailable")
+        canary = mint_canary()
+        oracle_mark = mint_oracle_mark()
+        leak = marker_in_poc_or_args(canary, pack_dir, command)
+        if leak:
+            skipped_reason = leak
+            verdict_override = "poc_broken"
+            oracle_meta["reason"] = leak
+            operator_hint = (
+                "The harness canary appears in the PoC source or run command. "
+                "That is poc_broken, not a signal."
+            )
         else:
-            try:
-                result = run_isolated(
-                    pack_dir,
-                    command,
-                    choice=choice,
-                    hc=hc,
-                    network=network,
-                    env_extra=env_merged or None,
-                    target_path=target,
-                )
-            except Exception as e:  # noqa: BLE001
-                result = _empty_result(str(choice.get("isolation") or "sandbox"), f"run_error:{e}")
+            choice = select_isolation(hc, probe=probe)
+            if not choice.get("ok"):
+                skipped_reason = str(choice.get("error") or "sandbox_unavailable")
+                operator_hint = str(choice.get("hint") or SANDBOX_MISSING_HINT)
+                verdict_override = str(choice.get("verdict") or "sandbox_unavailable")
+            else:
+                oracle_meta["planted"] = True
+                for _n in range(oracle_k):
+                    for phase, trigger in (("treatment", "1"), ("control", "0")):
+                        trial_env = dict(env_merged)
+                        trial_env[CANARY_ENV] = canary
+                        trial_env[TRIGGER_ENV] = trigger
+                        trial_env[ORACLE_MARK_ENV] = oracle_mark
+                        trial_env[POC_COMMAND_ENV] = command
+                        try:
+                            captured = run_isolated(
+                                pack_dir,
+                                ORACLE_WRAPPER,
+                                choice=choice,
+                                hc=hc,
+                                network=network,
+                                env_extra=trial_env,
+                                target_path=target,
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            captured = _empty_result(
+                                str(choice.get("isolation") or "sandbox"),
+                                f"run_error:{e}",
+                            )
+                        trials.append(_trial_from_capture(phase, captured, oracle_mark))
+                oracle_meta["runs"] = len(trials)
+                if trials:
+                    result = trials[-1]["capture"]
 
     if result is None:
         result = _empty_result(str(choice.get("isolation") or hc["runner"]), skipped_reason or "skipped")
 
-    signal_matched = _match_signal(
-        result.get("stdout") or "",
-        result.get("stderr") or "",
-        success_regex,
-    )
-    spawn_err = result.get("spawn_error")
     if verdict_override in ("unsafe_skipped", "sandbox_unavailable", "poc_broken") and skipped_reason:
         verdict = verdict_override
-    elif str(spawn_err or "").startswith("unsafe_mount") or "host_network" in str(spawn_err or ""):
-        verdict = "unsafe_skipped"
-        operator_hint = operator_hint or (
-            "Refused unsafe mount or host network. Evidence pack and optional target stay read-only."
+        signal_matched = False if oracle_meta.get("reason") else None
+    elif trials:
+        judged = judge_oracle_trials(trials, canary=canary, k=oracle_k)
+        verdict = str(judged.get("verdict") or "inconclusive")
+        signal_matched = judged.get("signal_matched")
+        oracle_meta["reason"] = judged.get("reason")
+        if "treatment_hits" in judged:
+            oracle_meta["treatment_hits"] = judged.get("treatment_hits")
+        if "control_hits" in judged:
+            oracle_meta["control_hits"] = judged.get("control_hits")
+        hint = {
+            "control_showed_canary": (
+                "The neutralized control also showed the canary. Not a signal."
+            ),
+            "marker_on_poc_stream": (
+                "The canary was on the PoC's own stdout or stderr. "
+                "Only target stdout (fd 3) counts, and exit 0 is required."
+            ),
+            "nonzero_exit": "The canary was on target stdout but the process did not exit 0.",
+            "flaky": "The canary was not observed on every treatment run.",
+            "canary_absent": "The harness canary was not on target stdout.",
+        }.get(str(oracle_meta.get("reason") or ""))
+        if hint:
+            operator_hint = operator_hint or hint
+        last_treatment = next(
+            (t for t in reversed(trials) if t.get("phase") == "treatment"),
+            trials[-1],
         )
-    elif _looks_like_build_failure(result):
-        verdict = "build_failed"
-        operator_hint = operator_hint or (
-            f"Sandbox image {hc['docker_image']} was not usable. "
-            "Pre-pull the pinned image on the Linux sandbox host. PoC was not run on the host."
-        )
-    elif _looks_like_missing_runtime(result) or _docker_binary_missing(result):
-        verdict = "sandbox_unavailable"
-        operator_hint = operator_hint or SANDBOX_MISSING_HINT
+        result = dict(last_treatment["capture"])
+        result["stdout"] = last_treatment.get("target_stdout") or ""
+        result["stderr"] = last_treatment.get("raw_stderr") or ""
     else:
-        verdict = classify_run_result(
-            ran=bool(result.get("ran")) and not spawn_err,
-            exit_code=result.get("exit_code"),
-            timed_out=bool(result.get("timed_out")),
-            spawn_error=spawn_err,
-            signal_matched=signal_matched,
-            skipped_reason=None,
-        )
-        if result.get("timed_out"):
-            verdict = "poc_broken"
-        if spawn_err and verdict not in ("unsafe_skipped", "sandbox_unavailable", "build_failed"):
-            verdict = "poc_broken"
+        signal_matched = None
+        verdict = "inconclusive"
 
     if verdict not in VERDICTS:
         verdict = "inconclusive"
@@ -1350,20 +1662,29 @@ def execute_poc_for_pack(
             "memory": hc["memory"],
             "pids_limit": hc["pids_limit"],
             "sandbox_selected": bool(choice.get("ok")),
+            "oracle_k": oracle_k,
         },
+        "oracle": oracle_meta,
         "ran": bool(result.get("ran")),
         "exit_code": result.get("exit_code"),
         "timed_out": bool(result.get("timed_out")),
         "spawn_error": result.get("spawn_error"),
         "duration_ms": result.get("duration_ms"),
-        "argv": result.get("argv"),
-        "stdout_excerpt": _truncate(result.get("stdout") or "", 8000),
-        "stderr_excerpt": _truncate(result.get("stderr") or "", 4000),
+        "argv": _redact_marker(result.get("argv"), [canary, oracle_mark]),
+        "stdout_excerpt": _truncate(
+            str(_redact_marker(result.get("stdout") or "", [canary, oracle_mark])),
+            8000,
+        ),
+        "stderr_excerpt": _truncate(
+            str(_redact_marker(result.get("stderr") or "", [canary, oracle_mark])),
+            4000,
+        ),
         "suggested_finding_action": suggested,
         "operator_hint": operator_hint or result.get("operator_hint"),
         "env_dropped": env_dropped,
         "caveats": [
             "Sandbox output is evidence only. It is not exploit proof and does not confirm the finding.",
+            "signal_observed requires the harness canary on target stdout (fd 3) for every treatment run, absent when the trigger is neutralized, with exit 0. A marker in the PoC source, args, or the PoC's own streams is not a signal.",
             "confirmed stays human-only. needs_human and HITL are unchanged by a sandbox hit.",
             "PoC failure or signal_absent is not a false positive.",
             "Guest network defaults to none. Host network and docker.sock are refused.",

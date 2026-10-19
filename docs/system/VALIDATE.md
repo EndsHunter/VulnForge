@@ -56,7 +56,7 @@ poc_harness:
 
 ### Sandbox one-shot (validate_poc)
 
-Linux only. macOS and Windows need a Linux sandbox host. v1 runs the PoC **once** inside:
+Linux only. macOS and Windows need a Linux sandbox host. v1 runs the PoC inside a sandbox and scores a harness-planted canary (not the PoC's own `success_regex`). Isolation order:
 
 1. **MicroVM** — Docker runtime `kata-qemu` / `kata-clh` / `kata`, or `kata-fc` only when host `firecracker` and `jailer` are patched, or direct Firecracker+jailer when `firecracker_kernel` and `firecracker_rootfs` are set and `/dev/kvm` is usable.
 2. **gVisor** — Docker runtime `runsc`.
@@ -69,6 +69,8 @@ Linux only. macOS and Windows need a Linux sandbox host. v1 runs the PoC **once*
 **Firecracker patch bar** (CVE-2026-5747 virtio-pci OOB, CVE-2026-1386 jailer symlink overwrite): accept **1.14.4 through 1.14.x**, or **1.15.1 and later**. Boot with `pci=off`. Direct Firecracker uses a fresh `0700` jail dir and jailer. The guest rootfs must read `vf.cmd=<base64>` from `/proc/cmdline` (see `docs/harness/validate/firecracker-guest-init.sh`).
 
 **Outcomes** (evidence only): `signal_observed` | `signal_absent` | `poc_broken` | `inconclusive` | `build_failed` | `sandbox_unavailable` | `unsafe_skipped`. The UI says “sandbox reproduced” / “signal observed”. That does **not** set `confirmed` and does **not** clear `needs_human` or HITL. PoC failure is not a false positive. `validate_mech` and `validate_llm` (when on) still run.
+
+`signal_observed` requires the harness canary on target stdout (fd 3) for every treatment run (`poc_harness.oracle_k`, default 2), exit 0, and a neutralized control (`VF_TRIGGER=0`) that does not show the canary. If that marker is in the PoC source or run args, the verdict is `poc_broken`.
 
 **Run-start toggle** (`vf init --sandbox-poc`, New audit “Sandbox PoC one-shot”, default off): init and campaign start refuse when this process cannot use the Docker API or isolation would be `sandbox_unavailable`. After `usermod -aG docker`, log out and back in; `newgrp` does not update the dashboard or Ralph. When the toggle is on and isolation works, idle Ralph enqueues one `validate_poc` per harness-ready `needs_human` finding. A missing sandbox at task time writes the same fail-closed enums and the campaign continues. Operator pack (Arch/Omarchy, `~/Projects/OSSvulnHunting`, restart the dashboard after pull): [docs/harness/validate/SANDBOX_HOST.md](../harness/validate/SANDBOX_HOST.md).
 

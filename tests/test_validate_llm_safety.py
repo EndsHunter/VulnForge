@@ -321,9 +321,12 @@ def test_flag_on_disprove_stand_needs_human(tmp_path: Path, toy_sqli: Path):
     db.close()
 
 
-def test_flag_on_disprove_parse_fail_needs_human_never_confirms(
+def test_flag_on_disprove_parse_fail_stays_inconclusive(
     tmp_path: Path, toy_sqli: Path
 ):
+    """Zero parsed verdicts do not clear pending_llm. Accept stays blocked."""
+    from vulnforge.control import ops as dashops
+
     run_dir, db = _setup_run(tmp_path, toy_sqli)
     body = _stamp_mech_pass(_good_body(toy_sqli))
     _write_evidence(run_dir)
@@ -331,13 +334,96 @@ def test_flag_on_disprove_parse_fail_needs_human_never_confirms(
     cfg = _fake_cfg(_PARSE_FAIL, _PARSE_FAIL)
     r = validate_llm.run(T(fid), db, run_dir, cfg)
     assert r["status"] == "succeeded"
-    assert r.get("verdict") == "needs_human"
-    assert r.get("stood") == 0
+    assert r.get("verdict") == "inconclusive"
+    assert r.get("pending_llm") is True
+    assert r.get("accept_blocked") is True
+    assert r.get("label") == "0 valid of 2"
     f = db.get_finding(fid)
     assert f.state == "needs_human"
     assert f.state != "confirmed"
-    assert f.body.get("needs_human") is True
+    assert (f.body.get("validation_mech") or {}).get("pending_llm") is True
+    vl = f.body.get("validation_llm") or {}
+    assert vl.get("status") == "inconclusive"
+    assert vl.get("verdict") == "inconclusive"
+    assert vl.get("parsed") == 0
     db.close()
+    refused = dashops.review_finding(run_dir, fid, action="confirm", notes="too early")
+    assert refused["ok"] is False
+    assert refused["code"] == "pending_llm"
+
+
+def _failed_cfg(*results: LLMResult) -> dict:
+    return {
+        "stages": {"validate_llm": True},
+        "llm": {
+            "fake": True,
+            "model": "fake-disprove",
+            "fake_responses": list(results),
+        },
+        "packet": {"max_file_slice_chars": 4000},
+    }
+
+
+def test_disprove_errors_and_timeouts_stay_inconclusive(
+    tmp_path: Path, toy_sqli: Path
+):
+    """Slot errors and timeouts are not parsed verdicts. Accept stays blocked."""
+    from vulnforge.control import ops as dashops
+
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _stamp_mech_pass(_good_body(toy_sqli))
+    _write_evidence(run_dir)
+    fid = db.insert_finding(body, state="needs_human")
+    err = LLMResult(
+        ok=False,
+        classification=ResponseClass.TRUNCATED,
+        content=None,
+        tool_calls=[],
+        raw=None,
+        model_id="fake-disprove",
+        error="timeout",
+    )
+    r = validate_llm.run(T(fid), db, run_dir, _failed_cfg(err, err))
+    assert r["status"] == "succeeded"
+    assert r.get("verdict") == "inconclusive"
+    assert r.get("pending_llm") is True
+    f = db.get_finding(fid)
+    assert f.state == "needs_human"
+    assert (f.body.get("validation_mech") or {}).get("pending_llm") is True
+    assert (f.body.get("validation_llm") or {}).get("status") == "inconclusive"
+    assert (f.body.get("validation_llm") or {}).get("parse_reason") == "llm_error_or_timeout"
+    db.close()
+    refused = dashops.review_finding(run_dir, fid, action="confirm", notes="timeout")
+    assert refused["ok"] is False
+    assert refused["code"] == "pending_llm"
+
+
+def test_disprove_infra_timeout_does_not_clear_pending(
+    tmp_path: Path, toy_sqli: Path
+):
+    from vulnforge.control import ops as dashops
+
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _stamp_mech_pass(_good_body(toy_sqli))
+    _write_evidence(run_dir)
+    fid = db.insert_finding(body, state="needs_human")
+    infra = LLMResult(
+        ok=False,
+        classification=ResponseClass.TRANSPORT,
+        content=None,
+        tool_calls=[],
+        raw=None,
+        model_id="fake-disprove",
+        error="connection timed out",
+    )
+    r = validate_llm.run(T(fid), db, run_dir, _failed_cfg(infra))
+    assert r["status"] == "failed_infra"
+    f = db.get_finding(fid)
+    assert (f.body.get("validation_mech") or {}).get("pending_llm") is True
+    db.close()
+    refused = dashops.review_finding(run_dir, fid, action="confirm", notes="infra")
+    assert refused["ok"] is False
+    assert refused["code"] == "pending_llm"
 
 
 def test_mech_with_validate_llm_enqueues_then_disprove(
@@ -369,10 +455,12 @@ def test_mech_with_validate_llm_enqueues_then_disprove(
     db.close()
 
 
-def test_flag_off_after_pending_llm_promotes_needs_human(
+def test_flag_off_with_zero_verdicts_stays_inconclusive(
     tmp_path: Path, toy_sqli: Path
 ):
-    """Flag flipped off after mech enqueue must not leave stuck pending_llm forever."""
+    """Flag off mid-queue must not clear pending_llm or unlock Accept."""
+    from vulnforge.control import ops as dashops
+
     run_dir, db = _setup_run(tmp_path, toy_sqli)
     body = _good_body(toy_sqli)
     _write_evidence(run_dir)
@@ -381,20 +469,26 @@ def test_flag_off_after_pending_llm_promotes_needs_human(
     assert r["verdict"] == "pending_llm"
     assert db.get_finding(fid).state == "needs_human"
 
-    # Operator turns flag off; stale validate_llm task runs.
+    # Operator turns flag off; stale validate_llm task runs with no verdicts.
     r2 = validate_llm.run(
         T(fid), db, run_dir, {"stages": {"validate_llm": False}}
     )
     assert r2["status"] == "succeeded"
-    assert r2.get("promoted") is True
-    assert r2.get("verdict") == "needs_human"
+    assert r2.get("promoted") is not True
+    assert r2.get("verdict") == "inconclusive"
+    assert r2.get("pending_llm") is True
     f = db.get_finding(fid)
     assert f.state == "needs_human"
-    assert f.body.get("needs_human") is True
-    assert (f.body.get("validation_llm") or {}).get("status") == "disabled_after_enqueue"
+    assert (f.body.get("validation_mech") or {}).get("pending_llm") is True
+    vl = f.body.get("validation_llm") or {}
+    assert vl.get("status") == "inconclusive"
+    assert vl.get("label") == "0 valid of 0"
     events = (run_dir / "events.jsonl").read_text(encoding="utf-8")
     assert "validate_llm_disabled" in events
     db.close()
+    refused = dashops.review_finding(run_dir, fid, action="confirm", notes="flag off")
+    assert refused["ok"] is False
+    assert refused["code"] == "pending_llm"
 
 
 def test_flag_false_mech_needs_human_zero_validate_llm_enqueue(

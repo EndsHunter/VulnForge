@@ -208,7 +208,7 @@ def test_firecracker_plan_has_no_nic_and_pci_off(tmp_path: Path):
     audit_sandbox_argv(plan["argv"])
 
 
-def test_gvisor_signal_and_teardown(tmp_path: Path, monkeypatch):
+def test_gvisor_self_marker_is_not_signal_and_teardown(tmp_path: Path, monkeypatch):
     import vulnforge.poc_runner as pr
 
     cleaned: list[list[str]] = []
@@ -234,8 +234,9 @@ def test_gvisor_signal_and_teardown(tmp_path: Path, monkeypatch):
         finding_id=7,
         probe=_probe(runtimes={"runsc": {}}, kvm=False, firecracker_patched=False),
     )
-    assert result["verdict"] == "signal_observed"
-    assert result["signal_matched"] is True
+    assert result["verdict"] == "signal_absent"
+    assert result["signal_matched"] is not True
+    assert result["verdict"] != "signal_observed"
     assert result["isolation"] == "gvisor"
     assert any(cmd[:3] == ["docker", "rm", "-f"] for cmd in cleaned)
     assert "confirmed" not in result["verdict"]
@@ -318,19 +319,30 @@ def test_campaign_toggle_enqueues_once_and_validate_keeps_needs_human(
 ):
     import vulnforge.poc_runner as pr
 
-    monkeypatch.setattr(
-        pr,
-        "spawn_captured",
-        lambda argv, *, timeout_s: {
+    def _honest(argv, *, timeout_s):
+        env: dict[str, str] = {}
+        i = 0
+        while i < len(argv):
+            if argv[i] == "-e" and i + 1 < len(argv):
+                key, _, val = argv[i + 1].partition("=")
+                env[key] = val
+                i += 2
+                continue
+            i += 1
+        canary = env.get("VF_CANARY", "")
+        mark = env.get("VF_ORACLE_MARK") or "VF_MARK"
+        target = f"{canary}\n" if env.get("VF_TRIGGER") == "1" and canary else ""
+        return {
             "exit_code": 0,
             "timed_out": False,
             "spawn_error": None,
-            "stdout": "ASSERT_OK\n",
+            "stdout": f"{target}\n{mark}\n\n{mark}ERR\n",
             "stderr": "",
             "duration_ms": 4,
             "argv": argv,
-        },
-    )
+        }
+
+    monkeypatch.setattr(pr, "spawn_captured", _honest)
     monkeypatch.setattr(pr, "run_cleanup", lambda argv: None)
     monkeypatch.setattr(
         pr,

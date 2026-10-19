@@ -117,16 +117,34 @@ def _gvisor_probe() -> dict:
     }
 
 
+def _env_from_argv(argv: list[str]) -> dict[str, str]:
+    env: dict[str, str] = {}
+    i = 0
+    while i < len(argv):
+        if argv[i] == "-e" and i + 1 < len(argv):
+            key, _, val = argv[i + 1].partition("=")
+            env[key] = val
+            i += 2
+            continue
+        i += 1
+    return env
+
+
 def _fake_spawn_ok(argv, *, timeout_s):
+    """Honest target: canary on fd 3 only when VF_TRIGGER=1. Exit 0."""
     assert argv[argv.index("--runtime") + 1] == "runsc"
     assert "--network=none" in argv
     assert "--privileged" not in argv
     assert not any("docker.sock" in part for part in argv)
+    env = _env_from_argv(argv)
+    canary = env.get("VF_CANARY", "")
+    mark = env.get("VF_ORACLE_MARK") or "VF_MARK"
+    target = f"{canary}\n" if env.get("VF_TRIGGER") == "1" and canary else ""
     return {
         "exit_code": 0,
         "timed_out": False,
         "spawn_error": None,
-        "stdout": "ASSERT_OK\n",
+        "stdout": f"{target}\n{mark}\n\n{mark}ERR\n",
         "stderr": "",
         "duration_ms": 5,
         "argv": argv,
@@ -238,6 +256,16 @@ def test_classify_verdicts():
             signal_matched=False,
         )
         == "signal_absent"
+    )
+    assert (
+        classify_run_result(
+            ran=True,
+            exit_code=1,
+            timed_out=False,
+            spawn_error=None,
+            signal_matched=True,
+        )
+        == "inconclusive"
     )
     assert (
         classify_run_result(
