@@ -1,0 +1,22 @@
+version: 1
+base_url: http://10.0.0.232:1234/v1
+api_key_env: OPENAI_API_KEY
+models:
+  - id: local-model-a
+    name: local-model-a
+    knowledge_cutoff: "2024-08-01"
+  - id: local-model-b
+    name: local-model-b
+    knowledge_cutoff: "2024-08-01"
+k: 3
+workers: 4
+timeout_s: 120
+temperature: 0
+difficulties:
+  - L0
+  - L1
+fpr_cap: 0.005
+disprove:
+  false_reject_max: 0.10
+  on_breach: warn
+prompt_version: bench-1
