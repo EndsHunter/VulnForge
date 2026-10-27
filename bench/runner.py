@@ -410,9 +410,10 @@ def run_bench(
             )
         if cacheable(result):
             cache.put(key, result)
-        else:
-            cache.put(key, failure_record(result))
-        return result
+            return result
+        record = failure_record(result)
+        cache.put(key, record)
+        return record
 
     workers = min(config.workers, max(1, len(jobs)))
     with ThreadPoolExecutor(max_workers=workers) as pool:

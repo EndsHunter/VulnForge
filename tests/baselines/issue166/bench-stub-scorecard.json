@@ -131,7 +131,8 @@
         "tokens": 11940.0,
         "vd_s": 0.708333,
         "wall_seconds": 0.244167,
-        "youden": 0.708333
+        "youden": "equals VD-S (fewer than 200 negatives)",
+        "youden_in_ranking": false
       },
       {
         "difficulty": "L0",
@@ -150,7 +151,8 @@
         "tokens": 21307.0,
         "vd_s": 0.238095,
         "wall_seconds": 0.285,
-        "youden": 0.238095
+        "youden": "equals VD-S (fewer than 200 negatives)",
+        "youden_in_ranking": false
       },
       {
         "difficulty": "L0",
@@ -169,7 +171,8 @@
         "tokens": 4280.0,
         "vd_s": 0.0,
         "wall_seconds": 0.145,
-        "youden": 0.0
+        "youden": "equals VD-S (fewer than 200 negatives)",
+        "youden_in_ranking": false
       },
       {
         "difficulty": "L1",
@@ -188,7 +191,8 @@
         "tokens": 12280.0,
         "vd_s": 0.833333,
         "wall_seconds": 0.251667,
-        "youden": 0.833333
+        "youden": "equals VD-S (fewer than 200 negatives)",
+        "youden_in_ranking": false
       },
       {
         "difficulty": "L1",
@@ -207,7 +211,8 @@
         "tokens": 21347.0,
         "vd_s": 0.380952,
         "wall_seconds": 0.29,
-        "youden": 0.380952
+        "youden": "equals VD-S (fewer than 200 negatives)",
+        "youden_in_ranking": false
       },
       {
         "difficulty": "L1",
@@ -226,10 +231,12 @@
         "tokens": 4280.0,
         "vd_s": 0.0,
         "wall_seconds": 0.145,
-        "youden": 0.0
+        "youden": "equals VD-S (fewer than 200 negatives)",
+        "youden_in_ranking": false
       }
     ],
-    "scored_row_count": 6
+    "scored_row_count": 6,
+    "stored_failure_count": 12
   },
   "llm_judge": null,
   "mode": "stub",
@@ -252,13 +259,7 @@
               "n": 3,
               "std": 0.0
             },
-            "youden": {
-              "high": 0.0,
-              "low": 0.0,
-              "mean": 0.0,
-              "n": 3,
-              "std": 0.0
-            }
+            "youden": null
           },
           "exclude_reason": null,
           "excluded": false,
@@ -464,7 +465,6 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
                   "youden_threshold": 0
                 },
                 "fn": 7.0,
@@ -511,7 +511,7 @@
                 "tn": 12.0,
                 "tp": 0.0,
                 "vd_s": 0.0,
-                "youden": 0.0,
+                "youden": "equals VD-S (fewer than 200 negatives)",
                 "youden_threshold": null
               },
               "hunt_raw": {
@@ -528,7 +528,6 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
                   "youden_threshold": 0
                 },
                 "fn": 7.0,
@@ -575,7 +574,7 @@
                 "tn": 12.0,
                 "tp": 0.0,
                 "vd_s": 0.0,
-                "youden": 0.0,
+                "youden": "equals VD-S (fewer than 200 negatives)",
                 "youden_threshold": null
               },
               "mech_formed": {
@@ -592,7 +591,6 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
                   "youden_threshold": 0
                 },
                 "fn": 7.0,
@@ -639,7 +637,7 @@
                 "tn": 12.0,
                 "tp": 0.0,
                 "vd_s": 0.0,
-                "youden": 0.0,
+                "youden": "equals VD-S (fewer than 200 negatives)",
                 "youden_threshold": null
               },
               "mech_reproduced": {
@@ -656,7 +654,6 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
                   "youden_threshold": 0
                 },
                 "fn": 7.0,
@@ -703,7 +700,7 @@
                 "tn": 12.0,
                 "tp": 0.0,
                 "vd_s": 0.0,
-                "youden": 0.0,
+                "youden": "equals VD-S (fewer than 200 negatives)",
                 "youden_threshold": null
               }
             }
@@ -855,7 +852,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "hunt_raw": {
@@ -887,7 +884,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_formed": {
@@ -919,7 +916,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_reproduced": {
@@ -951,7 +948,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 }
               }
@@ -1102,7 +1099,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "hunt_raw": {
@@ -1134,7 +1131,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_formed": {
@@ -1166,7 +1163,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_reproduced": {
@@ -1198,7 +1195,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 }
               }
@@ -1349,7 +1346,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "hunt_raw": {
@@ -1381,7 +1378,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_formed": {
@@ -1413,7 +1410,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_reproduced": {
@@ -1445,7 +1442,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 }
               }
@@ -1474,13 +1471,7 @@
               "n": 3,
               "std": 0.0
             },
-            "youden": {
-              "high": 0.0,
-              "low": 0.0,
-              "mean": 0.0,
-              "n": 3,
-              "std": 0.0
-            }
+            "youden": null
           },
           "exclude_reason": null,
           "excluded": false,
@@ -1686,7 +1677,6 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
                   "youden_threshold": 0
                 },
                 "fn": 7.0,
@@ -1733,7 +1723,7 @@
                 "tn": 12.0,
                 "tp": 0.0,
                 "vd_s": 0.0,
-                "youden": 0.0,
+                "youden": "equals VD-S (fewer than 200 negatives)",
                 "youden_threshold": null
               },
               "hunt_raw": {
@@ -1750,7 +1740,6 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
                   "youden_threshold": 0
                 },
                 "fn": 7.0,
@@ -1797,7 +1786,7 @@
                 "tn": 12.0,
                 "tp": 0.0,
                 "vd_s": 0.0,
-                "youden": 0.0,
+                "youden": "equals VD-S (fewer than 200 negatives)",
                 "youden_threshold": null
               },
               "mech_formed": {
@@ -1814,7 +1803,6 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
                   "youden_threshold": 0
                 },
                 "fn": 7.0,
@@ -1861,7 +1849,7 @@
                 "tn": 12.0,
                 "tp": 0.0,
                 "vd_s": 0.0,
-                "youden": 0.0,
+                "youden": "equals VD-S (fewer than 200 negatives)",
                 "youden_threshold": null
               },
               "mech_reproduced": {
@@ -1878,7 +1866,6 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
                   "youden_threshold": 0
                 },
                 "fn": 7.0,
@@ -1925,7 +1912,7 @@
                 "tn": 12.0,
                 "tp": 0.0,
                 "vd_s": 0.0,
-                "youden": 0.0,
+                "youden": "equals VD-S (fewer than 200 negatives)",
                 "youden_threshold": null
               }
             }
@@ -2077,7 +2064,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "hunt_raw": {
@@ -2109,7 +2096,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_formed": {
@@ -2141,7 +2128,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_reproduced": {
@@ -2173,7 +2160,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 }
               }
@@ -2324,7 +2311,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "hunt_raw": {
@@ -2356,7 +2343,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_formed": {
@@ -2388,7 +2375,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_reproduced": {
@@ -2420,7 +2407,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 }
               }
@@ -2571,7 +2558,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "hunt_raw": {
@@ -2603,7 +2590,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_formed": {
@@ -2635,7 +2622,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 },
                 "mech_reproduced": {
@@ -2667,7 +2654,7 @@
                   "tn": 12,
                   "tp": 0,
                   "vd_s": 0.0,
-                  "youden": 0.0,
+                  "youden": "equals VD-S (fewer than 200 negatives)",
                   "youden_threshold": null
                 }
               }
@@ -2701,13 +2688,7 @@
               "n": 3,
               "std": 0.082479
             },
-            "youden": {
-              "high": 0.443,
-              "low": 0.03319,
-              "mean": 0.238095,
-              "n": 3,
-              "std": 0.082479
-            }
+            "youden": null
           },
           "exclude_reason": null,
           "excluded": false,
@@ -2913,8 +2894,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 6.333333,
                 "fp": 2.0,
@@ -2960,8 +2940,8 @@
                 "tn": 10.0,
                 "tp": 0.666667,
                 "vd_s": 0.238095,
-                "youden": 0.238095,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "hunt_raw": {
                 "_contributed": {
@@ -2977,8 +2957,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 4.0,
                 "fp": 4.0,
@@ -3024,8 +3003,8 @@
                 "tn": 8.0,
                 "tp": 3.0,
                 "vd_s": 0.571429,
-                "youden": 0.571429,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "mech_formed": {
                 "_contributed": {
@@ -3041,8 +3020,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 4.0,
                 "fp": 4.0,
@@ -3088,8 +3066,8 @@
                 "tn": 8.0,
                 "tp": 3.0,
                 "vd_s": 0.571429,
-                "youden": 0.571429,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "mech_reproduced": {
                 "_contributed": {
@@ -3105,8 +3083,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 3.0,
                 "fp": 0.0,
@@ -3152,8 +3129,8 @@
                 "tn": 12.0,
                 "tp": 4.0,
                 "vd_s": 0.571429,
-                "youden": 0.571429,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               }
             }
           },
@@ -3303,8 +3280,8 @@
                   "tn": 10,
                   "tp": 1,
                   "vd_s": 0.285714,
-                  "youden": 0.285714,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 4,
@@ -3335,8 +3312,8 @@
                   "tn": 8,
                   "tp": 3,
                   "vd_s": 0.571429,
-                  "youden": 0.571429,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 4,
@@ -3367,8 +3344,8 @@
                   "tn": 8,
                   "tp": 3,
                   "vd_s": 0.571429,
-                  "youden": 0.571429,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 3,
@@ -3399,8 +3376,8 @@
                   "tn": 12,
                   "tp": 4,
                   "vd_s": 0.571429,
-                  "youden": 0.571429,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             },
@@ -3550,8 +3527,8 @@
                   "tn": 10,
                   "tp": 0,
                   "vd_s": 0.142857,
-                  "youden": 0.142857,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 4,
@@ -3582,8 +3559,8 @@
                   "tn": 8,
                   "tp": 3,
                   "vd_s": 0.571429,
-                  "youden": 0.571429,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 4,
@@ -3614,8 +3591,8 @@
                   "tn": 8,
                   "tp": 3,
                   "vd_s": 0.571429,
-                  "youden": 0.571429,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 3,
@@ -3646,8 +3623,8 @@
                   "tn": 12,
                   "tp": 4,
                   "vd_s": 0.571429,
-                  "youden": 0.571429,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             },
@@ -3796,8 +3773,8 @@
                   "tn": 10,
                   "tp": 1,
                   "vd_s": 0.285714,
-                  "youden": 0.285714,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 4,
@@ -3828,8 +3805,8 @@
                   "tn": 8,
                   "tp": 3,
                   "vd_s": 0.571429,
-                  "youden": 0.571429,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 4,
@@ -3860,8 +3837,8 @@
                   "tn": 8,
                   "tp": 3,
                   "vd_s": 0.571429,
-                  "youden": 0.571429,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 3,
@@ -3892,8 +3869,8 @@
                   "tn": 12,
                   "tp": 4,
                   "vd_s": 0.571429,
-                  "youden": 0.571429,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             }
@@ -3921,13 +3898,7 @@
               "n": 3,
               "std": 0.082479
             },
-            "youden": {
-              "high": 0.585857,
-              "low": 0.176048,
-              "mean": 0.380952,
-              "n": 3,
-              "std": 0.082479
-            }
+            "youden": null
           },
           "exclude_reason": null,
           "excluded": false,
@@ -4133,8 +4104,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 5.333333,
                 "fp": 2.0,
@@ -4180,8 +4150,8 @@
                 "tn": 10.0,
                 "tp": 1.666667,
                 "vd_s": 0.380952,
-                "youden": 0.380952,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "hunt_raw": {
                 "_contributed": {
@@ -4197,8 +4167,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 3.0,
                 "fp": 4.0,
@@ -4244,8 +4213,8 @@
                 "tn": 8.0,
                 "tp": 4.0,
                 "vd_s": 0.714286,
-                "youden": 0.714286,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "mech_formed": {
                 "_contributed": {
@@ -4261,8 +4230,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 3.0,
                 "fp": 4.0,
@@ -4308,8 +4276,8 @@
                 "tn": 8.0,
                 "tp": 4.0,
                 "vd_s": 0.714286,
-                "youden": 0.714286,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "mech_reproduced": {
                 "_contributed": {
@@ -4325,8 +4293,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 2.0,
                 "fp": 0.0,
@@ -4372,8 +4339,8 @@
                 "tn": 12.0,
                 "tp": 5.0,
                 "vd_s": 0.714286,
-                "youden": 0.714286,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               }
             }
           },
@@ -4522,8 +4489,8 @@
                   "tn": 10,
                   "tp": 2,
                   "vd_s": 0.428571,
-                  "youden": 0.428571,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 3,
@@ -4554,8 +4521,8 @@
                   "tn": 8,
                   "tp": 4,
                   "vd_s": 0.714286,
-                  "youden": 0.714286,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 3,
@@ -4586,8 +4553,8 @@
                   "tn": 8,
                   "tp": 4,
                   "vd_s": 0.714286,
-                  "youden": 0.714286,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 2,
@@ -4618,8 +4585,8 @@
                   "tn": 12,
                   "tp": 5,
                   "vd_s": 0.714286,
-                  "youden": 0.714286,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             },
@@ -4768,8 +4735,8 @@
                   "tn": 10,
                   "tp": 1,
                   "vd_s": 0.285714,
-                  "youden": 0.285714,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 3,
@@ -4800,8 +4767,8 @@
                   "tn": 8,
                   "tp": 4,
                   "vd_s": 0.714286,
-                  "youden": 0.714286,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 3,
@@ -4832,8 +4799,8 @@
                   "tn": 8,
                   "tp": 4,
                   "vd_s": 0.714286,
-                  "youden": 0.714286,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 2,
@@ -4864,8 +4831,8 @@
                   "tn": 12,
                   "tp": 5,
                   "vd_s": 0.714286,
-                  "youden": 0.714286,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             },
@@ -5013,8 +4980,8 @@
                   "tn": 10,
                   "tp": 2,
                   "vd_s": 0.428571,
-                  "youden": 0.428571,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 3,
@@ -5045,8 +5012,8 @@
                   "tn": 8,
                   "tp": 4,
                   "vd_s": 0.714286,
-                  "youden": 0.714286,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 3,
@@ -5077,8 +5044,8 @@
                   "tn": 8,
                   "tp": 4,
                   "vd_s": 0.714286,
-                  "youden": 0.714286,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 2,
@@ -5109,8 +5076,8 @@
                   "tn": 12,
                   "tp": 5,
                   "vd_s": 0.714286,
-                  "youden": 0.714286,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             }
@@ -5143,13 +5110,7 @@
               "n": 3,
               "std": 0.072169
             },
-            "youden": {
-              "high": 0.887625,
-              "low": 0.529042,
-              "mean": 0.708333,
-              "n": 3,
-              "std": 0.072169
-            }
+            "youden": null
           },
           "exclude_reason": null,
           "excluded": false,
@@ -5355,8 +5316,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 2.333333,
                 "fp": 0.0,
@@ -5404,8 +5364,8 @@
                 "tn": 12.0,
                 "tp": 5.666667,
                 "vd_s": 0.708333,
-                "youden": 0.708333,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "hunt_raw": {
                 "_contributed": {
@@ -5421,8 +5381,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 2.333333,
                 "fp": 0.0,
@@ -5470,8 +5429,8 @@
                 "tn": 12.0,
                 "tp": 5.666667,
                 "vd_s": 0.708333,
-                "youden": 0.708333,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "mech_formed": {
                 "_contributed": {
@@ -5487,8 +5446,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 2.333333,
                 "fp": 0.0,
@@ -5536,8 +5494,8 @@
                 "tn": 12.0,
                 "tp": 5.666667,
                 "vd_s": 0.708333,
-                "youden": 0.708333,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "mech_reproduced": {
                 "_contributed": {
@@ -5553,8 +5511,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 2.333333,
                 "fp": 0.0,
@@ -5602,8 +5559,8 @@
                 "tn": 12.0,
                 "tp": 5.666667,
                 "vd_s": 0.708333,
-                "youden": 0.708333,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               }
             }
           },
@@ -5741,8 +5698,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 2,
@@ -5774,8 +5731,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 2,
@@ -5807,8 +5764,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 2,
@@ -5840,8 +5797,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             },
@@ -5978,8 +5935,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 2,
@@ -6011,8 +5968,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 2,
@@ -6044,8 +6001,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 2,
@@ -6077,8 +6034,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             },
@@ -6216,8 +6173,8 @@
                   "tn": 12,
                   "tp": 5,
                   "vd_s": 0.625,
-                  "youden": 0.625,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 3,
@@ -6249,8 +6206,8 @@
                   "tn": 12,
                   "tp": 5,
                   "vd_s": 0.625,
-                  "youden": 0.625,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 3,
@@ -6282,8 +6239,8 @@
                   "tn": 12,
                   "tp": 5,
                   "vd_s": 0.625,
-                  "youden": 0.625,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 3,
@@ -6315,8 +6272,8 @@
                   "tn": 12,
                   "tp": 5,
                   "vd_s": 0.625,
-                  "youden": 0.625,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             }
@@ -6344,13 +6301,7 @@
               "n": 3,
               "std": 0.072169
             },
-            "youden": {
-              "high": 1.012625,
-              "low": 0.654042,
-              "mean": 0.833333,
-              "n": 3,
-              "std": 0.072169
-            }
+            "youden": null
           },
           "exclude_reason": null,
           "excluded": false,
@@ -6556,8 +6507,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 1.333333,
                 "fp": 0.0,
@@ -6605,8 +6555,8 @@
                 "tn": 12.0,
                 "tp": 6.666667,
                 "vd_s": 0.833333,
-                "youden": 0.833333,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "hunt_raw": {
                 "_contributed": {
@@ -6622,8 +6572,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 1.333333,
                 "fp": 0.0,
@@ -6671,8 +6620,8 @@
                 "tn": 12.0,
                 "tp": 6.666667,
                 "vd_s": 0.833333,
-                "youden": 0.833333,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "mech_formed": {
                 "_contributed": {
@@ -6688,8 +6637,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 1.333333,
                 "fp": 0.0,
@@ -6737,8 +6685,8 @@
                 "tn": 12.0,
                 "tp": 6.666667,
                 "vd_s": 0.833333,
-                "youden": 0.833333,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               },
               "mech_reproduced": {
                 "_contributed": {
@@ -6754,8 +6702,7 @@
                   "tn": 3,
                   "tp": 3,
                   "vd_s": 3,
-                  "youden": 3,
-                  "youden_threshold": 3
+                  "youden_threshold": 0
                 },
                 "fn": 1.333333,
                 "fp": 0.0,
@@ -6803,8 +6750,8 @@
                 "tn": 12.0,
                 "tp": 6.666667,
                 "vd_s": 0.833333,
-                "youden": 0.833333,
-                "youden_threshold": 0.9
+                "youden": "equals VD-S (fewer than 200 negatives)",
+                "youden_threshold": null
               }
             }
           },
@@ -6941,8 +6888,8 @@
                   "tn": 12,
                   "tp": 7,
                   "vd_s": 0.875,
-                  "youden": 0.875,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 1,
@@ -6974,8 +6921,8 @@
                   "tn": 12,
                   "tp": 7,
                   "vd_s": 0.875,
-                  "youden": 0.875,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 1,
@@ -7007,8 +6954,8 @@
                   "tn": 12,
                   "tp": 7,
                   "vd_s": 0.875,
-                  "youden": 0.875,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 1,
@@ -7040,8 +6987,8 @@
                   "tn": 12,
                   "tp": 7,
                   "vd_s": 0.875,
-                  "youden": 0.875,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             },
@@ -7177,8 +7124,8 @@
                   "tn": 12,
                   "tp": 7,
                   "vd_s": 0.875,
-                  "youden": 0.875,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 1,
@@ -7210,8 +7157,8 @@
                   "tn": 12,
                   "tp": 7,
                   "vd_s": 0.875,
-                  "youden": 0.875,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 1,
@@ -7243,8 +7190,8 @@
                   "tn": 12,
                   "tp": 7,
                   "vd_s": 0.875,
-                  "youden": 0.875,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 1,
@@ -7276,8 +7223,8 @@
                   "tn": 12,
                   "tp": 7,
                   "vd_s": 0.875,
-                  "youden": 0.875,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             },
@@ -7414,8 +7361,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "hunt_raw": {
                   "fn": 2,
@@ -7447,8 +7394,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_formed": {
                   "fn": 2,
@@ -7480,8 +7427,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 },
                 "mech_reproduced": {
                   "fn": 2,
@@ -7513,8 +7460,8 @@
                   "tn": 12,
                   "tp": 6,
                   "vd_s": 0.75,
-                  "youden": 0.75,
-                  "youden_threshold": 0.9
+                  "youden": "equals VD-S (fewer than 200 negatives)",
+                  "youden_threshold": null
                 }
               }
             }
@@ -7813,6 +7760,7 @@
       }
     ]
   },
+  "stored_failure_count": 12,
   "warnings": [
     "stub-noisy L0 disprove false-reject rate 0.4444 exceeds 0.1000 (warn)",
     "stub-noisy L1 disprove false-reject rate 0.3333 exceeds 0.1000 (warn)"

@@ -312,9 +312,59 @@ def test_from_cache_counts_stored_errors_as_infra(monkeypatch):
     assert payload["partial"] is False
     assert board["cache_miss_count"] == 0
     assert board["cache_coverage"] == 1
+    assert board["stored_failure_count"] == 20
+    assert payload["stored_failure_count"] == 20
     assert board["infra_error_count"] == 20
     assert board["infra_error_row_count"] == 1
     assert board["partial"] is False
+
+
+def _scored_card(payload: dict) -> dict:
+    """Drop lookup counters. A live run and a rescore count hits differently."""
+    body = json.loads(json.dumps(payload))
+    for key in ("cache_hits", "cache_misses", "cache_coverage"):
+        body.pop(key, None)
+    board = body["leaderboard"]
+    board.pop("cache_coverage", None)
+    board.pop("cache_miss_count", None)
+    board.pop("cache_misses_by_side", None)
+    return body
+
+
+def test_disprove_failure_scores_identically_live_and_from_cache():
+    finding = {
+        "path": "query.py",
+        "line": 1,
+        "symbol": "lookup_user",
+        "cwe": "CWE-89",
+        "confidence": 0.2,
+        "evidence": "conn.execute(sql)",
+        "path_contract": ["lookup_user"],
+    }
+    calls = {"n": 0}
+
+    def transport(model, messages):
+        del model
+        calls["n"] += 1
+        if messages[0]["content"].startswith("You judge"):
+            return _http(502)
+        return _ok(text=json.dumps({"findings": [finding]}), tokens=6)
+
+    tasks = load_tasks()
+    config = _config()
+    with TemporaryDirectory() as cache:
+        cache_path = Path(cache)
+        live = run_bench(config, tasks, mode="live", cache_dir=cache_path, transport=transport)
+        first = calls["n"]
+        cached = run_bench(config, tasks, mode="live", cache_dir=cache_path, from_cache=True)
+    assert calls["n"] == first
+    assert live["leaderboard"]["stored_failure_count"] == 20
+    assert cached["leaderboard"]["stored_failure_count"] == 20
+    assert cached["leaderboard"]["cache_coverage"] == 1
+    assert _scored_card(live) == _scored_card(cached)
+    repeat = live["models"]["glm-id"]["difficulties"]["L0"]["repeats"][0]
+    assert repeat["attempt_errors"]
+    assert all(item["error"] == "http 502" for item in repeat["attempt_errors"])
 
 
 def test_incomplete_cache_is_partial_with_per_side_misses(monkeypatch):

@@ -20,6 +20,8 @@ T_CRIT = {
     10: 2.228,
 }
 BINARY = 1e-9
+YOUDEN_FEW_NEGATIVES = "equals VD-S (fewer than 200 negatives)"
+MIN_NEGATIVES_FOR_YOUDEN = 200
 PAIR_KEYS = ("paired_correct", "both_vulnerable", "both_benign", "reversed", "error")
 SCALE_UP = (
     "Next: grow toward about 30 vulnerable/fixed pairs and 10 benign tasks "
@@ -108,21 +110,12 @@ def _sweep(positives: list[dict], negatives: list[dict], fpr_cap: float) -> dict
         if row["youden"] is not None and row["fpr"] is not None and row["fpr"] <= fpr_cap
     ]
     best_youden = max(youden_pool, key=lambda row: row["youden"]) if youden_pool else None
-    # Headline recall is the capped operating point. A point over the cap is not a score.
-    if chosen["fpr"] is None or chosen["fpr"] > fpr_cap:
-        headline_recall = 0.0
-        headline_fpr = 0.0
-        headline_precision = None
-    else:
-        headline_recall = chosen["recall"]
-        headline_fpr = chosen["fpr"]
-        headline_precision = chosen["precision"]
     return {
-        "recall_at_fpr_le_0.5pct": headline_recall,
+        "recall_at_fpr_le_0.5pct": chosen["recall"],
         # PrimeVul VD-S: same operating point as the headline, not Youden's J.
-        "vd_s": headline_recall,
-        "precision_at_fpr_cap": headline_precision,
-        "fpr_at_operating_point": headline_fpr,
+        "vd_s": chosen["recall"],
+        "precision_at_fpr_cap": chosen["precision"],
+        "fpr_at_operating_point": chosen["fpr"],
         "youden": 0.0 if best_youden is None else best_youden["youden"],
         "youden_threshold": None if best_youden is None else best_youden["threshold"],
     }
@@ -284,6 +277,9 @@ def score_repeat(
             )
         binary = _confusion(positives, negatives, BINARY)
         ranked = _sweep(positives, negatives, fpr_cap)
+        if len(negatives) < MIN_NEGATIVES_FOR_YOUDEN:
+            ranked["youden"] = YOUDEN_FEW_NEGATIVES
+            ranked["youden_threshold"] = None
         recall_per_class: dict[str, float | None] = {}
         for cwe in sorted({item["cwe"] for item in positives if item["cwe"]}):
             group = [item for item in positives if item["cwe"] == cwe]
@@ -737,6 +733,7 @@ def build_scorecard(
         if side in side_misses:
             side_misses[side] = int(count)
     holes = cache_misses if from_cache else 0
+    stored_failures = sum(1 for attempt in attempts if attempt.get("cached_failure"))
     if job_count:
         coverage = (job_count - holes) / job_count if from_cache else cache_hits / job_count
     else:
@@ -786,11 +783,17 @@ def build_scorecard(
                 hit_sets.append(hits)
             mean = average_tree([{key: value for key, value in row.items() if key != "repeat"} for row in repeats])
             # average_tree skips lists; surface ids from repeat 0 only via repeats.
+            youden_values = [row["stages"]["disprove"]["youden"] for row in repeats]
+            youden_ci = (
+                ci95(youden_values)
+                if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in youden_values)
+                else None
+            )
             ci = {
                 "recall_at_fpr_le_0.5pct": ci95(
                     [row["stages"]["disprove"]["recall_at_fpr_le_0.5pct"] for row in repeats]
                 ),
-                "youden": ci95([row["stages"]["disprove"]["youden"] for row in repeats]),
+                "youden": youden_ci,
                 "findings_per_1k_tokens": ci95(
                     [row["efficiency"]["findings_per_1k_tokens"] for row in repeats]
                 ),
@@ -854,10 +857,7 @@ def build_scorecard(
             diff["exclude_reason"] = None
             recall = mean["stages"]["disprove"]["recall_at_fpr_le_0.5pct"]
             operating_fpr = mean["stages"]["disprove"]["fpr_at_operating_point"]
-            if operating_fpr is not None and operating_fpr > fpr_cap:
-                recall = 0.0
-                operating_fpr = 0.0
-            elif recall is None:
+            if recall is None:
                 recall = 0.0
             operating_fprs[(model, difficulty)] = operating_fpr
             points.append(
@@ -886,13 +886,15 @@ def build_scorecard(
     ):
         diff = model_body[point["model"]]["difficulties"][point["difficulty"]]
         mean = diff["mean"]
+        youden = mean["stages"]["disprove"]["youden"]
         leaderboard_rows.append(
             {
                 "model": point["model"],
                 "difficulty": point["difficulty"],
                 "recall_at_fpr_le_0.5pct": point["score"],
                 "vd_s": point["score"],
-                "youden": mean["stages"]["disprove"]["youden"],
+                "youden": youden,
+                "youden_in_ranking": youden != YOUDEN_FEW_NEGATIVES,
                 "precision": mean["stages"]["disprove"]["precision"],
                 "fpr": operating_fprs[(point["model"], point["difficulty"])],
                 "tokens": point["tokens"],
@@ -916,6 +918,7 @@ def build_scorecard(
                 "recall_at_fpr_le_0.5pct": None,
                 "vd_s": None,
                 "youden": None,
+                "youden_in_ranking": False,
                 "precision": None,
                 "fpr": None,
                 "tokens": point["tokens"],
@@ -945,6 +948,7 @@ def build_scorecard(
         "cache_hits": cache_hits,
         "cache_misses": cache_misses,
         "cache_coverage": coverage,
+        "stored_failure_count": stored_failures,
         "partial": partial,
         "seed": {
             "pairs": sum(1 for task in tasks if task.kind == "pair"),
@@ -991,6 +995,7 @@ def build_scorecard(
             "cache_miss_count": holes,
             "cache_misses_by_side": side_misses,
             "cache_coverage": coverage,
+            "stored_failure_count": stored_failures,
             "partial": partial,
             "rows": leaderboard_rows,
         },
