@@ -1,0 +1,18 @@
+{
+  "status": "unscored",
+  "error": "score did not finish; no scorecard was written",
+  "partial": true,
+  "cache_coverage": 0.0,
+  "stored_failure_count": 0,
+  "infra_error_row_count": 0,
+  "rows": [
+    {
+      "model": "demo-b",
+      "difficulty": "L0",
+      "task_id": "pair-path",
+      "side": "benign",
+      "error": "missing cache entry",
+      "error_kind": "cache_miss"
+    }
+  ]
+}

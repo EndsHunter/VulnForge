@@ -423,13 +423,14 @@ def test_mechanical_post_still_blocking_passed():
         assert created.json().get("async") is not True
 
 
-def test_run_page_has_live_button():
+def test_old_run_page_redirects_to_scorecard_desk():
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        page = client.get("/benchmarks/run")
-        assert page.status_code == 200
-        assert 'id="bench-run-live"' in page.text
-        assert 'mode: "live"' in page.text
+        page = client.get("/benchmarks/run", follow_redirects=False)
+        assert page.status_code == 307
+        assert page.headers["location"] == "/benchmarks"
+        desk = client.get("/benchmarks")
+        assert 'id="bench-run-live"' not in desk.text
 
 
 def test_cancel_live_run_via_stop(monkeypatch):

@@ -216,6 +216,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override runs root (default from config)",
     )
+    dash.add_argument(
+        "--bench-results",
+        type=Path,
+        default=None,
+        help="Directory of python -m bench runs (default: bench/results or VF_BENCH_RESULTS)",
+    )
 
     del_p = sub.add_parser(
         "delete-run",
@@ -1643,11 +1649,15 @@ def cmd_dashboard(args, cfg: dict) -> int:
     runs_root = None
     if getattr(args, "runs_root", None):
         runs_root = Path(args.runs_root).resolve()
+    bench_results = None
+    if getattr(args, "bench_results", None):
+        bench_results = Path(args.bench_results).resolve()
     try:
         run_dashboard(
             host=args.host,
             port=int(args.port),
             runs_root=runs_root,
+            bench_results=bench_results,
         )
     except KeyboardInterrupt:
         return EXIT_PROGRESS

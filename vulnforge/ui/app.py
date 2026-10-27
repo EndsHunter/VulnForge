@@ -32,11 +32,13 @@ from vulnforge.control import campaign as campaign_ctl
 from vulnforge.ui import ops as dashops
 from vulnforge.ui import runner as runctl
 from vulnforge.ui import store
+from vulnforge.ui.bench_runs import format_metric
 from vulnforge.usage import load_usage_for_task
 
 UI_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(UI_DIR / "templates"))
 STATIC_DIR = UI_DIR / "static"
+TEMPLATES.env.filters["metric"] = format_metric
 
 # Runner states that mean the outer loop is still driving work.
 _RUNNER_ALIVE = frozenset({"running", "pausing", "busy"})
@@ -759,13 +761,19 @@ def _validate_architecture_body(arch: Any) -> Optional[str]:
     return None
 
 
-def create_app(runs_root: Optional[Path] = None) -> FastAPI:
+def create_app(
+    runs_root: Optional[Path] = None,
+    bench_results: Optional[Path] = None,
+) -> FastAPI:
+    from vulnforge.ui.bench_runs import resolve_bench_results
+
     cfg = load_config()
     root = Path(runs_root) if runs_root else resolve_runs_root(cfg)
 
     app = FastAPI(title="vulnforge dashboard", version="0.1.0")
     app.state.runs_root = root.resolve()
     app.state.project_root = PROJECT_ROOT
+    app.state.bench_results = resolve_bench_results(PROJECT_ROOT, bench_results)
     app.state.config = cfg
 
     from vulnforge.benchmarks.api import router as benchmarks_api
@@ -838,63 +846,56 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             {"runs_root": str(app.state.runs_root)},
         )
 
+    def _bench_page(request: Request):
+        from vulnforge.ui.bench_runs import list_runs
+
+        results = app.state.bench_results
+        return TEMPLATES.TemplateResponse(
+            request,
+            "benchmarks.html",
+            {
+                "runs_root": str(app.state.runs_root),
+                "bench_results": str(results),
+                "results_present": results.is_dir(),
+                "runs": list_runs(results),
+            },
+        )
+
     @app.get("/benchmarks", response_class=HTMLResponse)
     def benchmarks_root(request: Request):
-        """Bench desk hub — redirect to Run so /benchmarks lands on a page."""
-        return RedirectResponse(url="/benchmarks/run", status_code=307)
+        """python -m bench scorecards, including failed and unscored runs."""
+        return _bench_page(request)
 
     @app.get("/benchmarks/run", response_class=HTMLResponse)
-    def benchmarks_run_page(request: Request):
-        """Bench desk: Run (stub)."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {"runs_root": str(app.state.runs_root), "active": "run"},
-        )
-
     @app.get("/benchmarks/poc", response_class=HTMLResponse)
-    def benchmarks_poc_page(request: Request):
-        """Bench desk: POC workshop (stub)."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {"runs_root": str(app.state.runs_root), "active": "poc"},
-        )
-
-    @app.get("/benchmarks/results", response_class=HTMLResponse)
-    def benchmarks_results_page(request: Request):
-        """Bench desk: Results history table."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {
-                "runs_root": str(app.state.runs_root),
-                "active": "results",
-                "detail_run_id": None,
-            },
-        )
-
-    @app.get("/benchmarks/results/{run_id}", response_class=HTMLResponse)
-    def benchmarks_results_detail_page(request: Request, run_id: str):
-        """Bench desk: single BenchmarkRun detail."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {
-                "runs_root": str(app.state.runs_root),
-                "active": "results",
-                "detail_run_id": run_id,
-            },
-        )
-
     @app.get("/benchmarks/library", response_class=HTMLResponse)
-    def benchmarks_library_page(request: Request):
-        """Bench desk: Library (lists defs from /api/benchmarks)."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {"runs_root": str(app.state.runs_root), "active": "library"},
-        )
+    @app.get("/benchmarks/results", response_class=HTMLResponse)
+    @app.get("/benchmarks/results/{run_id}", response_class=HTMLResponse)
+    def benchmarks_retired(request: Request, run_id: str | None = None):
+        """Old recon/hunt/finding_report desk. The scorecard page replaced it."""
+        return RedirectResponse(url="/benchmarks", status_code=307)
+
+    @app.get("/api/bench/runs")
+    def api_bench_runs():
+        from vulnforge.ui.bench_runs import list_runs
+
+        results = app.state.bench_results
+        runs = list_runs(results) if results.is_dir() else []
+        return {
+            "results_root": str(results),
+            "present": results.is_dir(),
+            "count": len(runs),
+            "runs": runs,
+        }
+
+    @app.get("/api/bench/runs/{run_id}")
+    def api_bench_run(run_id: str):
+        from vulnforge.ui.bench_runs import get_run
+
+        run = get_run(app.state.bench_results, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="bench run not found")
+        return {"results_root": str(app.state.bench_results), "run": run}
 
     # ---------- API: operator AI chat ----------
 
@@ -3710,10 +3711,12 @@ def run_dashboard(
     host: str = "127.0.0.1",
     port: int = 8787,
     runs_root: Optional[Path] = None,
+    bench_results: Optional[Path] = None,
 ) -> None:
     import uvicorn
 
-    app = create_app(runs_root=runs_root)
+    app = create_app(runs_root=runs_root, bench_results=bench_results)
     print(f"vulnforge dashboard -> http://{host}:{port}")
     print(f"runs root: {app.state.runs_root}")
+    print(f"bench results: {app.state.bench_results}")
     uvicorn.run(app, host=host, port=port, log_level="info")

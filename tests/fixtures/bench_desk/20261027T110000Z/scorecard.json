@@ -1,0 +1,57 @@
+{
+  "cache_coverage": 0.85,
+  "cache_hits": 17,
+  "cache_misses": 3,
+  "disprove_gate": {
+    "failed": false,
+    "false_reject_max": 0.1,
+    "on_breach": "warn",
+    "rows": []
+  },
+  "fpr_cap": 0.005,
+  "headline_metric": "recall_at_fpr_le_0.5pct",
+  "leaderboard": {
+    "cache_coverage": 0.85,
+    "headline_metric": "recall_at_fpr_le_0.5pct",
+    "infra_error_count": 0,
+    "infra_error_row_count": 0,
+    "partial": true,
+    "rows": [
+      {
+        "difficulty": "L0",
+        "errors": 0.0,
+        "exclude_reason": null,
+        "excluded": false,
+        "fpr": 0.0,
+        "model": "cached",
+        "on_frontier": true,
+        "precision": 0.25,
+        "rank": 1,
+        "recall_at_fpr_le_0.5pct": 0.333333,
+        "vd_s": 0.333333,
+        "youden": "equals VD-S (fewer than 200 negatives)",
+        "youden_in_ranking": false
+      }
+    ],
+    "scored_row_count": 1,
+    "stored_failure_count": 4
+  },
+  "mode": "live",
+  "models": {
+    "cached": {
+      "difficulties": {
+        "L0": {
+          "mean": {"stages": {"disprove": {"recall": 0.4}}},
+          "repeats": []
+        }
+      }
+    }
+  },
+  "partial": true,
+  "scorecard_version": 1,
+  "scores_are_synthetic": false,
+  "stored_failure_count": 4,
+  "warnings": [
+    "INCOMPLETE CACHE: 3 cache misses, coverage 0.850000. Scorecard is partial."
+  ]
+}

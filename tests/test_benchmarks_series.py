@@ -360,40 +360,22 @@ def test_api_series_compare_validation():
 
 
 def test_results_page_chart_and_compare_hooks():
+    """The old results chart retired with the seed-set desk."""
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        page = client.get("/benchmarks/results")
-        assert page.status_code == 200
-        body = page.text
-        assert 'id="bench-chart"' in body
-        assert 'data-bench-chart="1"' in body
-        assert 'id="bench-chart-svg"' in body
-        assert 'data-bench-chart-svg="1"' in body
-        assert 'id="bench-chart-axes"' in body
-        assert "Speed vs accuracy" in body
-        assert "scatterToDots" in body
-        assert "bench_results_helpers.js?v=scatter-2" in body
-        assert 'id="bench-chart-def"' in body
-        assert 'id="bench-chart-type"' in body
-        assert 'id="bench-compare"' in body
-        assert 'data-bench-compare="1"' in body
-        assert 'id="bench-compare-def"' in body
-        assert 'id="bench-compare-a"' in body
-        assert 'id="bench-compare-b"' in body
-        assert 'id="bench-compare-apply"' in body
-        assert 'data-bench-compare-side="a"' in body
-        assert 'data-bench-compare-delta="1"' in body
-        assert "/api/benchmarks/runs/series" in body
-        assert "/api/benchmarks/compare" in body
-        assert "bench_results_helpers.js" in body
-        # Existing table/detail hooks stay
-        assert 'id="bench-results-table"' in body
-        assert 'data-bench-results-filters="1"' in body
+        page = client.get("/benchmarks/results", follow_redirects=False)
+        assert page.status_code == 307
+        assert page.headers["location"] == "/benchmarks"
+        desk = client.get("/benchmarks")
+        assert desk.status_code == 200
+        body = desk.text
+        assert 'id="bench-chart"' not in body
+        assert 'id="bench-scorecards"' in body
+        assert "recall_at_fpr_le_0.5pct" in body
 
-        detail = client.get("/benchmarks/results/br-notarealid00")
-        assert detail.status_code == 200
-        assert 'data-bench-results-detail="1"' in detail.text
-        assert 'id="bench-chart"' not in detail.text
+        detail = client.get("/benchmarks/results/br-notarealid00", follow_redirects=False)
+        assert detail.status_code == 307
+        assert detail.headers["location"] == "/benchmarks"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")

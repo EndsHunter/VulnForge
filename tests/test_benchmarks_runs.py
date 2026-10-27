@@ -96,38 +96,18 @@ def test_api_unknown_def_400():
 
 
 def test_run_and_results_page_hooks():
+    """The old Run/Results desk redirects. Scorecards live on /benchmarks."""
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        run_page = client.get("/benchmarks/run")
-        assert run_page.status_code == 200
-        assert 'id="bench-run-mechanical"' in run_page.text
-        assert 'id="bench-run-live"' in run_page.text
-        assert 'id="bench-active"' in run_page.text
-        assert "/api/benchmarks/runs/active" in run_page.text
-        assert 'mode: "live"' in run_page.text
-        assert 'id="bench-run-def"' in run_page.text
-        assert "/api/benchmarks/runs" in run_page.text
-        assert "all-hunt" in run_page.text
-        assert "all-recon" in run_page.text
-        assert "all-finding_report" in run_page.text
-        assert "all-runnable" in run_page.text
-        assert 'data-suite' in run_page.text
-
-        results = client.get("/benchmarks/results")
-        assert results.status_code == 200
-        assert 'id="bench-results-table"' in results.text
-        assert 'data-bench-results-filters="1"' in results.text
-        assert 'id="bench-filter-kind"' in results.text
-        assert 'id="bench-filter-def"' in results.text
-        assert 'id="bench-filter-status"' in results.text
-        assert 'id="bench-filter-type"' in results.text
-        assert "All hunts" in results.text
-        assert "all-hunt" in results.text
-        assert 'data-bench-sort="1"' in results.text
-        assert 'data-bench-order="1"' in results.text
-        assert 'id="bench-results-apply"' in results.text
-        assert "/api/benchmarks/runs" in results.text
-        assert "/benchmarks/results/" in results.text
+        for path in ("/benchmarks/run", "/benchmarks/results"):
+            page = client.get(path, follow_redirects=False)
+            assert page.status_code == 307
+            assert page.headers["location"] == "/benchmarks"
+        desk = client.get("/benchmarks")
+        assert desk.status_code == 200
+        assert 'id="bench-scorecards"' in desk.text
+        assert 'id="bench-run-mechanical"' not in desk.text
+        assert "all-finding_report" not in desk.text
 
 
 def test_api_runs_filter_and_sort():
@@ -218,16 +198,12 @@ def test_results_detail_route_and_list_prove():
         assert listed.status_code == 200
         assert any(r["id"] == rid for r in listed.json()["runs"])
 
-        page = client.get(f"/benchmarks/results/{rid}")
-        assert page.status_code == 200
-        assert 'data-bench-page="results"' in page.text
-        assert f'data-detail-run-id="{rid}"' in page.text
-        assert 'data-bench-results-detail="1"' in page.text
-        assert 'id="bench-detail-body"' in page.text
-        assert f"/api/benchmarks/runs/{rid}" in page.text or "/api/benchmarks/runs/" in page.text
-        assert 'id="bench-results-back"' in page.text
-        assert 'id="bench-detail-suite"' in page.text
-        assert 'id="bench-detail-members"' in page.text
+        page = client.get(f"/benchmarks/results/{rid}", follow_redirects=False)
+        assert page.status_code == 307
+        assert page.headers["location"] == "/benchmarks"
+        detail = client.get(f"/api/benchmarks/runs/{rid}")
+        assert detail.status_code == 200
+        assert detail.json()["run"]["id"] == rid
 
 
 def test_defs_for_suite_excludes_poc_dev():
@@ -317,10 +293,9 @@ def test_api_suite_all_recon_one_parent_plus_children():
         assert all(p.get("mode") == "live" for p in points)
         assert not any(p["run_id"] == run["id"] for p in points)
 
-        detail_page = client.get(f"/benchmarks/results/{run['id']}")
-        assert detail_page.status_code == 200
-        assert 'id="bench-detail-members"' in detail_page.text
-        assert 'data-bench-detail-suite="1"' in detail_page.text
+        detail_page = client.get(f"/benchmarks/results/{run['id']}", follow_redirects=False)
+        assert detail_page.status_code == 307
+        assert detail_page.headers["location"] == "/benchmarks"
 
 
 def test_api_suite_all_hunt_includes_toy_and_flag():

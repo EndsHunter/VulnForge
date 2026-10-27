@@ -1,0 +1,26 @@
+{
+  "status": "failed",
+  "error": "live run stopped before a scorecard: connection refused",
+  "partial": true,
+  "cache_coverage": 0.15,
+  "stored_failure_count": 11,
+  "infra_error_row_count": 2,
+  "rows": [
+    {
+      "model": "demo-a",
+      "difficulty": "L0",
+      "task_id": "pair-ssrf",
+      "side": "vulnerable",
+      "error": "connection refused",
+      "error_kind": "hunt_error"
+    },
+    {
+      "model": "demo-a",
+      "difficulty": "L1",
+      "task_id": "pair-xss",
+      "side": "fixed",
+      "error": "timeout",
+      "error_kind": "timeout"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 usage: vf dashboard [-h] [--host HOST] [--port PORT] [--runs-root RUNS_ROOT]
+                    [--bench-results BENCH_RESULTS]
 
 options:
   -h, --help            show this help message and exit
@@ -6,3 +7,6 @@ options:
   --port PORT
   --runs-root RUNS_ROOT
                         Override runs root (default from config)
+  --bench-results BENCH_RESULTS
+                        Directory of python -m bench runs (default:
+                        bench/results or VF_BENCH_RESULTS)

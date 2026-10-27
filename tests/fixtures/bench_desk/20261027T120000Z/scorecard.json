@@ -1,0 +1,108 @@
+{
+  "cache_coverage": 1.0,
+  "cache_hits": 40,
+  "cache_misses": 0,
+  "disprove_gate": {
+    "failed": false,
+    "false_reject_max": 0.1,
+    "on_breach": "warn",
+    "rows": []
+  },
+  "fpr_cap": 0.005,
+  "headline_metric": "recall_at_fpr_le_0.5pct",
+  "leaderboard": {
+    "cache_coverage": 1.0,
+    "headline_metric": "recall_at_fpr_le_0.5pct",
+    "infra_error_count": 6,
+    "infra_error_row_count": 1,
+    "partial": false,
+    "rows": [
+      {
+        "difficulty": "L0",
+        "errors": 1.0,
+        "exclude_reason": null,
+        "excluded": false,
+        "fpr": 0.0,
+        "model": "sharp",
+        "on_frontier": true,
+        "precision": 1.0,
+        "rank": 1,
+        "recall_at_fpr_le_0.5pct": 0.75,
+        "vd_s": 0.75,
+        "youden": "equals VD-S (fewer than 200 negatives)",
+        "youden_in_ranking": false
+      },
+      {
+        "difficulty": "L1",
+        "errors": 0.0,
+        "exclude_reason": null,
+        "excluded": false,
+        "fpr": 0.004,
+        "model": "sharp",
+        "on_frontier": false,
+        "precision": 0.5,
+        "rank": 2,
+        "recall_at_fpr_le_0.5pct": 0.5,
+        "vd_s": 0.5,
+        "youden": 0.496,
+        "youden_in_ranking": true
+      },
+      {
+        "difficulty": "L0",
+        "errors": 6,
+        "exclude_reason": "infra_errors",
+        "excluded": true,
+        "fpr": null,
+        "model": "blind",
+        "on_frontier": false,
+        "precision": null,
+        "rank": null,
+        "recall_at_fpr_le_0.5pct": null,
+        "vd_s": null,
+        "youden": null,
+        "youden_in_ranking": false
+      }
+    ],
+    "scored_row_count": 2,
+    "stored_failure_count": 2
+  },
+  "mode": "live",
+  "models": {
+    "blind": {
+      "difficulties": {
+        "L0": {
+          "mean": {"stages": {"disprove": {"recall": null}}},
+          "repeats": []
+        }
+      }
+    },
+    "sharp": {
+      "difficulties": {
+        "L0": {
+          "mean": {"stages": {"disprove": {"recall": 0.875}}},
+          "repeats": [
+            {
+              "attempt_errors": [
+                {
+                  "error": "connection refused",
+                  "error_kind": "hunt_error",
+                  "side": "vulnerable",
+                  "task_id": "pair-sqli"
+                }
+              ]
+            }
+          ]
+        },
+        "L1": {
+          "mean": {"stages": {"disprove": {"recall": 0.5}}},
+          "repeats": [{"attempt_errors": []}]
+        }
+      }
+    }
+  },
+  "partial": false,
+  "scorecard_version": 1,
+  "scores_are_synthetic": false,
+  "stored_failure_count": 2,
+  "warnings": []
+}

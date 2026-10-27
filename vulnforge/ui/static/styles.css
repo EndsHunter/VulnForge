@@ -7022,3 +7022,41 @@ body[data-page="benchmarks"] .bench-delta-zero .v { color: var(--text-muted); }
   .hitl-inbox { padding: 0.75rem; }
   .hitl-item-actions .btn { flex: 1 1 calc(50% - 0.4rem); }
 }
+
+.bench-desk .table-wrap { max-height: none; }
+.bench-desk .bench-run { margin-top: 1rem; }
+.bench-desk .bench-run h2 {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 1rem;
+  color: var(--text);
+}
+.bench-key {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+th .bench-key { font-weight: 500; }
+.bench-error,
+.bench-warning {
+  margin: 0.35rem 0 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid var(--tone-bad-border);
+  background: var(--tone-bad-bg);
+  color: var(--text);
+}
+.bench-warning {
+  border-color: var(--tone-warn-border);
+  background: var(--tone-warn-bg);
+}
+.bench-desk .stats .value { font-size: 1.15rem; word-break: break-word; }

@@ -86,15 +86,12 @@ def test_api_poc_workshop_and_run_path_still_refuses():
 def test_poc_workshop_page_hooks():
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        page = client.get("/benchmarks/poc")
-        assert page.status_code == 200
-        assert 'data-bench-page="poc"' in page.text
-        assert 'id="bench-poc-run"' in page.text
-        assert 'id="bench-poc-def"' in page.text
-        assert "/api/benchmarks/poc/runs" in page.text
-        # Must not absorb Report Develop POC modal
-        assert 'id="poc-modal"' not in page.text
-        assert "poc-modal" not in page.text
+        page = client.get("/benchmarks/poc", follow_redirects=False)
+        assert page.status_code == 307
+        assert page.headers["location"] == "/benchmarks"
+        desk = client.get("/benchmarks")
+        assert 'id="bench-poc-run"' not in desk.text
+        assert 'id="poc-modal"' not in desk.text
 
 
 def test_run_html_poc_modal_untouched():

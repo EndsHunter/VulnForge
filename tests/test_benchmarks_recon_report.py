@@ -173,12 +173,9 @@ def test_create_multi_type_def_and_run_page_lists_types():
 
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        page = client.get("/benchmarks/run")
-        assert page.status_code == 200
-        assert "bench-run-type-filter" in page.text
-        assert "finding_report" in page.text
-        assert "recon" in page.text
-        assert "poc_dev" not in page.text.split("bench-run-type-filter")[1].split("</select>")[0]
+        page = client.get("/benchmarks/run", follow_redirects=False)
+        assert page.status_code == 307
+        assert page.headers["location"] == "/benchmarks"
 
         lib = client.get("/api/benchmarks")
         assert lib.status_code == 200

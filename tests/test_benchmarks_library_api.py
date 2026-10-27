@@ -180,10 +180,12 @@ def test_seed_endpoint_idempotent():
 def test_library_page_lists_hook():
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        page = client.get("/benchmarks/library")
-        assert page.status_code == 200
-        assert 'id="bench-library-table"' in page.text
-        assert "/api/benchmarks" in page.text
+        page = client.get("/benchmarks/library", follow_redirects=False)
+        assert page.status_code == 307
+        assert page.headers["location"] == "/benchmarks"
+        listed = client.get("/api/benchmarks")
+        assert listed.status_code == 200
+        assert "benchmarks" in listed.json()
 
 
 def test_write_version_refuses_overwrite():
