@@ -1,6 +1,268 @@
+import json
+
+import pytest
+
+from bench.cli import main
+from bench.config import BenchConfig, ModelSpec
+from bench.score import _sweep, average_tree, build_scorecard
 from bench.selftest import run_checks
+from bench.tasks import load_tasks
 
 
 def test_stub_scorecard_invariants():
     failures = run_checks()
     assert failures == []
+
+
+def _hit() -> dict:
+    return {
+        "stable_key": "sink",
+        "confidence": 0.9,
+        "verdict": "survive",
+        "disprove_timeout": False,
+        "disprove_error": False,
+        "disprove_tokens": 0,
+        "disprove_latency_s": 0.0,
+        "mech": {
+            "oracle_hit": True,
+            "formed": True,
+            "reproduced": True,
+            "path_contract_valid": True,
+            "poc_signal": False,
+        },
+    }
+
+
+def _attempt(task_id: str, side: str, repeat: int, *, error: str | None) -> dict:
+    return {
+        "model": "m",
+        "knowledge_cutoff": "2024-01-01",
+        "repeat": repeat,
+        "difficulty": "L0",
+        "task_id": task_id,
+        "side": side,
+        "error": error,
+        "timed_out": False,
+        "tokens": 1,
+        "latency_s": 0.0,
+        "t_offset_s": 0.0,
+        "findings": [] if error else ([_hit()] if side == "vulnerable" else []),
+    }
+
+
+def test_scorecard_unions_cwe_keys_when_repeats_differ():
+    """Repeat 1 has CWE-89 and CWE-287, repeat 2 only CWE-89, repeat 3 CWE-89 and CWE-79."""
+    rows = [
+        {
+            "recall_per_class": {"CWE-89": 1.0, "CWE-287": 0.5},
+            "counts": {"CWE-89": 2, "CWE-287": 1},
+            "precision": 0.5,
+            "zero_rate": 0.0,
+        },
+        {
+            "recall_per_class": {"CWE-89": 0.0},
+            "counts": {"CWE-89": 0},
+            "precision": None,
+            "zero_rate": 0.0,
+        },
+        {
+            "recall_per_class": {"CWE-89": 0.5, "CWE-79": 1.0},
+            "counts": {"CWE-89": 1, "CWE-79": 4},
+            "precision": 1.0,
+            "zero_rate": 1.0,
+        },
+    ]
+    mean = average_tree(rows)
+    recall = mean["recall_per_class"]
+    counts = mean["counts"]
+    assert set(recall) == {"CWE-89", "CWE-287", "CWE-79", "_contributed"}
+    assert recall["CWE-89"] == pytest.approx(0.5)
+    assert recall["_contributed"]["CWE-89"] == 3
+    assert recall["CWE-287"] == pytest.approx(0.5)
+    assert recall["_contributed"]["CWE-287"] == 1
+    assert recall["CWE-79"] == pytest.approx(1.0)
+    assert recall["_contributed"]["CWE-79"] == 1
+    assert counts["CWE-89"] == pytest.approx(1.0)
+    assert counts["CWE-287"] == pytest.approx(1 / 3)
+    assert counts["CWE-79"] == pytest.approx(4 / 3)
+    assert counts["_contributed"] == {"CWE-89": 3, "CWE-287": 3, "CWE-79": 3}
+    assert mean["precision"] == pytest.approx(0.75)
+    assert mean["_contributed"]["precision"] == 2
+    assert mean["zero_rate"] == pytest.approx(1 / 3)
+    assert mean["_contributed"]["zero_rate"] == 3
+
+    present = {
+        0: {"pair-sqli", "pair-auth"},
+        1: {"pair-sqli"},
+        2: {"pair-sqli", "pair-xss"},
+    }
+    tasks = [task for task in load_tasks() if task.id in {"pair-sqli", "pair-auth", "pair-xss"}]
+    attempts = []
+    for repeat, ok in present.items():
+        for task in tasks:
+            error = None if task.id in ok else "unparsed hunt response"
+            for side in ("vulnerable", "fixed"):
+                attempts.append(_attempt(task.id, side, repeat, error=error))
+    card = build_scorecard(
+        attempts,
+        tasks,
+        mode="live",
+        k=3,
+        workers=1,
+        fpr_cap=0.005,
+        false_reject_max=0.10,
+        on_breach="warn",
+        cache_hits=0,
+        cache_misses=0,
+    )
+    stage = card["models"]["m"]["difficulties"]["L0"]["mean"]["stages"]["disprove"]
+    classes = stage["recall_per_class"]
+    assert set(classes) == {"CWE-89", "CWE-287", "CWE-79", "_contributed"}
+    assert classes["CWE-89"] == pytest.approx(1.0)
+    assert classes["_contributed"]["CWE-89"] == 3
+    assert classes["CWE-287"] == pytest.approx(1.0)
+    assert classes["_contributed"]["CWE-287"] == 1
+    assert classes["CWE-79"] == pytest.approx(1.0)
+    assert classes["_contributed"]["CWE-79"] == 1
+    assert stage["precision"] == pytest.approx(1.0)
+    assert stage["vd_s"] == stage["recall_at_fpr_le_0.5pct"]
+    assert stage["youden"] is not None
+    board = card["leaderboard"]
+    assert board["scored_row_count"] == 1
+    assert board["infra_error_row_count"] == 0
+    assert board["rows"][0]["excluded"] is False
+    assert board["rows"][0]["vd_s"] == board["rows"][0]["recall_at_fpr_le_0.5pct"]
+
+
+def test_vd_s_is_recall_at_fpr_le_half_percent():
+    positives = [
+        {"score": 0.9, "companion": 0.0},
+        {"score": 0.5, "companion": 0.0},
+        {"score": 0.05, "companion": 0.0},
+    ]
+    negatives = [{"score": 0.2} for _ in range(200)]
+    row = _sweep(positives, negatives, 0.005)
+    assert row["fpr_at_operating_point"] <= 0.005
+    assert row["vd_s"] == pytest.approx(2 / 3)
+    assert row["vd_s"] == row["recall_at_fpr_le_0.5pct"]
+    assert row["youden"] == pytest.approx(2 / 3)
+
+
+def _one_model_config() -> BenchConfig:
+    return BenchConfig(
+        models=[ModelSpec(id="glm-id", name="Pretty GLM", knowledge_cutoff="2024-08-01")],
+        k=1,
+        workers=1,
+        difficulties=["L0"],
+        timeout_s=0.01,
+    )
+
+
+def test_score_from_cache_rebuilds_without_model_calls(tmp_path, monkeypatch):
+    from bench.runner import run_bench
+
+    cache = tmp_path / "cache"
+    config = _one_model_config()
+    tasks = load_tasks()
+    calls = {"n": 0}
+
+    def transport(model, messages):
+        del model, messages
+        calls["n"] += 1
+        return {
+            "error": None,
+            "timed_out": False,
+            "text": '{"findings":[]}',
+            "tokens": 4,
+            "latency_s": 0.0,
+        }
+
+    first = run_bench(config, tasks, mode="live", cache_dir=cache, transport=transport)
+    assert calls["n"] > 0
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("model call")
+
+    monkeypatch.setattr("bench.runner.live_hunt", explode)
+    monkeypatch.setattr("bench.runner.scripted_hunt", explode)
+    monkeypatch.setattr("bench.runner.chat", explode)
+    second = run_bench(config, tasks, mode="live", cache_dir=cache, from_cache=True)
+    assert second["cache_misses"] == 0
+    assert second["cache_hits"] == calls["n"]
+    assert second["models"] == first["models"]
+    assert second["leaderboard"] == first["leaderboard"]
+    assert second["wrote_results"] is False
+
+
+def test_cli_score_from_cache_uses_temp_cache(tmp_path, monkeypatch, capsys):
+    from bench.runner import run_bench
+
+    cache = tmp_path / "cache"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "base_url: http://127.0.0.1:9/v1",
+                "models:",
+                "  - id: glm-id",
+                "    name: Pretty GLM",
+                '    knowledge_cutoff: "2024-08-01"',
+                "k: 1",
+                "workers: 1",
+                "timeout_s: 0.01",
+                "difficulties:",
+                "  - L0",
+                "prompt_version: bench-1",
+                "disprove:",
+                "  false_reject_max: 0.10",
+                "  on_breach: warn",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    run_bench(
+        _one_model_config(),
+        load_tasks(),
+        mode="live",
+        cache_dir=cache,
+        transport=lambda model, messages: {
+            "error": None,
+            "timed_out": False,
+            "text": '{"findings":[]}',
+            "tokens": 4,
+            "latency_s": 0.0,
+        },
+    )
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError("model call")
+
+    monkeypatch.setattr("bench.runner.live_hunt", explode)
+    monkeypatch.setattr("bench.runner.scripted_hunt", explode)
+    monkeypatch.setattr("bench.runner.chat", explode)
+    code = main(
+        [
+            "score",
+            "--from-cache",
+            "--config",
+            str(config_path),
+            "--cache-dir",
+            str(cache),
+            "--mode",
+            "live",
+        ]
+    )
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["cache_misses"] == 0
+    assert payload["cache_hits"] > 0
+    assert payload["wrote_results"] is False
+    assert payload["mode"] == "live"
+    stage = payload["models"]["glm-id"]["difficulties"]["L0"]["mean"]["stages"]["disprove"]
+    assert "precision" in stage
+    assert "recall_per_class" in stage
+    assert stage["vd_s"] == stage["recall_at_fpr_le_0.5pct"]
+    assert "youden" in stage
+    board = payload["leaderboard"]
+    assert board["scored_row_count"] + board["infra_error_row_count"] == len(board["rows"])

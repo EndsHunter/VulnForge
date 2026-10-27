@@ -106,6 +106,8 @@ def _sweep(positives: list[dict], negatives: list[dict], fpr_cap: float) -> dict
     best_youden = max(youden_pool, key=lambda row: row["youden"]) if youden_pool else chosen
     return {
         "recall_at_fpr_le_0.5pct": chosen["recall"],
+        # PrimeVul VD-S: recall at the operating point whose FPR is within the cap.
+        "vd_s": chosen["recall"],
         "precision_at_fpr_cap": chosen["precision"],
         "fpr_at_operating_point": chosen["fpr"],
         "youden": best_youden["youden"],
@@ -511,26 +513,56 @@ def flip_rate(verdict_map: dict[tuple, list[str]]) -> float | None:
     return _rate(flipped, considered)
 
 
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def average_tree(rows: list[dict]) -> dict:
+    """Mean a list of repeat dicts.
+
+    Keys are the union across repeats. A missing count is zero for that
+    repeat. A missing rate, or a rate that is None because the denominator
+    was zero, is left out of that key's mean. ``_contributed`` on each
+    averaged node records how many repeats entered each numeric mean.
+    """
     if not rows:
         return {}
-    keys = rows[0].keys()
+    keys: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                keys.append(key)
     merged: dict = {}
+    contributed: dict[str, int] = {}
     for key in keys:
-        values = [row[key] for row in rows]
-        if all(isinstance(value, dict) for value in values):
-            merged[key] = average_tree(values)  # type: ignore[arg-type]
-        elif any(isinstance(value, (list, dict)) for value in values):
+        present = [row[key] for row in rows if key in row]
+        if not present:
             continue
-        elif all(value is None or isinstance(value, (int, float)) for value in values):
-            if all(isinstance(value, int) and not isinstance(value, bool) for value in values):
-                merged[key] = _mean([float(value) for value in values])
+        if all(isinstance(value, dict) for value in present):
+            filled = [
+                row[key] if key in row and isinstance(row[key], dict) else {}
+                for row in rows
+            ]
+            merged[key] = average_tree(filled)
+            continue
+        if any(isinstance(value, (list, dict)) for value in present):
+            continue
+        if all(value is None or isinstance(value, (int, float)) for value in present):
+            if all(_is_count(value) for value in present):
+                nums: list[float | None] = [float(value) for value in present]
+                nums.extend([0.0] * (len(rows) - len(present)))
+                merged[key] = _mean(nums)
+                contributed[key] = len(rows)
             else:
-                merged[key] = _mean(
-                    [None if value is None else float(value) for value in values]
-                )
-        else:
-            merged[key] = values[0]
+                nums = [None if value is None else float(value) for value in present]
+                merged[key] = _mean(nums)
+                contributed[key] = sum(value is not None for value in nums)
+            continue
+        merged[key] = present[0]
+    if contributed:
+        merged["_contributed"] = contributed
     return merged
 
 
@@ -802,6 +834,7 @@ def build_scorecard(
                 "model": point["model"],
                 "difficulty": point["difficulty"],
                 "recall_at_fpr_le_0.5pct": point["score"],
+                "vd_s": point["score"],
                 "youden": mean["stages"]["disprove"]["youden"],
                 "precision": mean["stages"]["disprove"]["precision"],
                 "fpr": mean["stages"]["disprove"]["fpr"],
@@ -824,6 +857,7 @@ def build_scorecard(
                 "model": point["model"],
                 "difficulty": point["difficulty"],
                 "recall_at_fpr_le_0.5pct": None,
+                "vd_s": None,
                 "youden": None,
                 "precision": None,
                 "fpr": None,
@@ -892,6 +926,8 @@ def build_scorecard(
         "leaderboard": {
             "headline_metric": "recall_at_fpr_le_0.5pct",
             "llm_judge": None,
+            "scored_row_count": sum(1 for row in leaderboard_rows if not row["excluded"]),
+            "infra_error_row_count": sum(1 for row in leaderboard_rows if row["excluded"]),
             "rows": leaderboard_rows,
         },
         "pareto": frontier,

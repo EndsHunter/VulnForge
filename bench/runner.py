@@ -244,6 +244,7 @@ def run_bench(
     mode: str,
     cache_dir: Path,
     transport=None,
+    from_cache: bool = False,
 ) -> dict:
     if mode not in {"stub", "live"}:
         raise ValueError(mode)
@@ -297,6 +298,16 @@ def run_bench(
         )
         cached = cache.get(key)
         if cached is None:
+            if from_cache:
+                with lock:
+                    misses += 1
+                return {
+                    "error": "missing cache entry",
+                    "timed_out": False,
+                    "tokens": 0,
+                    "latency_s": 0.0,
+                    "findings": [],
+                }
             if mode == "stub":
                 result = scripted_hunt(
                     job["model"]["id"], task, job["side"], job["difficulty"], job["repeat"]

@@ -90,7 +90,10 @@ def test_all_infra_errors_are_excluded():
     assert row["on_frontier"] is False
     assert row["excluded"] is True
     assert row["exclude_reason"] == "infra_errors"
+    assert row["vd_s"] is None
     assert row["tokens"] == 0
+    assert payload["leaderboard"]["infra_error_row_count"] == 1
+    assert payload["leaderboard"]["scored_row_count"] == 0
     assert all(point["model"] != "glm-id" for point in payload["pareto"]["points"])
     assert any("excluded" in warning for warning in payload["warnings"])
 
@@ -143,7 +146,10 @@ def test_a_single_infra_error_still_ranks_as_a_real_zero():
     row = _row(payload)
     assert row["excluded"] is False
     assert row["recall_at_fpr_le_0.5pct"] == 0.0
+    assert row["vd_s"] == 0.0
     assert row["rank"] == 1
+    assert payload["leaderboard"]["scored_row_count"] == 1
+    assert payload["leaderboard"]["infra_error_row_count"] == 0
 
 
 def test_http_errors_are_not_replayed_from_cache():

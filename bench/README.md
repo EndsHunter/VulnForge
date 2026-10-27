@@ -8,7 +8,7 @@ Harness stages are not imported. `adapters.py` scores hunt JSON, a formed-vs-rep
 
 ## Scorecard
 
-- Recall at FPR ≤ 0.5%, Youden, and the four pair outcomes: `paired_correct`, `both_vulnerable`, `both_benign`, `reversed`
+- Recall at FPR ≤ 0.5% (`vd_s`), Youden, and the four pair outcomes: `paired_correct`, `both_vulnerable`, `both_benign`, `reversed`
 - Precision, recall, and FPR at hunt raw, mech formed, mech reproduced, and disprove
 - `union_at_n` across the k repeats
 - Pre/post knowledge-cutoff and train/dev/held-out slices
@@ -33,6 +33,12 @@ Live run against the OpenAI-compatible server in config. Do not point this at a 
 
 ```bash
 python -m bench run --live --config bench/config.yaml
+```
+
+Rebuild the scorecard from cached responses only. This does not call a model and does not write `bench/results/`. Means take the union of keys across repeats. A missing count is zero; a rate with no denominator is left out of that key's mean, and `_contributed` records how many repeats entered it. Infrastructure-error rows stay on `leaderboard.infra_error_row_count`, apart from `scored_row_count`.
+
+```bash
+python -m bench score --from-cache --config bench/config.yaml
 ```
 
 `bench/config.yaml` sets `base_url` (default `http://10.0.0.232:1234/v1`) and `models`. Live requests send each model's `id`. `httpx>=0.27` is a project dependency because the live client imports it. The disk cache stores successful completions only. A model×difficulty row is excluded from rank and from the Pareto frontier when every call, or a majority of calls, is an infrastructure error (`recall` null, `rank` null, `on_frontier` false). Stub mode ignores config model names and scores only `stub-sharp`, `stub-noisy`, and `stub-blind`.

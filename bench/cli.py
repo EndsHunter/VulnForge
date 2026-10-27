@@ -1,4 +1,4 @@
-"""CLI entry: python -m bench run --stub | --live"""
+"""CLI entry: python -m bench run --stub | --live, or score --from-cache."""
 
 from __future__ import annotations
 
@@ -27,11 +27,46 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("self-test", help="Check stub scorecard invariants")
 
+    score_p = sub.add_parser("score", help="Rebuild a scorecard from cached responses")
+    score_p.add_argument(
+        "--from-cache",
+        action="store_true",
+        required=True,
+        help="Score cached responses only; do not call a model",
+    )
+    score_p.add_argument("--config", type=Path, default=None)
+    score_p.add_argument("--cache-dir", type=Path, default=Path("bench/cache"))
+    score_p.add_argument("--mode", choices=("live", "stub"), default="live")
+    score_p.add_argument("--k", type=int, default=None)
+    score_p.add_argument("--workers", type=int, default=None)
+
     args = parser.parse_args(argv)
     if args.cmd == "self-test":
         from bench.selftest import main as selftest_main
 
         return selftest_main()
+
+    if args.cmd == "score":
+        if not args.cache_dir.is_dir():
+            sys.stderr.write(f"cache directory not found: {args.cache_dir}\n")
+            return 1
+        config = load_config(args.config)
+        if args.k is not None:
+            config.k = args.k
+        if args.workers is not None:
+            config.workers = args.workers
+        tasks = load_tasks()
+        payload = run_bench(
+            config,
+            tasks,
+            mode=args.mode,
+            cache_dir=args.cache_dir,
+            from_cache=True,
+        )
+        sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        if payload["disprove_gate"]["failed"]:
+            return 3
+        return 0
 
     config = load_config(args.config)
     if args.k is not None:
