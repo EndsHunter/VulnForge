@@ -22,6 +22,18 @@ T_CRIT = {
 BINARY = 1e-9
 YOUDEN_FEW_NEGATIVES = "equals VD-S (fewer than 200 negatives)"
 MIN_NEGATIVES_FOR_YOUDEN = 200
+RECALL_SURVIVING = "surviving-pairs"
+PAIRED_RECALL_NOTE = (
+    "Paired recall isn't monotonic in the threshold, so recall at the FPR cap "
+    "can exceed raw recall. A true positive needs vulnerable ≥ threshold and fixed < threshold."
+)
+CACHE_HITS_LABEL = "successful cache reads only; stored failure records are not hits"
+CACHE_COVERAGE_LABEL = (
+    "fraction of jobs present in the cache, including stored failure records"
+)
+FPR_COMPLETED_LABEL = (
+    "FPR on completed negatives; errored negatives are negatives_lost and are not in this rate"
+)
 PAIR_KEYS = ("paired_correct", "both_vulnerable", "both_benign", "reversed", "error")
 SCALE_UP = (
     "Next: grow toward about 30 vulnerable/fixed pairs and 10 benign tasks "
@@ -116,6 +128,7 @@ def _sweep(positives: list[dict], negatives: list[dict], fpr_cap: float) -> dict
         "vd_s": chosen["recall"],
         "precision_at_fpr_cap": chosen["precision"],
         "fpr_at_operating_point": chosen["fpr"],
+        "tp_at_operating_point": chosen["tp"],
         "youden": 0.0 if best_youden is None else best_youden["youden"],
         "youden_threshold": None if best_youden is None else best_youden["threshold"],
     }
@@ -221,13 +234,20 @@ def score_repeat(
         positives = []
         negatives = []
         outcomes = {key: 0 for key in PAIR_KEYS}
+        n_pairs = 0
+        pairs_lost = 0
+        negatives_lost = 0
         for task in tasks:
             if task.kind != "pair":
                 continue
+            n_pairs += 1
             vuln = by_task[task.id]["vulnerable"]
             fixed = by_task[task.id]["fixed"]
             if vuln["error"] or fixed["error"]:
                 outcomes["error"] += 1
+                pairs_lost += 1
+                if fixed["error"]:
+                    negatives_lost += 1
                 if not fixed["error"]:
                     negatives.append(
                         {
@@ -266,6 +286,7 @@ def score_repeat(
                 continue
             attempt = by_task[task.id]["benign"]
             if attempt["error"]:
+                negatives_lost += 1
                 continue
             negatives.append(
                 {
@@ -285,12 +306,22 @@ def score_repeat(
             group = [item for item in positives if item["cwe"] == cwe]
             hits = sum(1 for item in group if item["outcome"] == "paired_correct")
             recall_per_class[cwe] = _rate(hits, len(group))
+        cap_tp = int(ranked["tp_at_operating_point"] or 0)
         stages[stage] = {
             **binary,
             **ranked,
             "pair_outcomes": outcomes,
             "precision_oracle_matched_dedup": _dedup_precision(attempts, stage),
             "recall_per_class": recall_per_class,
+            "recall_label": RECALL_SURVIVING,
+            "n_pairs": n_pairs,
+            "pair_runs": n_pairs,
+            "pairs_lost": pairs_lost,
+            "recall_lower_bound": _rate(binary["tp"], n_pairs),
+            "recall_at_fpr_lower_bound": _rate(cap_tp, n_pairs),
+            "negatives_lost": negatives_lost,
+            "fpr_completed_negatives": ranked["fpr_at_operating_point"],
+            "fpr_label": FPR_COMPLETED_LABEL,
             "_positives": positives,
             "_negatives": negatives,
         }
@@ -692,6 +723,36 @@ def pareto_markdown(table: dict) -> str:
     return "\n".join(lines)
 
 
+def _rollup_pair_losses(mean: dict, repeats: list[dict]) -> None:
+    """k-mean counts are totals (pairs lost out of pair runs), not a per-repeat average."""
+    stages = mean.get("stages")
+    if not isinstance(stages, dict):
+        return
+    for name, stage in stages.items():
+        if not isinstance(stage, dict):
+            continue
+        present = [row["stages"][name] for row in repeats if name in row.get("stages", {})]
+        if not present:
+            continue
+        stage["pairs_lost"] = sum(int(item["pairs_lost"]) for item in present)
+        stage["pair_runs"] = sum(int(item["pair_runs"]) for item in present)
+        stage["negatives_lost"] = sum(int(item["negatives_lost"]) for item in present)
+
+
+def _loss_fields(mean: dict) -> dict:
+    stage = mean["stages"]["disprove"]
+    return {
+        "pairs_lost": stage["pairs_lost"],
+        "pair_runs": stage["pair_runs"],
+        "recall_lower_bound": stage["recall_lower_bound"],
+        "recall_at_fpr_lower_bound": stage["recall_at_fpr_lower_bound"],
+        "negatives_lost": stage["negatives_lost"],
+        "recall_label": RECALL_SURVIVING,
+        "fpr_completed_negatives": stage["fpr_completed_negatives"],
+        "fpr_label": FPR_COMPLETED_LABEL,
+    }
+
+
 def build_scorecard(
     attempts: list[dict],
     tasks: list[Task],
@@ -782,6 +843,7 @@ def build_scorecard(
                         hits.add(task_id)
                 hit_sets.append(hits)
             mean = average_tree([{key: value for key, value in row.items() if key != "repeat"} for row in repeats])
+            _rollup_pair_losses(mean, repeats)
             # average_tree skips lists; surface ids from repeat 0 only via repeats.
             youden_values = [row["stages"]["disprove"]["youden"] for row in repeats]
             youden_ci = (
@@ -906,6 +968,7 @@ def build_scorecard(
                 "on_frontier": point["on_frontier"],
                 "excluded": False,
                 "exclude_reason": None,
+                **_loss_fields(mean),
             }
         )
     for index, row in enumerate(leaderboard_rows, start=1):
@@ -931,6 +994,7 @@ def build_scorecard(
                 "excluded": True,
                 "exclude_reason": "infra_errors",
                 "rank": None,
+                **_loss_fields(model_body[point["model"]]["difficulties"][point["difficulty"]]["mean"]),
             }
         )
 
@@ -946,9 +1010,12 @@ def build_scorecard(
         "workers": workers,
         "wrote_results": False,
         "cache_hits": cache_hits,
+        "cache_hits_label": CACHE_HITS_LABEL,
         "cache_misses": cache_misses,
         "cache_coverage": coverage,
+        "cache_coverage_label": CACHE_COVERAGE_LABEL,
         "stored_failure_count": stored_failures,
+        "paired_recall_note": PAIRED_RECALL_NOTE,
         "partial": partial,
         "seed": {
             "pairs": sum(1 for task in tasks if task.kind == "pair"),
@@ -995,6 +1062,8 @@ def build_scorecard(
             "cache_miss_count": holes,
             "cache_misses_by_side": side_misses,
             "cache_coverage": coverage,
+            "cache_coverage_label": CACHE_COVERAGE_LABEL,
+            "cache_hits_label": CACHE_HITS_LABEL,
             "stored_failure_count": stored_failures,
             "partial": partial,
             "rows": leaderboard_rows,

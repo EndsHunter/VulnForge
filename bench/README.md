@@ -8,7 +8,7 @@ Harness stages are not imported. `adapters.py` scores hunt JSON, a formed-vs-rep
 
 ## Scorecard
 
-- Recall at FPR ≤ 0.5% (`vd_s`), Youden, and the four pair outcomes: `paired_correct`, `both_vulnerable`, `both_benign`, `reversed`
+- Recall at FPR ≤ 0.5% (`vd_s`) on surviving pairs, plus `recall_lower_bound` and `recall_at_fpr_lower_bound` (errored pairs count as misses). `pairs_lost` is how many pair runs were dropped. Youden, and the four pair outcomes: `paired_correct`, `both_vulnerable`, `both_benign`, `reversed`. Paired recall is not monotonic in the threshold: a true positive needs the vulnerable score at or above the cut and the fixed score below it.
 - Precision, recall, and FPR at hunt raw, mech formed, mech reproduced, and disprove
 - `union_at_n` across the k repeats
 - Pre/post knowledge-cutoff and train/dev/held-out slices

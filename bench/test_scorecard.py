@@ -4,7 +4,13 @@ import pytest
 
 from bench.cli import main
 from bench.config import BenchConfig, ModelSpec
-from bench.score import YOUDEN_FEW_NEGATIVES, _sweep, average_tree, build_scorecard
+from bench.score import (
+    PAIRED_RECALL_NOTE,
+    YOUDEN_FEW_NEGATIVES,
+    _sweep,
+    average_tree,
+    build_scorecard,
+)
 from bench.selftest import run_checks
 from bench.tasks import load_tasks
 
@@ -295,6 +301,89 @@ def test_youden_on_real_seed_size_is_not_ranked():
     assert [item["rank"] for item in card["leaderboard"]["rows"]] == list(
         range(1, len(ranked) + 1)
     )
+
+
+def _two_pair_card(attempts: list[dict], tasks: list) -> tuple[dict, dict, dict]:
+    card = build_scorecard(
+        attempts,
+        tasks,
+        mode="live",
+        k=1,
+        workers=1,
+        fpr_cap=0.005,
+        false_reject_max=0.10,
+        on_breach="warn",
+        cache_hits=0,
+        cache_misses=0,
+    )
+    stage = card["models"]["m"]["difficulties"]["L0"]["repeats"][0]["stages"]["disprove"]
+    mean = card["models"]["m"]["difficulties"]["L0"]["mean"]["stages"]["disprove"]
+    return card, stage, mean
+
+
+def test_errored_pair_lowers_the_full_denominator_only():
+    tasks = [task for task in load_tasks() if task.id in {"pair-sqli", "pair-auth"}]
+    attempts = []
+    for task in tasks:
+        for side in ("vulnerable", "fixed"):
+            if task.id == "pair-auth" and side == "fixed":
+                row = _attempt(task.id, side, 0, error="timeout")
+                row["timed_out"] = True
+                row["cached_failure"] = True
+            elif task.id == "pair-sqli" and side == "vulnerable":
+                row = _attempt(task.id, side, 0, error=None)
+                row["findings"] = [_finding(0.9, oracle_hit=True)]
+            else:
+                row = _attempt(task.id, side, 0, error=None)
+                row["findings"] = []
+            attempts.append(row)
+    card, stage, mean = _two_pair_card(attempts, tasks)
+    row = card["leaderboard"]["rows"][0]
+    assert stage["pairs_lost"] == 1
+    assert stage["recall_label"] == "surviving-pairs"
+    assert stage["recall"] == pytest.approx(1.0)
+    assert stage["recall_at_fpr_le_0.5pct"] == pytest.approx(1.0)
+    assert stage["recall_lower_bound"] == pytest.approx(0.5)
+    assert stage["recall_at_fpr_lower_bound"] == pytest.approx(0.5)
+    assert mean["pairs_lost"] == 1
+    assert mean["pair_runs"] == 2
+    assert mean["recall_lower_bound"] == pytest.approx(0.5)
+    assert row["pairs_lost"] == 1
+    assert row["pair_runs"] == 2
+    assert row["recall_lower_bound"] == pytest.approx(0.5)
+    assert row["recall_at_fpr_lower_bound"] == pytest.approx(0.5)
+    assert row["negatives_lost"] == 1
+    assert row["recall_label"] == "surviving-pairs"
+    assert "completed negatives" in row["fpr_label"]
+    assert "not hits" in card["cache_hits_label"]
+    assert "including stored failure records" in card["cache_coverage_label"]
+
+
+def test_paired_recall_is_not_monotonic_and_the_note_is_present():
+    pairs = [task for task in load_tasks() if task.id in {"pair-sqli", "pair-auth"}]
+    benigns = [task for task in load_tasks() if task.kind == "benign"]
+    assert len(benigns) == 4
+    tasks = pairs + benigns
+    attempts = []
+    for task in tasks:
+        if task.kind == "benign":
+            row = _attempt(task.id, "benign", 0, error=None)
+            row["findings"] = []
+            attempts.append(row)
+            continue
+        for side in ("vulnerable", "fixed"):
+            row = _attempt(task.id, side, 0, error=None)
+            if task.id == "pair-sqli" and side == "vulnerable":
+                row["findings"] = [_finding(0.9, oracle_hit=True)]
+            elif task.id == "pair-sqli" and side == "fixed":
+                row["findings"] = [_finding(0.3, oracle_hit=False)]
+            else:
+                row["findings"] = []
+            attempts.append(row)
+    card, stage, _mean = _two_pair_card(attempts, tasks)
+    assert stage["recall"] == pytest.approx(0.0)
+    assert stage["recall_at_fpr_le_0.5pct"] == pytest.approx(0.5)
+    assert card["paired_recall_note"] == PAIRED_RECALL_NOTE
 
 
 def test_fixed_side_errors_are_counted_with_text():
