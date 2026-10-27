@@ -351,10 +351,11 @@ def test_errored_pair_lowers_the_full_denominator_only():
     assert row["pairs_lost"] == 1
     assert row["pair_runs"] == 2
     assert row["recall_lower_bound"] == pytest.approx(0.5)
+    assert row["recall_surviving_pairs"] == pytest.approx(1.0)
     assert row["recall_at_fpr_lower_bound"] == pytest.approx(0.5)
     assert row["negatives_lost"] == 1
     assert row["recall_label"] == "surviving-pairs"
-    assert "completed negatives" in row["fpr_label"]
+    assert "completed negatives" in row["fpr_completed_negatives_label"]
     assert "not hits" in card["cache_hits_label"]
     assert "including stored failure records" in card["cache_coverage_label"]
 
@@ -384,6 +385,15 @@ def test_paired_recall_is_not_monotonic_and_the_note_is_present():
     assert stage["recall"] == pytest.approx(0.0)
     assert stage["recall_at_fpr_le_0.5pct"] == pytest.approx(0.5)
     assert card["paired_recall_note"] == PAIRED_RECALL_NOTE
+    row = card["leaderboard"]["rows"][0]
+    assert row["recall_surviving_pairs"] == pytest.approx(stage["recall"])
+    assert row["recall_lower_bound"] == pytest.approx(stage["recall_lower_bound"])
+    assert row["fpr"] == pytest.approx(row["fpr_at_operating_point"])
+    assert row["fpr_at_operating_point"] == pytest.approx(0.0)
+    assert row["fpr_completed_negatives"] == pytest.approx(1 / 6)
+    assert row["fpr_completed_negatives"] != pytest.approx(row["fpr_at_operating_point"])
+    assert "operating-point" in row["fpr_at_operating_point_label"]
+    assert "completed negatives" in row["fpr_completed_negatives_label"]
 
 
 def test_fixed_side_errors_are_counted_with_text():

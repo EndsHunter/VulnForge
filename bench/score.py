@@ -31,6 +31,7 @@ CACHE_HITS_LABEL = "successful cache reads only; stored failure records are not 
 CACHE_COVERAGE_LABEL = (
     "fraction of jobs present in the cache, including stored failure records"
 )
+FPR_OPERATING_LABEL = "operating-point FPR at the recall-at-cap threshold"
 FPR_COMPLETED_LABEL = (
     "FPR on completed negatives; errored negatives are negatives_lost and are not in this rate"
 )
@@ -318,10 +319,12 @@ def score_repeat(
             "pair_runs": n_pairs,
             "pairs_lost": pairs_lost,
             "recall_lower_bound": _rate(binary["tp"], n_pairs),
+            "recall_surviving_pairs": binary["recall"],
             "recall_at_fpr_lower_bound": _rate(cap_tp, n_pairs),
             "negatives_lost": negatives_lost,
-            "fpr_completed_negatives": ranked["fpr_at_operating_point"],
-            "fpr_label": FPR_COMPLETED_LABEL,
+            "fpr_completed_negatives": binary["fpr"],
+            "fpr_completed_negatives_label": FPR_COMPLETED_LABEL,
+            "fpr_at_operating_point_label": FPR_OPERATING_LABEL,
             "_positives": positives,
             "_negatives": negatives,
         }
@@ -745,11 +748,14 @@ def _loss_fields(mean: dict) -> dict:
         "pairs_lost": stage["pairs_lost"],
         "pair_runs": stage["pair_runs"],
         "recall_lower_bound": stage["recall_lower_bound"],
+        "recall_surviving_pairs": stage["recall"],
         "recall_at_fpr_lower_bound": stage["recall_at_fpr_lower_bound"],
         "negatives_lost": stage["negatives_lost"],
         "recall_label": RECALL_SURVIVING,
-        "fpr_completed_negatives": stage["fpr_completed_negatives"],
-        "fpr_label": FPR_COMPLETED_LABEL,
+        "fpr_at_operating_point": stage["fpr_at_operating_point"],
+        "fpr_at_operating_point_label": FPR_OPERATING_LABEL,
+        "fpr_completed_negatives": stage["fpr"],
+        "fpr_completed_negatives_label": FPR_COMPLETED_LABEL,
     }
 
 
