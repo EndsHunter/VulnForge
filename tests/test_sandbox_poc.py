@@ -10,6 +10,7 @@ from vulnforge.cli import EXIT_IDLE, EXIT_PROGRESS, cmd_run_once
 from vulnforge.db import Database
 from vulnforge.poc_phase import enqueue_sandbox_oneshot_phase, sandbox_oneshot_enabled
 from vulnforge.poc_runner import (
+    ORACLE_WRAPPER,
     audit_sandbox_argv,
     build_docker_argv,
     build_firecracker_plan,
@@ -205,6 +206,42 @@ def test_firecracker_plan_has_no_nic_and_pci_off(tmp_path: Path):
     assert cfg["machine-config"]["vcpu_count"] == 1
     assert cfg["machine-config"]["mem_size_mib"] == 512
     assert plan["argv"][0].endswith("jailer")
+    audit_sandbox_argv(plan["argv"])
+
+
+def test_firecracker_plan_delivers_script_on_a_drive(tmp_path: Path):
+    """A typical PoC command, including the oracle wrapper, is a drive not the cmdline."""
+    pack = _pack(tmp_path)
+    kernel = tmp_path / "vmlinux"
+    rootfs = tmp_path / "rootfs.ext4"
+    kernel.write_bytes(b"k")
+    rootfs.write_bytes(b"r")
+    work = tmp_path / "jail"
+    command = "python3 poc.py\n" + ORACLE_WRAPPER
+    plan = build_firecracker_plan(
+        pack_dir=pack,
+        command=command,
+        kernel=str(kernel),
+        rootfs=str(rootfs),
+        fc_bin="/usr/bin/firecracker",
+        jail_bin="/usr/bin/jailer",
+        memory="512m",
+        timeout_s=30,
+        work_dir=work,
+    )
+    boot = plan["config"]["boot-source"]["boot_args"]
+    assert boot == "console=ttyS0 reboot=k panic=1 pci=off nomodules vf.cmd=drive"
+    assert len(boot) < 2048
+    assert "network-interfaces" not in plan["config"]
+    drives = plan["config"]["drives"]
+    assert drives[0]["is_root_device"] is True
+    script = drives[1]
+    assert script["drive_id"] == "vf-script"
+    assert script["is_root_device"] is False
+    assert script["is_read_only"] is True
+    body = Path(script["path_on_host"]).read_text(encoding="utf-8")
+    assert body == command
+    assert "target_vuln.py" in body
     audit_sandbox_argv(plan["argv"])
 
 

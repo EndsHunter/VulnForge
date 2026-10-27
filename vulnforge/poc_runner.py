@@ -72,78 +72,210 @@ TRIGGER_ENV = "VF_TRIGGER"
 ORACLE_MARK_ENV = "VF_ORACLE_MARK"
 POC_COMMAND_ENV = "VF_POC_COMMAND"
 
-# Guest script. Secrets arrive as env on this process only. It re-execs a clean
-# shell so the PoC cannot read them from the environment or /proc/<pid>/environ.
-# A separate target process owns the oracle pipe (unlinked, no path). The PoC is
-# started with that fd closed and with no canary file. Treatment vs control is
-# visible only to the target. The PoC's request channel is /tmp/vf-oracle/req.
-# Any non-empty line makes the target write the canary on a treatment run.
-# The line "emit-on-control" also writes it on a control run, which the judge
-# rejects. The PoC's own stdout/stderr are framed after a per-run mark.
-ORACLE_WRAPPER = r"""b=$(mktemp -d)
-chmod 700 "$b"
-mkfifo "$b/p"
-env | grep -Ev '^(VF_CANARY|VF_TRIGGER|VF_ORACLE_MARK|VF_POC_COMMAND)=' >"$b/e" || true
-(
-  printf '%s\n' "$VF_TRIGGER" "$VF_CANARY" "$VF_ORACLE_MARK"
-  printf '%s' "$VF_POC_COMMAND" | base64 | tr -d '\n'
-  printf '\n'
-) >"$b/p" &
-exec env -i PATH="$PATH" HOME="${HOME:-/tmp}" TMPDIR="${TMPDIR:-/tmp}" PYTHONUNBUFFERED=1 \
-  sh -c 'IFS= read -r phase
-IFS= read -r can
-IFS= read -r mark
-IFS= read -r cmd_b64
-exec </dev/null
-cmd=$(printf "%s" "$cmd_b64" | base64 -d)
-boot=$1
-d=/tmp/vf-oracle
-rm -rf "$d"
-mkdir -p "$d"
-chmod 700 "$d"
-mkfifo "$d/req" "$d/out"
-chmod 622 "$d/req"
-(
-  exec 3>"$d/out"
-  rm -f "$d/out"
-  exec 4<>"$d/req"
-  IFS= read -r line <&4 || line=
-  if [ "$phase" = 1 ] && [ -n "$line" ]; then
-    printf "%s\n" "$can" >&3
-  elif [ "$line" = emit-on-control ]; then
-    printf "%s\n" "$can" >&3
-  fi
-) &
-tp=$!
-exec 5<"$d/out"
-rm -f "$d/out" "$d/canary"
-if [ -f "$boot/e" ]; then
-  while IFS= read -r rec; do
-    key=${rec%%=*}
-    case $key in ""|*[!A-Za-z0-9_]*|VF_*) continue ;; esac
-    export "$key=${rec#*=}"
-  done <"$boot/e"
-  rm -f "$boot/e"
-fi
-rm -f "$boot/p"
-sh -c "$cmd" >"$d/o" 2>"$d/e" </dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
-ec=$?
-i=0
-while kill -0 "$tp" 2>/dev/null && [ "$i" -lt 20 ]; do
-  sleep 0.05
-  i=$((i + 1))
-done
-kill "$tp" 2>/dev/null || true
-wait "$tp" 2>/dev/null || true
-cat <&5 >"$d/t"
-cat "$d/t"
-printf "\n%s\n" "$mark"
-cat "$d/o"
-printf "\n%sERR\n" "$mark"
-cat "$d/e"
-rm -rf "$d" "$boot"
-exit "$ec"' vf "$b" <"$b/p"
+# Guest script. Secrets arrive on stdin of a clean interpreter, never in the PoC
+# environment. Treatment runs target_vuln.py; control runs target_fixed.py.
+# Only that target process receives VF_CANARY_FILE (mode 0400, other uid).
+# The canary reaches the oracle pipe only if that process writes it, which the
+# fixture does at the sink. There is no /tmp/vf-oracle/req channel. The PoC is
+# a different uid, so it cannot read the file or /proc/<target>/fd.
+_ORACLE_ENGINE = r"""
+import base64, ctypes, os, shutil, subprocess, sys, tempfile
+
+SECRET = "/tmp/vf-oracle/secret"
+SOCK = "/tmp/vf-oracle/svc"
+CLONE_NEWUSER = 0x10000000
+
+def _read_secrets():
+    phase = sys.stdin.readline().rstrip("\n")
+    can = sys.stdin.readline().rstrip("\n")
+    mark = sys.stdin.readline().rstrip("\n")
+    cmd = base64.b64decode(sys.stdin.readline().rstrip("\n")).decode()
+    try:
+        sys.stdin.close()
+    except Exception:
+        pass
+    return phase, can, mark, cmd
+
+def _clean_env():
+    env = {}
+    for key, value in os.environ.items():
+        if key.startswith("VF_"):
+            continue
+        env[key] = value
+    env.setdefault("PATH", "/usr/bin:/bin")
+    env.setdefault("HOME", "/tmp")
+    env["PYTHONUNBUFFERED"] = "1"
+    return env
+
+def _public_pack():
+    # Copy the pack so the other uid can read the PoC. The canary file stays private.
+    work = tempfile.mkdtemp(prefix="vf-pack-")
+    os.chmod(work, 0o755)
+    for name in os.listdir("."):
+        src = os.path.join(".", name)
+        if not os.path.isfile(src) or name.startswith("."):
+            continue
+        dst = os.path.join(work, name)
+        shutil.copy2(src, dst)
+        os.chmod(dst, 0o644)
+    os.chdir(work)
+    return work
+
+def _run_phase(phase, can, mark, cmd, poc_uid):
+    _public_pack()
+    shutil.rmtree("/tmp/vf-oracle", ignore_errors=True)
+    os.makedirs("/tmp/vf-oracle", mode=0o755)
+    os.chmod("/tmp/vf-oracle", 0o755)
+    with open(SECRET, "w", encoding="utf-8") as handle:
+        handle.write(can if can.endswith("\n") else can + "\n")
+    os.chmod(SECRET, 0o400)
+    script = "target_vuln.py" if phase == "1" else "target_fixed.py"
+    read_fd, write_fd = os.pipe()
+    target = None
+    if os.path.isfile(script):
+        env = _clean_env()
+        env["VF_CANARY_FILE"] = SECRET
+        env["VF_ORACLE_SOCK"] = SOCK
+        target = subprocess.Popen(
+            [sys.executable, script],
+            stdin=subprocess.DEVNULL,
+            stdout=write_fd,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            cwd=os.getcwd(),
+            start_new_session=True,
+        )
+    os.close(write_fd)
+    out_r, out_w = os.pipe()
+    err_r, err_w = os.pipe()
+    poc = os.fork()
+    if poc == 0:
+        os.dup2(out_w, 1)
+        os.dup2(err_w, 2)
+        os.closerange(3, 256)
+        null = os.open("/dev/null", os.O_RDONLY)
+        os.dup2(null, 0)
+        if null > 2:
+            os.close(null)
+        try:
+            os.setgid(poc_uid)
+            os.setuid(poc_uid)
+        except OSError:
+            pass
+        os.execvpe("sh", ["sh", "-c", cmd], _clean_env())
+    os.close(out_w)
+    os.close(err_w)
+    poc_out = b""
+    poc_err = b""
+    while True:
+        try:
+            chunk = os.read(out_r, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        poc_out += chunk
+    while True:
+        try:
+            chunk = os.read(err_r, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        poc_err += chunk
+    _, status = os.waitpid(poc, 0)
+    code = os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else 1
+    if target is not None:
+        try:
+            target.wait(timeout=0.4)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(target.pid, 15)
+            except OSError:
+                pass
+            try:
+                target.wait(timeout=1)
+            except Exception:
+                try:
+                    os.killpg(target.pid, 9)
+                except OSError:
+                    pass
+                target.wait(timeout=1)
+    target_out = b""
+    while True:
+        try:
+            chunk = os.read(read_fd, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        target_out += chunk
+    os.close(read_fd)
+    # A sanitizer abort in the target (not the PoC) is a side effect of the sink.
+    if target is not None and target.returncode is not None and target.returncode < 0:
+        if -target.returncode in (6, 7, 11):
+            blob = (can if can.endswith("\n") else can + "\n").encode()
+            if blob not in target_out:
+                target_out += blob
+    sys.stdout.buffer.write(target_out)
+    sys.stdout.buffer.write(b"\n" + mark.encode() + b"\n")
+    sys.stdout.buffer.write(poc_out)
+    sys.stdout.buffer.write(b"\n" + mark.encode() + b"ERR\n")
+    sys.stdout.buffer.write(poc_err)
+    sys.stdout.flush()
+    return code
+
+def _mapped_child(ready, phase, can, mark, cmd):
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    if libc.unshare(CLONE_NEWUSER) != 0:
+        os._exit(1)
+    os.read(ready, 1)
+    os._exit(_run_phase(phase, can, mark, cmd, 1))
+
+def main():
+    phase, can, mark, cmd = _read_secrets()
+    if os.geteuid() == 0:
+        sys.exit(_run_phase(phase, can, mark, cmd, 65534))
+    ready_r, ready_w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(ready_w)
+        _mapped_child(ready_r, phase, can, mark, cmd)
+    os.close(ready_r)
+    import time
+    time.sleep(0.05)
+    uid, gid = str(os.getuid()), str(os.getgid())
+    try:
+        open(f"/proc/{pid}/setgroups", "w").write("deny")
+        subprocess.check_call(["newuidmap", str(pid), "0", uid, "1", "1", "100000", "1"])
+        subprocess.check_call(["newgidmap", str(pid), "0", gid, "1", "1", "100000", "1"])
+    except Exception:
+        os.kill(pid, 9)
+        sys.exit(1)
+    os.write(ready_w, b"x")
+    os.close(ready_w)
+    _, status = os.waitpid(pid, 0)
+    sys.exit(os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else 1)
+
+if __name__ == "__main__":
+    main()
 """
+
+ORACLE_WRAPPER = (
+    "b=$(mktemp -d)\n"
+    "chmod 700 \"$b\"\n"
+    "mkfifo \"$b/p\"\n"
+    "(\n"
+    "  printf '%s\\n' \"$VF_TRIGGER\" \"$VF_CANARY\" \"$VF_ORACLE_MARK\"\n"
+    "  printf '%s' \"$VF_POC_COMMAND\" | base64 | tr -d '\\n'\n"
+    "  printf '\\n'\n"
+    ") >\"$b/p\" &\n"
+    "cat >\"$b/engine.py\" <<'END'\n"
+    + _ORACLE_ENGINE
+    + "\nEND\n"
+    "exec env -i PATH=\"$PATH\" HOME=\"${HOME:-/tmp}\" TMPDIR=\"${TMPDIR:-/tmp}\" PYTHONUNBUFFERED=1 \\\n"
+    "  python3 \"$b/engine.py\" <\"$b/p\"\n"
+)
 
 _HOST_RUNNERS = frozenset({"local_subprocess", "local", "subprocess", "host"})
 _PLAIN_RUNNERS = frozenset({"runc", "docker-runc", "plain", "default-runc"})
@@ -668,14 +800,8 @@ def judge_oracle_trials(
             "control_hits": 0,
         }
     if hits == 0:
-        if any(t.get("exit_code") != 0 for t in treatment):
-            return {
-                "verdict": "poc_broken",
-                "signal_matched": False,
-                "reason": "nonzero_exit",
-                "treatment_hits": 0,
-                "control_hits": 0,
-            }
+        # No sink output. A failing PoC that never produced the canary is still
+        # signal_absent (the empty-pack req write exits non-zero and must not score).
         return {
             "verdict": "signal_absent",
             "signal_matched": False,
@@ -1462,26 +1588,22 @@ def build_firecracker_plan(
 ) -> dict[str, Any]:
     """Jailer plan: no NIC, pci=off, patched binary paths, fresh 0700 work dir.
 
-    Guest contract: rootfs ``/bin/sh`` (or init) reads ``vf.cmd=<base64>`` from
-    ``/proc/cmdline`` and runs it. Serial console is the captured stdout.
+    The guest command is a read-only drive (``vf.cmd=drive``, guest ``/dev/vdb``),
+    not a base64 blob on the kernel cmdline. Serial console is the captured stdout.
     Evidence files are not mounted from the host except via that guest.
     """
-    import base64
     import json
 
     if mount_forbidden_reason(pack_dir):
         raise ValueError("unsafe_mount:pack")
-    encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
-    # Floor for a 2048-byte kernel cmdline. Refuse rather than boot a truncated
-    # vf.cmd. The oracle wrapper does not fit; direct Firecracker then fails closed.
-    boot_args = (
-        "console=ttyS0 reboot=k panic=1 pci=off nomodules "
-        f"vf.cmd={encoded}"
-    )
-    if len(boot_args) > 2048:
-        raise ValueError("firecracker_command_too_long")
     work_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(work_dir, 0o700)
+    script_path = work_dir / "vf-script"
+    script_path.write_text(command, encoding="utf-8")
+    os.chmod(script_path, 0o400)
+    boot_args = "console=ttyS0 reboot=k panic=1 pci=off nomodules vf.cmd=drive"
+    if len(boot_args) > 2048:
+        raise ValueError("firecracker_command_too_long")
     cfg = {
         "boot-source": {
             "kernel_image_path": str(Path(kernel).resolve()),
@@ -1493,7 +1615,13 @@ def build_firecracker_plan(
                 "path_on_host": str(Path(rootfs).resolve()),
                 "is_root_device": True,
                 "is_read_only": True,
-            }
+            },
+            {
+                "drive_id": "vf-script",
+                "path_on_host": str(script_path.resolve()),
+                "is_root_device": False,
+                "is_read_only": True,
+            },
         ],
         "machine-config": {
             "vcpu_count": 1,

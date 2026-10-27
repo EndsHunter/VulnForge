@@ -24,13 +24,16 @@ You produce **runnable proof-of-concept code** for one existing finding — not 
      network: none
      ---
      ```
-     `success_regex` is a human hint only. The harness starts a separate target
-     process that owns fd 3 and the canary. Do **not** read a canary file, do
-     **not** write fd 3, and do **not** branch on `VF_TRIGGER` (it is not in
-     your environment). Write one line to `/tmp/vf-oracle/req` to exercise the
-     sink. On a treatment run the target writes the canary to fd 3. On a
-     control run it does not. The harness repeats that pair. Do **not** print
-     the canary. Your own stdout is not a signal.
+     `success_regex` is a human hint only. Ship `target_vuln.py` and
+     `target_fixed.py` in the pack. The harness runs the vulnerable file on
+     the treatment side and the fixed file on the control side, as a different
+     user from the PoC. Only the target process gets `VF_CANARY_FILE` (mode
+     0400). When the real sink runs, read that file and write the bytes to
+     the target's stdout. The fixed program must not. The target listens on
+     `/tmp/vf-oracle/svc` (`VF_ORACLE_SOCK`). The PoC may connect there. Do
+     **not** read `VF_CANARY_FILE` from the PoC, do **not** write fd 3, and
+     do **not** branch on `VF_TRIGGER`. There is no request fifo. Your own
+     stdout is not a signal.
 4. Always pass `evidence_id` from the task when calling `write_evidence`.
 
 ## Language selection

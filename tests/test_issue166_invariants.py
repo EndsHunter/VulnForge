@@ -447,21 +447,6 @@ def test_poc_oracle_forged_fd3_copy_is_not_signal(tmp_path: Path):
     assert result["command"] == _FORGE_COMMAND
 
 
-_HONEST_POC = """\
-import os
-from pathlib import Path
-Path("/tmp/vf-oracle/req").write_text("go\\n")
-Path("poc-view.txt").write_text(
-    "trigger=" + os.environ.get("VF_TRIGGER", "") + "\\n"
-    + "canary_file=" + str(Path("/tmp/vf-oracle/canary").exists()) + "\\n"
-)
-"""
-
-_CONTROL_POC = """\
-from pathlib import Path
-Path("/tmp/vf-oracle/req").write_text("emit-on-control\\n")
-"""
-
 _PRINT_POC = """\
 from pathlib import Path
 path = Path("/tmp/vf-oracle/canary")
@@ -469,48 +454,215 @@ print(path.read_text() if path.is_file() else "")
 print("ASSERT_OK")
 """
 
+_SINK_CLIENT = """\
+import socket
+import time
+from pathlib import Path
+payload = %s
+path = Path("/tmp/vf-oracle/svc")
+for _ in range(80):
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect(str(path))
+        sock.send(payload)
+        sock.close()
+        break
+    except OSError:
+        time.sleep(0.05)
+"""
+
+
+def _target_source(label: str, *, emit: bool) -> str:
+    body = (
+        "sys.stdout.write(Path(secret).read_text())\n"
+        "    sys.stdout.flush()\n"
+        if emit
+        else "pass\n"
+    )
+    return (
+        "import os, socket, sys\n"
+        "from pathlib import Path\n"
+        "sock = os.environ['VF_ORACLE_SOCK']\n"
+        "secret = os.environ['VF_CANARY_FILE']\n"
+        "if os.path.exists(sock):\n"
+        "    os.unlink(sock)\n"
+        "server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+        "server.bind(sock)\n"
+        "os.chmod(sock, 0o666)\n"
+        "server.listen(1)\n"
+        "server.settimeout(3)\n"
+        "try:\n"
+        "    conn, _addr = server.accept()\n"
+        "except socket.timeout:\n"
+        "    raise SystemExit(0)\n"
+        "data = conn.recv(128)\n"
+        f"Path('/tmp/vf-poc-seen').open('a').write({label!r} + ':' + data.decode('utf-8', 'replace'))\n"
+        "if data.startswith(b'HIT'):\n"
+        f"    {body}"
+        "conn.close()\n"
+    )
+
+
+def _write_pair(pack: Path, *, fixed_emits: bool, payload: bytes) -> None:
+    pack.mkdir(parents=True, exist_ok=True)
+    (pack / "target_vuln.py").write_text(_target_source("VULN", emit=True), encoding="utf-8")
+    (pack / "target_fixed.py").write_text(
+        _target_source("FIXED", emit=fixed_emits), encoding="utf-8"
+    )
+    (pack / "poc.py").write_text(_SINK_CLIENT % repr(payload), encoding="utf-8")
+
 
 def test_poc_oracle_fresh_canary_is_scored_on_fd3(tmp_path: Path):
-    """Each harness run plants a fresh canary. Only the target's fd scores it."""
+    """A sink hit on the vulnerable target scores. The fixed target does not."""
+    assert "target_vuln.py" in ORACLE_WRAPPER
+    assert "target_fixed.py" in ORACLE_WRAPPER
+    assert "/tmp/vf-oracle/req" not in ORACLE_WRAPPER
     assert '3>"$d/target.stdout"' not in ORACLE_WRAPPER
-    assert "3>&-" in ORACLE_WRAPPER
-    assert '>"$d/canary"' not in ORACLE_WRAPPER
 
     def _once(root: Path):
         pack = root / "pack"
-        pack.mkdir(parents=True)
-        (pack / "honest.py").write_text(_HONEST_POC, encoding="utf-8")
-        scored = score_oracle_sh(pack, "python3 honest.py", k=2, timeout_s=20)
-        view = (pack / "poc-view.txt").read_text(encoding="utf-8")
-        return scored, view
+        _write_pair(pack, fixed_emits=False, payload=b"HIT\n")
+        seen = Path("/tmp/vf-poc-seen")
+        seen.unlink(missing_ok=True)
+        scored = score_oracle_sh(pack, "python3 poc.py", k=2, timeout_s=25)
+        text = seen.read_text(encoding="utf-8") if seen.is_file() else ""
+        return scored, text
 
-    first, first_view = _once(tmp_path / "a")
-    second, _second_view = _once(tmp_path / "b")
+    first, first_seen = _once(tmp_path / "a")
+    second, _second_seen = _once(tmp_path / "b")
     assert first["verdict"] == "signal_observed"
     assert second["verdict"] == "signal_observed"
+    assert first["oracle"]["reason"] == "differential_ok"
     assert first["triggers"] == ["1", "0", "1", "0"]
-    assert second["triggers"] == ["1", "0", "1", "0"]
     assert _HEX_CANARY.fullmatch(first["canary"])
     assert first["canary"] != second["canary"]
     assert first["canary"] not in (first.get("command") or "")
     assert first["canary"] not in (first.get("stdout_excerpt") or "")
-    assert "trigger=\n" in first_view
-    assert "canary_file=False" in first_view
+    assert "VULN:" in first_seen and "FIXED:" in first_seen
     controls = [t for t in first["trials"] if t.get("phase") == "control"]
-    assert controls
+    treatments = [t for t in first["trials"] if t.get("phase") == "treatment"]
+    assert treatments and controls
+    assert all(first["canary"] in (t.get("target_stdout") or "") for t in treatments)
     assert all(first["canary"] not in (t.get("target_stdout") or "") for t in controls)
 
 
-def test_poc_oracle_control_run_must_omit_canary(tmp_path: Path):
-    """A control run that still shows the canary is not a signal."""
+def test_poc_oracle_sink_hit_scores_only_the_vulnerable_side(tmp_path: Path):
+    """The same request is signal_observed only because the vulnerable sink ran."""
     pack = tmp_path / "pack"
-    pack.mkdir()
-    (pack / "both.py").write_text(_CONTROL_POC, encoding="utf-8")
-    result = score_oracle_sh(pack, "python3 both.py", k=2, timeout_s=20)
+    _write_pair(pack, fixed_emits=False, payload=b"HIT\n")
+    Path("/tmp/vf-poc-seen").unlink(missing_ok=True)
+    result = score_oracle_sh(pack, "python3 poc.py", k=1, timeout_s=20)
+    assert result["verdict"] == "signal_observed"
+    assert result["oracle"]["treatment_hits"] == 1
+    assert result["oracle"]["control_hits"] == 0
+    seen = Path("/tmp/vf-poc-seen").read_text(encoding="utf-8")
+    assert seen.startswith("VULN:")
+    assert "FIXED:" in seen
+
+
+def test_poc_oracle_control_run_must_omit_canary(tmp_path: Path):
+    """The control side is the fixed target. If that sink still emits, it is not a signal."""
+    pack = tmp_path / "pack"
+    _write_pair(pack, fixed_emits=True, payload=b"HIT\n")
+    result = score_oracle_sh(pack, "python3 poc.py", k=1, timeout_s=20)
     assert result["oracle"]["reason"] == "control_showed_canary"
     assert result["verdict"] != "signal_observed"
     assert result["signal_matched"] is not True
-    assert result["oracle"]["control_hits"] == 2
+    assert result["oracle"]["control_hits"] == 1
+
+
+def test_poc_oracle_empty_pack_req_write_is_signal_absent(tmp_path: Path):
+    """An empty pack that only writes the old request path is not a signal."""
+    pack = tmp_path / "empty"
+    pack.mkdir()
+    result = score_oracle_sh(pack, "echo go > /tmp/vf-oracle/req", k=1, timeout_s=20)
+    assert result["verdict"] == "signal_absent"
+    assert result["signal_matched"] is not True
+    assert result["oracle"]["reason"] == "canary_absent"
+
+
+def test_poc_oracle_request_that_misses_the_sink_is_signal_absent(tmp_path: Path):
+    """A request the vulnerable target accepts without reaching the sink is not a signal."""
+    pack = tmp_path / "pack"
+    _write_pair(pack, fixed_emits=False, payload=b"NOPE\n")
+    seen = Path("/tmp/vf-poc-seen")
+    seen.unlink(missing_ok=True)
+    result = score_oracle_sh(pack, "python3 poc.py", k=1, timeout_s=20)
+    assert result["verdict"] == "signal_absent"
+    assert result["oracle"]["reason"] == "canary_absent"
+    text = seen.read_text(encoding="utf-8")
+    assert "VULN:" in text and "NOPE" in text
+    assert result["canary"] not in text
+
+
+def test_poc_oracle_direct_read_of_canary_resource_is_signal_absent(tmp_path: Path):
+    """The PoC uid cannot read the canary file the sink guards."""
+    pack = tmp_path / "pack"
+    _write_pair(pack, fixed_emits=False, payload=b"NOPE\n")
+    reader = (
+        "p='/tmp/vf-oracle/secret'\n"
+        "try:\n"
+        "    open(p).read()\n"
+        "    print('READ_OK')\n"
+        "except OSError as exc:\n"
+        "    print('READ_DENY', exc.errno)\n"
+    )
+    (pack / "read.py").write_text(reader, encoding="utf-8")
+    result = score_oracle_sh(pack, "python3 read.py", k=1, timeout_s=20)
+    assert result["verdict"] == "signal_absent"
+    stdout = "".join(str(t.get("poc_stdout") or "") for t in result["trials"])
+    assert "READ_DENY" in stdout
+    assert "READ_OK" not in stdout
+    assert result["canary"] not in stdout
+
+
+def test_poc_oracle_proc_fd_is_not_readable(tmp_path: Path):
+    """The PoC cannot open the parent or target oracle fds through /proc."""
+    pack = tmp_path / "pack"
+    _write_pair(pack, fixed_emits=False, payload=b"NOPE\n")
+    (pack / "probe.py").write_text(
+        "import os\n"
+        "ppid = os.getppid()\n"
+        "try:\n"
+        "    os.open('/proc/%d/fd/5' % ppid, os.O_RDONLY)\n"
+        "    print('PPID5_OK')\n"
+        "except OSError as exc:\n"
+        "    print('PPID5_DENY', exc.errno)\n"
+        "opened = False\n"
+        "for pid in os.listdir('/proc'):\n"
+        "    if not pid.isdigit():\n"
+        "        continue\n"
+        "    try:\n"
+        "        os.open('/proc/%s/fd/3' % pid, os.O_RDONLY)\n"
+        "        print('FD3_OK', pid)\n"
+        "        opened = True\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "if not opened:\n"
+        "    print('FD3_DENY')\n",
+        encoding="utf-8",
+    )
+    result = score_oracle_sh(pack, "python3 probe.py", k=1, timeout_s=20)
+    assert result["verdict"] == "signal_absent"
+    stdout = "".join(str(t.get("poc_stdout") or "") for t in result["trials"])
+    assert "PPID5_OK" not in stdout
+    assert "PPID5_DENY" in stdout
+    assert "FD3_OK" not in stdout
+    assert "FD3_DENY" in stdout
+    assert result["canary"] not in stdout
+
+
+def test_poc_oracle_target_sanitizer_abort_is_signal_on_vulnerable_side(tmp_path: Path):
+    """A sanitizer abort in the target process scores only on the vulnerable side."""
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    (pack / "target_vuln.py").write_text("import os\nos.abort()\n", encoding="utf-8")
+    (pack / "target_fixed.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    result = score_oracle_sh(pack, "true", k=1, timeout_s=20)
+    assert result["verdict"] == "signal_observed"
+    assert result["oracle"]["reason"] == "differential_ok"
+    assert result["oracle"]["control_hits"] == 0
 
 
 def test_poc_oracle_marker_in_poc_or_printed_by_poc_is_not_signal(tmp_path: Path):

@@ -30,12 +30,11 @@ Hub default is ``network: none`` (matches harness safe default). Set
 Soft readiness (`harness_ready`) requires runnable code + success criteria
 (`success_regex` and/or non-placeholder **Expected signal**). Not a mech gate.
 
-`success_regex` does not decide `signal_observed`. The harness starts a
-separate target process that owns fd 3 and the canary. The PoC has no oracle
-fd, no readable canary file, and no `VF_TRIGGER`. A treatment run scores the
-canary only on that target fd, with exit 0. A control run must omit it.
-`poc_harness.oracle_k` (default 2) is how many treatment/control pairs must
-agree. Iterate-in-sandbox uses this same oracle.
+`success_regex` does not decide `signal_observed`. The harness runs
+`target_vuln.py` on treatment and `target_fixed.py` on control. Only that
+target process can read `VF_CANARY_FILE`. The canary counts when the sink
+writes it to the target's stdout. The PoC is a different uid and cannot read
+the file or the target's fds. Iterate-in-sandbox uses this same oracle.
 
 ## Related
 
