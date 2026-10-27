@@ -94,7 +94,7 @@ def build_disprove_messages(finding: dict, root: Path) -> list[dict]:
 
 
 def cacheable(result: dict) -> bool:
-    """Keep only completions that did not fail the transport or the HTTP status."""
+    """Successful completions only. Failures are stored separately and retried live."""
     if result.get("error") or result.get("timed_out"):
         return False
     for finding in result.get("findings") or []:
@@ -104,7 +104,79 @@ def cacheable(result: dict) -> bool:
     return True
 
 
+def is_failure_record(payload: dict) -> bool:
+    return bool(payload.get("cached_failure"))
+
+
+def _error_kind(result: dict) -> str | None:
+    kind = result.get("error_kind")
+    if kind:
+        return str(kind)
+    if result.get("cached_failure"):
+        return "hunt_error"
+    if result.get("timed_out"):
+        return "timeout"
+    if result.get("error") == "missing cache entry":
+        return "cache_miss"
+    if result.get("error"):
+        return "hunt_error"
+    return None
+
+
+def failure_record(result: dict) -> dict:
+    """Persist a failed job without making it replayable as a success."""
+    if result.get("timed_out"):
+        kind = "timeout"
+        message = result.get("error") or "timeout"
+    elif result.get("error"):
+        kind = "hunt_error"
+        message = str(result["error"])
+    else:
+        kind = "disprove_error"
+        messages = []
+        for finding in result.get("findings") or []:
+            disprove = finding.get("disprove") or {}
+            if disprove.get("timed_out") or disprove.get("error"):
+                messages.append(str(disprove.get("error") or "timeout"))
+        message = "; ".join(messages) or "disprove failed"
+    return {
+        "cached_failure": True,
+        "error_kind": kind,
+        "error": message,
+        "timed_out": bool(result.get("timed_out")),
+        "tokens": int(result.get("tokens") or 0),
+        "latency_s": float(result.get("latency_s") or 0.0),
+        "findings": [],
+    }
+
+
+_INFLIGHT: dict[tuple[str, int], threading.BoundedSemaphore] = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def endpoint_semaphore(base_url: str, limit: int) -> threading.BoundedSemaphore:
+    """One semaphore per base URL and cap, shared by every stage and worker."""
+    key = (base_url.rstrip("/"), int(limit))
+    with _INFLIGHT_LOCK:
+        sem = _INFLIGHT.get(key)
+        if sem is None:
+            sem = threading.BoundedSemaphore(key[1])
+            _INFLIGHT[key] = sem
+        return sem
+
+
 def chat(
+    config: BenchConfig,
+    model: str,
+    messages: list[dict],
+    *,
+    transport=None,
+) -> dict:
+    with endpoint_semaphore(config.base_url, config.max_inflight):
+        return _chat_call(config, model, messages, transport=transport)
+
+
+def _chat_call(
     config: BenchConfig,
     model: str,
     messages: list[dict],
@@ -278,13 +350,14 @@ def run_bench(
                             }
                         )
     cache = DiskCache(cache_dir)
+    hits = 0
     misses = 0
+    miss_sides = {"vulnerable": 0, "fixed": 0, "benign": 0}
     lock = threading.Lock()
 
-    def execute(job: dict) -> dict:
-        nonlocal misses
+    def job_key(job: dict) -> str:
         task: Task = job["task"]
-        key = _cache_key(
+        return _cache_key(
             {
                 "mode": mode,
                 "prompt_version": config.prompt_version,
@@ -296,58 +369,55 @@ def run_bench(
                 "content_hash": task.content_hash,
             }
         )
+
+    def execute(job: dict) -> dict:
+        nonlocal hits, misses
+        task: Task = job["task"]
+        key = job_key(job)
         cached = cache.get(key)
-        if cached is None:
-            if from_cache:
+        if cached is not None and not is_failure_record(cached):
+            with lock:
+                hits += 1
+            return cached
+        if from_cache:
+            if cached is None:
                 with lock:
                     misses += 1
+                    miss_sides[job["side"]] = miss_sides.get(job["side"], 0) + 1
                 return {
                     "error": "missing cache entry",
+                    "error_kind": "cache_miss",
                     "timed_out": False,
                     "tokens": 0,
                     "latency_s": 0.0,
                     "findings": [],
                 }
-            if mode == "stub":
-                result = scripted_hunt(
-                    job["model"]["id"], task, job["side"], job["difficulty"], job["repeat"]
-                )
-            else:
-                result = live_hunt(
-                    config,
-                    job["model"]["id"],
-                    task,
-                    job["side"],
-                    job["difficulty"],
-                    transport=transport,
-                )
-            if cacheable(result):
-                cache.put(key, result)
-            with lock:
-                misses += 1
-            cached = result
-        return cached
+            return cached
+        with lock:
+            misses += 1
+        if mode == "stub":
+            result = scripted_hunt(
+                job["model"]["id"], task, job["side"], job["difficulty"], job["repeat"]
+            )
+        else:
+            result = live_hunt(
+                config,
+                job["model"]["id"],
+                task,
+                job["side"],
+                job["difficulty"],
+                transport=transport,
+            )
+        if cacheable(result):
+            cache.put(key, result)
+            return result
+        record = failure_record(result)
+        cache.put(key, record)
+        return record
 
     workers = min(config.workers, max(1, len(jobs)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         raw_results = list(pool.map(execute, jobs))
-    hits = 0
-    for job in jobs:
-        task = job["task"]
-        key = _cache_key(
-            {
-                "mode": mode,
-                "prompt_version": config.prompt_version,
-                "model": job["model"]["id"],
-                "repeat": job["repeat"],
-                "difficulty": job["difficulty"],
-                "task": task.id,
-                "side": job["side"],
-                "content_hash": task.content_hash,
-            }
-        )
-        if cache.get(key) is not None:
-            hits += 1
 
     attempts = []
     clock = 0.0
@@ -366,6 +436,8 @@ def run_bench(
                 "task_id": task.id,
                 "side": job["side"],
                 "error": result["error"],
+                "error_kind": _error_kind(result),
+                "cached_failure": bool(result.get("cached_failure")),
                 "timed_out": result["timed_out"],
                 "tokens": result["tokens"],
                 "latency_s": result["latency_s"],
@@ -384,6 +456,9 @@ def run_bench(
         on_breach=config.on_breach,
         cache_hits=hits,
         cache_misses=misses,
+        cache_misses_by_side=miss_sides,
+        job_count=len(jobs),
+        from_cache=from_cache,
     )
     return freeze(card)  # type: ignore[return-value]
 

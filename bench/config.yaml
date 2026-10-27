@@ -20,3 +20,5 @@ disprove:
   false_reject_max: 0.10
   on_breach: warn
 prompt_version: bench-1
+# LM Studio at this base_url serves 4 concurrent requests.
+max_inflight: 4

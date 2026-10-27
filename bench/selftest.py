@@ -61,6 +61,7 @@ def run_checks() -> list[str]:
     ) as cache_b:
         first = run_bench(config, tasks, mode="stub", cache_dir=Path(cache_a))
         second = run_bench(config, tasks, mode="stub", cache_dir=Path(cache_b))
+        replay = run_bench(config, tasks, mode="stub", cache_dir=Path(cache_a))
     check(first == second, "stub scorecard is not deterministic")
     payload = first
     check(payload["mode"] == "stub", "mode")
@@ -72,9 +73,15 @@ def run_checks() -> list[str]:
     check(payload["seed"]["pairs"] == 8 and payload["seed"]["benign"] == 4, "seed size")
     check("BigVul" in payload["seed"]["excluded_label_sets"], "label policy")
     check(any(task["split"] == "held_out" for task in payload["seed"]["tasks"]), "held_out")
+    check(payload["cache_hits"] == 0, "fresh run does not count writes as hits")
+    check(payload["cache_misses"] > 0, "fresh run records lookup misses")
+    check(payload["partial"] is False, "stub run is not a partial rescore")
+    check(replay["models"] == first["models"], "retry keeps stub scores")
+    check(replay["cache_hits"] > 0, "successes are reused from cache")
+    check(replay["cache_misses"] > 0, "stored errors are retried")
     check(
-        payload["cache_misses"] > payload["cache_hits"] > 0,
-        "successes are cached and errors are not",
+        replay["cache_hits"] + replay["cache_misses"] == first["cache_misses"],
+        "replay accounts for every job",
     )
     check(not (PACKAGE_DIR / "results").exists(), "bench/results was created")
 

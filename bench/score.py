@@ -20,6 +20,21 @@ T_CRIT = {
     10: 2.228,
 }
 BINARY = 1e-9
+YOUDEN_FEW_NEGATIVES = "equals VD-S (fewer than 200 negatives)"
+MIN_NEGATIVES_FOR_YOUDEN = 200
+RECALL_SURVIVING = "surviving-pairs"
+PAIRED_RECALL_NOTE = (
+    "Paired recall isn't monotonic in the threshold, so recall at the FPR cap "
+    "can exceed raw recall. A true positive needs vulnerable ≥ threshold and fixed < threshold."
+)
+CACHE_HITS_LABEL = "successful cache reads only; stored failure records are not hits"
+CACHE_COVERAGE_LABEL = (
+    "fraction of jobs present in the cache, including stored failure records"
+)
+FPR_OPERATING_LABEL = "operating-point FPR at the recall-at-cap threshold"
+FPR_COMPLETED_LABEL = (
+    "FPR on completed negatives; errored negatives are negatives_lost and are not in this rate"
+)
 PAIR_KEYS = ("paired_correct", "both_vulnerable", "both_benign", "reversed", "error")
 SCALE_UP = (
     "Next: grow toward about 30 vulnerable/fixed pairs and 10 benign tasks "
@@ -102,16 +117,21 @@ def _sweep(positives: list[dict], negatives: list[dict], fpr_cap: float) -> dict
         best_fpr = min(row["fpr"] for row in pool)
         pool = [row for row in pool if row["fpr"] == best_fpr]
         chosen = pool[0]
-    youden_pool = [row for row in ranked if row["youden"] is not None]
-    best_youden = max(youden_pool, key=lambda row: row["youden"]) if youden_pool else chosen
+    youden_pool = [
+        row
+        for row in ranked
+        if row["youden"] is not None and row["fpr"] is not None and row["fpr"] <= fpr_cap
+    ]
+    best_youden = max(youden_pool, key=lambda row: row["youden"]) if youden_pool else None
     return {
         "recall_at_fpr_le_0.5pct": chosen["recall"],
-        # PrimeVul VD-S: recall at the operating point whose FPR is within the cap.
+        # PrimeVul VD-S: same operating point as the headline, not Youden's J.
         "vd_s": chosen["recall"],
         "precision_at_fpr_cap": chosen["precision"],
         "fpr_at_operating_point": chosen["fpr"],
-        "youden": best_youden["youden"],
-        "youden_threshold": best_youden["threshold"],
+        "tp_at_operating_point": chosen["tp"],
+        "youden": 0.0 if best_youden is None else best_youden["youden"],
+        "youden_threshold": None if best_youden is None else best_youden["threshold"],
     }
 
 
@@ -215,13 +235,20 @@ def score_repeat(
         positives = []
         negatives = []
         outcomes = {key: 0 for key in PAIR_KEYS}
+        n_pairs = 0
+        pairs_lost = 0
+        negatives_lost = 0
         for task in tasks:
             if task.kind != "pair":
                 continue
+            n_pairs += 1
             vuln = by_task[task.id]["vulnerable"]
             fixed = by_task[task.id]["fixed"]
             if vuln["error"] or fixed["error"]:
                 outcomes["error"] += 1
+                pairs_lost += 1
+                if fixed["error"]:
+                    negatives_lost += 1
                 if not fixed["error"]:
                     negatives.append(
                         {
@@ -260,6 +287,7 @@ def score_repeat(
                 continue
             attempt = by_task[task.id]["benign"]
             if attempt["error"]:
+                negatives_lost += 1
                 continue
             negatives.append(
                 {
@@ -271,17 +299,32 @@ def score_repeat(
             )
         binary = _confusion(positives, negatives, BINARY)
         ranked = _sweep(positives, negatives, fpr_cap)
+        if len(negatives) < MIN_NEGATIVES_FOR_YOUDEN:
+            ranked["youden"] = YOUDEN_FEW_NEGATIVES
+            ranked["youden_threshold"] = None
         recall_per_class: dict[str, float | None] = {}
         for cwe in sorted({item["cwe"] for item in positives if item["cwe"]}):
             group = [item for item in positives if item["cwe"] == cwe]
             hits = sum(1 for item in group if item["outcome"] == "paired_correct")
             recall_per_class[cwe] = _rate(hits, len(group))
+        cap_tp = int(ranked["tp_at_operating_point"] or 0)
         stages[stage] = {
             **binary,
             **ranked,
             "pair_outcomes": outcomes,
             "precision_oracle_matched_dedup": _dedup_precision(attempts, stage),
             "recall_per_class": recall_per_class,
+            "recall_label": RECALL_SURVIVING,
+            "n_pairs": n_pairs,
+            "pair_runs": n_pairs,
+            "pairs_lost": pairs_lost,
+            "recall_lower_bound": _rate(binary["tp"], n_pairs),
+            "recall_surviving_pairs": binary["recall"],
+            "recall_at_fpr_lower_bound": _rate(cap_tp, n_pairs),
+            "negatives_lost": negatives_lost,
+            "fpr_completed_negatives": binary["fpr"],
+            "fpr_completed_negatives_label": FPR_COMPLETED_LABEL,
+            "fpr_at_operating_point_label": FPR_OPERATING_LABEL,
             "_positives": positives,
             "_negatives": negatives,
         }
@@ -365,11 +408,20 @@ def score_repeat(
     misses = headline["pair_outcomes"]["both_benign"] + headline["pair_outcomes"]["reversed"]
     hunt_errors = sum(1 for attempt in attempts if attempt["error"])
     error_tasks = sorted(
-        {
-            attempt["task_id"]
+        {attempt["task_id"] for attempt in attempts if attempt.get("error")}
+    )
+    attempt_errors = sorted(
+        (
+            {
+                "task_id": attempt["task_id"],
+                "side": attempt["side"],
+                "error": attempt["error"],
+                "error_kind": attempt.get("error_kind"),
+            }
             for attempt in attempts
-            if attempt["error"] and attempt["side"] in {"vulnerable", "benign"}
-        }
+            if attempt.get("error")
+        ),
+        key=lambda row: (row["task_id"], row["side"], row["error"] or ""),
     )
     miss_tasks = sorted(
         item["task_id"]
@@ -485,6 +537,7 @@ def score_repeat(
         },
         "splits": splits,
         "error_task_ids": error_tasks,
+        "attempt_errors": attempt_errors,
         "miss_task_ids": miss_tasks,
     }
 
@@ -604,11 +657,19 @@ def score_calibration() -> dict:
 
 
 def is_infra_failure(attempt: dict) -> bool:
-    """Transport, timeout, and HTTP failures. A parsed miss is not one of these."""
+    """Transport, timeout, HTTP, and stored cache failures.
+
+    A parsed miss is not one of these. A from-cache hole (``missing cache entry``)
+    is a cache miss, not an infrastructure error.
+    """
+    if attempt.get("cached_failure"):
+        return True
+    if attempt.get("error_kind") == "cache_miss":
+        return False
     if attempt.get("timed_out"):
         return True
     error = attempt.get("error")
-    if not error or error == "unparsed hunt response":
+    if not error or error in {"unparsed hunt response", "missing cache entry"}:
         return False
     return True
 
@@ -665,6 +726,39 @@ def pareto_markdown(table: dict) -> str:
     return "\n".join(lines)
 
 
+def _rollup_pair_losses(mean: dict, repeats: list[dict]) -> None:
+    """k-mean counts are totals (pairs lost out of pair runs), not a per-repeat average."""
+    stages = mean.get("stages")
+    if not isinstance(stages, dict):
+        return
+    for name, stage in stages.items():
+        if not isinstance(stage, dict):
+            continue
+        present = [row["stages"][name] for row in repeats if name in row.get("stages", {})]
+        if not present:
+            continue
+        stage["pairs_lost"] = sum(int(item["pairs_lost"]) for item in present)
+        stage["pair_runs"] = sum(int(item["pair_runs"]) for item in present)
+        stage["negatives_lost"] = sum(int(item["negatives_lost"]) for item in present)
+
+
+def _loss_fields(mean: dict) -> dict:
+    stage = mean["stages"]["disprove"]
+    return {
+        "pairs_lost": stage["pairs_lost"],
+        "pair_runs": stage["pair_runs"],
+        "recall_lower_bound": stage["recall_lower_bound"],
+        "recall_surviving_pairs": stage["recall"],
+        "recall_at_fpr_lower_bound": stage["recall_at_fpr_lower_bound"],
+        "negatives_lost": stage["negatives_lost"],
+        "recall_label": RECALL_SURVIVING,
+        "fpr_at_operating_point": stage["fpr_at_operating_point"],
+        "fpr_at_operating_point_label": FPR_OPERATING_LABEL,
+        "fpr_completed_negatives": stage["fpr"],
+        "fpr_completed_negatives_label": FPR_COMPLETED_LABEL,
+    }
+
+
 def build_scorecard(
     attempts: list[dict],
     tasks: list[Task],
@@ -677,6 +771,9 @@ def build_scorecard(
     on_breach: str,
     cache_hits: int,
     cache_misses: int,
+    cache_misses_by_side: dict | None = None,
+    job_count: int | None = None,
+    from_cache: bool = False,
 ) -> dict:
     grouped: dict[tuple, list[dict]] = defaultdict(list)
     for attempt in attempts:
@@ -698,6 +795,24 @@ def build_scorecard(
         warnings.append(f"k={k} is below 3; confidence intervals need at least 3 repeats")
     if calibration["canary_catch_rate"] != 1.0 or not calibration["canary_true_pass"]:
         warnings.append("canary catch rate is below the 100% target")
+    side_misses = {"vulnerable": 0, "fixed": 0, "benign": 0}
+    for side, count in (cache_misses_by_side or {}).items():
+        if side in side_misses:
+            side_misses[side] = int(count)
+    holes = cache_misses if from_cache else 0
+    stored_failures = sum(1 for attempt in attempts if attempt.get("cached_failure"))
+    if job_count:
+        coverage = (job_count - holes) / job_count if from_cache else cache_hits / job_count
+    else:
+        coverage = None
+    partial = bool(from_cache and holes > 0)
+    if partial:
+        warnings.append(
+            "INCOMPLETE CACHE: "
+            f"{holes} cache misses, coverage {coverage:.6f}, "
+            f"vulnerable={side_misses['vulnerable']}, fixed={side_misses['fixed']}, "
+            f"benign={side_misses['benign']}. Scorecard is partial."
+        )
 
     for model in models:
         cutoff = next(item["knowledge_cutoff"] for item in attempts if item["model"] == model)
@@ -734,12 +849,19 @@ def build_scorecard(
                         hits.add(task_id)
                 hit_sets.append(hits)
             mean = average_tree([{key: value for key, value in row.items() if key != "repeat"} for row in repeats])
+            _rollup_pair_losses(mean, repeats)
             # average_tree skips lists; surface ids from repeat 0 only via repeats.
+            youden_values = [row["stages"]["disprove"]["youden"] for row in repeats]
+            youden_ci = (
+                ci95(youden_values)
+                if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in youden_values)
+                else None
+            )
             ci = {
                 "recall_at_fpr_le_0.5pct": ci95(
                     [row["stages"]["disprove"]["recall_at_fpr_le_0.5pct"] for row in repeats]
                 ),
-                "youden": ci95([row["stages"]["disprove"]["youden"] for row in repeats]),
+                "youden": youden_ci,
                 "findings_per_1k_tokens": ci95(
                     [row["efficiency"]["findings_per_1k_tokens"] for row in repeats]
                 ),
@@ -770,6 +892,7 @@ def build_scorecard(
         model_body[model] = {"knowledge_cutoff": cutoff, "difficulties": diff_body}
 
     points = []
+    operating_fprs: dict[tuple[str, str], float | None] = {}
     excluded_points = []
     for model, body in model_body.items():
         for difficulty, diff in body["difficulties"].items():
@@ -801,8 +924,10 @@ def build_scorecard(
             diff["excluded"] = False
             diff["exclude_reason"] = None
             recall = mean["stages"]["disprove"]["recall_at_fpr_le_0.5pct"]
+            operating_fpr = mean["stages"]["disprove"]["fpr_at_operating_point"]
             if recall is None:
                 recall = 0.0
+            operating_fprs[(model, difficulty)] = operating_fpr
             points.append(
                 {
                     "model": model,
@@ -829,15 +954,17 @@ def build_scorecard(
     ):
         diff = model_body[point["model"]]["difficulties"][point["difficulty"]]
         mean = diff["mean"]
+        youden = mean["stages"]["disprove"]["youden"]
         leaderboard_rows.append(
             {
                 "model": point["model"],
                 "difficulty": point["difficulty"],
                 "recall_at_fpr_le_0.5pct": point["score"],
                 "vd_s": point["score"],
-                "youden": mean["stages"]["disprove"]["youden"],
+                "youden": youden,
+                "youden_in_ranking": youden != YOUDEN_FEW_NEGATIVES,
                 "precision": mean["stages"]["disprove"]["precision"],
-                "fpr": mean["stages"]["disprove"]["fpr"],
+                "fpr": operating_fprs[(point["model"], point["difficulty"])],
                 "tokens": point["tokens"],
                 "wall_seconds": point["wall_seconds"],
                 "findings_per_1k_tokens": point["findings_per_1k_tokens"],
@@ -847,6 +974,7 @@ def build_scorecard(
                 "on_frontier": point["on_frontier"],
                 "excluded": False,
                 "exclude_reason": None,
+                **_loss_fields(mean),
             }
         )
     for index, row in enumerate(leaderboard_rows, start=1):
@@ -859,6 +987,7 @@ def build_scorecard(
                 "recall_at_fpr_le_0.5pct": None,
                 "vd_s": None,
                 "youden": None,
+                "youden_in_ranking": False,
                 "precision": None,
                 "fpr": None,
                 "tokens": point["tokens"],
@@ -871,6 +1000,7 @@ def build_scorecard(
                 "excluded": True,
                 "exclude_reason": "infra_errors",
                 "rank": None,
+                **_loss_fields(model_body[point["model"]]["difficulties"][point["difficulty"]]["mean"]),
             }
         )
 
@@ -886,7 +1016,13 @@ def build_scorecard(
         "workers": workers,
         "wrote_results": False,
         "cache_hits": cache_hits,
+        "cache_hits_label": CACHE_HITS_LABEL,
         "cache_misses": cache_misses,
+        "cache_coverage": coverage,
+        "cache_coverage_label": CACHE_COVERAGE_LABEL,
+        "stored_failure_count": stored_failures,
+        "paired_recall_note": PAIRED_RECALL_NOTE,
+        "partial": partial,
         "seed": {
             "pairs": sum(1 for task in tasks if task.kind == "pair"),
             "benign": sum(1 for task in tasks if task.kind == "benign"),
@@ -928,6 +1064,14 @@ def build_scorecard(
             "llm_judge": None,
             "scored_row_count": sum(1 for row in leaderboard_rows if not row["excluded"]),
             "infra_error_row_count": sum(1 for row in leaderboard_rows if row["excluded"]),
+            "infra_error_count": sum(1 for attempt in attempts if is_infra_failure(attempt)),
+            "cache_miss_count": holes,
+            "cache_misses_by_side": side_misses,
+            "cache_coverage": coverage,
+            "cache_coverage_label": CACHE_COVERAGE_LABEL,
+            "cache_hits_label": CACHE_HITS_LABEL,
+            "stored_failure_count": stored_failures,
+            "partial": partial,
             "rows": leaderboard_rows,
         },
         "pareto": frontier,

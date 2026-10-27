@@ -37,12 +37,15 @@ class BenchConfig:
     false_reject_max: float = 0.10
     on_breach: str = "warn"
     prompt_version: str = "bench-1"
+    max_inflight: int = 4
 
     def __post_init__(self) -> None:
         if self.k < 1:
             raise ValueError("k must be >= 1")
         if self.workers < 1:
             raise ValueError("workers must be >= 1")
+        if self.max_inflight < 1:
+            raise ValueError("max_inflight must be >= 1")
         if self.on_breach not in {"warn", "fail"}:
             raise ValueError("disprove.on_breach must be warn or fail")
         if not self.difficulties:
@@ -85,4 +88,5 @@ def load_config(path: Path | None = None) -> BenchConfig:
         ),
         on_breach=str(disprove.get("on_breach") or "warn"),
         prompt_version=str(raw.get("prompt_version") or "bench-1"),
+        max_inflight=int(raw["max_inflight"]) if raw.get("max_inflight") is not None else 4,
     )
