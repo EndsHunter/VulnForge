@@ -1,0 +1,22 @@
+usage: eval_vulngym.py [-h] [--freeze] [--prepare] [--sensitivity] [--live]
+                       [--dashboard] [--label LABEL]
+                       [--task-timeout TASK_TIMEOUT] [--max-tasks MAX_TASKS]
+                       [--only ONLY] [--host HOST] [--port PORT]
+                       [--model MODEL]
+
+VulnGym hunt-profile live recall
+
+options:
+  -h, --help            show this help message and exit
+  --freeze
+  --prepare
+  --sensitivity
+  --live
+  --dashboard
+  --label LABEL
+  --task-timeout TASK_TIMEOUT
+  --max-tasks MAX_TASKS
+  --only ONLY
+  --host HOST           LLM host (default VF_EVAL_HOST or 192.168.80.4)
+  --port PORT           LLM port (default VF_EVAL_PORT or 11434)
+  --model MODEL         LLM model id (default VF_EVAL_MODEL or ornith-1.5:35b)

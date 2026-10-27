@@ -1,0 +1,10 @@
+usage: bench run [-h] [--config CONFIG] (--stub | --live) [--k K]
+                 [--workers WORKERS]
+
+options:
+  -h, --help         show this help message and exit
+  --config CONFIG
+  --stub             Offline deterministic personas
+  --live             OpenAI-compatible endpoint in config
+  --k K
+  --workers WORKERS

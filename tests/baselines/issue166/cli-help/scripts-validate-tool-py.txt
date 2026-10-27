@@ -1,0 +1,11 @@
+usage: validate_tool.py [-h] [--json] [--integrate] draft_dir
+
+Validate a VulnForge tool draft
+
+positional arguments:
+  draft_dir    Path to draft directory (e.g. config/tool_drafts/my_tool)
+
+options:
+  -h, --help   show this help message and exit
+  --json       Print full JSON report
+  --integrate  Use integrate-time hard checks (wireup + tests required)

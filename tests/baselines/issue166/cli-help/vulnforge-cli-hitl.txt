@@ -1,0 +1,14 @@
+usage: vf hitl [-h] {inbox,responses,show,respond,emit} ...
+
+positional arguments:
+  {inbox,responses,show,respond,emit}
+    inbox               List awaiting-review packets for a run
+    responses           Print the durable responses document
+    show                Print one report packet and its responses
+    respond             Record an explicit human answer (finding approval
+                        delegates to review)
+    emit                Store an explicit HITL packet (gate). Does not touch
+                        findings.
+
+options:
+  -h, --help            show this help message and exit

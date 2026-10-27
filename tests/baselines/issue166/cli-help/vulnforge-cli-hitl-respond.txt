@@ -1,0 +1,11 @@
+usage: vf hitl respond [-h] [--run-dir RUN_DIR] --id ID --block BLOCK --value
+                       VALUE [--note NOTE] [--operator OPERATOR]
+
+options:
+  -h, --help           show this help message and exit
+  --run-dir RUN_DIR
+  --id ID              Report id
+  --block BLOCK        Interactive block id
+  --value VALUE        Answer value
+  --note NOTE          Optional note stored with the answer
+  --operator OPERATOR

@@ -1,0 +1,10 @@
+usage: bench [-h] {run,self-test,score} ...
+
+positional arguments:
+  {run,self-test,score}
+    run                 Score the seed per model
+    self-test           Check stub scorecard invariants
+    score               Rebuild a scorecard from cached responses
+
+options:
+  -h, --help            show this help message and exit

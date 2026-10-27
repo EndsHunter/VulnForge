@@ -1,0 +1,47 @@
+usage: ralph [-h] [--run-dir RUN_DIR] [--config CONFIG]
+             [--max-iterations MAX_ITERATIONS]
+             [--max-infra-retries MAX_INFRA_RETRIES]
+             [--sleep-seconds SLEEP_SECONDS]
+             [--infra-backoff-base INFRA_BACKOFF_BASE]
+             [--vf-command VF_COMMAND] [--stop-file STOP_FILE] [--dry-run]
+             [--task-timeout SECONDS] [--max-wall-seconds MAX_WALL_SECONDS]
+             [--max-tasks MAX_TASKS] [-q]
+
+Outer loop driver for vulnforge (vf run-once).
+
+options:
+  -h, --help            show this help message and exit
+  --run-dir RUN_DIR     Run directory containing harness.db (passed to vf as
+                        --run-dir)
+  --config CONFIG       Optional config YAML path forwarded to vf
+  --max-iterations MAX_ITERATIONS
+                        Hard cap on run-once invocations (default: 200)
+  --max-infra-retries MAX_INFRA_RETRIES
+                        Consecutive EXIT_INFRA (20) before giving up (default:
+                        5). For unattended runs keep this >=
+                        run.max_task_attempts (default 3) so the DB can
+                        deadletter poison tasks before Ralph infra_give_up.
+  --sleep-seconds SLEEP_SECONDS
+                        Pause after each successful progress iteration
+                        (default: 2)
+  --infra-backoff-base INFRA_BACKOFF_BASE
+                        Base seconds for infra backoff: base * attempt
+                        (default: 5)
+  --vf-command VF_COMMAND
+                        Command to invoke vf, e.g. "python -m vulnforge.cli"
+                        or path to vf entrypoint
+  --stop-file STOP_FILE
+                        STOP file path (default: <run-dir>/STOP if run-dir
+                        set)
+  --dry-run             Print planned vf argv once and exit 0 (does not fake
+                        idle/complete)
+  --task-timeout SECONDS
+                        Kill a hung vf run-once after this many seconds
+                        (recommended: llm.timeout_seconds + slack, e.g. 900).
+                        Default: no timeout (unsafe for unattended runs).
+  --max-wall-seconds MAX_WALL_SECONDS
+                        Stop with exit 40 after this many wall-clock seconds
+  --max-tasks MAX_TASKS
+                        Stop with exit 40 after this many progress (exit 0)
+                        iterations
+  -q, --quiet           Less logging

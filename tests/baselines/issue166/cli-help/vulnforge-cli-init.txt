@@ -1,0 +1,57 @@
+usage: vf init [-h] --target TARGET [--profile PROFILE]
+               [--runs-root RUNS_ROOT]
+               [--strategy {discovery,file_by_file,recon_docs}]
+               [--docs-path DOCS_PATH] [--recon-agent AGENT_IDS]
+               [--recon-brief OPERATOR_NOTES] [--dynamic-skills]
+               [--dynamic-skill-count DYNAMIC_SKILL_COUNT]
+               [--hunt-skill-mode {all_active,seed_active,custom_only,explicit}]
+               [--hunt-skill HUNT_SKILL_IDS] [--model-validate MODEL_VALIDATE]
+               [--sandbox-poc] [--no-enqueue-hunts]
+
+options:
+  -h, --help            show this help message and exit
+  --target TARGET
+  --profile PROFILE     Profile (default from config; source analysis only:
+                        code_static)
+  --runs-root RUNS_ROOT
+                        Override runs root directory
+  --strategy {discovery,file_by_file,recon_docs}
+                        Init strategy: discovery, file_by_file, or recon_docs
+  --docs-path DOCS_PATH
+                        Docs file or directory for recon_docs strategy
+  --recon-agent AGENT_IDS
+                        Recon agent id to run (repeatable; default: active
+                        collection set)
+  --recon-brief OPERATOR_NOTES
+                        Extra instructions for the recon agent(s)
+  --dynamic-skills      After recon, generate N target-specific hunt skills
+                        for this run
+  --dynamic-skill-count DYNAMIC_SKILL_COUNT
+                        Number of custom hunt skills to generate (min 1;
+                        default 3)
+  --hunt-skill-mode {all_active,seed_active,custom_only,explicit}
+                        Run-scoped hunt skills: all_active (default),
+                        seed_active, custom_only, or explicit (with --hunt-
+                        skill)
+  --hunt-skill HUNT_SKILL_IDS
+                        Hunt skill id when --hunt-skill-mode=explicit
+                        (repeatable)
+  --model-validate MODEL_VALIDATE
+                        Dedicated validate_llm / PoC referee model. Bare model
+                        id when no hosts are saved (ids may contain slashes).
+                        host_id/model_id when a host catalog is saved — the
+                        first slash separates the host; a bare id is refused
+                        so it cannot match another host. Writes Settings and
+                        this run's config. Omit to leave the role unchanged
+                        (blank = same as hunt). Never auto-confirms.
+  --sandbox-poc         Opt in at run start: queue one sandbox validate_poc
+                        per harness-ready needs_human finding (microVM or
+                        gVisor only). Default off. Refuses to create the run
+                        when this process cannot use the Docker API or
+                        select_isolation would be sandbox_unavailable. A
+                        missing sandbox at task time fails closed and does not
+                        confirm.
+  --no-enqueue-hunts    Do not auto-queue hunt tasks after recon
+                        (architecture-only). Enqueue later from Hunts /
+                        Explorer. For file_by_file, create the run with zero
+                        hunt tasks.

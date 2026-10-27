@@ -1,0 +1,6 @@
+usage: vf hitl emit [-h] [--run-dir RUN_DIR] --file FILE
+
+options:
+  -h, --help         show this help message and exit
+  --run-dir RUN_DIR
+  --file FILE        Report JSON file

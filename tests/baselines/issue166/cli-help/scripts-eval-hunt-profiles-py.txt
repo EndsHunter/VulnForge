@@ -1,0 +1,18 @@
+usage: eval_hunt_profiles.py [-h] [--sensitivity] [--live]
+                             [--score-run-dir SCORE_RUN_DIR] [--dashboard]
+                             [--label LABEL] [--task-timeout TASK_TIMEOUT]
+                             [--max-tasks MAX_TASKS] [--only ONLY]
+
+Hunt profile live recall eval
+
+options:
+  -h, --help            show this help message and exit
+  --sensitivity
+  --live
+  --score-run-dir SCORE_RUN_DIR
+  --dashboard
+  --label LABEL
+  --task-timeout TASK_TIMEOUT
+  --max-tasks MAX_TASKS
+  --only ONLY           Restrict live hunts to these oracle ids (diagnosis
+                        only; official metric uses all 21)

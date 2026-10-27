@@ -1,0 +1,8 @@
+usage: vf delete-run [-h] [--run-dir RUN_DIR] [--yes] [--force]
+
+options:
+  -h, --help         show this help message and exit
+  --run-dir RUN_DIR  Run directory (default: latest under runs/)
+  --yes, -y          Required: confirm permanent deletion
+  --force            Hard-stop runner if alive; allow delete even without
+                     harness.db

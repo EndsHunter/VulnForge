@@ -1,0 +1,324 @@
+{
+  "columns": "80",
+  "locale": "C.UTF-8",
+  "commands": [
+    {
+      "slug": "vulnforge-cli",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli.txt"
+    },
+    {
+      "slug": "vulnforge-cli-init",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "init",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-init.txt"
+    },
+    {
+      "slug": "vulnforge-cli-run-once",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "run-once",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-run-once.txt"
+    },
+    {
+      "slug": "vulnforge-cli-status",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "status",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-status.txt"
+    },
+    {
+      "slug": "vulnforge-cli-project",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "project",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-project.txt"
+    },
+    {
+      "slug": "vulnforge-cli-apply-candidate",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "apply-candidate",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-apply-candidate.txt"
+    },
+    {
+      "slug": "vulnforge-cli-dashboard",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "dashboard",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-dashboard.txt"
+    },
+    {
+      "slug": "vulnforge-cli-delete-run",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "delete-run",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-delete-run.txt"
+    },
+    {
+      "slug": "vulnforge-cli-export-validation-job",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "export-validation-job",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-export-validation-job.txt"
+    },
+    {
+      "slug": "vulnforge-cli-validate-poc",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "validate-poc",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-validate-poc.txt"
+    },
+    {
+      "slug": "vulnforge-cli-tool-gaps",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "tool-gaps",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-tool-gaps.txt"
+    },
+    {
+      "slug": "vulnforge-cli-hitl",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "hitl",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-hitl.txt"
+    },
+    {
+      "slug": "vulnforge-cli-hitl-inbox",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "hitl",
+        "inbox",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-hitl-inbox.txt"
+    },
+    {
+      "slug": "vulnforge-cli-hitl-responses",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "hitl",
+        "responses",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-hitl-responses.txt"
+    },
+    {
+      "slug": "vulnforge-cli-hitl-show",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "hitl",
+        "show",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-hitl-show.txt"
+    },
+    {
+      "slug": "vulnforge-cli-hitl-respond",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "hitl",
+        "respond",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-hitl-respond.txt"
+    },
+    {
+      "slug": "vulnforge-cli-hitl-emit",
+      "args": [
+        "-m",
+        "vulnforge.cli",
+        "hitl",
+        "emit",
+        "--help"
+      ],
+      "file": "cli-help/vulnforge-cli-hitl-emit.txt"
+    },
+    {
+      "slug": "bench",
+      "args": [
+        "-m",
+        "bench",
+        "--help"
+      ],
+      "file": "cli-help/bench.txt"
+    },
+    {
+      "slug": "bench-run",
+      "args": [
+        "-m",
+        "bench",
+        "run",
+        "--help"
+      ],
+      "file": "cli-help/bench-run.txt"
+    },
+    {
+      "slug": "bench-self-test",
+      "args": [
+        "-m",
+        "bench",
+        "self-test",
+        "--help"
+      ],
+      "file": "cli-help/bench-self-test.txt"
+    },
+    {
+      "slug": "bench-score",
+      "args": [
+        "-m",
+        "bench",
+        "score",
+        "--help"
+      ],
+      "file": "cli-help/bench-score.txt"
+    },
+    {
+      "slug": "bench-cli",
+      "args": [
+        "-m",
+        "bench.cli",
+        "--help"
+      ],
+      "file": "cli-help/bench-cli.txt"
+    },
+    {
+      "slug": "bench-cli-run",
+      "args": [
+        "-m",
+        "bench.cli",
+        "run",
+        "--help"
+      ],
+      "file": "cli-help/bench-cli-run.txt"
+    },
+    {
+      "slug": "bench-cli-self-test",
+      "args": [
+        "-m",
+        "bench.cli",
+        "self-test",
+        "--help"
+      ],
+      "file": "cli-help/bench-cli-self-test.txt"
+    },
+    {
+      "slug": "bench-cli-score",
+      "args": [
+        "-m",
+        "bench.cli",
+        "score",
+        "--help"
+      ],
+      "file": "cli-help/bench-cli-score.txt"
+    },
+    {
+      "slug": "scripts-ralph-py",
+      "args": [
+        "scripts/ralph.py",
+        "--help"
+      ],
+      "file": "cli-help/scripts-ralph-py.txt"
+    },
+    {
+      "slug": "scripts-validate-tool-py",
+      "args": [
+        "scripts/validate_tool.py",
+        "--help"
+      ],
+      "file": "cli-help/scripts-validate-tool-py.txt"
+    },
+    {
+      "slug": "scripts-eval-recall-py",
+      "args": [
+        "scripts/eval_recall.py",
+        "--help"
+      ],
+      "file": "cli-help/scripts-eval-recall-py.txt"
+    },
+    {
+      "slug": "scripts-eval-hunt-profiles-py",
+      "args": [
+        "scripts/eval_hunt_profiles.py",
+        "--help"
+      ],
+      "file": "cli-help/scripts-eval-hunt-profiles-py.txt"
+    },
+    {
+      "slug": "scripts-eval-vulngym-py",
+      "args": [
+        "scripts/eval_vulngym.py",
+        "--help"
+      ],
+      "file": "cli-help/scripts-eval-vulngym-py.txt"
+    },
+    {
+      "slug": "scripts-live-toolgen-smoke-py",
+      "args": [
+        "scripts/live_toolgen_smoke.py",
+        "--help"
+      ],
+      "file": "cli-help/scripts-live-toolgen-smoke-py.txt"
+    },
+    {
+      "slug": "scripts-strands-spike-py",
+      "args": [
+        "scripts/strands_spike.py",
+        "--help"
+      ],
+      "file": "cli-help/scripts-strands-spike-py.txt"
+    }
+  ],
+  "stub_scorecard": {
+    "command": "python -m bench run --stub",
+    "args": [
+      "-m",
+      "bench",
+      "run",
+      "--stub"
+    ],
+    "file": "bench-stub-scorecard.json"
+  }
+}

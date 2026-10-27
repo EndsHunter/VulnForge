@@ -1,0 +1,8 @@
+usage: vf dashboard [-h] [--host HOST] [--port PORT] [--runs-root RUNS_ROOT]
+
+options:
+  -h, --help            show this help message and exit
+  --host HOST
+  --port PORT
+  --runs-root RUNS_ROOT
+                        Override runs root (default from config)

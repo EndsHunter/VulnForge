@@ -1,0 +1,13 @@
+usage: vf tool-gaps [-h] [--run-dir RUN_DIR] [--runs-root RUNS_ROOT] [--all]
+                    [--mode {mechanical,llm,hybrid}] [--llm]
+
+options:
+  -h, --help            show this help message and exit
+  --run-dir RUN_DIR     Single run directory (default: latest under runs/)
+  --runs-root RUNS_ROOT
+                        Runs root when using --all
+  --all                 Analyze every run under --runs-root (default: runs/)
+  --mode {mechanical,llm,hybrid}
+                        Analysis mode (default: run.tool_gaps_mode or
+                        mechanical)
+  --llm                 Shortcut for --mode hybrid

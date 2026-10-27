@@ -1,0 +1,6 @@
+usage: vf hitl show [-h] [--run-dir RUN_DIR] --id ID
+
+options:
+  -h, --help         show this help message and exit
+  --run-dir RUN_DIR
+  --id ID            Report id (e.g. finding-1)

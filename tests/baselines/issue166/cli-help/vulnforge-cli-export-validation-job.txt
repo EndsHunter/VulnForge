@@ -1,0 +1,12 @@
+usage: vf export-validation-job [-h] --finding-id FINDING_ID
+                                [--run-dir RUN_DIR] [--out OUT] [--no-zip]
+                                [--no-citations]
+
+options:
+  -h, --help            show this help message and exit
+  --finding-id FINDING_ID
+  --run-dir RUN_DIR
+  --out OUT             Output directory (default: <run>/exports/validation-
+                        job-finding-N)
+  --no-zip              Skip writing the .zip sibling
+  --no-citations        Do not slice cited target files into the bundle

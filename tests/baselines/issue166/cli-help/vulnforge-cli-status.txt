@@ -1,0 +1,5 @@
+usage: vf status [-h] [--run-dir RUN_DIR]
+
+options:
+  -h, --help         show this help message and exit
+  --run-dir RUN_DIR

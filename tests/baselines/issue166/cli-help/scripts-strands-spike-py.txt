@@ -1,0 +1,17 @@
+usage: strands_spike.py [-h] [--base-url BASE_URL] [--model MODEL]
+                        [--api-key API_KEY] [--max-turns MAX_TURNS]
+                        [--scripted-only] [--live-only] [--no-report]
+                        [--report-path REPORT_PATH]
+
+VulnForge × Strands Phase 0 spike
+
+options:
+  -h, --help            show this help message and exit
+  --base-url BASE_URL
+  --model MODEL
+  --api-key API_KEY
+  --max-turns MAX_TURNS
+  --scripted-only
+  --live-only
+  --no-report
+  --report-path REPORT_PATH

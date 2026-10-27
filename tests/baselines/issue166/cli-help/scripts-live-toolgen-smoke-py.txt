@@ -1,0 +1,10 @@
+usage: live_toolgen_smoke.py [-h] [--draft-id DRAFT_ID] [--apply] [--skip-fix]
+
+Live Ornith toolgen smoke
+
+options:
+  -h, --help           show this help message and exit
+  --draft-id DRAFT_ID  Draft / tool id
+  --apply              Apply integrate (writes vulnforge/tools +
+                       extra_registry). Default: dry-run only.
+  --skip-fix           Do not run AI fix on hard_fail

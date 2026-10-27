@@ -1,0 +1,29 @@
+usage: vf [-h] [--config CONFIG]
+          {init,run-once,status,project,apply-candidate,dashboard,delete-run,export-validation-job,validate-poc,tool-gaps,hitl}
+          ...
+
+VulnForge CLI
+
+positional arguments:
+  {init,run-once,status,project,apply-candidate,dashboard,delete-run,export-validation-job,validate-poc,tool-gaps,hitl}
+    init                Initialize a new audit run
+    run-once            Lease and execute one task
+    status              Show run summary
+    project             Regenerate project/ from DB
+    apply-candidate     Apply inbox candidate JSON
+    dashboard           Open web UI for runs (live + history)
+    delete-run          Permanently delete a run directory (DB, evidence,
+                        transcripts)
+    export-validation-job
+                        Export a finding + evidence pack as a validation
+                        handoff bundle
+    validate-poc        Enqueue or run sandbox validate_poc (one-shot, or
+                        --iterate; never host exec, never confirms)
+    tool-gaps           Analyze run transcripts for missing/failed tool
+                        signals (mech/llm/hybrid)
+    hitl                Durable human-review inbox (report↔responses). Never
+                        auto-confirms.
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       Path to config YAML (default: config/default.yaml)

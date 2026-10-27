@@ -1,0 +1,11 @@
+usage: bench score [-h] --from-cache [--config CONFIG] [--cache-dir CACHE_DIR]
+                   [--mode {live,stub}] [--k K] [--workers WORKERS]
+
+options:
+  -h, --help            show this help message and exit
+  --from-cache          Score cached responses only; do not call a model
+  --config CONFIG
+  --cache-dir CACHE_DIR
+  --mode {live,stub}
+  --k K
+  --workers WORKERS

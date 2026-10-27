@@ -1,0 +1,8 @@
+usage: eval_recall.py [-h] [--target TARGETS] [--json]
+
+L0 mechanical fixture recall
+
+options:
+  -h, --help        show this help message and exit
+  --target TARGETS  Ground-truth id (toy_sqli, mono_synth). Default: both.
+  --json            JSON output

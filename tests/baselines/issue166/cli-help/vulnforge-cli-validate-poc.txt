@@ -1,0 +1,15 @@
+usage: vf validate-poc [-h] --finding-id FINDING_ID [--run-dir RUN_DIR]
+                       [--execute] [--iterate] [--referee]
+                       [--target-url TARGET_URL]
+
+options:
+  -h, --help            show this help message and exit
+  --finding-id FINDING_ID
+  --run-dir RUN_DIR
+  --execute             Run immediately in-process (else only enqueue)
+  --iterate             Keep one microVM/gVisor session and rewrite/re-run
+                        until success or caps
+  --referee             Also run optional LLM referee (or set
+                        stages.validate_poc_referee)
+  --target-url TARGET_URL
+                        Optional TARGET_URL env for the PoC process
