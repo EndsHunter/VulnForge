@@ -102,16 +102,29 @@ def _sweep(positives: list[dict], negatives: list[dict], fpr_cap: float) -> dict
         best_fpr = min(row["fpr"] for row in pool)
         pool = [row for row in pool if row["fpr"] == best_fpr]
         chosen = pool[0]
-    youden_pool = [row for row in ranked if row["youden"] is not None]
-    best_youden = max(youden_pool, key=lambda row: row["youden"]) if youden_pool else chosen
+    youden_pool = [
+        row
+        for row in ranked
+        if row["youden"] is not None and row["fpr"] is not None and row["fpr"] <= fpr_cap
+    ]
+    best_youden = max(youden_pool, key=lambda row: row["youden"]) if youden_pool else None
+    # Headline recall is the capped operating point. A point over the cap is not a score.
+    if chosen["fpr"] is None or chosen["fpr"] > fpr_cap:
+        headline_recall = 0.0
+        headline_fpr = 0.0
+        headline_precision = None
+    else:
+        headline_recall = chosen["recall"]
+        headline_fpr = chosen["fpr"]
+        headline_precision = chosen["precision"]
     return {
-        "recall_at_fpr_le_0.5pct": chosen["recall"],
-        # PrimeVul VD-S: recall at the operating point whose FPR is within the cap.
-        "vd_s": chosen["recall"],
-        "precision_at_fpr_cap": chosen["precision"],
-        "fpr_at_operating_point": chosen["fpr"],
-        "youden": best_youden["youden"],
-        "youden_threshold": best_youden["threshold"],
+        "recall_at_fpr_le_0.5pct": headline_recall,
+        # PrimeVul VD-S: same operating point as the headline, not Youden's J.
+        "vd_s": headline_recall,
+        "precision_at_fpr_cap": headline_precision,
+        "fpr_at_operating_point": headline_fpr,
+        "youden": 0.0 if best_youden is None else best_youden["youden"],
+        "youden_threshold": None if best_youden is None else best_youden["threshold"],
     }
 
 
@@ -365,11 +378,20 @@ def score_repeat(
     misses = headline["pair_outcomes"]["both_benign"] + headline["pair_outcomes"]["reversed"]
     hunt_errors = sum(1 for attempt in attempts if attempt["error"])
     error_tasks = sorted(
-        {
-            attempt["task_id"]
+        {attempt["task_id"] for attempt in attempts if attempt.get("error")}
+    )
+    attempt_errors = sorted(
+        (
+            {
+                "task_id": attempt["task_id"],
+                "side": attempt["side"],
+                "error": attempt["error"],
+                "error_kind": attempt.get("error_kind"),
+            }
             for attempt in attempts
-            if attempt["error"] and attempt["side"] in {"vulnerable", "benign"}
-        }
+            if attempt.get("error")
+        ),
+        key=lambda row: (row["task_id"], row["side"], row["error"] or ""),
     )
     miss_tasks = sorted(
         item["task_id"]
@@ -485,6 +507,7 @@ def score_repeat(
         },
         "splits": splits,
         "error_task_ids": error_tasks,
+        "attempt_errors": attempt_errors,
         "miss_task_ids": miss_tasks,
     }
 
@@ -604,11 +627,19 @@ def score_calibration() -> dict:
 
 
 def is_infra_failure(attempt: dict) -> bool:
-    """Transport, timeout, and HTTP failures. A parsed miss is not one of these."""
+    """Transport, timeout, HTTP, and stored cache failures.
+
+    A parsed miss is not one of these. A from-cache hole (``missing cache entry``)
+    is a cache miss, not an infrastructure error.
+    """
+    if attempt.get("cached_failure"):
+        return True
+    if attempt.get("error_kind") == "cache_miss":
+        return False
     if attempt.get("timed_out"):
         return True
     error = attempt.get("error")
-    if not error or error == "unparsed hunt response":
+    if not error or error in {"unparsed hunt response", "missing cache entry"}:
         return False
     return True
 
@@ -677,6 +708,9 @@ def build_scorecard(
     on_breach: str,
     cache_hits: int,
     cache_misses: int,
+    cache_misses_by_side: dict | None = None,
+    job_count: int | None = None,
+    from_cache: bool = False,
 ) -> dict:
     grouped: dict[tuple, list[dict]] = defaultdict(list)
     for attempt in attempts:
@@ -698,6 +732,23 @@ def build_scorecard(
         warnings.append(f"k={k} is below 3; confidence intervals need at least 3 repeats")
     if calibration["canary_catch_rate"] != 1.0 or not calibration["canary_true_pass"]:
         warnings.append("canary catch rate is below the 100% target")
+    side_misses = {"vulnerable": 0, "fixed": 0, "benign": 0}
+    for side, count in (cache_misses_by_side or {}).items():
+        if side in side_misses:
+            side_misses[side] = int(count)
+    holes = cache_misses if from_cache else 0
+    if job_count:
+        coverage = (job_count - holes) / job_count if from_cache else cache_hits / job_count
+    else:
+        coverage = None
+    partial = bool(from_cache and holes > 0)
+    if partial:
+        warnings.append(
+            "INCOMPLETE CACHE: "
+            f"{holes} cache misses, coverage {coverage:.6f}, "
+            f"vulnerable={side_misses['vulnerable']}, fixed={side_misses['fixed']}, "
+            f"benign={side_misses['benign']}. Scorecard is partial."
+        )
 
     for model in models:
         cutoff = next(item["knowledge_cutoff"] for item in attempts if item["model"] == model)
@@ -770,6 +821,7 @@ def build_scorecard(
         model_body[model] = {"knowledge_cutoff": cutoff, "difficulties": diff_body}
 
     points = []
+    operating_fprs: dict[tuple[str, str], float | None] = {}
     excluded_points = []
     for model, body in model_body.items():
         for difficulty, diff in body["difficulties"].items():
@@ -801,8 +853,13 @@ def build_scorecard(
             diff["excluded"] = False
             diff["exclude_reason"] = None
             recall = mean["stages"]["disprove"]["recall_at_fpr_le_0.5pct"]
-            if recall is None:
+            operating_fpr = mean["stages"]["disprove"]["fpr_at_operating_point"]
+            if operating_fpr is not None and operating_fpr > fpr_cap:
                 recall = 0.0
+                operating_fpr = 0.0
+            elif recall is None:
+                recall = 0.0
+            operating_fprs[(model, difficulty)] = operating_fpr
             points.append(
                 {
                     "model": model,
@@ -837,7 +894,7 @@ def build_scorecard(
                 "vd_s": point["score"],
                 "youden": mean["stages"]["disprove"]["youden"],
                 "precision": mean["stages"]["disprove"]["precision"],
-                "fpr": mean["stages"]["disprove"]["fpr"],
+                "fpr": operating_fprs[(point["model"], point["difficulty"])],
                 "tokens": point["tokens"],
                 "wall_seconds": point["wall_seconds"],
                 "findings_per_1k_tokens": point["findings_per_1k_tokens"],
@@ -887,6 +944,8 @@ def build_scorecard(
         "wrote_results": False,
         "cache_hits": cache_hits,
         "cache_misses": cache_misses,
+        "cache_coverage": coverage,
+        "partial": partial,
         "seed": {
             "pairs": sum(1 for task in tasks if task.kind == "pair"),
             "benign": sum(1 for task in tasks if task.kind == "benign"),
@@ -928,6 +987,11 @@ def build_scorecard(
             "llm_judge": None,
             "scored_row_count": sum(1 for row in leaderboard_rows if not row["excluded"]),
             "infra_error_row_count": sum(1 for row in leaderboard_rows if row["excluded"]),
+            "infra_error_count": sum(1 for attempt in attempts if is_infra_failure(attempt)),
+            "cache_miss_count": holes,
+            "cache_misses_by_side": side_misses,
+            "cache_coverage": coverage,
+            "partial": partial,
             "rows": leaderboard_rows,
         },
         "pareto": frontier,

@@ -64,8 +64,16 @@ def main(argv: list[str] | None = None) -> int:
             from_cache=True,
         )
         sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        if payload.get("partial"):
+            sys.stderr.write(
+                "INCOMPLETE CACHE: scorecard is partial "
+                f"(cache_misses={payload['cache_misses']}, "
+                f"coverage={payload.get('cache_coverage')}).\n"
+            )
         if payload["disprove_gate"]["failed"]:
             return 3
+        if payload.get("partial"):
+            return 2
         return 0
 
     config = load_config(args.config)

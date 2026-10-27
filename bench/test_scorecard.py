@@ -145,7 +145,128 @@ def test_vd_s_is_recall_at_fpr_le_half_percent():
     assert row["fpr_at_operating_point"] <= 0.005
     assert row["vd_s"] == pytest.approx(2 / 3)
     assert row["vd_s"] == row["recall_at_fpr_le_0.5pct"]
+    assert row["fpr_at_operating_point"] == 0
     assert row["youden"] == pytest.approx(2 / 3)
+
+
+def test_youden_differs_from_vd_s_when_operating_fpr_is_nonzero():
+    """Youden is TPR-FPR. VD-S is recall at the FPR cap. They match only when that FPR is 0."""
+    positives = [
+        {"score": 0.9, "companion": 0.0},
+        {"score": 0.7, "companion": 0.0},
+    ]
+    negatives = [{"score": 0.8}] + [{"score": 0.0} for _ in range(999)]
+    row = _sweep(positives, negatives, 0.005)
+    assert 0 < row["fpr_at_operating_point"] <= 0.005
+    assert row["vd_s"] == pytest.approx(1.0)
+    assert row["recall_at_fpr_le_0.5pct"] == row["vd_s"]
+    assert row["youden"] == pytest.approx(row["vd_s"] - row["fpr_at_operating_point"])
+    assert row["youden"] != pytest.approx(row["vd_s"])
+
+
+def test_youden_ignores_thresholds_that_break_the_fpr_cap():
+    """A high TPR minus a still-too-high FPR is not Youden for this scorecard."""
+    positives = [{"score": 0.9, "companion": 0.0} for _ in range(10)]
+    negatives = [{"score": 0.9} for _ in range(2)] + [{"score": 0.0} for _ in range(8)]
+    row = _sweep(positives, negatives, 0.005)
+    assert row["recall_at_fpr_le_0.5pct"] == 0
+    assert row["vd_s"] == 0
+    assert row["youden"] == 0
+    assert row["fpr_at_operating_point"] <= 0.005
+
+
+def _board_row(attempts: list[dict], tasks: list) -> tuple[dict, dict]:
+    card = build_scorecard(
+        attempts,
+        tasks,
+        mode="live",
+        k=1,
+        workers=1,
+        fpr_cap=0.005,
+        false_reject_max=0.10,
+        on_breach="warn",
+        cache_hits=0,
+        cache_misses=0,
+    )
+    row = card["leaderboard"]["rows"][0]
+    stage = card["models"]["m"]["difficulties"]["L0"]["repeats"][0]["stages"]["disprove"]
+    return row, stage
+
+
+def _finding(confidence: float, *, oracle_hit: bool) -> dict:
+    finding = _hit()
+    finding["confidence"] = confidence
+    finding["mech"] = dict(finding["mech"])
+    finding["mech"]["oracle_hit"] = oracle_hit
+    return finding
+
+
+def test_headline_recall_is_zero_when_every_threshold_breaks_the_cap():
+    pair = next(task for task in load_tasks() if task.id == "pair-sqli")
+    benign = next(task for task in load_tasks() if task.kind == "benign")
+    attempts = [
+        _attempt(pair.id, "vulnerable", 0, error=None),
+        _attempt(pair.id, "fixed", 0, error=None),
+        _attempt(benign.id, "benign", 0, error=None),
+    ]
+    attempts[0]["findings"] = [_finding(0.9, oracle_hit=True)]
+    attempts[1]["findings"] = []
+    attempts[2]["findings"] = [_finding(0.95, oracle_hit=False)]
+    row, stage = _board_row(attempts, [pair, benign])
+    assert stage["fpr"] > 0.005
+    assert row["recall_at_fpr_le_0.5pct"] == 0
+    assert row["vd_s"] == row["recall_at_fpr_le_0.5pct"]
+    assert row["youden"] == 0
+    assert row["fpr"] is not None and row["fpr"] <= 0.005
+
+
+def test_headline_fpr_is_the_capped_operating_point():
+    pair = next(task for task in load_tasks() if task.id == "pair-sqli")
+    benign = next(task for task in load_tasks() if task.kind == "benign")
+    attempts = [
+        _attempt(pair.id, "vulnerable", 0, error=None),
+        _attempt(pair.id, "fixed", 0, error=None),
+        _attempt(benign.id, "benign", 0, error=None),
+    ]
+    attempts[0]["findings"] = [_finding(0.9, oracle_hit=True)]
+    attempts[1]["findings"] = []
+    attempts[2]["findings"] = [_finding(0.2, oracle_hit=False)]
+    row, stage = _board_row(attempts, [pair, benign])
+    assert stage["fpr"] > 0.005
+    assert row["recall_at_fpr_le_0.5pct"] == pytest.approx(1.0)
+    assert row["vd_s"] == row["recall_at_fpr_le_0.5pct"]
+    assert row["fpr"] <= 0.005
+    assert row["youden"] == pytest.approx(row["vd_s"])
+
+
+def test_fixed_side_errors_are_counted_with_text():
+    pair = next(task for task in load_tasks() if task.id == "pair-auth")
+    vulnerable = _attempt(pair.id, "vulnerable", 0, error=None)
+    fixed = _attempt(pair.id, "fixed", 0, error="timeout")
+    fixed["timed_out"] = True
+    fixed["error_kind"] = "timeout"
+    card = build_scorecard(
+        [vulnerable, fixed],
+        [pair],
+        mode="live",
+        k=1,
+        workers=1,
+        fpr_cap=0.005,
+        false_reject_max=0.10,
+        on_breach="warn",
+        cache_hits=0,
+        cache_misses=0,
+    )
+    repeat = card["models"]["m"]["difficulties"]["L0"]["repeats"][0]
+    assert repeat["error_task_ids"] == ["pair-auth"]
+    assert repeat["attempt_errors"] == [
+        {
+            "task_id": "pair-auth",
+            "side": "fixed",
+            "error": "timeout",
+            "error_kind": "timeout",
+        }
+    ]
 
 
 def _one_model_config() -> BenchConfig:
@@ -187,10 +308,13 @@ def test_score_from_cache_rebuilds_without_model_calls(tmp_path, monkeypatch):
     monkeypatch.setattr("bench.runner.scripted_hunt", explode)
     monkeypatch.setattr("bench.runner.chat", explode)
     second = run_bench(config, tasks, mode="live", cache_dir=cache, from_cache=True)
+    assert first["cache_hits"] == 0
     assert second["cache_misses"] == 0
     assert second["cache_hits"] == calls["n"]
     assert second["models"] == first["models"]
-    assert second["leaderboard"] == first["leaderboard"]
+    assert second["leaderboard"]["rows"] == first["leaderboard"]["rows"]
+    assert second["leaderboard"]["partial"] is False
+    assert second["leaderboard"]["cache_coverage"] == 1
     assert second["wrote_results"] is False
 
 
