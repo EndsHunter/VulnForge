@@ -429,33 +429,22 @@ def test_gate_chain_mech_then_disprove_then_human_accept(
         db.close()
 
 
-_FORGE_POC = """\
-import os
-from pathlib import Path
-triggered = os.environ.get("VF_TRIGGER") == "1"
-path = Path("/tmp/vf-oracle/canary")
-data = path.read_text() if path.is_file() else ""
-if triggered and data:
-    payload = data if data.endswith("\\n") else data + "\\n"
-    try:
-        os.write(3, payload.encode())
-    except OSError:
-        pass
-"""
+# Local fixture only. Copies the canary onto fd 3 when the trigger is set.
+_FORGE_COMMAND = '[ "$VF_TRIGGER" = 1 ] && cat /tmp/vf-oracle/canary >&3'
 
 
 def test_poc_oracle_forged_fd3_copy_is_not_signal(tmp_path: Path):
-    """A local PoC that copies the canary file onto fd 3 when triggered is not a signal.
+    """A PoC that copies the canary file onto fd 3 when triggered is not a signal.
 
     Runs the shipped wrapper under sh. No spawn_captured mock.
     """
     pack = tmp_path / "forge"
     pack.mkdir()
-    (pack / "forge.py").write_text(_FORGE_POC, encoding="utf-8")
-    result = score_oracle_sh(pack, "python3 forge.py", k=2, timeout_s=20)
+    result = score_oracle_sh(pack, _FORGE_COMMAND, k=2, timeout_s=20)
     assert result["verdict"] != "signal_observed"
     assert result["signal_matched"] is not True
     assert result["oracle"]["planted"] is True
+    assert result["command"] == _FORGE_COMMAND
 
 
 _HONEST_POC = """\
