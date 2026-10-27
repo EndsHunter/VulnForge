@@ -72,7 +72,10 @@ def run_checks() -> list[str]:
     check(payload["seed"]["pairs"] == 8 and payload["seed"]["benign"] == 4, "seed size")
     check("BigVul" in payload["seed"]["excluded_label_sets"], "label policy")
     check(any(task["split"] == "held_out" for task in payload["seed"]["tasks"]), "held_out")
-    check(payload["cache_hits"] == payload["cache_misses"] > 0, "cache replay")
+    check(
+        payload["cache_misses"] > payload["cache_hits"] > 0,
+        "successes are cached and errors are not",
+    )
     check(not (PACKAGE_DIR / "results").exists(), "bench/results was created")
 
     sharp = _mean_recall(payload, "stub-sharp", "L0")

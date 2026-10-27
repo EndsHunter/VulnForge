@@ -571,6 +571,25 @@ def score_calibration() -> dict:
     }
 
 
+def is_infra_failure(attempt: dict) -> bool:
+    """Transport, timeout, and HTTP failures. A parsed miss is not one of these."""
+    if attempt.get("timed_out"):
+        return True
+    error = attempt.get("error")
+    if not error or error == "unparsed hunt response":
+        return False
+    return True
+
+
+def row_infra_excluded(attempts: list[dict]) -> bool:
+    """All calls failed, or a strict majority failed, for this model×difficulty row."""
+    count = len(attempts)
+    if count == 0:
+        return False
+    infra = sum(1 for attempt in attempts if is_infra_failure(attempt))
+    return infra == count or infra * 2 > count
+
+
 def pareto(points: list[dict]) -> dict:
     frontier = []
     for point in points:
@@ -605,6 +624,10 @@ def pareto_markdown(table: dict) -> str:
                 tokens=point["tokens"],
                 flag="yes" if point["on_frontier"] else "no",
             )
+        )
+    for point in table.get("excluded") or []:
+        lines.append(
+            f"| {point['model']} | {point['difficulty']} | excluded |  | no |"
         )
     lines.append("")
     return "\n".join(lines)
@@ -715,21 +738,58 @@ def build_scorecard(
         model_body[model] = {"knowledge_cutoff": cutoff, "difficulties": diff_body}
 
     points = []
+    excluded_points = []
     for model, body in model_body.items():
         for difficulty, diff in body["difficulties"].items():
-            recall = diff["mean"]["stages"]["disprove"]["recall_at_fpr_le_0.5pct"] or 0.0
-            tokens = diff["mean"]["efficiency"]["tokens"] or 0.0
+            row_attempts = [
+                attempt
+                for attempt in attempts
+                if attempt["model"] == model and attempt["difficulty"] == difficulty
+            ]
+            mean = diff["mean"]
+            if row_infra_excluded(row_attempts):
+                infra = sum(1 for attempt in row_attempts if is_infra_failure(attempt))
+                diff["excluded"] = True
+                diff["exclude_reason"] = "infra_errors"
+                warnings.append(
+                    f"{model} {difficulty} excluded: infrastructure errors on "
+                    f"{infra}/{len(row_attempts)} calls"
+                )
+                excluded_points.append(
+                    {
+                        "model": model,
+                        "difficulty": difficulty,
+                        "tokens": mean["efficiency"]["tokens"],
+                        "wall_seconds": mean["efficiency"]["wall_seconds"],
+                        "errors": mean["efficiency"]["errors"],
+                        "misses": mean["efficiency"]["misses"],
+                    }
+                )
+                continue
+            diff["excluded"] = False
+            diff["exclude_reason"] = None
+            recall = mean["stages"]["disprove"]["recall_at_fpr_le_0.5pct"]
+            if recall is None:
+                recall = 0.0
             points.append(
                 {
                     "model": model,
                     "difficulty": difficulty,
                     "score": recall,
-                    "tokens": tokens,
-                    "wall_seconds": diff["mean"]["efficiency"]["wall_seconds"],
-                    "findings_per_1k_tokens": diff["mean"]["efficiency"]["findings_per_1k_tokens"],
+                    "tokens": mean["efficiency"]["tokens"] or 0.0,
+                    "wall_seconds": mean["efficiency"]["wall_seconds"],
+                    "findings_per_1k_tokens": mean["efficiency"]["findings_per_1k_tokens"],
                 }
             )
     frontier = pareto(points)
+    frontier["excluded"] = [
+        {
+            "model": point["model"],
+            "difficulty": point["difficulty"],
+            "reason": "infra_errors",
+        }
+        for point in excluded_points
+    ]
     leaderboard_rows = []
     for point in sorted(
         frontier["points"],
@@ -752,10 +812,33 @@ def build_scorecard(
                 "misses": mean["efficiency"]["misses"],
                 "false_reject_rate": mean["gates"]["disprove"]["false_reject_rate"],
                 "on_frontier": point["on_frontier"],
+                "excluded": False,
+                "exclude_reason": None,
             }
         )
     for index, row in enumerate(leaderboard_rows, start=1):
         row["rank"] = index
+    for point in excluded_points:
+        leaderboard_rows.append(
+            {
+                "model": point["model"],
+                "difficulty": point["difficulty"],
+                "recall_at_fpr_le_0.5pct": None,
+                "youden": None,
+                "precision": None,
+                "fpr": None,
+                "tokens": point["tokens"],
+                "wall_seconds": point["wall_seconds"],
+                "findings_per_1k_tokens": None,
+                "errors": point["errors"],
+                "misses": point["misses"],
+                "false_reject_rate": None,
+                "on_frontier": False,
+                "excluded": True,
+                "exclude_reason": "infra_errors",
+                "rank": None,
+            }
+        )
 
     breach = any(row["status"] == "fail" for row in gate_rows)
     return {

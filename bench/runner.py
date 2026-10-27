@@ -93,8 +93,40 @@ def build_disprove_messages(finding: dict, root: Path) -> list[dict]:
     ]
 
 
-def chat(config: BenchConfig, model: str, messages: list[dict]) -> dict:
-    import httpx
+def cacheable(result: dict) -> bool:
+    """Keep only completions that did not fail the transport or the HTTP status."""
+    if result.get("error") or result.get("timed_out"):
+        return False
+    for finding in result.get("findings") or []:
+        disprove = finding.get("disprove") or {}
+        if disprove.get("error") or disprove.get("timed_out"):
+            return False
+    return True
+
+
+def chat(
+    config: BenchConfig,
+    model: str,
+    messages: list[dict],
+    *,
+    transport=None,
+) -> dict:
+    if transport is not None:
+        result = transport(model, messages)
+        if not isinstance(result, dict):
+            raise TypeError("transport must return a dict")
+        result.setdefault("error", None)
+        result.setdefault("timed_out", False)
+        result.setdefault("text", "")
+        result.setdefault("tokens", 0)
+        result.setdefault("latency_s", 0.0)
+        return result
+    try:
+        import httpx
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "bench --live requires httpx>=0.27 from the project dependencies"
+        ) from exc
 
     url = config.base_url.rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
@@ -146,9 +178,22 @@ def chat(config: BenchConfig, model: str, messages: list[dict]) -> dict:
     }
 
 
-def live_hunt(config: BenchConfig, model: str, task: Task, side: str, difficulty: str) -> dict:
+def live_hunt(
+    config: BenchConfig,
+    model: str,
+    task: Task,
+    side: str,
+    difficulty: str,
+    *,
+    transport=None,
+) -> dict:
     root = task.side_root(side)
-    hunt = chat(config, model, build_hunt_messages(task, side, difficulty, root))
+    hunt = chat(
+        config,
+        model,
+        build_hunt_messages(task, side, difficulty, root),
+        transport=transport,
+    )
     if hunt["error"]:
         return {
             "error": hunt["error"],
@@ -168,7 +213,12 @@ def live_hunt(config: BenchConfig, model: str, task: Task, side: str, difficulty
         }
     findings = []
     for raw in parsed:
-        judged = chat(config, model, build_disprove_messages(raw, root))
+        judged = chat(
+            config,
+            model,
+            build_disprove_messages(raw, root),
+            transport=transport,
+        )
         raw = dict(raw)
         raw["disprove"] = {
             "verdict_text": "" if judged["error"] else judged["text"],
@@ -193,6 +243,7 @@ def run_bench(
     *,
     mode: str,
     cache_dir: Path,
+    transport=None,
 ) -> dict:
     if mode not in {"stub", "live"}:
         raise ValueError(mode)
@@ -252,9 +303,15 @@ def run_bench(
                 )
             else:
                 result = live_hunt(
-                    config, job["model"]["name"], task, job["side"], job["difficulty"]
+                    config,
+                    job["model"]["id"],
+                    task,
+                    job["side"],
+                    job["difficulty"],
+                    transport=transport,
                 )
-            cache.put(key, result)
+            if cacheable(result):
+                cache.put(key, result)
             with lock:
                 misses += 1
             cached = result

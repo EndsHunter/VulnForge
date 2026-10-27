@@ -35,7 +35,7 @@ Live run against the OpenAI-compatible server in config. Do not point this at a 
 python -m bench run --live --config bench/config.yaml
 ```
 
-`bench/config.yaml` sets `base_url` (default `http://10.0.0.232:1234/v1`) and `models`. Stub mode ignores those names and scores only `stub-sharp`, `stub-noisy`, and `stub-blind`.
+`bench/config.yaml` sets `base_url` (default `http://10.0.0.232:1234/v1`) and `models`. Live requests send each model's `id`. `httpx>=0.27` is a project dependency because the live client imports it. The disk cache stores successful completions only. A model×difficulty row is excluded from rank and from the Pareto frontier when every call, or a majority of calls, is an infrastructure error (`recall` null, `rank` null, `on_frontier` false). Stub mode ignores config model names and scores only `stub-sharp`, `stub-noisy`, and `stub-blind`.
 
 ## Scale-up
 
