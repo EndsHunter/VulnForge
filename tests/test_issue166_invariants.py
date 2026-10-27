@@ -22,6 +22,7 @@ from vulnforge.poc_runner import (
     execute_poc_for_pack,
     run_poc_docker,
     run_poc_local,
+    score_oracle_sh,
     select_isolation,
 )
 from vulnforge.stages import validate_llm
@@ -67,23 +68,6 @@ def _pack(tmp_path: Path, source: str = "print('ASSERT_OK')\n") -> Path:
     pack.mkdir(parents=True, exist_ok=True)
     (pack / "poc.py").write_text(source, encoding="utf-8")
     return pack
-
-
-def _env_from_argv(argv: list[str]) -> dict[str, str]:
-    env: dict[str, str] = {}
-    i = 0
-    while i < len(argv):
-        if argv[i] == "-e" and i + 1 < len(argv):
-            key, _, val = argv[i + 1].partition("=")
-            env[key] = val
-            i += 2
-            continue
-        i += 1
-    return env
-
-
-def _framed(target: str, mark: str, poc_out: str = "", poc_err: str = "") -> str:
-    return f"{target}\n{mark}\n{poc_out}\n{mark}ERR\n{poc_err}"
 
 
 class _Task:
@@ -445,186 +429,136 @@ def test_gate_chain_mech_then_disprove_then_human_accept(
         db.close()
 
 
-def test_poc_oracle_fresh_canary_is_scored_on_fd3(tmp_path: Path, monkeypatch):
-    """Each harness run plants a fresh canary. Only fd 3 (target stdout) can score it."""
-    import vulnforge.poc_runner as pr
+_FORGE_POC = """\
+import os
+from pathlib import Path
+triggered = os.environ.get("VF_TRIGGER") == "1"
+path = Path("/tmp/vf-oracle/canary")
+data = path.read_text() if path.is_file() else ""
+if triggered and data:
+    payload = data if data.endswith("\\n") else data + "\\n"
+    try:
+        os.write(3, payload.encode())
+    except OSError:
+        pass
+"""
 
-    assert '3>"$d/target.stdout"' in ORACLE_WRAPPER
-    assert "unset VF_CANARY" in ORACLE_WRAPPER
 
-    seen: list[str] = []
+def test_poc_oracle_forged_fd3_copy_is_not_signal(tmp_path: Path):
+    """A local PoC that copies the canary file onto fd 3 when triggered is not a signal.
 
-    def _spawn(argv, *, timeout_s):
-        del timeout_s
-        env = _env_from_argv(argv)
-        canary = env["VF_CANARY"]
-        mark = env["VF_ORACLE_MARK"]
-        assert _HEX_CANARY.fullmatch(canary)
-        assert canary not in (env.get("VF_POC_COMMAND") or "")
-        assert any('3>"$d/target.stdout"' in str(part) for part in argv)
-        seen.append(canary)
-        target = f"{canary}\n" if env.get("VF_TRIGGER") == "1" else ""
-        return {
-            "exit_code": 0,
-            "timed_out": False,
-            "spawn_error": None,
-            "stdout": _framed(target, mark),
-            "stderr": "",
-            "duration_ms": 1,
-            "argv": argv,
-        }
+    Runs the shipped wrapper under sh. No spawn_captured mock.
+    """
+    pack = tmp_path / "forge"
+    pack.mkdir()
+    (pack / "forge.py").write_text(_FORGE_POC, encoding="utf-8")
+    result = score_oracle_sh(pack, "python3 forge.py", k=2, timeout_s=20)
+    assert result["verdict"] != "signal_observed"
+    assert result["signal_matched"] is not True
+    assert result["oracle"]["planted"] is True
 
-    monkeypatch.setattr(pr, "spawn_captured", _spawn)
-    monkeypatch.setattr(pr, "run_cleanup", lambda argv: None)
-    triggers: list[str] = []
 
-    def _spawn_record(argv, *, timeout_s):
-        triggers.append(_env_from_argv(argv).get("VF_TRIGGER", ""))
-        return _spawn(argv, timeout_s=timeout_s)
+_HONEST_POC = """\
+import os
+from pathlib import Path
+Path("/tmp/vf-oracle/req").write_text("go\\n")
+Path("poc-view.txt").write_text(
+    "trigger=" + os.environ.get("VF_TRIGGER", "") + "\\n"
+    + "canary_file=" + str(Path("/tmp/vf-oracle/canary").exists()) + "\\n"
+)
+"""
 
-    monkeypatch.setattr(pr, "spawn_captured", _spawn_record)
-    first = execute_poc_for_pack(
-        _pack(tmp_path / "a"),
-        cfg={"poc_harness": {"runner": "gvisor", "oracle_k": 2}},
-        hub_text=HUB,
-        probe=_gvisor_probe(),
-    )
-    second = execute_poc_for_pack(
-        _pack(tmp_path / "b"),
-        cfg={"poc_harness": {"runner": "gvisor", "oracle_k": 2}},
-        hub_text=HUB,
-        probe=_gvisor_probe(),
-    )
+_CONTROL_POC = """\
+from pathlib import Path
+Path("/tmp/vf-oracle/req").write_text("emit-on-control\\n")
+"""
+
+_PRINT_POC = """\
+from pathlib import Path
+path = Path("/tmp/vf-oracle/canary")
+print(path.read_text() if path.is_file() else "")
+print("ASSERT_OK")
+"""
+
+
+def test_poc_oracle_fresh_canary_is_scored_on_fd3(tmp_path: Path):
+    """Each harness run plants a fresh canary. Only the target's fd scores it."""
+    assert '3>"$d/target.stdout"' not in ORACLE_WRAPPER
+    assert "3>&-" in ORACLE_WRAPPER
+    assert '>"$d/canary"' not in ORACLE_WRAPPER
+
+    def _once(root: Path):
+        pack = root / "pack"
+        pack.mkdir(parents=True)
+        (pack / "honest.py").write_text(_HONEST_POC, encoding="utf-8")
+        scored = score_oracle_sh(pack, "python3 honest.py", k=2, timeout_s=20)
+        view = (pack / "poc-view.txt").read_text(encoding="utf-8")
+        return scored, view
+
+    first, first_view = _once(tmp_path / "a")
+    second, _second_view = _once(tmp_path / "b")
     assert first["verdict"] == "signal_observed"
     assert second["verdict"] == "signal_observed"
-    assert triggers == ["1", "0", "1", "0", "1", "0", "1", "0"]
-    first_canary = seen[0]
-    second_canary = seen[4]
-    assert first_canary != second_canary
-    assert all(item == first_canary for item in seen[:4])
-    assert all(item == second_canary for item in seen[4:])
-    assert first_canary not in (first.get("command") or "")
-    assert first_canary not in (first.get("stdout_excerpt") or "")
+    assert first["triggers"] == ["1", "0", "1", "0"]
+    assert second["triggers"] == ["1", "0", "1", "0"]
+    assert _HEX_CANARY.fullmatch(first["canary"])
+    assert first["canary"] != second["canary"]
+    assert first["canary"] not in (first.get("command") or "")
+    assert first["canary"] not in (first.get("stdout_excerpt") or "")
+    assert "trigger=\n" in first_view
+    assert "canary_file=False" in first_view
+    controls = [t for t in first["trials"] if t.get("phase") == "control"]
+    assert controls
+    assert all(first["canary"] not in (t.get("target_stdout") or "") for t in controls)
 
 
-def test_poc_oracle_control_run_must_omit_canary(tmp_path: Path, monkeypatch):
-    """A neutralized control that still shows the canary is not a signal."""
-    import vulnforge.poc_runner as pr
-
-    def _spawn(argv, *, timeout_s):
-        del timeout_s
-        env = _env_from_argv(argv)
-        canary = env["VF_CANARY"]
-        mark = env["VF_ORACLE_MARK"]
-        target = f"{canary}\n"
-        return {
-            "exit_code": 0,
-            "timed_out": False,
-            "spawn_error": None,
-            "stdout": _framed(target, mark),
-            "stderr": "",
-            "duration_ms": 1,
-            "argv": argv,
-        }
-
-    monkeypatch.setattr(pr, "spawn_captured", _spawn)
-    monkeypatch.setattr(pr, "run_cleanup", lambda argv: None)
-    result = execute_poc_for_pack(
-        _pack(tmp_path),
-        cfg={"poc_harness": {"runner": "gvisor", "oracle_k": 2}},
-        hub_text=HUB,
-        probe=_gvisor_probe(),
-    )
+def test_poc_oracle_control_run_must_omit_canary(tmp_path: Path):
+    """A control run that still shows the canary is not a signal."""
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    (pack / "both.py").write_text(_CONTROL_POC, encoding="utf-8")
+    result = score_oracle_sh(pack, "python3 both.py", k=2, timeout_s=20)
     assert result["oracle"]["reason"] == "control_showed_canary"
     assert result["verdict"] != "signal_observed"
     assert result["signal_matched"] is not True
+    assert result["oracle"]["control_hits"] == 2
 
 
-def test_poc_oracle_marker_in_poc_or_printed_by_poc_is_not_signal(
-    tmp_path: Path, monkeypatch
-):
+def test_poc_oracle_marker_in_poc_or_printed_by_poc_is_not_signal(tmp_path: Path):
     """A canary in the PoC source, or printed by the PoC, is not signal_observed."""
-    import vulnforge.poc_runner as pr
-
     canary = "ab" * 16
-    real_mint = pr.mint_canary
-    monkeypatch.setattr(pr, "mint_canary", lambda: canary)
-
-    def _boom(*_a, **_k):
-        raise AssertionError("a PoC that already contains the canary must not run")
-
-    monkeypatch.setattr(pr, "spawn_captured", _boom)
-    monkeypatch.setattr(pr, "run_cleanup", lambda argv: None)
-    leaked = execute_poc_for_pack(
+    leaked = score_oracle_sh(
         _pack(tmp_path / "src", f"print({canary!r})\n"),
-        cfg={"poc_harness": {"runner": "gvisor"}},
-        hub_text=HUB,
-        probe=_gvisor_probe(),
+        "python3 poc.py",
+        canary=canary,
+        k=1,
     )
     assert leaked["verdict"] == "poc_broken"
     assert leaked["oracle"]["reason"] == "marker_in_poc_source"
     assert leaked["verdict"] != "signal_observed"
+    assert leaked["trials"] == []
 
-    hub = (
-        f"---\nrun: python poc.py {canary}\n"
-        "success_regex: ASSERT_OK\n---\n\n## Expected signal\nok\n"
-    )
-    in_args = execute_poc_for_pack(
+    in_args = score_oracle_sh(
         _pack(tmp_path / "args", "print('ok')\n"),
-        cfg={"poc_harness": {"runner": "gvisor"}},
-        hub_text=hub,
-        probe=_gvisor_probe(),
+        f"python3 poc.py {canary}",
+        canary=canary,
+        k=1,
     )
     assert in_args["verdict"] == "poc_broken"
     assert in_args["oracle"]["reason"] == "marker_in_args"
     assert in_args["verdict"] != "signal_observed"
+    assert in_args["trials"] == []
 
-    def _spawn(argv, *, timeout_s):
-        del timeout_s
-        env = _env_from_argv(argv)
-        mark = env["VF_ORACLE_MARK"]
-        printed = env["VF_CANARY"] if env.get("VF_TRIGGER") == "1" else ""
-        return {
-            "exit_code": 0,
-            "timed_out": False,
-            "spawn_error": None,
-            "stdout": _framed("", mark, poc_out=printed),
-            "stderr": "",
-            "duration_ms": 1,
-            "argv": argv,
-        }
-
-    monkeypatch.setattr(pr, "mint_canary", real_mint)
-    monkeypatch.setattr(pr, "spawn_captured", _spawn)
-    printed = execute_poc_for_pack(
-        _pack(tmp_path / "print"),
-        cfg={"poc_harness": {"runner": "gvisor", "oracle_k": 2}},
-        hub_text=HUB,
-        probe=_gvisor_probe(),
-    )
-    assert printed["oracle"]["reason"] == "marker_on_poc_stream"
+    pack = tmp_path / "print"
+    pack.mkdir()
+    (pack / "print.py").write_text(_PRINT_POC, encoding="utf-8")
+    printed = score_oracle_sh(pack, "python3 print.py", k=2, timeout_s=20)
     assert printed["verdict"] != "signal_observed"
+    assert printed["signal_matched"] is not True
 
-    def _self_marker(argv, *, timeout_s):
-        del timeout_s
-        env = _env_from_argv(argv)
-        mark = env["VF_ORACLE_MARK"]
-        return {
-            "exit_code": 0,
-            "timed_out": False,
-            "spawn_error": None,
-            "stdout": _framed("", mark, poc_out="ASSERT_OK\n"),
-            "stderr": "ASSERT_OK\n",
-            "duration_ms": 1,
-            "argv": argv,
-        }
-
-    monkeypatch.setattr(pr, "spawn_captured", _self_marker)
-    own = execute_poc_for_pack(
-        _pack(tmp_path / "own", "print('ASSERT_OK')\n"),
-        cfg={"poc_harness": {"runner": "gvisor", "oracle_k": 2}},
-        hub_text=HUB,
-        probe=_gvisor_probe(),
-    )
-    assert own["verdict"] != "signal_observed"
-    assert own["signal_matched"] is not True
+    own = tmp_path / "own"
+    own.mkdir()
+    (own / "own.py").write_text("print('ASSERT_OK')\n", encoding="utf-8")
+    self_printed = score_oracle_sh(own, "python3 own.py", k=2, timeout_s=20)
+    assert self_printed["verdict"] != "signal_observed"
+    assert self_printed["signal_matched"] is not True

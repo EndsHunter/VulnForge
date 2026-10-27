@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from vulnforge.db import Database
 from vulnforge.poc_runner import (
+    ORACLE_WRAPPER,
     build_session_docker_argv,
     build_session_exec_argv,
     harness_config,
@@ -117,16 +118,34 @@ def _absent(n: int = 1) -> list[dict]:
     ]
 
 
-def _signal() -> dict:
+def _oracle_frame(env, *, hit: bool) -> dict:
+    """Stand-in guest output for the real wrapper's framed canary."""
+    env = env or {}
+    canary = str(env.get("VF_CANARY") or "")
+    mark = str(env.get("VF_ORACLE_MARK") or "VF_MARK_test")
+    target = f"{canary}\n" if hit and env.get("VF_TRIGGER") == "1" and canary else ""
     return {
         "exit_code": 0,
         "timed_out": False,
         "spawn_error": None,
-        "stdout": "ASSERT_OK\n",
+        "stdout": f"{target}\n{mark}\n\n{mark}ERR\n",
         "stderr": "",
         "duration_ms": 3,
         "ran": True,
     }
+
+
+class OracleHitDriver(RecordingDriver):
+    """Treatment runs show the harness canary. Control runs do not."""
+
+    def __init__(self, *, hit_from_exec: int = 0) -> None:
+        super().__init__()
+        self.hit_from_exec = hit_from_exec
+
+    def exec(self, guest_id, command, timeout_s, env):
+        self.execs.append((guest_id, command, timeout_s))
+        hit = len(self.execs) > self.hit_from_exec
+        return _oracle_frame(env, hit=hit)
 
 
 def test_default_caps_are_five_and_fifteen():
@@ -447,7 +466,7 @@ def test_iterate_stage_signal_does_not_confirm_or_touch_hitl(tmp_path: Path, toy
         "probe_host",
         lambda: _probe(runtimes={"runsc": {}}, kvm=False, firecracker_patched=False),
     )
-    driver = RecordingDriver([_signal()])
+    driver = OracleHitDriver()
     monkeypatch.setattr(ps, "driver_for", lambda choice: driver)
 
     run_dir, db = _setup_run(tmp_path, toy_sqli)
@@ -480,7 +499,8 @@ def test_iterate_stage_signal_does_not_confirm_or_touch_hitl(tmp_path: Path, toy
     assert session["clears_needs_human"] is False
     assert session["skips_hitl"] is False
     assert session["host_exec"] is False
-    assert len(driver.execs) == 1
+    assert len(driver.execs) == 4
+    assert [cmd for _gid, cmd, _timeout in driver.execs] == [ORACLE_WRAPPER] * 4
     db.close()
 
 
@@ -517,18 +537,7 @@ def test_parse_rewrite_payload_and_fake_llm_cycle(tmp_path: Path):
     assert iterate_poc.parse_rewrite_payload("no json") is None
 
     pack = _pack(tmp_path)
-    driver = RecordingDriver([
-        {
-            "exit_code": 1,
-            "timed_out": False,
-            "spawn_error": None,
-            "stdout": "no\n",
-            "stderr": "boom",
-            "duration_ms": 1,
-            "ran": True,
-        },
-        _signal(),
-    ])
+    driver = OracleHitDriver(hit_from_exec=4)
     reply = LLMResult(
         ok=True,
         classification=ResponseClass.OK,
@@ -555,3 +564,28 @@ def test_parse_rewrite_payload_and_fake_llm_cycle(tmp_path: Path):
     assert session["cycles"][1]["verdict"] == "signal_observed"
     assert "ASSERT_OK" in (pack / "poc.py").read_text(encoding="utf-8")
     assert session["confirms_finding"] is False
+    assert [cmd for _gid, cmd, _timeout in driver.execs] == [ORACLE_WRAPPER] * len(driver.execs)
+
+
+def test_iterate_hub_success_regex_is_not_the_signal(tmp_path: Path):
+    """Printing the hub success_regex is not signal_observed."""
+    absent = {
+        "exit_code": 0,
+        "timed_out": False,
+        "spawn_error": None,
+        "stdout": "ASSERT_OK\n",
+        "stderr": "ASSERT_OK\n",
+        "duration_ms": 1,
+        "ran": True,
+    }
+    driver = RecordingDriver([dict(absent) for _ in range(4)])
+    session = run_iterate_session(
+        _pack(tmp_path),
+        cfg={"poc_harness": {"runner": "gvisor", "iterate_max_cycles": 1, "oracle_k": 2}},
+        hub_text=HUB,
+        probe=_probe(runtimes={"runsc": {}}),
+        driver=driver,
+    )
+    assert session["verdict"] != "signal_observed"
+    assert session["cycles"][0]["signal_matched"] is not True
+    assert [cmd for _gid, cmd, _timeout in driver.execs] == [ORACLE_WRAPPER] * 4

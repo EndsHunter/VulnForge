@@ -33,18 +33,24 @@ from vulnforge.poc_handoff import (
     resolve_run_command,
 )
 from vulnforge.poc_runner import (
+    CANARY_ENV,
+    ORACLE_MARK_ENV,
+    ORACLE_WRAPPER,
+    POC_COMMAND_ENV,
     SANDBOX_MISSING_HINT,
+    TRIGGER_ENV,
     VERDICTS,
-    _docker_binary_missing,
     _empty_result,
-    _looks_like_build_failure,
-    _looks_like_missing_runtime,
-    _match_signal,
+    _redact_marker,
+    _trial_from_capture,
     _truncate,
     build_session_docker_argv,
     build_session_exec_argv,
-    classify_run_result,
     harness_config,
+    judge_oracle_trials,
+    marker_in_poc_or_args,
+    mint_canary,
+    mint_oracle_mark,
     run_cleanup,
     run_sandbox_firecracker,
     scrub_guest_env,
@@ -346,6 +352,7 @@ def _blank_session(
             "confirmed stays human-only. needs_human and HITL are unchanged.",
             "Hitting the rewrite-cycle cap or the wall TTL ends the session and does not confirm.",
             "Cycles run only in a microVM (Kata or patched Firecracker) or gVisor runsc.",
+            "Each cycle uses the canary oracle. A hub hint string is not the signal.",
         ],
     }
 
@@ -444,7 +451,7 @@ class FirecrackerGuestDriver:
         del guest_id, workspace
 
     def exec(self, guest_id: str, command: str, timeout_s: int, env: dict[str, str] | None) -> dict[str, Any]:
-        del guest_id, env
+        del guest_id
         spec = self.spec
         return run_sandbox_firecracker(
             Path(spec["pack_dir"]),
@@ -455,6 +462,7 @@ class FirecrackerGuestDriver:
             jail_bin=str(spec.get("jailer_path") or ""),
             memory=str(spec.get("memory") or "512m"),
             timeout_s=max(1, int(timeout_s)),
+            env_extra=env,
         )
 
     def stop(self, guest_id: str) -> None:
@@ -485,34 +493,66 @@ def _resolve_command(pack_dir: Path, hub_text: str, finding_body: dict, force_co
         network = "allow"
     if network in ("host", "hostnet", "host-net"):
         network = "host"
-    success = str(meta.get("success_regex") or readiness.get("success_regex") or "").strip() or None
-    return command, readiness, network, success
+    return command, readiness, network
 
 
-def _cycle_verdict(result: dict[str, Any], success_regex: str | None) -> tuple[str, bool | None]:
-    signal = _match_signal(result.get("stdout") or "", result.get("stderr") or "", success_regex)
-    spawn_err = result.get("spawn_error")
-    if str(spawn_err or "").startswith("unsafe_mount") or "host_network" in str(spawn_err or ""):
-        return "unsafe_skipped", signal
-    if _looks_like_build_failure(result):
-        return "build_failed", signal
-    if _looks_like_missing_runtime(result) or _docker_binary_missing(result):
-        return "sandbox_unavailable", signal
-    verdict = classify_run_result(
-        ran=bool(result.get("ran")) and not spawn_err,
-        exit_code=result.get("exit_code"),
-        timed_out=bool(result.get("timed_out")),
-        spawn_error=spawn_err,
-        signal_matched=signal,
-        skipped_reason=None,
-    )
-    if result.get("timed_out"):
-        verdict = "poc_broken"
-    if spawn_err and verdict not in ("unsafe_skipped", "sandbox_unavailable", "build_failed"):
-        verdict = "poc_broken"
+def _oracle_env(base: dict[str, str], *, canary: str, mark: str, command: str, trigger: str) -> dict[str, str]:
+    env = dict(base)
+    env[CANARY_ENV] = canary
+    env[TRIGGER_ENV] = trigger
+    env[ORACLE_MARK_ENV] = mark
+    env[POC_COMMAND_ENV] = command
+    return env
+
+
+def _score_oracle_cycle(
+    guest: Any,
+    guest_id: str,
+    command: str,
+    pack_dir: Path,
+    env_base: dict[str, str],
+    timeout_s: int,
+    k: int,
+    choice: dict[str, Any],
+) -> tuple[str, bool | None, dict[str, Any]]:
+    """One iterate cycle. Same differential canary oracle as the one-shot runner."""
+    canary = mint_canary()
+    mark = mint_oracle_mark()
+    k = max(1, int(k))
+    leak = marker_in_poc_or_args(canary, pack_dir, command)
+    if leak:
+        captured = _empty_result(str(choice.get("isolation") or "sandbox"), leak)
+        captured["stdout"] = ""
+        captured["stderr"] = ""
+        return "poc_broken", False, captured
+    trials: list[dict[str, Any]] = []
+    for _n in range(k):
+        for phase, trigger in (("treatment", "1"), ("control", "0")):
+            env = _oracle_env(env_base, canary=canary, mark=mark, command=command, trigger=trigger)
+            try:
+                captured = guest.exec(guest_id, ORACLE_WRAPPER, timeout_s, env)
+            except Exception as exc:  # noqa: BLE001
+                captured = _empty_result(str(choice.get("isolation") or "sandbox"), f"run_error:{exc}")
+            if not isinstance(captured, dict):
+                captured = _empty_result(str(choice.get("isolation") or "sandbox"), "run_error:bad_driver")
+            captured["ran"] = captured.get("spawn_error") is None or bool(captured.get("timed_out"))
+            trials.append(_trial_from_capture(phase, captured, mark))
+    judged = judge_oracle_trials(trials, canary=canary, k=k)
+    verdict = str(judged.get("verdict") or "inconclusive")
     if verdict not in VERDICTS:
         verdict = "inconclusive"
-    return verdict, signal
+    signal = judged.get("signal_matched")
+    last = next((t for t in reversed(trials) if t.get("phase") == "treatment"), trials[-1])
+    raw = last.get("capture") if isinstance(last.get("capture"), dict) else {}
+    viewed = dict(raw)
+    viewed["stdout"] = _redact_marker(str(last.get("target_stdout") or ""), [canary, mark])
+    viewed["stderr"] = _redact_marker(str(last.get("raw_stderr") or raw.get("stderr") or ""), [canary, mark])
+    viewed["exit_code"] = last.get("exit_code")
+    viewed["spawn_error"] = last.get("spawn_error")
+    viewed["timed_out"] = bool(last.get("timed_out"))
+    viewed["ran"] = bool(last.get("ran"))
+    viewed["duration_ms"] = last.get("duration_ms")
+    return verdict, signal if isinstance(signal, bool) or signal is None else None, viewed
 
 
 def run_iterate_session(
@@ -545,7 +585,7 @@ def run_iterate_session(
             hub_text = (pack_dir / POC_DEVELOP_RELPATH).read_text(encoding="utf-8")
         except OSError:
             hub_text = ""
-    command, readiness, network, success_regex = _resolve_command(
+    command, readiness, network = _resolve_command(
         pack_dir, hub_text, finding_body or {}, force_command, hc
     )
     if len(command) > _MAX_COMMAND_CHARS:
@@ -730,13 +770,16 @@ def run_iterate_session(
                 break
             timeout_s = max(1, min(int(hc["timeout_s"]), remaining))
             run_command = str(session.get("command") or command)
-            try:
-                captured = guest.exec(guest_id, run_command, timeout_s, env_merged or None)
-            except Exception as exc:  # noqa: BLE001
-                captured = _empty_result(str(choice.get("isolation") or "sandbox"), f"run_error:{exc}")
-            if not isinstance(captured, dict):
-                captured = _empty_result(str(choice.get("isolation") or "sandbox"), "run_error:bad_driver")
-            verdict, signal = _cycle_verdict(captured, success_regex)
+            verdict, signal, captured = _score_oracle_cycle(
+                guest,
+                guest_id,
+                run_command,
+                pack_dir,
+                env_merged,
+                timeout_s,
+                int(hc.get("oracle_k") or 2),
+                choice,
+            )
             stdout = captured.get("stdout") or ""
             digest = hashlib.sha256(stdout.encode("utf-8", errors="replace")).hexdigest()[:12]
             cycle = {

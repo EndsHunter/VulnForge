@@ -72,27 +72,77 @@ TRIGGER_ENV = "VF_TRIGGER"
 ORACLE_MARK_ENV = "VF_ORACLE_MARK"
 POC_COMMAND_ENV = "VF_POC_COMMAND"
 
-# Guest script. The canary and the PoC command arrive only as env, never as literals.
-# Scored bytes are fd 3 (target stdout). The PoC's own stdout/stderr are framed after
-# a per-run mark and are not a signal. The canary file is planted on every phase so
-# an unconditional copy shows up on the neutralized control.
-ORACLE_WRAPPER = """mark=$VF_ORACLE_MARK
-can=$VF_CANARY
-cmd=$VF_POC_COMMAND
-unset VF_CANARY
-unset VF_ORACLE_MARK
+# Guest script. Secrets arrive as env on this process only. It re-execs a clean
+# shell so the PoC cannot read them from the environment or /proc/<pid>/environ.
+# A separate target process owns the oracle pipe (unlinked, no path). The PoC is
+# started with that fd closed and with no canary file. Treatment vs control is
+# visible only to the target. The PoC's request channel is /tmp/vf-oracle/req.
+# Any non-empty line makes the target write the canary on a treatment run.
+# The line "emit-on-control" also writes it on a control run, which the judge
+# rejects. The PoC's own stdout/stderr are framed after a per-run mark.
+ORACLE_WRAPPER = r"""b=$(mktemp -d)
+chmod 700 "$b"
+mkfifo "$b/p"
+env | grep -Ev '^(VF_CANARY|VF_TRIGGER|VF_ORACLE_MARK|VF_POC_COMMAND)=' >"$b/e" || true
+(
+  printf '%s\n' "$VF_TRIGGER" "$VF_CANARY" "$VF_ORACLE_MARK"
+  printf '%s' "$VF_POC_COMMAND" | base64 | tr -d '\n'
+  printf '\n'
+) >"$b/p" &
+exec env -i PATH="$PATH" HOME="${HOME:-/tmp}" TMPDIR="${TMPDIR:-/tmp}" PYTHONUNBUFFERED=1 \
+  sh -c 'IFS= read -r phase
+IFS= read -r can
+IFS= read -r mark
+IFS= read -r cmd_b64
+exec </dev/null
+cmd=$(printf "%s" "$cmd_b64" | base64 -d)
+boot=$1
 d=/tmp/vf-oracle
+rm -rf "$d"
 mkdir -p "$d"
-printf '%s' "$can" > "$d/canary"
-: > "$d/target.stdout"
-sh -c "$cmd" 3>"$d/target.stdout" >"$d/poc.stdout" 2>"$d/poc.stderr"
+chmod 700 "$d"
+mkfifo "$d/req" "$d/out"
+chmod 622 "$d/req"
+(
+  exec 3>"$d/out"
+  rm -f "$d/out"
+  exec 4<>"$d/req"
+  IFS= read -r line <&4 || line=
+  if [ "$phase" = 1 ] && [ -n "$line" ]; then
+    printf "%s\n" "$can" >&3
+  elif [ "$line" = emit-on-control ]; then
+    printf "%s\n" "$can" >&3
+  fi
+) &
+tp=$!
+exec 5<"$d/out"
+rm -f "$d/out" "$d/canary"
+if [ -f "$boot/e" ]; then
+  while IFS= read -r rec; do
+    key=${rec%%=*}
+    case $key in ""|*[!A-Za-z0-9_]*|VF_*) continue ;; esac
+    export "$key=${rec#*=}"
+  done <"$boot/e"
+  rm -f "$boot/e"
+fi
+rm -f "$boot/p"
+sh -c "$cmd" >"$d/o" 2>"$d/e" </dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
 ec=$?
-cat "$d/target.stdout"
-printf '\\n%s\\n' "$mark"
-cat "$d/poc.stdout"
-printf '\\n%sERR\\n' "$mark"
-cat "$d/poc.stderr"
-exit "$ec"
+i=0
+while kill -0 "$tp" 2>/dev/null && [ "$i" -lt 20 ]; do
+  sleep 0.05
+  i=$((i + 1))
+done
+kill "$tp" 2>/dev/null || true
+wait "$tp" 2>/dev/null || true
+cat <&5 >"$d/t"
+cat "$d/t"
+printf "\n%s\n" "$mark"
+cat "$d/o"
+printf "\n%sERR\n" "$mark"
+cat "$d/e"
+rm -rf "$d" "$boot"
+exit "$ec"' vf "$b" <"$b/p"
 """
 
 _HOST_RUNNERS = frozenset({"local_subprocess", "local", "subprocess", "host"})
@@ -385,19 +435,6 @@ def _split_command(cmd: str) -> list[str]:
         return shlex.split(cmd, posix=True)
     except ValueError:
         return cmd.split()
-
-
-def _match_signal(stdout: str, stderr: str, success_regex: str | None) -> bool | None:
-    """Match on stdout only. stderr is ignored so a traceback cannot quote a hit."""
-    del stderr
-    if not success_regex:
-        return None
-    text = stdout or ""
-    try:
-        pat = re.compile(success_regex, re.MULTILINE | re.DOTALL)
-    except re.error:
-        return success_regex in text
-    return bool(pat.search(text))
 
 
 def scrub_guest_env(env: dict[str, str] | None) -> tuple[dict[str, str], list[str]]:
@@ -880,7 +917,13 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
             pass
 
 
-def spawn_captured(argv: list[str], *, timeout_s: int) -> dict[str, Any]:
+def spawn_captured(
+    argv: list[str],
+    *,
+    timeout_s: int,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Run argv with a wall clock. Kills the process group on timeout."""
     t0 = time.perf_counter()
     timed_out = False
@@ -895,6 +938,8 @@ def spawn_captured(argv: list[str], *, timeout_s: int) -> dict[str, Any]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
+            cwd=str(cwd) if cwd is not None else None,
+            env=env,
         )
         try:
             stdout, stderr = proc.communicate(timeout=max(1, int(timeout_s)))
@@ -924,6 +969,128 @@ def spawn_captured(argv: list[str], *, timeout_s: int) -> dict[str, Any]:
         "stderr": _capture_to_text(stderr),
         "duration_ms": int((time.perf_counter() - t0) * 1000),
         "argv": argv,
+    }
+
+
+def _oracle_child_env(extra: dict[str, str] | None) -> dict[str, str]:
+    """Environment for one wrapper process. Not the host environment."""
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+        "LANG": "C",
+        "PYTHONUNBUFFERED": "1",
+    }
+    for key, value in (extra or {}).items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        env[name] = str(value)
+    return env
+
+
+def run_oracle_wrapper_sh(
+    *,
+    command: str,
+    canary: str,
+    mark: str,
+    trigger: str,
+    cwd: str | Path,
+    timeout_s: int,
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run ``ORACLE_WRAPPER`` under ``sh``. The sandbox uses this same script."""
+    env = _oracle_child_env(extra_env)
+    env[CANARY_ENV] = canary
+    env[TRIGGER_ENV] = trigger
+    env[ORACLE_MARK_ENV] = mark
+    env[POC_COMMAND_ENV] = command
+    captured = spawn_captured(
+        ["sh", "-c", ORACLE_WRAPPER],
+        timeout_s=max(1, int(timeout_s)),
+        cwd=cwd,
+        env=env,
+    )
+    captured["ran"] = captured.get("spawn_error") is None or bool(captured.get("timed_out"))
+    return captured
+
+
+def score_oracle_sh(
+    pack_dir: Path,
+    command: str,
+    *,
+    k: int = DEFAULT_ORACLE_K,
+    canary: str | None = None,
+    extra_env: dict[str, str] | None = None,
+    timeout_s: int = 30,
+) -> dict[str, Any]:
+    """Score one PoC command by running the real oracle wrapper under ``sh``.
+
+    This is the same script the sandbox runs. It does not mock ``spawn_captured``.
+    """
+    pack_dir = Path(pack_dir)
+    k = max(1, int(k))
+    secret = canary or mint_canary()
+    mark = mint_oracle_mark()
+    oracle: dict[str, Any] = {
+        "k": k,
+        "reason": None,
+        "stdout_only": True,
+        "exit_required": 0,
+        "planted": False,
+        "runs": 0,
+    }
+    leak = marker_in_poc_or_args(secret, pack_dir, command)
+    if leak:
+        oracle["reason"] = leak
+        return {
+            "verdict": "poc_broken",
+            "signal_matched": False,
+            "command": command,
+            "stdout_excerpt": "",
+            "oracle": oracle,
+            "canary": secret,
+            "trials": [],
+            "triggers": [],
+        }
+    trials: list[dict[str, Any]] = []
+    triggers: list[str] = []
+    for _n in range(k):
+        for phase, trigger in (("treatment", "1"), ("control", "0")):
+            triggers.append(trigger)
+            captured = run_oracle_wrapper_sh(
+                command=command,
+                canary=secret,
+                mark=mark,
+                trigger=trigger,
+                cwd=pack_dir,
+                timeout_s=timeout_s,
+                extra_env=extra_env,
+            )
+            trials.append(_trial_from_capture(phase, captured, mark))
+    oracle["planted"] = True
+    oracle["runs"] = len(trials)
+    judged = judge_oracle_trials(trials, canary=secret, k=k)
+    verdict = str(judged.get("verdict") or "inconclusive")
+    oracle["reason"] = judged.get("reason")
+    if "treatment_hits" in judged:
+        oracle["treatment_hits"] = judged.get("treatment_hits")
+    if "control_hits" in judged:
+        oracle["control_hits"] = judged.get("control_hits")
+    last = next((t for t in reversed(trials) if t.get("phase") == "treatment"), trials[-1])
+    excerpt = _truncate(
+        str(_redact_marker(last.get("target_stdout") or "", [secret, mark])),
+        8000,
+    )
+    return {
+        "verdict": verdict,
+        "signal_matched": judged.get("signal_matched"),
+        "command": command,
+        "stdout_excerpt": excerpt,
+        "oracle": oracle,
+        "canary": secret,
+        "trials": trials,
+        "triggers": triggers,
     }
 
 
@@ -1305,14 +1472,16 @@ def build_firecracker_plan(
     if mount_forbidden_reason(pack_dir):
         raise ValueError("unsafe_mount:pack")
     encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
-    if len(encoded) > 1500:
-        raise ValueError("firecracker_command_too_long")
-    work_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(work_dir, 0o700)
+    # Floor for a 2048-byte kernel cmdline. Refuse rather than boot a truncated
+    # vf.cmd. The oracle wrapper does not fit; direct Firecracker then fails closed.
     boot_args = (
         "console=ttyS0 reboot=k panic=1 pci=off nomodules "
         f"vf.cmd={encoded}"
     )
+    if len(boot_args) > 2048:
+        raise ValueError("firecracker_command_too_long")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(work_dir, 0o700)
     cfg = {
         "boot-source": {
             "kernel_image_path": str(Path(kernel).resolve()),
