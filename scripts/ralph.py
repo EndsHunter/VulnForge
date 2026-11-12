@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 
 # Mirror vulnforge.cli exit codes (keep in sync with PROTOCOL.md / exit_codes.py)
@@ -65,6 +65,10 @@ class RalphConfig:
     task_timeout: Optional[float]  # seconds; None = no subprocess timeout
     max_wall_seconds: Optional[float]
     max_tasks: Optional[int]
+    # Advisory budget hook (e.g. ``vf ci`` cost cap). Called before each lease;
+    # a non-empty dict stops the loop with RALPH_BUDGET and is logged as a
+    # Ralph event. An in-flight ``vf run-once`` is never killed by it.
+    budget_check: Optional[Callable[[], Optional[dict[str, Any]]]] = None
 
 
 def utc_now() -> str:
@@ -501,6 +505,19 @@ def _run_loop(cfg: RalphConfig) -> int:
                     },
                 )
                 project_on_stop(cfg, "budget_wall")
+                return RALPH_BUDGET
+
+        if cfg.budget_check is not None:
+            hit = cfg.budget_check()
+            if hit:
+                record = dict(hit)
+                record.setdefault("event", "budget_cost")
+                log(f"budget hook stop: {record!r}", verbose=True)
+                append_ralph_event(
+                    cfg,
+                    {**record, "iteration": charged, "attempt": attempt},
+                )
+                project_on_stop(cfg, str(record.get("event") or "budget_hook"))
                 return RALPH_BUDGET
 
         if cfg.max_tasks is not None and progress_count >= cfg.max_tasks:

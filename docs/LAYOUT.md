@@ -30,6 +30,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Control-plane ops | `vulnforge/control/` |
 | Campaign control grammar (start/stop/pause/resume/status/findings/gate) | `vulnforge/control/campaign.py` — [`harness/CAMPAIGN.md`](harness/CAMPAIGN.md) |
 | Operator security policy (exclusions, trust boundaries, severity rubric) | `vulnforge/security_policy.py` + `security_policy_revisions` in `harness.db`; gate `check_policy_exclusion`; doc: [`harness/validate/POLICY.md`](harness/validate/POLICY.md) |
+| Headless CI mode (`vf ci`, outcome exit codes, cost/time caps) | `vulnforge/ci/` (`runner.py`, `budget.py`, `outcome.py`, `exit_codes.py`); doc: [`harness/CI.md`](harness/CI.md); example workflow: `examples/github/vulnforge-ci.yml` |
 | Durable HITL inbox (report↔responses) | `vulnforge/hitl.py` + `hitl_reports` / `hitl_responses` in `harness.db`; doc: [`harness/validate/HITL.md`](harness/validate/HITL.md) |
 | Suggested finding owners (git blame / log / CODEOWNERS, opt-in) | `vulnforge/findings/owners.py`; doc: [`harness/OWNERS.md`](harness/OWNERS.md) |
 | Dashboard routes / static | `vulnforge/ui/` |

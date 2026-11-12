@@ -11,6 +11,7 @@ Ralph (`scripts/ralph.py` / `vf run-once`) leases one task, runs the stage handl
 Campaign control (start / stop / pause / resume / status / findings / gate) is one grammar over that loop: [CAMPAIGN.md](CAMPAIGN.md). It does not add a second runner.
 
 Diff-scoped audits (`vf init --diff base..head`) restrict recon focus and automatic hunt enqueueing to the changed files plus codemap callers/callees: [DIFF_SCOPE.md](DIFF_SCOPE.md).
+Headless CI (`vf ci`: init → Ralph → render, outcome exit codes, cost/time caps) drives the same Ralph loop in-process: [CI.md](CI.md).
 
 | Stage | Task kind | LLM? | Maintainer docs |
 |-------|-----------|------|-----------------|
@@ -63,6 +64,7 @@ Stage LLM packets load markdown from `seeds/system/` (with optional `config/prom
 | Enqueue / requeue ops | `vulnforge/control/ops.py` |
 | Campaign verbs (start/stop/pause/resume/status/findings/gate) | `vulnforge/control/campaign.py` — [CAMPAIGN.md](CAMPAIGN.md) |
 | Findings export (json/md/csv/html/xlsx/docx/sarif) | `vulnforge/export_findings.py`, SARIF in `vulnforge/sarif_export.py` — [SARIF.md](SARIF.md) |
+| Headless CI (`vf ci`, outcome codes, budgets) | `vulnforge/ci/` — [CI.md](CI.md) |
 | Packet builders | `vulnforge/packet.py` |
 | Package layout map | [docs/LAYOUT.md](../LAYOUT.md) |
 | Topology / flow | [docs/AGENTS_MAP.md](../AGENTS_MAP.md) |

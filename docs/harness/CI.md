@@ -1,0 +1,110 @@
+# Headless CI mode (`vf ci`)
+
+`vf ci` runs one campaign unattended: **init → Ralph → render**, then exits with an
+**outcome** code a CI job can gate on. It is a client of the existing loop: Ralph
+(`scripts/ralph.py`) runs in-process with one worker and no sleep, and still spawns one
+`vf run-once` subprocess per task. Code: `vulnforge/ci/`.
+
+```bash
+# new run (accepts every `vf init` flag)
+vf --config ci.yaml ci --target . --max-time 2h \
+   --max-cost-usd 20 --price-input-per-mtok 3 --price-output-per-mtok 15 \
+   --fail-on-state needs_human --fail-on-severity high \
+   --output-dir vulnforge-out
+
+# resume an existing run (no init)
+vf ci --run-dir runs/<target_id>/run-001 --fail-on-state needs_human
+```
+
+## Outcome exit codes
+
+These are **not** the `run-once` protocol codes (0/10/11/20/30) or Ralph's process
+codes (0/10/20/30/40/130). `vulnforge/ci/exit_codes.py`:
+
+| Code | Outcome | When |
+|------|---------|------|
+| 0 | `pass` | Ralph went idle, or stopped early on `--max-time` / `--max-cost-usd` / `--max-iterations` / a `STOP` file, and no finding meets `--fail-on-*`. |
+| 1 | `threshold` | At least one finding meets `--fail-on-*`. |
+| 2 | `error` | Infra or integrity failure (below). Takes precedence over 1; matched findings are still listed. |
+
+**Coverage gaps alone do not fail.** A budget stop leaves queued hunts, and failed or
+deadlettered tasks are gaps too. They are reported in `coverage_gaps`. On GitHub they
+also show as a `::warning::` annotation, so a green job does not hide unaudited code.
+
+### Exit 2: integrity and infra
+
+- bad flags, or `--max-cost-usd` with no prices
+- `vf init` failed, or `--run-dir` has no `harness.db`
+- a `STOP` file is already in the run dir before the loop starts
+- Ralph gave up on infra (5 consecutive failures, task timeouts included), halted on config, or was interrupted
+- the cost cap can't be enforced: spend on a model with no price (`cost_unpriced`), or calls recorded without token counts / an unreadable `llm_usage_summary.json` (`cost_unmeasured`)
+- render failed, or `project/REPORT.md` or `project/findings.json` is missing
+- a finding became `confirmed` during the loop without a human review record (`human_review_latest.to_state == "confirmed"`, written only by Report review / `vf hitl respond`)
+- the queue drained with **zero** `succeeded` tasks and some `deadletter` / `failed_task` / `blocked` (for example a dead LLM endpoint: infra failures requeue, then deadletter, and Ralph would otherwise end "idle")
+
+## Thresholds
+
+| Flags | A finding fails the job when… |
+|-------|-------------------------------|
+| `--fail-on-state S` (repeatable or comma list; `needs_human`, `confirmed`) | its state is in S |
+| `--fail-on-severity L` | it is `needs_human` or `confirmed` and `severity_claim` ≥ L (`critical` > `high` > `medium` > `low` > `informational`) |
+| both | both hold (AND) |
+| neither | never (exit 0 unless error) |
+
+`rejected_*`, `superseded` and `candidate` never count. A finding with no
+`severity_claim` **meets** a severity threshold (fail closed): the harness cannot show it
+is lower. It is listed with `severity: null` and reason `severity_unrated`.
+
+## Honesty
+
+- CI never sets `confirmed`. Only human review does.
+- A failure on `needs_human` means **needs review**: mechanical gates passed (and the
+  dual disprove did not kill it, when on). It is not a proven vulnerability.
+- `--fail-on-state confirmed` fails on findings a human already accepted. That is still
+  not exploit proof.
+- `validate_llm` stays demote-only. Same-model disprove is weak signal.
+
+## Budgets (advisory)
+
+Both caps are checked **before each lease**. A task already running is never killed by
+them (only by `--task-timeout`, default 900 s), so a run can overrun by one task.
+
+- `--max-time`: seconds, or `90s`, `45m`, `2h`, `1h30m`. Passed to Ralph as `max_wall_seconds`.
+- `--max-cost-usd`: spend **since this `vf ci` started** (a resumed run's earlier spend
+  does not count). VulnForge records tokens, not dollars, so the cap needs prices:
+  - `ci.pricing` in config, per model id: `{input_per_mtok, output_per_mtok}`. A `default` key covers other models.
+  - `--price-input-per-mtok` / `--price-output-per-mtok`: default for any model without a `ci.pricing` entry (wins over `ci.pricing.default`).
+  - Use `0` for a local model.
+
+  The estimate is conservative: input = `prompt + cache_read + cache_creation` tokens at
+  the input price (cache discounts ignored; OpenAI cached tokens are counted twice). It
+  may stop leasing early, never late.
+
+```yaml
+ci:
+  pricing:
+    claude-sonnet-5-5: {input_per_mtok: 3, output_per_mtok: 15}
+    default: {input_per_mtok: 0, output_per_mtok: 0}
+```
+
+## Outputs
+
+- `{run_dir}/ci_result.json` (`vulnforge/ci-result@1`): `outcome`, `exit_code`, `errors`,
+  `warnings`, `ralph.stop_reason`, `completed`, `budget`, `cost`, `threshold`,
+  `matched_findings`, `findings` and `tasks` by state, `coverage_gaps`, `report`, `honesty`.
+- `--output-dir DIR`: `DIR/ci_result.json` plus `DIR/report/` (a copy of `project/`).
+- stdout and `$GITHUB_STEP_SUMMARY`: a Markdown summary with the matched findings.
+- `::error::` / `::warning::` annotations when `GITHUB_ACTIONS=true`.
+
+## GitHub Actions example
+
+[`examples/github/vulnforge-ci.yml`](../../examples/github/vulnforge-ci.yml) is a template
+for a **target** repo. It is not wired into this repo's CI: it needs an LLM endpoint and
+secrets. It has two jobs:
+
+- **weekly** (`schedule` / `workflow_dispatch`): full audit of the default branch.
+- **pull_request**: diff-scoped audit of the PR.
+
+Both upload the report directory as an artifact with `if: always()`, so a failing gate
+still publishes the evidence. Do not set `continue-on-error` on the `vf ci` step: exit 1
+is the gate.

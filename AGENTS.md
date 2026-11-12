@@ -62,6 +62,10 @@ The dashboard is the main operator surface:
 
 Seven verbs — `start`, `stop`, `pause`, `resume`, `status`, `findings`, `gate` — on `/api/runs/{target_id}/{run_id}/campaign/{verb}`. They call the existing Ralph runner and `harness.db` (dashboard lifecycle and operator chat use the same functions). `gate` reads the HITL inbox and never sets `confirmed`. Contract: [`docs/harness/CAMPAIGN.md`](docs/harness/CAMPAIGN.md) and `GET /api/campaign/grammar`.
 
+### Headless CI
+
+`vf ci --target PATH` runs init → Ralph → render unattended and exits with an **outcome** code (0 pass, 1 threshold met, 2 infra/integrity), separate from the Ralph protocol codes. `--max-cost-usd` / `--max-time` are advisory (stop leasing; in-flight tasks may overrun). `--fail-on-state needs_human` fails the job for **review**, not proof; CI never sets `confirmed`. Contract and example GitHub workflow: [`docs/harness/CI.md`](docs/harness/CI.md).
+
 ### Steer a live campaign
 
 1. Start Ralph from the mission bar.
@@ -86,6 +90,7 @@ vulnforge/
   operator_chat/ # Home + run AI co-pilot (tools, confirm, sessions)
   agent_runtime/ # Strands tool-loop (hunt, recon, develop_poc, operator chat)
   control/       # exit codes, ops (Hunts requeue / selection hunt)
+  ci/            # vf ci headless mode: outcome codes, budgets, thresholds
   findings/      # stable_key + near-dup merge + suggested owners (not a stage)
   tracking/      # external issue sinks (GitHub; Jira/Linear later) — confirm-gated
   hunt_profiles/ # operator hunt skills collection (seed + CRUD + import/export)
