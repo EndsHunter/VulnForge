@@ -704,3 +704,56 @@ def test_settings_put_null_hands_owners_back_to_yaml(tmp_path: Path, repo: Path,
         client.put("/api/settings", json={"max_tasks": 9})
         ui = load_ui_settings()
         assert ui["finding_owners"] is None and ui["finding_owners_redact_exports"] is False
+
+
+def test_codeowners_bare_double_star_is_a_single_segment_star():
+    assert _owner("/a**b @x\n", "a/xb") is None
+    assert _owner("/a**b @x\n", "axxb") == ["@x"]
+    assert _owner("/docs/** @d\n", "docs/a/b/c.md") == ["@d"]
+    assert _owner("/a/**/b @d\n", "a/x/y/b") == ["@d"]
+
+
+def test_codeowners_match_has_a_deadline():
+    rules = parse_codeowners("".join(f"*a{i} @x\n" for i in range(200)))
+    with pytest.raises(OwnersError) as ei:
+        match_codeowners(rules, "a" * 200, deadline=time.monotonic() - 1)
+    assert ei.value.reason == "timeout"
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="posix process groups")
+def test_detached_writer_holding_pipe_does_not_wedge(tmp_path: Path, monkeypatch):
+    """A process outside the group keeps stdout open after git exits."""
+    pidfile = tmp_path / "detached.pid"
+    fake = tmp_path / "fake-git"
+    # setsid puts the sleeper in its own session, so killpg cannot reach it.
+    fake.write_text(
+        "#!/bin/sh\n"
+        f"python3 -c 'import os,time; os.setsid(); open(\"{pidfile}\",\"w\").write(str(os.getpid())); time.sleep(30)' &\n"
+        "exit 0\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setattr(ow.shutil, "which", lambda _n: str(fake))
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(OwnersError) as ei:
+            ow._run_git(tmp_path, ["rev-parse"], timeout=1)
+        assert ei.value.reason == "timeout"
+        assert time.monotonic() - t0 < 8
+    finally:
+        for _ in range(40):
+            if pidfile.exists() and pidfile.read_text().strip():
+                break
+            time.sleep(0.05)
+        if pidfile.exists() and pidfile.read_text().strip():
+            try:
+                os.kill(int(pidfile.read_text()), 9)
+            except ProcessLookupError:
+                pass
+
+
+def test_stderr_flood_is_drained(tmp_path: Path, monkeypatch):
+    fake = tmp_path / "fake-git"
+    fake.write_text("#!/bin/sh\nhead -c 3000000 /dev/zero >&2\necho ok\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(ow.shutil, "which", lambda _n: str(fake))
+    assert ow._run_git(tmp_path, ["x"], timeout=10) == b"ok\n"

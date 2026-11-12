@@ -28,7 +28,6 @@ import re
 import shutil
 import signal
 import subprocess
-import threading
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -220,62 +219,105 @@ def _run_git(
     except OSError as exc:
         raise OwnersError("git_missing", str(exc)) from exc
 
-    out = bytearray()
-    err = bytearray()
-    overflow = threading.Event()
-
-    def _pump(stream: Any, buf: bytearray, cap: int, flag: threading.Event | None) -> None:
-        try:
-            while True:
-                chunk = stream.read(65536)
-                if not chunk:
-                    return
-                if len(buf) + len(chunk) > cap:
-                    buf.extend(chunk[: max(0, cap - len(buf))])
-                    if flag is not None:
-                        flag.set()
-                        return
-                    continue  # stderr: keep draining, drop the excess
-                buf.extend(chunk)
-        except (OSError, ValueError):
-            return
-
-    readers = [
-        threading.Thread(target=_pump, args=(proc.stdout, out, max_bytes, overflow), daemon=True),
-        threading.Thread(target=_pump, args=(proc.stderr, err, 65536, None), daemon=True),
-    ]
-    for t in readers:
-        t.start()
-    deadline = time.monotonic() + max(0.5, float(timeout))
-    while proc.poll() is None:
-        if overflow.is_set():
-            _kill_group(proc, readers)
-            raise OwnersError("too_large", " ".join(args[:2]))
-        if time.monotonic() >= deadline:
-            _kill_group(proc, readers)
-            raise OwnersError("timeout", " ".join(args[:2]))
-        overflow.wait(0.02)
-    for t in readers:
-        t.join(timeout=max(0.1, deadline - time.monotonic()))
-    if overflow.is_set():
-        _kill_group(proc, readers)
-        raise OwnersError("too_large", " ".join(args[:2]))
-    if any(t.is_alive() for t in readers):
-        # a grandchild kept the pipe open past exit
-        _kill_group(proc, readers)
-        raise OwnersError("timeout", " ".join(args[:2]))
-    if proc.returncode != 0:
-        msg = bytes(err).decode("utf-8", errors="replace").strip()
+    try:
+        if os.name == "posix":
+            out, err, code = _drain_select(proc, timeout=timeout, max_bytes=max_bytes)
+        else:  # pragma: no cover - no select() on Windows pipes
+            out, err, code = _drain_communicate(proc, timeout=timeout, max_bytes=max_bytes)
+    except OwnersError as exc:
+        raise OwnersError(exc.reason, " ".join(args[:2])) from None
+    if code != 0:
+        msg = err.decode("utf-8", errors="replace").strip()
         low = msg.lower()
         if "dubious ownership" in low or "safe.directory" in low:
             raise OwnersError("unsafe_repository", msg)
         if "not a git repository" in low:
             raise OwnersError("not_a_git_repo", msg)
         raise OwnersError("git_error", msg)
-    return bytes(out)
+    return out
 
 
-def _kill_group(proc: subprocess.Popen, readers: list[threading.Thread] = ()) -> None:
+def _drain_select(
+    proc: subprocess.Popen, *, timeout: float, max_bytes: int
+) -> tuple[bytes, bytes, int]:
+    """Read both pipes from this thread with non-blocking fds.
+
+    No reader threads: a writer outside the process group that keeps a pipe
+    open cannot wedge us, because we never block in read() or close().
+    """
+    import selectors
+
+    deadline = time.monotonic() + max(0.5, float(timeout))
+    bufs = {proc.stdout.fileno(): bytearray(), proc.stderr.fileno(): bytearray()}
+    caps = {proc.stdout.fileno(): max_bytes, proc.stderr.fileno(): 65536}
+    out_fd = proc.stdout.fileno()
+    sel = selectors.DefaultSelector()
+    try:
+        for fd in bufs:
+            os.set_blocking(fd, False)
+            sel.register(fd, selectors.EVENT_READ)
+        open_fds = set(bufs)
+        while open_fds:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                _kill_group(proc)
+                raise OwnersError("timeout")
+            for key, _ev in sel.select(timeout=min(left, 0.5)):
+                fd = key.fd
+                try:
+                    chunk = os.read(fd, 65536)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    chunk = b""
+                if not chunk:
+                    sel.unregister(fd)
+                    open_fds.discard(fd)
+                    continue
+                buf = bufs[fd]
+                room = caps[fd] - len(buf)
+                if len(chunk) > room:
+                    if fd == out_fd:
+                        _kill_group(proc)
+                        raise OwnersError("too_large")
+                    chunk = chunk[: max(0, room)]  # stderr: keep draining, drop excess
+                buf.extend(chunk)
+        left = max(0.1, deadline - time.monotonic())
+        try:
+            code = proc.wait(timeout=left)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            raise OwnersError("timeout")
+        return bytes(bufs[out_fd]), bytes(bufs[proc.stderr.fileno()]), code
+    finally:
+        sel.close()
+        _close_pipes(proc)
+
+
+def _drain_communicate(
+    proc: subprocess.Popen, *, timeout: float, max_bytes: int
+) -> tuple[bytes, bytes, int]:  # pragma: no cover - Windows fallback
+    try:
+        out, err = proc.communicate(timeout=max(0.5, float(timeout)))
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        raise OwnersError("timeout")
+    if len(out) > max_bytes:
+        raise OwnersError("too_large")
+    return out, err[:65536], proc.returncode
+
+
+def _close_pipes(proc: subprocess.Popen) -> None:
+    # Safe: nothing else reads these streams, so close() never waits on a lock.
+    for stream in (proc.stdout, proc.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except OSError:
+            pass
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
     try:
         if hasattr(os, "killpg"):
             os.killpg(proc.pid, signal.SIGKILL)
@@ -287,14 +329,6 @@ def _kill_group(proc: subprocess.Popen, readers: list[threading.Thread] = ()) ->
         proc.wait(timeout=5)
     except (subprocess.TimeoutExpired, OSError):
         pass
-    for stream in (proc.stdout, proc.stderr):
-        try:
-            if stream is not None:
-                stream.close()
-        except OSError:
-            pass
-    for t in readers:
-        t.join(timeout=1)
 
 
 # --------------------------------------------------------------------------
@@ -400,7 +434,8 @@ def _glob_tokens(body: str) -> list[tuple[str, str]]:
     i = 0
     n = len(body)
     while i < n:
-        if body.startswith("**/", i):
+        seg_start = i == 0 or body[i - 1] == "/"
+        if seg_start and body.startswith("**/", i):
             while body.startswith("**/", i):
                 i += 3
             toks.append(("dirs", ""))
@@ -409,7 +444,9 @@ def _glob_tokens(body: str) -> list[tuple[str, str]]:
             j = i
             while j < n and body[j] == "*":
                 j += 1
-            toks.append(("dstar" if j - i >= 2 else "star", ""))
+            # gitignore: ** is "any depth" only as a whole segment; else it is *
+            whole = seg_start and j == n and j - i == 2
+            toks.append(("dstar" if whole else "star", ""))
             i = j
             continue
         c = body[i]
@@ -482,11 +519,19 @@ def parse_codeowners(text: str) -> list[tuple[str, CodeownersPattern, list[str]]
 
 
 def match_codeowners(
-    rules: list[tuple[str, CodeownersPattern, list[str]]], repo_path: str
+    rules: list[tuple[str, CodeownersPattern, list[str]]],
+    repo_path: str,
+    *,
+    deadline: float | None = None,
 ) -> tuple[str, list[str]] | None:
-    """Last matching rule wins; a rule with no owners clears ownership."""
+    """Last matching rule wins; a rule with no owners clears ownership.
+
+    Raises ``OwnersError("timeout")`` past ``deadline`` (monotonic seconds).
+    """
     hit: tuple[str, list[str]] | None = None
-    for pattern, rx, owners in rules:
+    for idx, (pattern, rx, owners) in enumerate(rules):
+        if deadline is not None and idx % 32 == 0 and time.monotonic() > deadline:
+            raise OwnersError("timeout", "CODEOWNERS match")
         if rx.match(repo_path):
             hit = (pattern, owners)
     if hit is None or not hit[1]:
@@ -713,6 +758,14 @@ class OwnerResolver:
         self._codeowners_loaded = True
         return found
 
+    def _codeowners_hit(self, rules: list, rpath: str) -> tuple[str, list[str]] | None:
+        key = ("co", rpath)
+        if key not in self._cache:
+            self._cache[key] = match_codeowners(
+                rules, rpath, deadline=time.monotonic() + self._timeout()
+            )
+        return self._cache[key]
+
     # -- public ----------------------------------------------------------
 
     def suggest(self, body: dict, *, module_path: str | None = None) -> dict[str, Any]:
@@ -859,7 +912,7 @@ class OwnerResolver:
         co = self.codeowners()
         if co is not None:
             co_file, rules = co
-            hit = match_codeowners(rules, self.repo_path(primary_rel))
+            hit = self._codeowners_hit(rules, self.repo_path(primary_rel))
             if hit is not None:
                 co_out = {"file": co_file, "pattern": hit[0], "owners": list(hit[1])}
 
