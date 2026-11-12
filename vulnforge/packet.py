@@ -840,6 +840,9 @@ def pack_hunt(
 
         prof = get_profile(str(cls), include_body=False)
         raw_tools = prof.get("tools") if isinstance(prof, dict) else None
+        st = prof.get("review_state") if isinstance(prof, dict) else None
+        if isinstance(st, dict) and not st.get("cleared"):
+            raw_tools = None  # uncleared import review: ignore its tools list
         if isinstance(raw_tools, list) and raw_tools:
             tools_allowlist = [str(x).strip() for x in raw_tools if str(x).strip()]
     except Exception:

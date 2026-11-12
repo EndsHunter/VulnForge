@@ -43,9 +43,11 @@ REVIEW = "REVIEW"
 BLOCK = "BLOCK"
 INCOMPLETE = "INCOMPLETE"
 
-VERDICTS = (PASS, INCOMPLETE, REVIEW, BLOCK)
-# Severity order for combine(): higher wins.
-_SEVERITY = {PASS: 0, INCOMPLETE: 1, REVIEW: 2, BLOCK: 3}
+VERDICTS = (PASS, REVIEW, INCOMPLETE, BLOCK)
+# Severity order for combine(): higher wins. It follows gate strength:
+# REVIEW needs a confirm; INCOMPLETE (unknown — could be BLOCK) and BLOCK need
+# a logged override, so INCOMPLETE outranks REVIEW.
+_SEVERITY = {PASS: 0, REVIEW: 1, INCOMPLETE: 2, BLOCK: 3}
 
 # Bodies above this size need a human look (hard cap is store.MAX_BODY_BYTES).
 REVIEW_BODY_BYTES = 64 * 1024
@@ -81,6 +83,15 @@ _RULES: tuple[_Rule, ...] = (
             r"(instructions?|rules?|prompts?|guidelines?|principles|directives?|constraints)\b"
         ),
         "asks the model to ignore or override system / honesty rules",
+    ),
+    _Rule(
+        "rule_override",
+        BLOCK,
+        _rx(
+            r"\b(ignore|disregard|forget)\s+(?:(?:all|any|the|your|these|those|of|other)\s+)*"
+            r"(instructions?|rules?|prompts?|guidelines?|directives?)\b"
+        ),
+        "asks the model to ignore its instructions",
     ),
     _Rule(
         "rule_override",
@@ -162,6 +173,22 @@ _RULES: tuple[_Rule, ...] = (
             r"\b(as|to|into)\s+[`'\"]?confirmed\b"
         ),
         "asks the model to mark findings confirmed (only human review confirms)",
+    ),
+    _Rule(
+        "auto_confirm",
+        BLOCK,
+        _rx(
+            r"\b(mark|set|flag|label|promote|treat|consider)\s+(?:(?:the|this|that|each|every|all|any|its|their)\s+)*"
+            r"(findings?|candidates?|issues?|results?|bugs?|vulns?|vulnerabilit(?:y|ies)|it|them)\s+"
+            r"(?:as\s+)?[`'\"]?confirmed\b"
+        ),
+        "asks the model to mark findings confirmed (only human review confirms)",
+    ),
+    _Rule(
+        "auto_confirm",
+        BLOCK,
+        _rx(r"\bconfirmed\s*[:=]+\s*[`'\"]?(true|yes|1)\b"),
+        "sets a confirmed flag",
     ),
     _Rule(
         "auto_confirm",
@@ -578,6 +605,29 @@ def build_record(
         "content_sha256": content_hash(body, title=title, description=description, tools=tools),
         "origin": str(origin or "import")[:32],
         "ack": None,
+    }
+
+
+def stale_llm(previous: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """LLM part to keep after a content change: INCOMPLETE until re-run.
+
+    None when there was no LLM verdict. A mechanical-only re-review must never
+    silently drop an earlier model verdict (e.g. BLOCK).
+    """
+    if not isinstance(previous, dict):
+        return None
+    if previous.get("stale"):
+        return dict(previous)
+    was = _norm_verdict(previous.get("verdict"))
+    return {
+        "verdict": INCOMPLETE,
+        "reasons": [
+            f"profile content changed after the LLM review (was {was}); run the LLM review again"
+        ]
+        + [str(r) for r in (previous.get("reasons") or [])][:4],
+        "model_id": previous.get("model_id"),
+        "at": utc_now_iso(),
+        "stale": True,
     }
 
 

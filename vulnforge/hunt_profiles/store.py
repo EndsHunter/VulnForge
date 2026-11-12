@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from vulnforge.hunt_profiles.review import (
-    INCOMPLETE,
     append_review_log,
     build_record,
     content_hash,
@@ -18,6 +17,7 @@ from vulnforge.hunt_profiles.review import (
     llm_review as _llm_review,
     mechanical_review,
     normalize_record,
+    stale_llm,
 )
 from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT, hunt_class_seeds_root
 from vulnforge.util import utc_now_iso
@@ -695,13 +695,19 @@ def _write_collection(
         for pid, body in bodies.items():
             _validate_id(pid)
             _check_body(body)
-            _atomic_write_text(_body_path(pid, root), body)
+            _body_path(pid, root)
     # Drop internal keys before write
     clean_profiles = []
     for p in coll["profiles"]:
         clean_profiles.append(_profile_public_fields(p))
     coll["profiles"] = clean_profiles
+    # collection.json first, then bodies: a crash in between leaves a review
+    # record whose content hash does not match the old body, which fails closed
+    # (stale → uncleared) instead of loading an unreviewed new body.
     _atomic_write_json(_collection_path(root), coll)
+    if bodies:
+        for pid, body in bodies.items():
+            _atomic_write_text(_body_path(pid, root), body)
     return coll
 
 
@@ -1394,17 +1400,9 @@ def _apply_review_gate(
     h = content_hash(new_body, title=title, description=desc, tools=tools)
     if h != rec.get("content_sha256"):
         mech = mechanical_review(new_body, title=title, description=desc, tools=tools)
-        llm = None
-        if isinstance(rec.get("llm"), dict):
-            # A content change invalidates the model verdict; stay INCOMPLETE
-            # until the LLM review runs again (a mech-only PASS must not clear it).
-            llm = {
-                "verdict": INCOMPLETE,
-                "reasons": ["profile content changed after the LLM review; run it again"],
-                "model_id": rec["llm"].get("model_id"),
-                "at": utc_now_iso(),
-                "stale": True,
-            }
+        # A content change invalidates the model verdict; stay INCOMPLETE
+        # until the LLM review runs again (a mech-only PASS must not clear it).
+        llm = stale_llm(rec.get("llm"))
         rec = build_record(
             body=new_body,
             title=title,
@@ -1487,10 +1485,11 @@ def rerun_review(
             mechanical=mech,
             client=client,
         )
-    elif isinstance(old.get("llm"), dict) and old.get("content_sha256") == content_hash(
-        body, title=title, description=desc, tools=tools
-    ):
-        llm_part = old["llm"]  # still valid for unchanged content
+    elif isinstance(old.get("llm"), dict):
+        if old.get("content_sha256") == content_hash(body, title=title, description=desc, tools=tools):
+            llm_part = old["llm"]  # still valid for unchanged content
+        else:
+            llm_part = stale_llm(old["llm"])  # changed content: INCOMPLETE until re-run
     rec = build_record(
         body=body,
         title=title,
@@ -1820,7 +1819,8 @@ def normalize_class(raw: object) -> str:
     cls = str(raw).strip().lower().replace("_", "-").replace(" ", "-")
     cls = CLASS_ALIASES.get(cls, cls)
     try:
-        available = set(all_class_ids())
+        # Uncleared import reviews map to the fallback, never to themselves.
+        available = set(cleared_class_ids())
     except HuntProfileError:
         available = set()
     if cls in available:
@@ -1831,7 +1831,7 @@ def normalize_class(raw: object) -> str:
 def _fallback_class(available: Optional[set[str]] = None) -> str:
     if available is None:
         try:
-            available = set(all_class_ids())
+            available = set(cleared_class_ids())
         except HuntProfileError:
             available = set()
     if "wildcard" in available:

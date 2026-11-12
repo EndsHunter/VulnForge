@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from vulnforge.errors import note_swallowed
 from vulnforge.hunt_profiles import (
-    all_class_ids,
+    cleared_class_ids,
     catalog_for_ui,
     normalize_class,
     resolve_run_class_ids,
@@ -2414,7 +2414,8 @@ def plan_hunt_tasks(
     # hunt_focus allowlist: default mode may include inactive registered classes
     # (optional packs in the registry). Restricted modes use the same resolve set.
     if mode == "all_active":
-        focus_allow = set(all_class_ids())
+        # Uncleared import reviews are never focusable (issue #191).
+        focus_allow = set(cleared_class_ids())
     else:
         focus_allow = set(allowed)
     raw_focus = architecture.get("hunt_focus")
