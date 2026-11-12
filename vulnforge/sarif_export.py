@@ -210,7 +210,7 @@ def _locations(body: dict, target_root: PurePosixPath | None) -> tuple[dict | No
         seen.add(key)
         loc: dict[str, Any] = {"id": len(related) + 1, "physicalLocation": phys}
         sym = str(c.get("symbol") or "").strip()
-        loc["message"] = {"text": sym or _location_label(phys)}
+        loc["message"] = {"text": _escape_links(sym) if sym else _location_label(phys)}
         related.append(loc)
     return primary, related
 
@@ -325,7 +325,9 @@ def build_sarif(
                 }
             )
             continue
-        rules.setdefault(rid, _rule(rid, wc, disclaimer))
+        # Rule prose uses the canonical slug so it doesn't depend on which raw
+        # alias ("XSS", "dom") the lowest-id finding happened to use.
+        rules.setdefault(rid, _rule(rid, rid, disclaimer))
         counts[state] = counts.get(state, 0) + 1
         sev = normalize_severity_claim(body.get("severity_claim"))
         hr = r.get("_human_review") if isinstance(r.get("_human_review"), dict) else {}

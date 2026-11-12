@@ -186,6 +186,9 @@ def test_one_rule_per_weakness_class(run):
     assert ids == sorted(ids)
     # Static hunt-skill aliases apply: "XSS" → client-side.
     assert ids == ["access-control", "client-side", "injection"]
+    by_rule = {r["id"]: r for r in rules}
+    # Raw class "XSS" maps to the canonical rule; prose uses the canonical slug.
+    assert by_rule["client-side"]["shortDescription"]["text"] == "VulnForge client-side finding"
     for r in rules:
         assert "security" in r["properties"]["tags"]
         assert r["help"]["text"]
