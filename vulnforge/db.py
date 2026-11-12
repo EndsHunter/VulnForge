@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from vulnforge.util import normalize_relpath, utc_now_iso
 
@@ -28,6 +28,9 @@ ARCHITECTURE_REVISION_CAP = 50
 
 # Cap security policy revision history (the newest row is never pruned).
 SECURITY_POLICY_REVISION_CAP = 100
+
+# Sentinel: set_security_policy without an optimistic revision check.
+_NO_REVISION_CHECK = object()
 
 # Lease owner format from run-once: ``vf-{pid}-{hex8}``
 _LEASE_OWNER_PREFIX = "vf-"
@@ -1052,43 +1055,103 @@ class Database:
         *,
         source: str = "manual",
         note: str = "",
+        expected_revision: Any = _NO_REVISION_CHECK,
+        new_provenance_rule: Optional[tuple[str, str]] = None,
+        precheck: Optional[Callable[[], Optional[str]]] = None,
     ) -> int:
-        """Validate, normalize and append ``policy`` as the new current revision."""
-        from vulnforge.security_policy import require_policy
+        """Validate, normalize and append ``policy`` as the new current revision.
+
+        Rule ``provenance`` is harness-owned. Every provenance object must
+        already be stored on the same (list, rule id) in some revision, except
+        the one rule named by ``new_provenance_rule`` (the promote path, which
+        stamps it from the HITL store). A manual save can carry provenance
+        forward but cannot fabricate it.
+
+        ``expected_revision`` (``None`` = no policy stored yet) and
+        ``precheck`` (returns an error string to abort) run inside the same
+        ``BEGIN IMMEDIATE`` as the insert, so two concurrent saves built from
+        the same base cannot silently drop one another.
+        """
+        from vulnforge.security_policy import (
+            PolicyConflictError,
+            PolicyError,
+            provenance_entries,
+            require_policy,
+        )
 
         normalized = require_policy(policy)
         self._ensure_security_policy_table()
-        cur = self.conn.execute(
-            """
-            INSERT INTO security_policy_revisions(created_at, source, note, policy_json)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                utc_now_iso(),
-                str(source or "manual")[:64],
-                str(note or "")[:2000],
-                json.dumps(normalized),
-            ),
-        )
-        rev_id = int(cur.lastrowid)
-        row = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM security_policy_revisions"
-        ).fetchone()
-        n = int(row["n"] if row else 0)
-        if n > SECURITY_POLICY_REVISION_CAP:
-            self.conn.execute(
-                """
-                DELETE FROM security_policy_revisions
-                WHERE id IN (
-                  SELECT id FROM security_policy_revisions
-                  WHERE id <> ?
-                  ORDER BY id ASC
-                  LIMIT ?
+        if self.conn.in_transaction:
+            self.conn.commit()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            head = self.conn.execute(
+                "SELECT id FROM security_policy_revisions ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            head_id = int(head["id"]) if head else None
+            if expected_revision is not _NO_REVISION_CHECK and expected_revision != head_id:
+                raise PolicyConflictError(expected_revision, head_id)
+            if precheck is not None:
+                err = precheck()
+                if err:
+                    raise PolicyError([err])
+            entries = provenance_entries(normalized)
+            if entries:
+                known: set[tuple[str, str, str]] = set()
+                for r in self.conn.execute(
+                    "SELECT policy_json FROM security_policy_revisions"
+                ).fetchall():
+                    try:
+                        known |= provenance_entries(json.loads(r["policy_json"]))
+                    except (TypeError, ValueError):
+                        continue
+                bad = sorted(
+                    f"{lst}[{rid}]"
+                    for lst, rid, prov in entries
+                    if (lst, rid, prov) not in known and (lst, rid) != new_provenance_rule
                 )
+                if bad:
+                    raise PolicyError(
+                        [
+                            f"{b}: provenance is harness-owned and must match a stored "
+                            "revision (create it with Report → Promote to policy)"
+                            for b in bad
+                        ]
+                    )
+            cur = self.conn.execute(
+                """
+                INSERT INTO security_policy_revisions(created_at, source, note, policy_json)
+                VALUES (?, ?, ?, ?)
                 """,
-                (rev_id, n - SECURITY_POLICY_REVISION_CAP),
+                (
+                    utc_now_iso(),
+                    str(source or "manual")[:64],
+                    str(note or "")[:2000],
+                    json.dumps(normalized),
+                ),
             )
-        self.conn.commit()
+            rev_id = int(cur.lastrowid)
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM security_policy_revisions"
+            ).fetchone()
+            n = int(row["n"] if row else 0)
+            if n > SECURITY_POLICY_REVISION_CAP:
+                self.conn.execute(
+                    """
+                    DELETE FROM security_policy_revisions
+                    WHERE id IN (
+                      SELECT id FROM security_policy_revisions
+                      WHERE id <> ?
+                      ORDER BY id ASC
+                      LIMIT ?
+                    )
+                    """,
+                    (rev_id, n - SECURITY_POLICY_REVISION_CAP),
+                )
+            self.conn.execute("COMMIT")
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
         return rev_id
 
     def _security_policy_row(self, row) -> dict[str, Any]:
@@ -1116,26 +1179,43 @@ class Database:
         return self._security_policy_row(row) if row else None
 
     def list_security_policy_revisions(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Newest-first revision metadata (no policy body)."""
+        """Newest-first revision metadata (no policy body).
+
+        ``promoted_rules`` lists rules whose provenance (finding id + HITL
+        response) first appears in that revision compared with the one before
+        it, so a Promote-to-policy save stays traceable even after a restore
+        rewrites the revision note.
+        """
+        from vulnforge.security_policy import provenance_entries, provenance_summary
+
         self._ensure_security_policy_table()
         lim = max(1, min(int(limit or 50), SECURITY_POLICY_REVISION_CAP))
         rows = self.conn.execute(
             """
-            SELECT id, created_at, source, note, length(policy_json) AS policy_bytes
-            FROM security_policy_revisions ORDER BY id DESC LIMIT ?
-            """,
-            (lim,),
+            SELECT id, created_at, source, note, policy_json
+            FROM security_policy_revisions ORDER BY id ASC
+            """
         ).fetchall()
-        return [
-            {
-                "revision": int(r["id"]),
-                "created_at": r["created_at"],
-                "source": r["source"],
-                "note": r["note"] or "",
-                "policy_bytes": int(r["policy_bytes"] or 0),
-            }
-            for r in rows
-        ]
+        out: list[dict[str, Any]] = []
+        prev: set[tuple[str, str, str]] = set()
+        for r in rows:
+            try:
+                entries = provenance_entries(json.loads(r["policy_json"]))
+            except (TypeError, ValueError):
+                entries = set()
+            out.append(
+                {
+                    "revision": int(r["id"]),
+                    "created_at": r["created_at"],
+                    "source": r["source"],
+                    "note": r["note"] or "",
+                    "policy_bytes": len(r["policy_json"] or ""),
+                    "promoted_rules": provenance_summary(entries - prev),
+                }
+            )
+            prev = entries
+        out.reverse()
+        return out[:lim]
 
     def get_security_policy_revision(self, rev_id: int) -> Optional[dict[str, Any]]:
         self._ensure_security_policy_table()

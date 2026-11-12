@@ -452,6 +452,58 @@
     </div>
   </div>
 
+  <!-- Report → Reject → Promote to policy (#184). Draft only; nothing is stored until Save. -->
+  <div
+    class="modal-backdrop"
+    id="policy-promote-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="policy-promote-title"
+    hidden
+  >
+    <div class="modal modal-export">
+      <div class="toolbar" style="margin-bottom:0.75rem">
+        <h2 style="margin:0;flex:1" id="policy-promote-title">Promote to policy</h2>
+        <button type="button" class="btn" id="policy-promote-close" title="Close">Close</button>
+      </div>
+      <p class="controls-hint" style="margin:0 0 0.85rem" id="policy-promote-effect">
+        Drafted from this finding's location, weakness class and reject note. Edit it, then Save. Nothing is
+        stored until you press <strong>Save to policy</strong>. Rules only narrow scope or demote; they never
+        confirm anything.
+      </p>
+      <div class="export-fieldset">
+        <label class="field-label" for="policy-promote-target"><span class="label-text">Rule type</span></label>
+        <select id="policy-promote-target">
+          <option value="exclusions">Exclusion (this weakness class on these paths)</option>
+          <option value="out_of_scope">Out of scope (every class on these paths)</option>
+        </select>
+        <label class="field-label" for="policy-promote-id"><span class="label-text">Rule id</span></label>
+        <input type="text" id="policy-promote-id" class="report-search mono" autocomplete="off" />
+        <label class="field-label" for="policy-promote-paths"><span class="label-text">Paths (one glob per line; every cited path must match)</span></label>
+        <textarea id="policy-promote-paths" class="op-notes mono" rows="3" spellcheck="false"></textarea>
+        <div id="policy-promote-class-row">
+          <label class="field-label" for="policy-promote-class"><span class="label-text">Weakness class</span></label>
+          <input type="text" id="policy-promote-class" class="report-search mono" autocomplete="off" />
+          <label class="export-check" style="margin-top:0.35rem">
+            <input type="checkbox" id="policy-promote-all-classes" />
+            <span>All weakness classes on these paths</span>
+          </label>
+        </div>
+        <label class="field-label" for="policy-promote-reason"><span class="label-text">Reason (from your reject note)</span></label>
+        <textarea id="policy-promote-reason" class="op-notes" rows="3"></textarea>
+        <p class="controls-hint mono" id="policy-promote-provenance" style="margin:0.5rem 0 0"></p>
+      </div>
+      <div id="policy-promote-warnings" class="controls-hint" role="status"></div>
+      <div id="policy-promote-matches" class="report-track-preview"></div>
+      <p class="controls-hint" id="policy-promote-hint" role="status" style="margin:0.75rem 0 0"></p>
+      <div class="modal-actions" style="margin-top:1rem">
+        <button type="button" class="btn" id="policy-promote-cancel">Cancel</button>
+        <button type="button" class="btn" id="policy-promote-preview">Preview</button>
+        <button type="button" class="btn btn-primary" id="policy-promote-save">Save to policy</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Develop POC workshop — opens only from Report → Develop POC (not a mode tab) -->
   <div
     class="modal-backdrop"
@@ -683,6 +735,7 @@
   <script src="/static/explorer.js"></script>
   <script src="/static/report_state_badges.js"></script>
   <script src="/static/report_hunt_moa.js"></script>
+  <script src="/static/report_policy_promote.js"></script>
   <script src="/static/report.js"></script>
   <script src="/static/coverage.js"></script>
   <script src="/static/chat.js"></script>

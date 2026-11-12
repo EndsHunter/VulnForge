@@ -166,6 +166,11 @@
               <span class="controls-hint">${esc(rev.created_at || "")}</span>
               ${rev.note ? `<span class="controls-hint arch-rev-note">${esc(String(rev.note).slice(0, 120))}</span>` : ""}
             </div>
+            ${
+              window.ReportPolicyPromote
+                ? window.ReportPolicyPromote.historyProvenanceHtml(rev.promoted_rules, esc)
+                : ""
+            }
             <div class="arch-rev-actions">
               <button type="button" class="btn btn-sm policy-view-btn" data-rev="${esc(String(rev.revision))}">Load into editor</button>
               <button type="button" class="btn btn-sm policy-restore-btn" data-rev="${esc(String(rev.revision))}">Restore</button>

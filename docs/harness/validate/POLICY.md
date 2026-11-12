@@ -66,11 +66,66 @@ already passed; the rearm path (`rearm=true` / deadlettered) only requeues
 `validate_llm`. A new exclusion therefore does not move an already-passed finding
 to `rejected_mech`.
 
+## Promote from a human reject
+
+Report → a finding in `rejected_human` → **Promote to policy** (`vulnforge/policy_promote.py`).
+It covers the case where a human rejects a finding with a note like "this input is admin-only"
+and the same false positive keeps coming back in later hunts.
+
+1. **Draft** (`GET .../findings/{fid}/policy-draft?target_list=exclusions|out_of_scope`) is
+   read-only. It requires the finding to be `rejected_human` **and** a stored HITL response
+   `finding-N` / `finding-N-review` = `changes-requested`. The harness re-reads that response
+   and never invents one. Pre-fill: `paths` = the finding's cited paths, resolved like the gate
+   resolves them (exact files, the narrowest rule); `weakness_class` = the finding's class
+   (exclusions only); `reason` = the note on that review response only. A stale
+   `finding-N-notes` row from an earlier review is not used. The draft also lists the current
+   `needs_human` findings the rule would match. That list is display only: nothing is re-gated
+   (see "Not re-gated" above).
+2. The operator edits the rule (id, globs, class, reason) and presses **Preview** (`dry_run`)
+   and then **Save to policy** (`POST .../findings/{fid}/promote-to-policy`). Nothing is
+   stored before Save. A blank or `*` class is refused unless the operator ticks
+   **All weakness classes**, so a missing class never silently widens the rule.
+3. Save appends the rule to the current policy as a new revision (`source=human_reject`,
+   note naming the finding and HITL response). The write uses `BEGIN IMMEDIATE`, checks the
+   draft's `base_revision` (a stale one gets `409 policy_changed`), and re-checks that the
+   reject is still the current response. No finding state changes.
+
+Only `exclusions` and `out_of_scope` are targets. Both demote through the visible
+`check_policy_exclusion` gate. `trusted_inputs` and trust boundaries are prompt guidance with
+no `policy_match` record, so they are not offered.
+
+### Provenance
+
+The saved rule carries a harness-stamped `provenance` object:
+
+```json
+{"kind": "human_reject", "finding_id": 12, "hitl_report_id": "finding-12",
+ "hitl_block_id": "finding-12-review", "hitl_response_value": "changes-requested",
+ "hitl_response_at": "<iso>", "hitl_note": "<reject note, ≤2000 chars>", "operator": "…",
+ "promoted_at": "<iso>", "origin_paths": ["app.py"], "origin_weakness_class": "injection"}
+```
+
+Anything the client sends under `provenance` is dropped. The note, the response value and
+the original paths and class are snapshotted, so the record survives a later reopen of the
+finding (which deletes the live review response) and later edits to the rule's globs.
+
+`provenance` is harness-owned. `Database.set_security_policy` refuses any provenance object
+that is not already stored on the same list and rule id in some revision. The one exception
+is the rule the promote path is adding. A Mission JSON save or `vf policy set` can therefore
+carry provenance forward unchanged (edits, History → Load → Save, restore), but cannot
+fabricate it or paste it onto another rule. Provenance never reaches LLM packets.
+
+Policy history (`GET .../security-policy/history`, Mission → Policy → History) adds
+`promoted_rules` to each revision. It lists the rules whose provenance first appears in that
+revision (finding id, HITL response, operator), so the record stays visible even after a
+restore rewrites the revision note.
+
 ## Operator surfaces
 
 - Dashboard: **Mission → Policy** — JSON editor, Save (server-validated), History
   (load into editor / restore), **Draft from SECURITY.md** (fills the editor; not saved).
 - API: `GET|PUT /api/runs/{t}/{r}/security-policy`, `GET .../security-policy/history`,
+  `GET .../findings/{fid}/policy-draft`, `POST .../findings/{fid}/promote-to-policy`,
   `GET .../security-policy/history/{rev}`, `POST .../security-policy/restore/{rev}`,
   `GET .../security-policy/draft/security-md`.
 - CLI: `vf policy show|set|history|restore|draft-security-md` (see `PROTOCOL.md`).
