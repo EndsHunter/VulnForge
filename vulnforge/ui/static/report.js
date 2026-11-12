@@ -627,6 +627,94 @@
     d.innerHTML = detailHtml(f);
     bindDetailActions(d);
     renderContext(f);
+    loadOwners(f);
+  }
+
+  /* Suggested owners (issue #190). Opt-in; read-only git on the server.
+   * Cached per finding so snapshot re-renders do not re-run git. */
+  const ownersCache = new Map();
+  const OWNER_REASONS = {
+    not_a_git_repo: "Target is not a git repository (or is a subdirectory of one; see owners.allow_parent_repo).",
+    git_missing: "git is not installed on the dashboard host.",
+    unsafe_repository: "git refused this repository (ownership or work tree outside the target).",
+    no_head: "Repository has no commits.",
+    untracked: "Cited file is not tracked at HEAD.",
+    no_citations: "Finding has no usable citations.",
+    timeout: "git timed out.",
+    target_missing: "Target path is missing.",
+  };
+
+  function ownerIdent(o) {
+    const name = String(o.name || "");
+    const email = String(o.email || "");
+    return name && email ? `${name} <${email}>` : name || email || "?";
+  }
+
+  function ownersHtml(o) {
+    if (!o || o.reason === "disabled") return "";
+    const head = `<h4>Suggested owners <button type="button" class="btn btn-sm report-owners-refresh" title="Re-run git for this finding">Refresh</button></h4>`;
+    if (o.loading) return `${head}<p class="controls-hint">Reading git history…</p>`;
+    if (!o.available) {
+      const why = OWNER_REASONS[o.reason] || `Unavailable (${o.reason || "error"}).`;
+      return `${head}<p class="controls-hint">${esc(why)}</p>`;
+    }
+    const co = o.codeowners;
+    const coLine =
+      co && Array.isArray(co.owners) && co.owners.length
+        ? `<p class="mono">CODEOWNERS <span class="controls-hint">${esc(co.file || "")} · ${esc(co.pattern || "")}</span><br>${co.owners
+            .map((x) => esc(x))
+            .join(" ")}</p>`
+        : `<p class="controls-hint">No CODEOWNERS rule matches this file.</p>`;
+    const rows = (o.suggestions || [])
+      .map(
+        (s) =>
+          `<tr><td>${esc(ownerIdent(s))}</td><td class="mono">${esc(s.blame_lines || 0)}</td><td class="mono">${esc(
+            s.file_commits || 0
+          )}</td><td class="mono">${esc(s.module_commits || 0)}</td><td class="mono">${esc(
+            String(s.last_commit_at || "").slice(0, 10)
+          )}</td></tr>`
+      )
+      .join("");
+    const table = rows
+      ? `<table class="report-owners-table"><thead><tr><th>Author</th><th title="Blamed cited lines">Blame</th><th title="Recent commits to the file">File</th><th title="Recent commits to ${esc(
+          o.module || "module"
+        )}">Module</th><th>Last</th></tr></thead><tbody>${rows}</tbody></table>`
+      : `<p class="controls-hint">No authors found in history.</p>`;
+    const redact = o.redact_in_exports
+      ? "Exports show pseudonyms."
+      : "Exports show these identities.";
+    return `${head}${coLine}${table}<p class="controls-hint">${esc(o.note || "")} ${esc(redact)}</p>`;
+  }
+
+  function paintOwners(fid) {
+    const host = document.querySelector(`#report-detail .report-owners[data-fid="${fid}"]`);
+    if (!host) return;
+    const o = ownersCache.get(String(fid));
+    host.innerHTML = ownersHtml(o);
+    host.hidden = !host.innerHTML;
+    host.querySelector(".report-owners-refresh")?.addEventListener("click", () => {
+      ownersCache.delete(String(fid));
+      loadOwners({ id: fid });
+    });
+  }
+
+  async function loadOwners(f) {
+    const fid = String(f && f.id);
+    const base = apiBase();
+    if (!base || !fid) return;
+    if (ownersCache.has(fid)) {
+      paintOwners(fid);
+      return;
+    }
+    ownersCache.set(fid, { loading: true });
+    paintOwners(fid);
+    try {
+      const o = await callApi(`${base}/findings/${encodeURIComponent(fid)}/owners`);
+      ownersCache.set(fid, o || { available: false, reason: "error" });
+    } catch (e) {
+      ownersCache.set(fid, { available: false, reason: "error" });
+    }
+    paintOwners(fid);
   }
 
   function showFindingDetail(f, opts) {
@@ -967,6 +1055,7 @@
         </div>
         <h4>Citations</h4>
         <div class="finding-paths">${cites || '<span class="controls-hint">None</span>'}</div>
+        <div class="report-owners" data-fid="${f.id}" hidden></div>
         <div class="report-review-panel">
           <h4>Human review</h4>
           <p class="controls-hint">Mech can auto-reject; otherwise findings wait here under Needs review. Accept, reject, or reclassify confirmed/rejected items. Notes are saved on the finding, under the evidence pack, and in the durable HITL responses store. Accept is the explicit human review that sets confirmed.</p>

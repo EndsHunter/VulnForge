@@ -67,7 +67,7 @@ Seven verbs — `start`, `stop`, `pause`, `resume`, `status`, `findings`, `gate`
 1. Start Ralph from the mission bar.
 2. **Explorer**: open a file, optionally select lines, pick a hunt class, add notes, **Enqueue hunt**.
 3. **Hunts**: plan area×skill batches, or click residual cells (shallow/aborted/none) → re-queue with notes.
-4. **Report**: open a finding → **Open Evidence**; **Develop POC** opens a **workshop modal** (not a mode tab) — hub is `evidence/<pack>/poc_develop.md`; optional Ralph `develop_poc` writes **runnable** PoC code (not a narrative rewrite); **Run in harness** queues a sandbox one-shot `validate_poc` (microVM or gVisor only; writes `poc_run.json`; does not confirm); **Iterate in sandbox** keeps that guest for rewrite/re-run cycles (default 5, 15-minute TTL, both in Settings) and writes `poc_session.json` without confirming; **Export validation job** builds a handoff zip; **Accept / Reject / Needs review** with optional notes. None of these auto-prove exploitability. New audit can opt in to the same one-shot as a validation-phase step (**Sandbox PoC one-shot**).
+4. **Report**: open a finding → **Open Evidence**; **Develop POC** opens a **workshop modal** (not a mode tab) — hub is `evidence/<pack>/poc_develop.md`; optional Ralph `develop_poc` writes **runnable** PoC code (not a narrative rewrite); **Run in harness** queues a sandbox one-shot `validate_poc` (microVM or gVisor only; writes `poc_run.json`; does not confirm); **Iterate in sandbox** keeps that guest for rewrite/re-run cycles (default 5, 15-minute TTL, both in Settings) and writes `poc_session.json` without confirming; **Export validation job** builds a handoff zip; **Accept / Reject / Needs review** with optional notes. None of these auto-prove exploitability. Opt-in **Suggested owners** (blame on cited lines, file/module authors, CODEOWNERS; read-only git) show in finding detail and exports, pseudonymised in exports by default — [`docs/harness/OWNERS.md`](docs/harness/OWNERS.md). New audit can opt in to the same one-shot as a validation-phase step (**Sandbox PoC one-shot**).
 
 CLI handoff / harness:
 
@@ -86,7 +86,7 @@ vulnforge/
   operator_chat/ # Home + run AI co-pilot (tools, confirm, sessions)
   agent_runtime/ # Strands tool-loop (hunt, recon, develop_poc, operator chat)
   control/       # exit codes, ops (Hunts requeue / selection hunt)
-  findings/      # stable_key + near-dup merge (not a stage)
+  findings/      # stable_key + near-dup merge + suggested owners (not a stage)
   tracking/      # external issue sinks (GitHub; Jira/Linear later) — confirm-gated
   hunt_profiles/ # operator hunt skills collection (seed + CRUD + import/export)
   stages/        # recon, hunt, validate_mech, render, …

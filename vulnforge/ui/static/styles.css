@@ -7041,3 +7041,11 @@ body[data-page="benchmarks"] .bench-delta-zero .v { color: var(--text-muted); }
 .report-track-body { white-space: pre-wrap; max-height: 18rem; overflow: auto; font-size: 0.8rem; }
 #report-track-hint.bad, .report-track-preview .bad { color: var(--bad); }
 .report-tracked a { word-break: break-all; }
+
+/* Suggested finding owners (issue #190) */
+.report-owners { margin: 0.75rem 0; }
+.report-owners h4 { display: flex; align-items: center; gap: 0.5rem; }
+.report-owners-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+.report-owners-table th,
+.report-owners-table td { text-align: left; padding: 0.2rem 0.5rem; border-bottom: 1px solid var(--border, #333); }
+.report-owners-table td:first-child { word-break: break-all; }

@@ -15,7 +15,7 @@ import html
 import io
 import json
 import zipfile
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -79,6 +79,15 @@ class ExportOptions:
     sarif_include_rejected: bool = False
     # Explicit state allow-list; wins over the two flags above.
     sarif_states: tuple[str, ...] | None = None
+    # Suggested owners (issue #190). Opt-in via owners.enabled; the dashboard
+    # route sets these from config. redact_owners pseudonymises identities.
+    include_owners: bool = False
+    redact_owners: bool = True
+    owners_cfg: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    # Shared across formats in one bundle so git runs once per finding.
+    owners_cache: dict[Any, Any] = field(
+        default_factory=dict, compare=False, repr=False
+    )
 
     def as_dict(self) -> dict[str, bool]:
         """Report sections only (printed by JSON/HTML/DOCX); SARIF filters excluded."""
@@ -311,6 +320,7 @@ def collect_report_context(
                 run_dir_p,
                 include_poc=options.include_poc,
             )
+            _attach_owner_rows(rows, db, meta, options)
     counts = _summary_counts(rows) if rows else _summary_counts([])
     # When findings omitted, still report DB totals if summary requested
     if not options.include_findings and options.include_summary and db is not None:
@@ -1057,12 +1067,50 @@ def _summary_counts(rows: Iterable[dict]) -> dict[str, int]:
     return c
 
 
+# Optional columns appended only when their feature is on.
+OWNERS_COLUMN = "suggested_owners"
+
+
+def _row_columns(opts: ExportOptions) -> list[str]:
+    cols = list(ROW_COLUMNS)
+    if not opts.include_poc:
+        cols = [c for c in cols if c != "poc_excerpt"]
+    if opts.include_owners:
+        cols.append(OWNERS_COLUMN)
+    return cols
+
+
 def _public_rows(rows: list[dict]) -> list[dict]:
     """Strip private keys used only during export composition."""
     out = []
     for r in rows:
-        out.append({k: r[k] for k in ROW_COLUMNS if k in r})
+        row = {k: r[k] for k in ROW_COLUMNS if k in r}
+        if OWNERS_COLUMN in r:
+            row[OWNERS_COLUMN] = r[OWNERS_COLUMN]
+        out.append(row)
     return out
+
+
+def _attach_owner_rows(
+    rows: list[dict[str, Any]], db: Any, meta: dict[str, Any], options: ExportOptions
+) -> None:
+    """Fill ``_owners`` / ``suggested_owners`` on rows when owners are on."""
+    if not options.include_owners or not rows:
+        return
+    try:
+        from vulnforge.findings.owners import attach_owners
+
+        attach_owners(
+            rows,
+            meta.get("target_path") or "",
+            options.owners_cfg or {"enabled": True},
+            codemap=_safe_codemap(db),
+            redact=bool(options.redact_owners),
+            salt=str(meta.get("run_id") or meta.get("run_dir") or ""),
+            cache=options.owners_cache,
+        )
+    except Exception as exc:
+        note_swallowed(exc, context="export_findings.owners")
 
 
 def export_json(
@@ -1096,6 +1144,8 @@ def export_json(
                     "evidence_id": r.get("evidence_id") or "",
                     "files": [],
                 }
+            if opts.include_owners:
+                entry["owners"] = r.get("_owners")
             findings_full.append(entry)
     payload: dict[str, Any] = {
         "exported_at": ctx.get("exported_at") or utc_now_iso(),
@@ -1121,7 +1171,16 @@ def export_json(
         payload["codemap"] = ctx.get("codemap")
     if ctx.get("diff_scope"):
         payload["diff_scope"] = ctx.get("diff_scope")
+    if opts.include_owners:
+        payload["owners"] = {"included": True, "redacted": bool(opts.redact_owners)}
     return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+def _md_owners_inline(owners: Any) -> str:
+    from vulnforge.findings.owners import owners_markdown
+
+    items = [ln[2:] for ln in owners_markdown(owners) if ln.startswith("- ")]
+    return "; ".join(items)
+
 
 def _md_finding_block(r: dict) -> list[str]:
     """Markdown bullets + body for one finding row."""
@@ -1160,6 +1219,8 @@ def _md_finding_block(r: dict) -> list[str]:
         lines.append(f"- **human_review:** {hr.get('action')}{note_bit}")
     if r.get("validation_reasons"):
         lines.append(f"- **validation_reasons:** {r['validation_reasons']}")
+    if r.get(OWNERS_COLUMN):
+        lines.append(f"- **suggested_owners:** {_md_owners_inline(r.get('_owners'))}")
     lines.append("")
     if r.get("summary"):
         lines.append(r["summary"])
@@ -1259,19 +1320,17 @@ def export_csv(
     )
     # CSV is findings-oriented; force findings on when this format is chosen alone.
     if not opts.include_findings:
-        opts = ExportOptions(
+        opts = replace(
+            opts,
             include_findings=True,
             include_architecture=False,
             include_hunts=False,
             include_summary=False,
-            include_poc=opts.include_poc,
             include_codemap=False,
         )
     ctx = collect_report_context(run_dir, db, opts)
     rows = _public_rows(ctx.get("rows") or [])
-    cols = list(ROW_COLUMNS)
-    if not opts.include_poc:
-        cols = [c for c in cols if c != "poc_excerpt"]
+    cols = _row_columns(opts)
     buf = io.StringIO()
     writer = csv.DictWriter(
         buf,
@@ -1281,13 +1340,22 @@ def export_csv(
     )
     writer.writeheader()
     for r in rows:
-        writer.writerow({k: ("" if r.get(k) is None else r.get(k)) for k in cols})
+        out = {k: ("" if r.get(k) is None else r.get(k)) for k in cols}
+        if OWNERS_COLUMN in out:
+            out[OWNERS_COLUMN] = _cell_safe(out[OWNERS_COLUMN])
+        writer.writerow(out)
     body = buf.getvalue()
     note = f"# {DISCLAIMER}"
     if opts.include_poc:
         note += " | include_poc=true (poc_excerpt truncated)"
     note += " | architecture/hunts/summary not in CSV (use md/html/json/docx/xlsx)"
     return f"{note}\n{body}"
+
+def _cell_safe(value: Any) -> str:
+    from vulnforge.findings.owners import csv_safe
+
+    return csv_safe(value)
+
 
 def _esc(s: Any) -> str:
     return html.escape(str(s if s is not None else ""), quote=True)
@@ -1405,6 +1473,9 @@ def export_html(
         vr_html = (
             f"<dt>Validation reasons</dt><dd class='mono'>{_esc(vr)}</dd>" if vr else ""
         )
+        so = r.get(OWNERS_COLUMN) or ""
+        if so:
+            vr_html += f"<dt>Suggested owners</dt><dd>{_esc(so)}</dd>"
         poc_html = ""
         pack = r.get("_poc") if opts.include_poc else None
         if isinstance(pack, dict) and pack.get("files"):
@@ -1717,9 +1788,7 @@ def export_xlsx(
         "run_dir": ctx.get("run_dir"),
         "profile": ctx.get("profile"),
     }
-    cols = list(ROW_COLUMNS)
-    if not opts.include_poc:
-        cols = [c for c in cols if c != "poc_excerpt"]
+    cols = _row_columns(opts)
 
     wb = Workbook()
     # Meta first
@@ -1766,7 +1835,12 @@ def export_xlsx(
         for cell in ws[1]:
             cell.font = Font(bold=True)
         for r in rows:
-            ws.append([r.get(c, "") for c in cols])
+            ws.append(
+                [
+                    _cell_safe(r.get(c, "")) if c == OWNERS_COLUMN else r.get(c, "")
+                    for c in cols
+                ]
+            )
         for col in ws.columns:
             max_len = 0
             col_letter = col[0].column_letter
@@ -2043,6 +2117,8 @@ def export_docx(
                         bullets.append(
                             f"validation_reasons: {r['validation_reasons']}"
                         )
+                    if r.get(OWNERS_COLUMN):
+                        bullets.append(f"suggested_owners: {r[OWNERS_COLUMN]}")
                     for b in bullets:
                         doc.add_paragraph(b, style="List Bullet")
                     if r.get("summary"):

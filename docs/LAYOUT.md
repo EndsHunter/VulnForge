@@ -31,6 +31,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Campaign control grammar (start/stop/pause/resume/status/findings/gate) | `vulnforge/control/campaign.py` — [`harness/CAMPAIGN.md`](harness/CAMPAIGN.md) |
 | Operator security policy (exclusions, trust boundaries, severity rubric) | `vulnforge/security_policy.py` + `security_policy_revisions` in `harness.db`; gate `check_policy_exclusion`; doc: [`harness/validate/POLICY.md`](harness/validate/POLICY.md) |
 | Durable HITL inbox (report↔responses) | `vulnforge/hitl.py` + `hitl_reports` / `hitl_responses` in `harness.db`; doc: [`harness/validate/HITL.md`](harness/validate/HITL.md) |
+| Suggested finding owners (git blame / log / CODEOWNERS, opt-in) | `vulnforge/findings/owners.py`; doc: [`harness/OWNERS.md`](harness/OWNERS.md) |
 | Dashboard routes / static | `vulnforge/ui/` |
 | Hunt profile store / reseed | `vulnforge/hunt_profiles/` |
 | Mechanical codemap (not architecture) | `vulnforge/tools/codemap.py` → `runs.codemap_json` (v2: modules + files + symbols; hunts get area slice) |
