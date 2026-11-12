@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from vulnforge.errors import note_swallowed
 from vulnforge.tools.base import ToolSpec
 from vulnforge.tools.flows import (
     call_sites,
@@ -92,8 +93,8 @@ def _load_codemap(ctx: dict, *, rebuild: bool) -> dict[str, Any]:
             if db is not None and cm:
                 try:
                     db.set_codemap(cm, source=str(cm.get("source") or "mechanical"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    note_swallowed(exc, context="query_flows.persist_codemap")
         except Exception:
             cm = cm or {}
     return cm if isinstance(cm, dict) else {}

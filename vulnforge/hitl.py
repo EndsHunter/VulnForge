@@ -23,6 +23,7 @@ See ``docs/harness/validate/HITL.md``.
 from __future__ import annotations
 
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
@@ -612,7 +613,7 @@ def respond(
             # End any read transaction on this connection before review opens another.
             try:
                 db.conn.commit()
-            except Exception:
+            except sqlite3.Error:
                 pass
             from vulnforge.control.ops import review_finding
 

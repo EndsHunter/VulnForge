@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from vulnforge.errors import note_swallowed
 from vulnforge.util import normalize_relpath
 
 # More specific class wins when same sink path+symbol across classes
@@ -74,8 +75,8 @@ def class_rank(weakness_class: str) -> int:
         rank = int(specificity_for_class(cls) or 0)
         if rank > 0:
             return rank
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="dedup.specificity_for_class")
     return _CLASS_SPECIFICITY.get(cls, 10)
 
 

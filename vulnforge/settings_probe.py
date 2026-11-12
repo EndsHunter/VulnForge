@@ -792,7 +792,7 @@ def verify_model_pair(
             body = response.json()
             if isinstance(body, dict) and body.get("error"):
                 detail = f"{detail} {body.get('error')}"[:240]
-        except Exception:
+        except ValueError:
             pass
         return {"ok": False, "detail": detail}
     try:

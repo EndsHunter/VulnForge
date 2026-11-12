@@ -6,8 +6,10 @@ or individual packages). When unavailable, callers fall back to heuristic.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+from vulnforge.errors import note_swallowed
 from vulnforge.tools.symbols.heuristic import language_for_path
 from vulnforge.tools.symbols.types import symbol_id
 
@@ -182,8 +184,10 @@ def _load_language(lang_id: str):
             }.get(lang_id)
             if name:
                 return get_language(name)
-    except Exception:
+    except ImportError:
         pass
+    except Exception as exc:
+        note_swallowed(exc, context="tree_sitter.language_pack_load", level=logging.DEBUG)
 
     # Individual packages: tree_sitter_python, etc.
     pkg_map = {

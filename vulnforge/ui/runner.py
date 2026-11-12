@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.errors import note_swallowed
 from vulnforge.paths import PROJECT_ROOT
 from vulnforge.util import append_event, utc_now_iso
 PID_NAME = "ralph.pid"
@@ -752,8 +753,8 @@ def resume_run(
                         "reclaimed": stale,
                     },
                 )
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="runner.resume_reclaim_stale", run_dir=run_dir)
     _clear_run_lock(run_dir)
     append_event(run_dir, {"source": "ui", "event": "runner_resume"})
     st = runner_status(run_dir)

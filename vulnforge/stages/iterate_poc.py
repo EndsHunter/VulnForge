@@ -9,10 +9,12 @@ Never writes a HITL response.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
+from vulnforge.errors import note_swallowed
 from vulnforge.poc_handoff import POC_DEVELOP_RELPATH, POC_RUN_RELPATH
 from vulnforge.poc_session import (
     SESSION_RELPATH,
@@ -120,8 +122,8 @@ def _llm_rewriter(cfg: dict, scripted: list[dict[str, Any]]):
         finally:
             try:
                 client.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="iterate_poc.client_close", level=logging.DEBUG)
         if not getattr(result, "ok", False):
             return None
         return parse_rewrite_payload(getattr(result, "content", None))

@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from vulnforge.errors import note_swallowed
+
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._-]+")
 
@@ -139,8 +141,8 @@ def build_single_file_manifest(target: Path, *, progress: Any = None) -> dict[st
         if callable(progress):
             try:
                 progress(kw)
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="util.manifest_progress_callback")
 
     _prog(
         phase="inventory",
@@ -228,8 +230,8 @@ def build_target_manifest(
         if callable(progress):
             try:
                 progress(kw)
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="util.manifest_progress_callback")
 
     listing_capped = False
     hashed = 0

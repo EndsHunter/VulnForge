@@ -9,11 +9,13 @@ Never creates findings. Never sets confirmed / reject states. Does not execute P
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from vulnforge.control.ops import POC_CODE_EXTS, POC_DEVELOP_RELPATH
 from vulnforge.agent_runtime import run_tool_loop as run_agent_tool_loop
+from vulnforge.errors import note_swallowed
 from vulnforge.llm import InfraError, classify_llm_failure
 from vulnforge.packet import pack_develop_poc, refuse_if_over_budget
 from vulnforge.tools import build_tool_handler
@@ -334,5 +336,5 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     finally:
         try:
             client.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="develop_poc.client_close", level=logging.DEBUG)

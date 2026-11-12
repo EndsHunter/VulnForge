@@ -155,6 +155,8 @@ Writes `project/TOOL_GAPS.md` and `project/tool_gaps.json`. Dashboard: **Home �
 
 Gaps are **ideas, not mandates** — evaluate safety/cost, then implement via **`toolgen.md`**.
 
+**Swallowed errors.** Best-effort handlers that keep the loop alive call `vulnforge.errors.note_swallowed(exc, context=...)` instead of a bare `pass`. It logs with context, counts per run, and appends to `{run_dir}/swallowed_errors.jsonl`. The **Tool gaps → Per run** table shows the count (hover for top contexts). A non-zero count is a bug lead, not a finding.
+
 Ralph can pick up a no-LLM task if enqueued:
 
 ```text

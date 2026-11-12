@@ -22,10 +22,12 @@ decision).
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
+from vulnforge.errors import note_swallowed
 from vulnforge.llm import InfraError, classify_llm_failure, messages_from_packet
 from vulnforge.packet import pack_disprove
 from vulnforge.transcript import save_transcript
@@ -587,8 +589,8 @@ def _run_disprove(
         for c in open_clients:
             try:
                 c.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="validate_llm.client_close", level=logging.DEBUG)
 
 
 def _stamp_partial_llm(
@@ -1114,8 +1116,8 @@ def _publish_hitl(db, run_dir: Path, finding_id: int) -> None:
 def _emit_event(run_dir: Path, payload: dict[str, Any]) -> None:
     try:
         append_event(run_dir, payload)
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="validate_llm.emit_event", run_dir=run_dir)
 
 
 def load_citation_slices(

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from vulnforge.errors import note_swallowed
 from vulnforge.llm import LLMClient
 from vulnforge.operator_chat import session as sess
 from vulnforge.operator_chat.confirm import take_pending
@@ -50,8 +52,8 @@ def _emit(on_event: Optional[Callable[[dict[str, Any]], None]], payload: dict[st
         return
     try:
         on_event(payload)
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="operator_chat.on_event")
 
 
 def handle_turn(
@@ -198,8 +200,8 @@ def handle_turn(
         if own_client and hasattr(client, "close"):
             try:
                 client.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="operator_chat.client_close", level=logging.DEBUG)
 
 
 def confirm_pending(
@@ -287,14 +289,14 @@ def confirm_pending(
             res = client.chat(messages, tools=None, temperature=0.2)
             if res.ok and res.content:
                 asst_text = res.content.strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="operator_chat.summarize_action")
         finally:
             if own_client and hasattr(client, "close"):
                 try:
                     client.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    note_swallowed(exc, context="operator_chat.client_close", level=logging.DEBUG)
 
     asst_ui = {"role": "assistant", "content": asst_text}
     stored = list(data.get("messages") or [])

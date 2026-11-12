@@ -14,6 +14,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.errors import note_swallowed
 from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT
 
 DEFAULT_CONFIG_PATH = CONFIG_ROOT / "default_tools.json"
@@ -67,8 +68,8 @@ def stage_critical_tools(stage: str) -> frozenset[str]:
         crit = critical_tools_for(stage_key)
         if crit:
             return crit
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="default_tools.critical_tools_for")
     return _CRITICAL_FALLBACK.get(stage_key, frozenset())
 
 
@@ -160,14 +161,14 @@ def _safe_tool_pool(built_in: list[str] | None = None) -> set[str]:
         from vulnforge.profiles.code_static import CodeStaticProfile
 
         pool |= set(CodeStaticProfile().allowed_tools())
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="default_tools.code_static_tools")
     try:
         from vulnforge.tools.extra_registry import extra_tool_names
 
         pool |= set(extra_tool_names())
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="default_tools.extra_tool_names")
     pool -= BLOCKED_TOOLS
     return pool
 

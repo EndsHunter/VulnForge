@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.errors import note_swallowed
 from vulnforge.hunt_profiles.store import (
     MAX_BODY_BYTES,
     PROFILE_ID_RE,
@@ -498,8 +500,8 @@ def generate_hunt_skill(
         if own_client and hasattr(client, "close"):
             try:
                 client.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="hunt_profiles_generate.client_close", level=logging.DEBUG)
 
 
 def generate_hunt_skills_batch(
@@ -572,8 +574,8 @@ def generate_hunt_skills_batch(
                     model_id=model_id or getattr(result, "model_id", None),
                     result=result,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="hunt_profiles_generate.record_llm_result", run_dir=run_dir)
 
         if result.ok:
             try:
@@ -599,8 +601,8 @@ def generate_hunt_skills_batch(
         if own_client and hasattr(client, "close"):
             try:
                 client.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="hunt_profiles_generate.client_close", level=logging.DEBUG)
 
 
 def _brief_slices_from_architecture(

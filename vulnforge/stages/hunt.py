@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from vulnforge.agent_runtime import run_tool_loop as run_agent_tool_loop
+from vulnforge.errors import note_swallowed
 from vulnforge.llm import InfraError, classify_llm_failure
 from vulnforge.packet import pack_hunt, refuse_if_over_budget
 from vulnforge.stages.hunt_moa import (
@@ -90,8 +92,8 @@ def _mark_sink_coverage(
             visit_delta=visit_delta,
             last_depth=last_depth,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="hunt.upsert_coverage_fact")
 
 
 def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
@@ -399,8 +401,8 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                         merge_annotations_into_codemap(base_cm, note_rows),
                         source="merge",
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="hunt.merge_codemap_annotations")
         shallow = is_shallow(session, profile=profile)
         spawned_hunts = list(session.get("spawned_hunts") or [])
 
@@ -761,8 +763,8 @@ def _flush_moa_notes(ctx, db, session: dict, codemap_struct) -> None:
                     merge_annotations_into_codemap(base_cm, note_rows),
                     source="merge",
                 )
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="hunt.merge_codemap_annotations")
 
 
 def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
@@ -968,8 +970,8 @@ def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 if owned is not None:
                     try:
                         owned.close()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        note_swallowed(exc, context="hunt.client_close", level=logging.DEBUG)
 
             used = _rounds_consumed(result, allotted)
             remaining = max(0, remaining - used)
@@ -1553,8 +1555,8 @@ def _architecture_slice(
                 for m in (sliced.get("modules") or [])
                 if isinstance(m, dict)
             ][:4]
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="hunt.codemap_focus_modules")
     if focus_matched:
         slim["hunt_focus"] = focus_matched[:5]
     if arch.get("recon_generation") is not None:

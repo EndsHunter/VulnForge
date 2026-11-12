@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.errors import note_swallowed
 from vulnforge.llm import make_client
 from vulnforge.packet import load_prompt_slice
 from vulnforge.profiles.code_static import CodeStaticProfile
@@ -435,8 +437,8 @@ def _chat(
                         model_id=model_id or getattr(result, "model_id", None),
                         result=result,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    note_swallowed(exc, context="toolgen_generate.record_llm_result", run_dir=run_dir)
             if not result.ok:
                 raise GenerateToolError(_llm_failure_hint(result))
             # Prefer content; fall back to reasoning if it looks like JSON
@@ -487,8 +489,8 @@ def _chat(
         if own and hasattr(client, "close"):
             try:
                 client.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="toolgen_generate.client_close", level=logging.DEBUG)
 
 
 def generate_spec(
