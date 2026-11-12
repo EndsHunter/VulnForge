@@ -863,3 +863,27 @@ def test_codeowners_match_checks_deadline_inside_a_pattern():
     rx = compile_codeowners_pattern("/" + "*a" * 250)
     with pytest.raises(OwnersError):
         rx.match("a" * 4000 + "b", time.monotonic() - 1)
+
+
+def test_sarif_export_carries_redacted_owners(tmp_path: Path, repo: Path):
+    from vulnforge.export_findings import export_sarif
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    db = Database.create(run_dir / "harness.db")
+    db.insert_run("run-001", target_path=str(repo), profile="code_static", prompt_pin="p", config={})
+    db.insert_finding(body_for(start=1, end=10), state="confirmed")
+    db.insert_finding(body_for(start=3, end=3), state="rejected_mech")
+    try:
+        off = json.loads(export_sarif(run_dir, db))
+        on = export_sarif(run_dir, db, options=_opts(redact_owners=True))
+    finally:
+        db.close()
+    assert "vulnforge/suggested_owners" not in off["runs"][0]["results"][0]["properties"]
+    doc = json.loads(on)
+    results = doc["runs"][0]["results"]
+    assert len(results) == 1
+    owners = results[0]["properties"]["vulnforge/suggested_owners"]
+    assert owners["available"] is True and owners["redacted"] is True
+    for ident in ("Alice", "alice@example.com", "Bob", "@org/auth", "@alice"):
+        assert ident not in on

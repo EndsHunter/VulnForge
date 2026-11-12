@@ -363,6 +363,14 @@ def build_sarif(
         if r.get("policy_rule"):
             # Operator security policy effect, e.g. "capped:sev-2".
             props["vulnforge/policy_rule"] = str(r.get("policy_rule"))
+        owners = r.get("_owners")
+        if isinstance(owners, dict) and owners.get("reason") != "disabled":
+            # Suggested owners (#190); already redacted when the export redacts.
+            props["vulnforge/suggested_owners"] = {
+                k: owners.get(k)
+                for k in ("available", "reason", "redacted", "codeowners", "suggestions")
+                if k in owners
+            }
         result["properties"] = props
         pending.append((rid, result))
 

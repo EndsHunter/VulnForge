@@ -2163,13 +2163,24 @@ def sarif_document(
 
     opts = ExportOptions.from_kwargs(options=options, **section_flags)
     meta = _run_meta(Path(run_dir) if run_dir else None, db)
+    states = selected_states(
+        include_needs_human=opts.sarif_include_needs_human,
+        include_rejected=opts.sarif_include_rejected,
+        states=opts.sarif_states,
+    )
+    rows = findings_to_rows(db)
+    if opts.include_owners:
+        # Only rows SARIF can emit, so git does not run for filtered states.
+        allowed = {str(s).lower() for s in states}
+        _attach_owner_rows(
+            [r for r in rows if str(r.get("state") or "").lower() in allowed],
+            db,
+            meta,
+            opts,
+        )
     return build_sarif(
-        findings_to_rows(db),
-        states=selected_states(
-            include_needs_human=opts.sarif_include_needs_human,
-            include_rejected=opts.sarif_include_rejected,
-            states=opts.sarif_states,
-        ),
+        rows,
+        states=states,
         target_path=meta.get("target_path") or "",
         run_id=meta.get("run_id") or "",
         profile=meta.get("profile") or "",
