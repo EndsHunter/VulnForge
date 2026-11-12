@@ -35,8 +35,16 @@ keys (top-level or inside a rule) are errors, ids must be unique across the poli
 `exclusions` / `out_of_scope` need a `reason`. An invalid save stores nothing.
 
 Globs are case-sensitive and match the full relative path: `*` stays within one
-segment, `**` crosses segments (may be empty), a trailing `/` or a glob with no
-wildcard means the whole directory (`vendor` ≡ `vendor/**`).
+segment, `**` crosses segments (may be empty), `?` is one character, and `[` is a
+literal (no character classes, so `app/[id]` works). A trailing `/` or a glob with
+no wildcard means the whole directory (`vendor` ≡ `vendor/**`). Citation paths are
+resolved lexically first (`lib/../vendor/a.py` → `vendor/a.py`), the same way the
+citation gate resolves them.
+
+`policy_match`, `severity_rubric` and `severity_claim_original` are harness-owned:
+`validate_mech` drops any copy a candidate carried (listed in
+`harness_keys_dropped`) before the gates, then recomputes them from the stored
+policy. The Report ignores these fields on findings still in `candidate`.
 
 ## Where it is used
 

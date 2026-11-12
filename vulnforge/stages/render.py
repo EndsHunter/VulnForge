@@ -382,7 +382,11 @@ def _policy_excluded_report_lines(rejected: list) -> list[str]:
                     f"`{cell(m.get('rule_id'))}`",
                     cell(m.get("kind")),
                     cell(m.get("reason")),
-                    cell(", ".join(m.get("matched_paths") or [])),
+                    cell(
+                        ", ".join(str(x) for x in m.get("matched_paths"))
+                        if isinstance(m.get("matched_paths"), list)
+                        else ""
+                    ),
                 ]
             )
             + " |"

@@ -113,6 +113,8 @@ def test_auto_ids_do_not_collide_with_explicit():
         ("**/test_*.py", "pkg/sub/test_a.py", True),
         ("a.b", "aXb", False),
         ("Src/**", "src/a.py", False),
+        ("app/[id]", "app/[id]/page.tsx", True),
+        ("app/[id]", "app/x/page.tsx", False),
     ],
 )
 def test_path_matches(glob, path, ok):
@@ -127,6 +129,13 @@ def test_match_exclusion_requires_every_cited_path():
     assert oos["kind"] == "out_of_scope" and oos["policy_revision"] == 7
     assert match_exclusion(pol, {"citations": []}) is None
     assert match_exclusion(pol, {"citations": "garbage"}) is None
+
+
+def test_match_exclusion_resolves_dotdot_like_citation_gate():
+    pol, _ = normalize_policy(POLICY)
+    assert match_exclusion(pol, _body("lib/../vendor/a.py"))["matched_paths"] == ["vendor/a.py"]
+    assert match_exclusion(pol, _body("vendor/../src/app.py")) is None
+    assert match_exclusion(pol, _body("../vendor/a.py")) is None
 
 
 def test_in_scope_is_not_a_gate():
@@ -391,6 +400,21 @@ def test_report_md_keeps_policy_match_after_human_reopen(tmp_path: Path):
     text = out.read_text(encoding="utf-8")
     assert "security policy:** excluded by rule `ex-vendor`" in text
     assert "hunter claimed HIGH; capped by policy rule `sev-admin`" in text
+    db.close()
+
+
+def test_report_md_survives_malformed_policy_match(tmp_path: Path):
+    from vulnforge.stages.render import write_report_md
+
+    db, fid = _excluded_db(tmp_path)
+    f = db.get_finding(fid)
+    body = dict(f.body)
+    body["policy_match"] = {"kind": "excluded", "rule_id": "ex-1", "matched_paths": 5}
+    db.conn.execute("UPDATE findings SET body_json=? WHERE id=?", (json.dumps(body), fid))
+    db.conn.commit()
+    out = tmp_path / "REPORT.md"
+    write_report_md(out, db)
+    assert "`ex-1`" in out.read_text(encoding="utf-8")
     db.close()
 
 

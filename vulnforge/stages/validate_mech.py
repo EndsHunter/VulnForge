@@ -98,6 +98,16 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     # Optional severity_claim: canonicalize aliases or soft-drop free-text before
     # gates so bad_severity alone never discards an otherwise solid candidate.
     body0 = dict(finding.body or {})
+    # Policy annotations are harness-owned: drop any copy the candidate carried
+    # (a fake prior cap would disable the rubric; a fake policy_match would
+    # list the finding as excluded). Recomputed below from the stored policy.
+    from vulnforge.security_policy import strip_harness_owned
+
+    body0, dropped_keys = strip_harness_owned(body0)
+    if dropped_keys:
+        body0["harness_keys_dropped"] = sorted(
+            set(body0.get("harness_keys_dropped") or []) | set(dropped_keys)
+        )
     body0, sev_action = apply_severity_claim(body0)
     if sev_action is not None or body0 != dict(finding.body or {}):
         db.conn.execute(

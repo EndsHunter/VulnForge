@@ -892,7 +892,9 @@
               .map((r) => `<li>${esc(typeof r === "string" ? r : JSON.stringify(r))}</li>`)
               .join("")}</ul>`
           : "";
-    const policyBox = policyDetailHtml(b);
+    // Policy fields are harness-written by validate_mech; ignore them before it ran.
+    const policyTrusted = String(f.state || "") !== "candidate";
+    const policyBox = policyTrusted ? policyDetailHtml(b) : "";
     const eid = f.evidence_id || b.evidence_id;
     const evRel = preferredEvidenceRel(f);
     const reviews = Array.isArray(b.human_review) ? b.human_review : [];
@@ -936,7 +938,7 @@
             ${nearBadge}
             ${llmBadge}
             ${huntMoaBadgeHtml(f)}
-            ${b.policy_match ? `<span class="badge policy" title="Matched an operator security policy rule">policy ${esc(b.policy_match.rule_id || "")}</span>` : ""}
+            ${policyTrusted && b.policy_match ? `<span class="badge policy" title="Matched an operator security policy rule">policy ${esc(b.policy_match.rule_id || "")}</span>` : ""}
           </div>
         </div>
         <p class="report-detail-summary">${esc(b.summary || "No summary.")}</p>

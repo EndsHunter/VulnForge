@@ -16,6 +16,7 @@ packet guidance only (no gate). See ``docs/harness/validate/POLICY.md``.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from pathlib import Path
 from typing import Any
@@ -75,7 +76,8 @@ _LISTS: dict[str, tuple[str, frozenset[str], bool, str | None]] = {
 
 _TOP_KEYS = frozenset({"schema", "notes", *_LISTS})
 _RULE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-_GLOB_CHARS = frozenset("*?[")
+# Only * and ? are wildcards; "[" is literal (Next.js-style "app/[id]" dirs).
+_GLOB_CHARS = frozenset("*?")
 
 
 class PolicyError(ValueError):
@@ -91,6 +93,25 @@ def empty_policy() -> dict[str, Any]:
     for key in _LISTS:
         out[key] = []
     return out
+
+
+# Body keys only the harness may write. validate_mech strips candidate-supplied
+# copies before the gates so a hunt cannot fake a prior cap or an exclusion.
+HARNESS_OWNED_KEYS: tuple[str, ...] = (
+    "policy_match",
+    "severity_rubric",
+    "severity_claim_original",
+)
+
+
+def strip_harness_owned(body: dict) -> tuple[dict, list[str]]:
+    """Return (body without harness-owned policy keys, dropped key names)."""
+    if not isinstance(body, dict):
+        return body, []
+    dropped = [k for k in HARNESS_OWNED_KEYS if k in body]
+    if not dropped:
+        return body, []
+    return {k: v for k, v in body.items() if k not in HARNESS_OWNED_KEYS}, dropped
 
 
 def is_empty_policy(policy: dict | None) -> bool:
@@ -396,10 +417,21 @@ def cited_paths(body: dict | None) -> list[str]:
     for c in cites:
         if not isinstance(c, dict):
             continue
-        p = normalize_relpath(str(c.get("path") or ""))
+        p = _resolve_relpath(str(c.get("path") or ""))
         if p and p not in out:
             out.append(p)
     return out
+
+
+def _resolve_relpath(raw: str) -> str:
+    """Lexically resolve ``.``/``..`` so ``lib/../vendor/a.py`` matches as
+    ``vendor/a.py`` (the citation gate resolves the same way). A path that still
+    escapes the root is returned with its leading ``..`` so no rule matches it."""
+    p = normalize_relpath(raw)
+    if not p:
+        return ""
+    norm = posixpath.normpath(p)
+    return "" if norm == "." else norm
 
 
 def _class_matches(rule: dict, body: dict) -> bool:

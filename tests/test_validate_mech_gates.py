@@ -623,3 +623,27 @@ def test_policy_cap_does_not_loosen_non_vacuous_gate(tmp_path: Path, toy_sqli: P
     assert r["verdict"] == "rejected_mech", r
     assert "vacuous_impact_for_severity" in r["reasons"]
     db.close()
+
+
+def test_candidate_supplied_policy_keys_are_stripped(tmp_path: Path, toy_sqli: Path):
+    """A hunt cannot disable the cap or fake an exclusion via harness-owned keys."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy({"severity_rubric": [{"id": "sev-1", "max_severity": "LOW"}]})
+    body = _passing_body(run_dir, toy_sqli)
+    body["severity_claim"] = "CRITICAL"
+    body["severity_claim_original"] = "CRITICAL"
+    body["severity_rubric"] = {"rule_id": "fake", "action": "capped"}
+    body["policy_match"] = {"kind": "excluded", "rule_id": "fake", "matched_paths": ["x"]}
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    b = db.get_finding(fid).body
+    assert b["severity_claim"] == "LOW"
+    assert b["severity_rubric"]["rule_id"] == "sev-1"
+    assert "policy_match" not in b
+    assert set(b["harness_keys_dropped"]) == {
+        "policy_match",
+        "severity_rubric",
+        "severity_claim_original",
+    }
+    db.close()
