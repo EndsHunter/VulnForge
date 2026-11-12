@@ -8,36 +8,29 @@
   <link rel="icon" type="image/png" href="/static/logo.png" />
   <link rel="apple-touch-icon" href="/static/logo.png" />
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/shell.css" />
+  <link rel="stylesheet" href="/static/pages/chat.css" data-vf-chat-css="1" />
 </head>
 <body data-page="chat" data-chat-scope="home">
-  <header class="app-header">
-    <div class="brand">
-      <a href="/" class="home-link" title="Home  -  all runs">
-        <img class="logo" src="/static/logo.svg" width="32" height="32" alt="" />
-        <div>
-          VulnForge
-          <div class="sub">Home AI — fleet co-pilot</div>
-        </div>
-      </a>
-    </div>
-    <div class="header-actions">
-      <a class="btn btn-ghost home-btn" href="/" title="Home">Home</a>
-      <a class="btn btn-primary" href="/chat" title="AI Chat">AI</a>
-      <a class="btn" href="/settings" id="btn-settings" title="LLM &amp; validation settings">⚙ Settings</a>
-      <span class="controls-hint mono">{{ runs_root }}</span>
-    </div>
-  </header>
-
-  <main class="main chat-page-main">
-    <div class="page-hero chat-hero">
-      <div>
-        <h1>AI Chat</h1>
-        <p>
-          Query results across all runs, start and inspect hunts, init audits, and control Ralph.
-          Mutating actions require your confirmation. Uses the same LLM as Settings.
-        </p>
-      </div>
-    </div>
+  <main class="vf-chat-page">
+    <header class="vf-chat-head">
+      <a href="/" class="home-mark" title="Home - all runs"><img class="logo" src="/static/logo.svg" width="28" height="28" alt="VulnForge"></a>
+      <h1 class="vf-chat-title">AI chat</h1>
+      <span class="vf-pill">Fleet co-pilot</span>
+      <span class="vf-spacer"></span>
+      <a class="vf-btn vf-btn--ghost" href="/" title="All runs">Runs</a>
+      <details class="danger-menu vf-chat-menu">
+        <summary class="vf-btn vf-btn--ghost" title="Operator tools" aria-label="Operator tools">···</summary>
+        <nav class="danger-menu-body" aria-label="Operator tools">
+          <a href="/settings" id="btn-settings" class="vf-menu-link">Settings</a>
+          <a href="/dev" id="btn-open-dev" class="vf-menu-link">Dev</a>
+          <a href="/benchmarks" id="btn-open-benchmarks" class="vf-menu-link">Benchmarks</a>
+          <a href="/tool-gaps" id="btn-open-tool-gaps" class="vf-menu-link">Tool gaps</a>
+          <hr />
+          <div class="vf-chat-root-path vf-mono" title="Runs root">{{ runs_root }}</div>
+        </nav>
+      </details>
+    </header>
     <div id="operator-chat-root" class="operator-chat-root"></div>
   </main>
 
