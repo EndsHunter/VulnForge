@@ -146,6 +146,40 @@ def _safe_codemap(db: Any) -> dict[str, Any] | None:
     return cm if isinstance(cm, dict) and cm else None
 
 
+def _safe_diff_scope(db: Any) -> dict[str, Any] | None:
+    try:
+        return db.get_diff_scope() if db is not None else None
+    except Exception as exc:
+        note_swallowed(exc, context="export_findings.diff_scope")
+        return None
+
+
+def _diff_hunted_paths(db: Any) -> list[str] | None:
+    """Every hunt hint on a diff-scoped run (full DB read, not the export rows)."""
+    if _safe_diff_scope(db) is None:
+        return None
+    try:
+        return [
+            str(h)
+            for t in db.list_tasks(limit=100_000)
+            if t.kind == "hunt" and isinstance(t.payload, dict)
+            for h in t.payload.get("path_hints") or []
+        ]
+    except Exception as exc:
+        note_swallowed(exc, context="export_findings.diff_hunted_paths")
+        return None
+
+
+def _md_diff_scope_section(ctx: dict[str, Any]) -> list[str]:
+    manifest = ctx.get("diff_scope")
+    if not manifest:
+        return []
+    from vulnforge.diff_scope import report_md_lines
+
+    paths = [str(r.get("path") or "") for r in ctx.get("rows") or []]
+    return report_md_lines(manifest, paths, ctx.get("diff_hunted_paths"))
+
+
 def _safe_coverage(db: Any) -> dict[str, Any] | None:
     try:
         m = db.coverage_matrix() if db is not None else None
@@ -306,6 +340,9 @@ def collect_report_context(
         "hunt_tasks": hunt_tasks,
         "campaign": campaign,
         "codemap": codemap,
+        # Diff-scoped run (#185): always exported — it defines what was audited.
+        "diff_scope": _safe_diff_scope(db),
+        "diff_hunted_paths": _diff_hunted_paths(db),
     }
 
 
@@ -641,6 +678,7 @@ def _narrative_md_preamble(ctx: dict[str, Any]) -> list[str]:
                 "",
             ]
         )
+    lines.extend(_md_diff_scope_section(ctx))
     if opts.get("include_summary"):
         lines.extend(_md_summary_section(ctx.get("campaign"), counts))
     if opts.get("include_architecture"):
@@ -1065,6 +1103,8 @@ def export_json(
         payload["campaign"] = ctx.get("campaign")
     if opts.include_codemap:
         payload["codemap"] = ctx.get("codemap")
+    if ctx.get("diff_scope"):
+        payload["diff_scope"] = ctx.get("diff_scope")
     return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
 
 def _md_finding_block(r: dict) -> list[str]:
@@ -1440,7 +1480,7 @@ def export_html(
     details_html = "\n".join(detail_parts)
 
     # Narrative sections (summary / architecture / hunts / codemap) as HTML
-    extra_md: list[str] = []
+    extra_md: list[str] = list(_md_diff_scope_section(ctx))
     if opts.include_summary:
         extra_md.extend(_md_summary_section(ctx.get("campaign"), counts))
     if opts.include_architecture:
@@ -1911,7 +1951,7 @@ def export_docx(
         f"Total: {counts.get('total', 0)}"
     )
 
-    extra_md: list[str] = []
+    extra_md: list[str] = list(_md_diff_scope_section(ctx))
     if opts.include_summary:
         extra_md.extend(_md_summary_section(ctx.get("campaign"), counts))
     if opts.include_architecture:

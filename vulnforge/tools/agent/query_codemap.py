@@ -7,7 +7,7 @@ from typing import Any
 
 from vulnforge.errors import note_swallowed
 from vulnforge.tools.base import ToolSpec
-from vulnforge.tools.scope import attach_scope_warning, maybe_soft_jail
+from vulnforge.tools.scope import attach_scope_warning, diff_ceiling, maybe_soft_jail
 from vulnforge.util import normalize_relpath
 
 SPEC = ToolSpec(
@@ -78,6 +78,9 @@ SPEC = ToolSpec(
 
 
 def _load_codemap(ctx: dict, *, rebuild: bool) -> dict[str, Any]:
+    if rebuild and diff_ceiling(ctx) is not None:
+        # Diff-scoped run: the map was built at init; a rebuild walks the whole tree.
+        rebuild = False
     cm: dict[str, Any] = {}
     db = ctx.get("db")
     if db is not None:

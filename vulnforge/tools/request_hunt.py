@@ -17,6 +17,7 @@ from vulnforge.hunt_profiles import (
     resolve_run_class_ids,
     skill_policy_from_run_cfg,
 )
+from vulnforge.errors import note_swallowed
 from vulnforge.util import normalize_relpath
 
 # Active queue states: a hunt with this profile is "under way"
@@ -366,6 +367,18 @@ def request_hunt(
     if not hints_in:
         hints_in = list(parent_payload.get("path_hints") or [])
     hints = [normalize_relpath(str(p)) for p in hints_in if p][:15]
+    # Diff-scoped run (#185): agent-requested hunts stay inside the scope.
+    diff_manifest = None
+    try:
+        diff_manifest = db.get_diff_scope() if db is not None else None
+    except Exception as exc:
+        note_swallowed(exc, context="request_hunt.diff_scope")
+    if diff_manifest:
+        from vulnforge.diff_scope import clip_hints_to_scope
+
+        hints = clip_hints_to_scope(hints, diff_manifest) or clip_hints_to_scope(
+            parent_payload.get("path_hints") or [], diff_manifest
+        )
 
     child_chain = list(spawn_chain)
     if current_class and current_class not in child_chain:
@@ -381,6 +394,10 @@ def request_hunt(
         "spawn_reason": reason_s[:2000],
         "agent_requested": True,
     }
+    if diff_manifest:
+        from vulnforge.diff_scope import hunt_diff_context
+
+        child_payload["diff_scope"] = hunt_diff_context(diff_manifest, hints)
     # Inherit operator notes lightly
     if parent_payload.get("operator_notes"):
         child_payload["operator_notes"] = (

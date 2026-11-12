@@ -21,12 +21,18 @@ def render_all(run_dir: Path, db) -> list[str]:
     write_codemap_md(out / "CODEMAP.md", db)
     write_report_md(out / "REPORT.md", db)
     write_findings_json(out / "findings.json", db)
-    return [
+    paths = [
         str(out / "STATE.md"),
         str(out / "CODEMAP.md"),
         str(out / "REPORT.md"),
         str(out / "findings.json"),
     ]
+    # Diff-scoped run (#185): projection copy of the scope manifest.
+    manifest = db.get_diff_scope()
+    if manifest:
+        write_json(out / "diff_scope.json", manifest)
+        paths.append(str(out / "diff_scope.json"))
+    return paths
 
 
 def write_state_md(path: Path, db, run_dir: Path | None = None) -> None:
@@ -395,6 +401,26 @@ def _policy_excluded_report_lines(rejected: list) -> list[str]:
     return lines
 
 
+def _diff_scope_report_lines(db) -> list[str]:
+    """Diff scope header section (diff-scoped runs only)."""
+    manifest = db.get_diff_scope()
+    if not manifest:
+        return []
+    from vulnforge.diff_scope import report_md_lines
+
+    paths: list[str] = []
+    for f in db.list_findings():
+        for c in (f.body or {}).get("citations") or []:
+            if isinstance(c, dict) and c.get("path"):
+                paths.append(str(c["path"]))
+                break
+    hunted: list[str] = []
+    for t in db.list_tasks(limit=100_000):
+        if t.kind == "hunt" and isinstance(t.payload, dict):
+            hunted.extend(str(h) for h in t.payload.get("path_hints") or [])
+    return report_md_lines(manifest, paths, hunted)
+
+
 def write_report_md(path: Path, db) -> None:
     confirmed = db.list_findings(states=["confirmed"])
     needs_human = db.list_findings(states=["needs_human"])
@@ -432,6 +458,7 @@ def write_report_md(path: Path, db) -> None:
         f"Superseded near-dups: {len(superseded)}",
         "",
     ]
+    lines.extend(_diff_scope_report_lines(db))
     lines.extend(_architecture_report_lines(db))
     lines.extend(
         [

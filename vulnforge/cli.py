@@ -202,6 +202,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    init_p.add_argument(
+        "--diff",
+        dest="diff",
+        default=None,
+        metavar="BASE..HEAD",
+        help=(
+            "Diff-scoped audit: hunt only files changed between the BASE and HEAD "
+            "commit trees (two-tree compare, not merge-base) plus their callers/"
+            "callees from the codemap. BASE.. means BASE..HEAD. The target checkout "
+            "must be at HEAD; the repository is never modified."
+        ),
+    )
+    init_p.add_argument(
+        "--diff-depth",
+        dest="diff_depth",
+        type=int,
+        default=None,
+        help="Caller/callee expansion depth for --diff (0-3; default diff.expand_depth or 1)",
+    )
+
     once = sub.add_parser("run-once", help="Lease and execute one task")
     once.add_argument("--run-dir", type=Path, default=None)
 
@@ -569,6 +589,24 @@ def cmd_init(args, cfg: dict) -> int:
             print(msg, file=sys.stderr)
             return EXIT_CONFIG
 
+    # Diff-scoped audit (#185): validate spec + revisions before creating the run dir.
+    diff_spec = str(getattr(args, "diff", None) or "").strip()
+    diff_changes: Optional[dict[str, Any]] = None
+    if diff_spec:
+        from vulnforge.diff_scope import DiffScopeError, collect_changes, require_changes
+
+        try:
+            diff_changes = collect_changes(
+                target,
+                diff_spec,
+                ignore_globs=list(cfg.get("run", {}).get("ignore_globs") or []),
+            )
+            require_changes(diff_changes)
+        except DiffScopeError as e:
+            setattr(args, "init_error", str(e))
+            print(str(e), file=sys.stderr)
+            return EXIT_CONFIG
+
     runs_root = resolve_runs_root(cfg, getattr(args, "runs_root", None))
     tid = target_id_from_path(target)
     rid = next_run_id(runs_root, tid)
@@ -731,6 +769,45 @@ def cmd_init(args, cfg: dict) -> int:
         config=cfg_store,
     )
 
+    # Diff scope: expand changed files to callers/callees via the mechanical
+    # codemap (same builder recon uses), then persist the manifest.
+    diff_scope: Optional[dict[str, Any]] = None
+    if diff_changes is not None:
+        from vulnforge.diff_scope import DiffScopeError, build_diff_scope
+        from vulnforge.tools.codemap import build_codemap
+
+        progress(
+            {
+                "phase": "diff_scope",
+                "status": "running",
+                "message": f"Scoping diff {diff_spec} (callers/callees via codemap)...",
+                "percent": 92,
+            }
+        )
+        try:
+            init_codemap = build_codemap(target, None, cfg=cfg, ignore_globs=ignore)
+            db.set_codemap(init_codemap, source="mechanical")
+        except Exception as exc:
+            note_swallowed(exc, context="cli.init.diff_codemap")
+            init_codemap = {}
+        try:
+            diff_scope = build_diff_scope(
+                target,
+                diff_spec,
+                codemap=init_codemap,
+                cfg=cfg,
+                ignore_globs=ignore,
+                depth=getattr(args, "diff_depth", None),
+                changes=diff_changes,
+            )
+        except DiffScopeError as e:  # pragma: no cover - validated above
+            db.close()
+            setattr(args, "init_error", str(e))
+            print(str(e), file=sys.stderr)
+            return EXIT_CONFIG
+        db.set_diff_scope(diff_scope)
+        write_json(run_dir / "diff_scope.json", diff_scope)
+
     # Optional operator recon selection / brief (UI + CLI)
     init_agent_ids = [
         str(a).strip().lower()
@@ -751,12 +828,35 @@ def cmd_init(args, cfg: dict) -> int:
     def _attach_enqueue_hunts(recon_pl: dict[str, Any]) -> None:
         recon_pl["enqueue_hunts"] = init_enqueue_hunts
 
+    def _attach_diff_scope(recon_pl: dict[str, Any]) -> None:
+        """Focus recon on the change; hunts are clipped to the scope at finalize."""
+        if diff_scope is None:
+            return
+        brief = recon_brief(diff_scope)
+        prior = str(recon_pl.get("operator_notes") or "").strip()
+        merged = (brief + "\n\n" + prior) if prior else brief
+        recon_pl["operator_notes"] = merged
+        recon_pl["operator_brief"] = merged
+        changed = changed_paths(diff_scope)
+        recon_pl["focus_paths"] = (
+            changed + [p for p in scope_files(diff_scope) if p not in changed]
+        )[:40]
+        recon_pl["diff_scoped"] = True
+
     from vulnforge.stages.recon import enqueue_recon_agent_tasks, resolve_recon_agent_ids
 
     try:
         recon_agent_ids = resolve_recon_agent_ids(init_agent_ids or None)
     except Exception:
         recon_agent_ids = list(init_agent_ids or [])
+
+    from vulnforge.diff_scope import (
+        changed_paths,
+        hunt_diff_context,
+        recon_brief,
+        scope_brief,
+        scope_files,
+    )
 
     hunts_enqueued = 0
     recon_task_ids: list[int] = []
@@ -770,8 +870,16 @@ def cmd_init(args, cfg: dict) -> int:
                 classes=None,
                 hunt_skill_mode=init_hunt_mode,
                 hunt_skill_ids=init_hunt_ids or None,
+                only_paths=(
+                    None
+                    if diff_scope is None
+                    else changed_paths(diff_scope)
+                    + [p for p in scope_files(diff_scope) if p not in changed_paths(diff_scope)]
+                ),
             )
             for pl in payloads:
+                if diff_scope is not None:
+                    pl["diff_scope"] = hunt_diff_context(diff_scope, pl.get("path_hints") or [])
                 db.enqueue_task("hunt", pl, priority=50)
                 db.upsert_coverage_fact(
                     pl.get("area", "app"),
@@ -805,6 +913,7 @@ def cmd_init(args, cfg: dict) -> int:
         _attach_dynamic_skills(recon_payload)
         _attach_hunt_skill_policy(recon_payload)
         _attach_enqueue_hunts(recon_payload)
+        _attach_diff_scope(recon_payload)
         # One Ralph task per recon agent; architecture merges when batch completes.
         from vulnforge.task_priority import RECON_INIT_PRIORITY
 
@@ -827,6 +936,7 @@ def cmd_init(args, cfg: dict) -> int:
         _attach_dynamic_skills(recon_payload)
         _attach_hunt_skill_policy(recon_payload)
         _attach_enqueue_hunts(recon_payload)
+        _attach_diff_scope(recon_payload)
         from vulnforge.task_priority import RECON_INIT_PRIORITY
 
         recon_task_ids = enqueue_recon_agent_tasks(
@@ -853,6 +963,7 @@ def cmd_init(args, cfg: dict) -> int:
             "docs_files": docs_meta.get("files"),
             "docs_chars": docs_meta.get("chars"),
             "manifest_incomplete": manifest.get("incomplete"),
+            "diff": scope_brief(diff_scope),
         },
     )
 

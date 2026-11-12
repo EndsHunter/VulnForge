@@ -125,6 +125,10 @@ class InitBody(BaseModel):
     enqueue_hunts: bool = True
     # Campaign sandbox one-shot for harness-ready needs_human PoCs. Default off.
     sandbox_poc_validate: bool = False
+    # Diff-scoped audit (#185): "base..head" (two-tree compare); blank = whole tree.
+    diff: Optional[str] = None
+    # Caller/callee expansion depth for diff (0-3); None = config default.
+    diff_depth: Optional[int] = None
 
 
 class ControlBody(BaseModel):
@@ -1218,6 +1222,8 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         args.hunt_skill_ids = skill_ids or None
         args.enqueue_hunts = bool(body.enqueue_hunts)
         args.sandbox_poc_validate = bool(body.sandbox_poc_validate)
+        args.diff = (body.diff or "").strip() or None
+        args.diff_depth = body.diff_depth
 
         profile_n = (args.profile or "code_static").strip().lower()
         if not args.target.exists():

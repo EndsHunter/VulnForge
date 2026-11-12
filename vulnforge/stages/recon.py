@@ -1664,6 +1664,14 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             tasks, hunt_plan_source = plan_hunt_tasks(
                 arch, inventory, cfg, codemap=codemap or None
             )
+            # Diff-scoped audit (#185): clip to the scope before the empty check so an
+            # all-out-of-scope hunt_focus still yields changed-file hunts.
+            diff_manifest = db.get_diff_scope()
+            if diff_manifest:
+                tasks = apply_diff_scope_to_plan(
+                    tasks, diff_manifest, inventory, cfg, codemap=codemap or None
+                )
+                hunt_plan_source = f"{hunt_plan_source}+diff_scope"
             if not tasks:
                 # Only fail the finalizer hard when this is a non-batch recon;
                 # batch members already contributed architecture.
@@ -2470,6 +2478,48 @@ def plan_hunt_tasks(
     # Interleave by area so a small budget does not keep only the first component.
     max_tasks = max(0, int(max_tasks))
     return diversify_clip_tasks(tasks, max_tasks), source
+
+
+def apply_diff_scope_to_plan(
+    tasks: list[dict],
+    manifest: dict,
+    inventory: dict,
+    cfg: dict,
+    codemap: Optional[dict] = None,
+) -> list[dict]:
+    """Restrict a planned hunt list to the run's diff scope, then re-clip.
+
+    Hints become scope files (never module dirs); uncovered changed files get
+    allowed-class tasks; class routing and ``run.max_tasks`` apply after.
+    """
+    from vulnforge.diff_scope import scope_hunt_tasks
+
+    mode, skill_ids = skill_policy_from_run_cfg(cfg)
+    scoped = scope_hunt_tasks(
+        tasks,
+        manifest,
+        classes=list(resolve_run_class_ids(mode, skill_ids)),
+        codemap=codemap,
+    )
+    scoped = _apply_class_routing(scoped, inventory)
+    max_tasks = max(0, int((cfg.get("run") or {}).get("max_tasks", 50)))
+    if len(scoped) <= max_tasks:
+        return scoped
+    # Budget: first keep one task per changed file (in change order), then
+    # spread the rest across areas/classes.
+    from vulnforge.diff_scope import changed_paths
+
+    reserved: list[dict] = []
+    for p in changed_paths(manifest):
+        if len(reserved) >= max_tasks:
+            break
+        if any(p in (t.get("path_hints") or []) for t in reserved):
+            continue
+        pick = next((t for t in scoped if p in (t.get("path_hints") or [])), None)
+        if pick is not None and all(pick is not r for r in reserved):
+            reserved.append(pick)
+    rest = [t for t in scoped if all(t is not r for r in reserved)]
+    return reserved + diversify_clip_tasks(rest, max_tasks - len(reserved))
 
 
 def diversify_clip_tasks(tasks: list[dict], max_tasks: int) -> list[dict]:

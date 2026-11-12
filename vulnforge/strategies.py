@@ -177,9 +177,13 @@ def plan_file_by_file_hunts(
     *,
     hunt_skill_mode: Optional[str] = None,
     hunt_skill_ids: Optional[list[str]] = None,
+    only_paths: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """
     Plan hunt task payloads: each source file x class, capped by max_tasks.
+
+    ``only_paths`` (diff-scoped audits) restricts planning to those files, in
+    the given order (changed files first, then callers/callees).
 
     Priority order (entrypoints / shallow first). Skips huge and binary-ish files.
     Area is the top-level directory (or 'app' for root files).
@@ -202,6 +206,9 @@ def plan_file_by_file_hunts(
         return []
 
     files = list_source_files(target, ignore)
+    if only_paths is not None:
+        present = set(files)
+        files = [p for p in (normalize_relpath(str(x)) for x in only_paths) if p in present]
     payloads: list[dict[str, Any]] = []
     for rel in files:
         if len(payloads) >= max_tasks:

@@ -644,6 +644,34 @@ def _known_finding_on_hints(row: str, hints: list[str]) -> bool:
     )
 
 
+def _diff_scope_block(diff: Any) -> str:
+    """Hunt packet section for a diff-scoped run (#185)."""
+    if not isinstance(diff, dict) or not (diff.get("changed") or diff.get("context")):
+        return ""
+    lines = [
+        "",
+        f"## Diff under review ({diff.get('spec') or 'base..head'})",
+        f"base={str(diff.get('base') or '')[:12]} head={str(diff.get('head') or '')[:12]} "
+        "(two-tree compare). Prioritize code changed in this diff: what can an attacker "
+        "now reach that they could not before? Callers/callees are context for how input "
+        "reaches the change; findings should involve the changed lines.",
+    ]
+    for c in diff.get("changed") or []:
+        if not isinstance(c, dict):
+            continue
+        rng = ", ".join(
+            f"{h[0]}-{h[1]}" for h in (c.get("hunks") or []) if isinstance(h, (list, tuple)) and len(h) == 2
+        ) or "whole file"
+        lines.append(f"- changed `{c.get('path')}` lines {rng}")
+    for e in diff.get("context") or []:
+        if not isinstance(e, dict):
+            continue
+        lines.append(
+            f"- context `{e.get('path')}` ({e.get('via')} of `{e.get('symbol')}` in `{e.get('from')}`)"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def pack_hunt(
     cfg: dict,
     prompts_root: Path,
@@ -792,13 +820,14 @@ def pack_hunt(
         cfg=cfg,
         path_hints=list(task_payload.get("path_hints") or []),
     )
+    diff_block = _diff_scope_block(task_payload.get("diff_scope"))
     user = (
         f"## Hunt task\narea={task_payload.get('area')!r} class={cls!r}\n"
         f"path_hints={task_payload.get('path_hints')}\n"
         f"{scope_note}\n"
         f"{class_md}{angles_block}"
         f"{perspective_txt}"
-        f"{op_block}{sel_block}"
+        f"{op_block}{sel_block}{diff_block}"
         f"## Architecture (area slice)\n{arch}\n"
         f"{policy_block}"
         f"{cm_struct_block}"

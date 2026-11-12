@@ -69,6 +69,15 @@
             <p class="controls-hint init-hint" id="init-target-hint">Source folder or single source file (source analysis only)</p>
           </div>
 
+          <div class="field" id="init-diff-field">
+            <div class="field-label-row">
+              <label class="field-label-text" for="init-diff">Diff (optional)</label>
+              <button type="button" class="init-help" data-tip="Diff-scoped audit: base..head hunts only files changed between the two commit trees (not a merge-base diff), plus their callers/callees from the codemap. The target checkout must be at head. Blank = whole tree." aria-label="Help: Diff scope">?</button>
+            </div>
+            <input id="init-diff" name="diff" placeholder="main..HEAD" autocomplete="off" spellcheck="false" />
+            <p class="controls-hint init-hint">base..head · blank audits the whole tree</p>
+          </div>
+
           <div class="field" id="init-profile-field">
             <div class="field-label-row">
               <span class="field-label-text" id="init-profile-label">Profile</span>

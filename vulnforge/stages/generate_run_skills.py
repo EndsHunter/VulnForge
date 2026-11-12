@@ -184,16 +184,28 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             path_hints = payload.get("path_hints")
             if not isinstance(path_hints, list) or not path_hints:
                 path_hints = _path_hints_from_arch(architecture, skill)
+            path_hints = [str(p) for p in path_hints if p is not None and str(p).strip()][:12]
+            diff_manifest = db.get_diff_scope()
+            if diff_manifest:
+                from vulnforge.diff_scope import changed_paths, clip_hints_to_scope
+
+                path_hints = clip_hints_to_scope(path_hints, diff_manifest, cap=12) or (
+                    changed_paths(diff_manifest)[:12]
+                )
             hunt_payload: dict[str, Any] = {
                 "area": area,
                 "class": pid,
-                "path_hints": [str(p) for p in path_hints if p is not None and str(p).strip()][:12],
+                "path_hints": path_hints,
                 "operator_notes": (
                     f"Dynamic skill for this run ({pid}). "
                     + (operator_brief[:1500] if operator_brief else "")
                 ).strip(),
                 "reason": "dynamic_run_skills",
             }
+            if diff_manifest:
+                from vulnforge.diff_scope import hunt_diff_context
+
+                hunt_payload["diff_scope"] = hunt_diff_context(diff_manifest, path_hints)
             if skill.get("body_md"):
                 hunt_payload["class_body_override"] = skill["body_md"]
             try:
