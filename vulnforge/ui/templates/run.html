@@ -123,6 +123,14 @@
               >
                 Export report
               </button>
+              <button
+                type="button"
+                class="btn"
+                id="report-track-visible"
+                title="Preview, then publish the visible confirmed findings to GitHub Issues"
+              >
+                Track visible…
+              </button>
             </div>
           </div>
           <div id="report-summary" role="group" aria-label="Filter findings by state"></div>
@@ -403,6 +411,44 @@
           <button type="submit" class="btn btn-primary" id="settings-save">Save</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Track findings in an external tracker (#189). Outward-facing: preview, then explicit Publish. -->
+  <div
+    class="modal-backdrop"
+    id="report-track-modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="report-track-title"
+    hidden
+  >
+    <div class="modal modal-export">
+      <div class="toolbar" style="margin-bottom:0.75rem">
+        <h2 style="margin:0;flex:1" id="report-track-title">Track in GitHub Issues</h2>
+        <button type="button" class="btn" id="report-track-close" title="Close">Close</button>
+      </div>
+      <p class="controls-hint" style="margin:0 0 0.85rem">
+        This publishes outside VulnForge. Preview shows the exact issue text; nothing is sent until you press
+        <strong>Publish</strong>. Re-tracking replaces the title and body of the issue already linked by
+        stable_key. Only <span class="mono">confirmed</span> findings by default. Issues are not exploit proof.
+      </p>
+      <div class="export-fieldset">
+        <label class="field-label" for="report-track-repo"><span class="label-text">Repository (owner/name)</span></label>
+        <input type="text" id="report-track-repo" class="report-search" autocomplete="off" placeholder="owner/name" />
+        <label class="export-check" style="margin-top:0.5rem">
+          <input type="checkbox" id="report-track-needs-human" />
+          <span>Also include <span class="mono">needs_human</span> findings (NOT confirmed)</span>
+        </label>
+        <p class="controls-hint mono" id="report-track-ids" style="margin:0.5rem 0 0"></p>
+      </div>
+      <div id="report-track-preview" class="report-track-preview"></div>
+      <p class="controls-hint" id="report-track-hint" role="status" style="margin:0.75rem 0 0"></p>
+      <div class="modal-actions" style="margin-top:1rem">
+        <button type="button" class="btn" id="report-track-cancel">Cancel</button>
+        <button type="button" class="btn" id="report-track-do-preview">Preview</button>
+        <button type="button" class="btn btn-primary" id="report-track-publish" disabled>Publish</button>
+      </div>
     </div>
   </div>
 

@@ -7028,3 +7028,9 @@ body[data-page="benchmarks"] .bench-delta-zero .v { color: var(--text-muted); }
   .hitl-inbox { padding: 0.75rem; }
   .hitl-item-actions .btn { flex: 1 1 calc(50% - 0.4rem); }
 }
+
+/* Track in external issues (#189) */
+.report-track-preview { max-height: 50vh; overflow: auto; margin-top: 0.75rem; }
+.report-track-body { white-space: pre-wrap; max-height: 18rem; overflow: auto; font-size: 0.8rem; }
+#report-track-hint.bad, .report-track-preview .bad { color: var(--bad); }
+.report-tracked a { word-break: break-all; }

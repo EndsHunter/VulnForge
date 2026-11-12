@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from vulnforge.db import Database
+from vulnforge.errors import note_swallowed
 
 
 @dataclass
@@ -531,6 +532,21 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
                 }
             )
         findings = []
+        tracking_by_key: dict[str, list[dict]] = {}
+        try:
+            for t in db.list_tracking():
+                if t.get("status") == "linked" and t.get("url"):
+                    tracking_by_key.setdefault(str(t["stable_key"]), []).append(
+                        {
+                            "sink": t.get("sink"),
+                            "destination": t.get("destination"),
+                            "external_id": t.get("external_id"),
+                            "url": t.get("url"),
+                            "updated_at": t.get("updated_at"),
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001 — snapshot must not fail on links
+            note_swallowed(exc, context="store.snapshot.tracking", run_dir=run.path)
         for f in db.list_findings():
             findings.append(
                 {
@@ -539,6 +555,7 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
                     "state": f.state,
                     "evidence_id": f.evidence_id,
                     "body": f.body,
+                    "tracking": tracking_by_key.get(f.stable_key, []),
                 }
             )
         arch = db.get_architecture()

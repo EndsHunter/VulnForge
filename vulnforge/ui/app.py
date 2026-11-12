@@ -594,6 +594,22 @@ class ReconRerunBody(BaseModel):
     hunt_skill_ids: Optional[list[str]] = None
 
 
+class TrackPreviewBody(BaseModel):
+    """Plan an external-issue publish (#189). No network call."""
+
+    finding_ids: list[int]
+    repo: Optional[str] = None
+    sink: Optional[str] = None
+    include_needs_human: bool = False
+
+
+class TrackPublishBody(BaseModel):
+    """Publish exactly what a preview showed. ``token`` comes from preview only."""
+
+    token: str
+    operator: str = "operator"
+
+
 class FindingReviewBody(BaseModel):
     """Human accept / reject / reclassify a finding."""
 
@@ -2332,6 +2348,50 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         )
         if not r.get("ok"):
             raise HTTPException(400, r.get("error") or "enqueue failed")
+        return r
+
+    @app.get("/api/tracking/config")
+    def api_tracking_config():
+        """Default sink + destination for the Track dialog (no secrets)."""
+        from vulnforge.tracking.base import sink_names
+        from vulnforge.tracking.service import MAX_PER_PUBLISH, tracking_config
+
+        tc = tracking_config()
+        sink = str(tc.get("sink") or "github")
+        sub = tc.get(sink) if isinstance(tc.get(sink), dict) else {}
+        return {
+            "sink": sink,
+            "sinks": sink_names(),
+            "destination": str(sub.get("repo") or ""),
+            "max_per_publish": MAX_PER_PUBLISH,
+        }
+
+    @app.post("/api/runs/{target_id}/{run_id}/findings/track/preview")
+    def api_findings_track_preview(target_id: str, run_id: str, body: TrackPreviewBody):
+        """Exact issue text + one-shot token. Nothing leaves the machine."""
+        from vulnforge.tracking import preview_track
+
+        run = _get_run(target_id, run_id)
+        r = preview_track(
+            run.path,
+            body.finding_ids,
+            include_needs_human=bool(body.include_needs_human),
+            destination=body.repo,
+            sink=body.sink,
+        )
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "preview failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/findings/track")
+    def api_findings_track(target_id: str, run_id: str, body: TrackPublishBody):
+        """Outward-facing: publish the previewed findings. Requires a preview token."""
+        from vulnforge.tracking import publish_with_token
+
+        run = _get_run(target_id, run_id)
+        r = publish_with_token(run.path, body.token, operator=body.operator or "operator")
+        if not r.get("results") and not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "track failed")
         return r
 
     @app.post("/api/runs/{target_id}/{run_id}/findings/{finding_id}/review")

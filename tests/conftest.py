@@ -183,6 +183,25 @@ def _git_status() -> "set[str] | None":
     }
 
 
+@pytest.fixture(autouse=True)
+def _no_real_issue_tracker(monkeypatch):
+    """Tests must never create real GitHub issues (#189).
+
+    Real transports fail loudly; tests inject a fake transport or patch
+    ``_run`` / ``_urlopen`` inside ``vulnforge.tracking.github``.
+    """
+    import vulnforge.tracking.github as gh
+
+    def _blocked(*_a, **_k):
+        raise AssertionError("test tried to reach a real issue tracker")
+
+    monkeypatch.setattr(gh, "_run", _blocked)
+    monkeypatch.setattr(gh, "_urlopen", _blocked)
+    monkeypatch.setattr(gh, "resolve_transport", lambda *_a, **_k: _blocked(), raising=True)
+    for var in gh.TOKEN_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _repo_tree_unchanged():
     """Fail the session if tests changed the repo working tree."""

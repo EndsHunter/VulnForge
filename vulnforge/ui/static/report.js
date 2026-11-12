@@ -987,7 +987,9 @@
         <div class="report-detail-actions">
           <button type="button" class="btn btn-primary report-open-book-evidence">Evidence and context</button>
           <button type="button" class="btn btn-primary report-develop-poc" data-fid="${f.id}" title="Open working PoC workshop for this finding">Develop POC</button>
+          <button type="button" class="btn report-track-one" data-fid="${f.id}" title="Preview, then publish this finding as an external issue (outward-facing)">Track…</button>
         </div>
+        ${trackedLinksHtml(f)}
         <p class="controls-hint">Run in harness (inside Develop POC) is a sandbox one-shot. Signal observed does not accept the finding or clear needs-human.</p>
       </div>`;
   }
@@ -2019,6 +2021,13 @@
         }
       });
     });
+    root.querySelectorAll(".report-track-one").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const fid = Number(btn.getAttribute("data-fid"));
+        if (fid) openTrackModal([fid]);
+      });
+    });
     root.querySelector(".report-open-book-evidence")?.addEventListener("click", (e) => {
       e.stopPropagation();
       goReviewPage("evidence");
@@ -2555,6 +2564,230 @@
       document.addEventListener("DOMContentLoaded", bindOnce, { once: true });
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Track in external issues (#189). Outward-facing: preview (no network) mints a
+  // one-shot token; only the explicit Publish button sends it.
+  // ---------------------------------------------------------------------------
+  let trackIds = [];
+  let trackToken = null;
+  let trackGen = 0; // bumped on every invalidate; stale preview responses are dropped
+  let trackBound = false;
+  let trackMaxPerPublish = 25;
+
+  function trackedLinksHtml(f) {
+    const links = Array.isArray(f && f.tracking) ? f.tracking : [];
+    if (!links.length) return "";
+    return `<p class="controls-hint report-tracked">Tracked: ${links
+      .map((t) => {
+        const url = String(t.url || "");
+        const safe = /^https:\/\//i.test(url) ? url : "";
+        const label = `${esc(t.destination || t.sink || "")}#${esc(t.external_id || "")}`;
+        return safe
+          ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+          : `<span class="mono">${label}</span>`;
+      })
+      .join(" · ")}</p>`;
+  }
+
+  function setTrackHint(msg, isErr) {
+    const el = document.getElementById("report-track-hint");
+    if (!el) return;
+    el.textContent = msg || "";
+    el.classList.toggle("bad", !!isErr);
+  }
+
+  function invalidateTrackPreview(msg) {
+    trackGen += 1;
+    trackToken = null;
+    const pub = document.getElementById("report-track-publish");
+    if (pub) pub.disabled = true;
+    if (msg) setTrackHint(msg);
+  }
+
+  function trackRunBase() {
+    const tid = meta.target_id;
+    const rid = meta.run_id;
+    if (!tid || !rid) return null;
+    return `/api/runs/${encodeURIComponent(tid)}/${encodeURIComponent(rid)}`;
+  }
+
+  async function openTrackModal(ids) {
+    const modal = document.getElementById("report-track-modal");
+    const api = typeof window.api === "function" ? window.api : null;
+    if (!modal || !api) {
+      toast("Track dialog unavailable", true);
+      return;
+    }
+    trackIds = (ids || []).map(Number).filter(Boolean);
+    if (!trackIds.length) {
+      toast("No findings to track", true);
+      return;
+    }
+    if (trackIds.length > trackMaxPerPublish) {
+      toast(`At most ${trackMaxPerPublish} findings per publish; narrow the filter`, true);
+      return;
+    }
+    const idsEl = document.getElementById("report-track-ids");
+    if (idsEl) idsEl.textContent = `Findings: ${trackIds.map((x) => "#" + x).join(", ")}`;
+    const nh = document.getElementById("report-track-needs-human");
+    if (nh) nh.checked = false;
+    const prev = document.getElementById("report-track-preview");
+    if (prev) prev.innerHTML = "";
+    invalidateTrackPreview("Press Preview to see the exact issue text.");
+    modal.removeAttribute("hidden");
+    modal.hidden = false;
+    modal.classList.add("open");
+    modal.setAttribute("aria-hidden", "false");
+    const repoEl = document.getElementById("report-track-repo");
+    try {
+      const cfg = await api("/api/tracking/config");
+      if (cfg && cfg.max_per_publish) trackMaxPerPublish = Number(cfg.max_per_publish) || 25;
+      if (repoEl && !repoEl.value && cfg && cfg.destination) repoEl.value = cfg.destination;
+    } catch {
+      /* config is a prefill only */
+    }
+  }
+
+  function closeTrackModal() {
+    const modal = document.getElementById("report-track-modal");
+    if (!modal) return;
+    invalidateTrackPreview("");
+    modal.classList.remove("open");
+    modal.hidden = true;
+    modal.setAttribute("hidden", "");
+    modal.setAttribute("aria-hidden", "true");
+  }
+
+  function trackPreviewHtml(r) {
+    const counts = Object.entries(r.state_counts || {})
+      .map(([k, v]) => `${esc(v)} ${esc(k)}`)
+      .join(", ");
+    const head = `<p><strong>Destination:</strong> <span class="mono">${esc(r.sink)} ${esc(
+      r.destination
+    )}</span> · ${esc(r.eligible_count)} to publish${counts ? " (" + counts + ")" : ""}${
+      r.include_needs_human ? ' · <strong class="bad">includes needs_human (NOT confirmed)</strong>' : ""
+    }</p>`;
+    const rows = (r.items || [])
+      .map((it) => {
+        if (!it.eligible) {
+          return `<li>#${esc(it.finding_id)} — <em>skipped</em>: ${esc(it.reason || "")}</li>`;
+        }
+        const what = it.existing_url
+          ? `replace title + body of <span class="mono">${esc(it.existing_url)}</span>`
+          : "create (or replace the issue already carrying this stable_key)";
+        const labels = (it.issue_labels || []).map((l) => esc(l)).join(", ");
+        return `<li>#${esc(it.finding_id)} <span class="mono">${esc(it.state)}</span> — ${what}${
+          labels && !it.existing_url ? ` · labels on create: <span class="mono">${labels}</span>` : ""
+        }
+          <details><summary>${esc(it.issue_title || "")}</summary><pre class="mono report-track-body">${esc(
+            it.issue_body || ""
+          )}</pre></details></li>`;
+      })
+      .join("");
+    return head + `<ul class="report-reasons">${rows}</ul>`;
+  }
+
+  async function previewTrack() {
+    const base = trackRunBase();
+    const api = typeof window.api === "function" ? window.api : null;
+    if (!base || !api) return toast("No run loaded", true);
+    invalidateTrackPreview("Previewing…");
+    const gen = trackGen;
+    const ids = trackIds.slice();
+    const repo = (document.getElementById("report-track-repo")?.value || "").trim();
+    const include_needs_human = !!document.getElementById("report-track-needs-human")?.checked;
+    try {
+      const r = await api(`${base}/findings/track/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ finding_ids: ids, repo: repo || null, include_needs_human }),
+      });
+      if (gen !== trackGen) return; // inputs or ids changed while previewing
+      const prev = document.getElementById("report-track-preview");
+      if (prev) prev.innerHTML = trackPreviewHtml(r);
+      if (r.token) {
+        trackToken = r.token;
+        const pub = document.getElementById("report-track-publish");
+        if (pub) {
+          pub.disabled = false;
+          pub.textContent = `Publish ${r.eligible_count} to ${r.destination}`;
+        }
+        setTrackHint("Review the issue text above. Publish sends exactly this.");
+      } else {
+        setTrackHint("Nothing eligible to publish.", true);
+      }
+    } catch (e) {
+      if (gen === trackGen) setTrackHint(e.message || String(e), true);
+    }
+  }
+
+  async function publishTrack() {
+    const base = trackRunBase();
+    const api = typeof window.api === "function" ? window.api : null;
+    if (!base || !api || !trackToken) return;
+    const token = trackToken;
+    invalidateTrackPreview("Publishing…");
+    const gen = trackGen;
+    try {
+      const r = await api(`${base}/findings/track`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, operator: "operator" }),
+      });
+      const res = r.results || [];
+      if (typeof window.loadRunFull === "function") window.loadRunFull();
+      if (gen !== trackGen) return; // dialog changed meanwhile; keep the newer view
+      const prev = document.getElementById("report-track-preview");
+      if (prev) {
+        prev.innerHTML = `<ul class="report-reasons">${res
+          .map((x) =>
+            x.ok
+              ? `<li>#${esc(x.finding_id)} ${esc(x.action)} — <a href="${esc(
+                  /^https:\/\//i.test(String(x.url || "")) ? x.url : ""
+                )}" target="_blank" rel="noopener noreferrer">${esc(x.url || "")}</a>${
+                  x.remote_state ? ` (${esc(x.remote_state)})` : ""
+                }</li>`
+              : `<li>#${esc(x.finding_id)} ${esc(x.action || "error")}: ${esc(x.reason || "")}</li>`
+          )
+          .join("")}</ul>`;
+      }
+      setTrackHint(`Published ${r.published || 0} of ${res.length}.`, !r.ok);
+    } catch (e) {
+      if (gen === trackGen) setTrackHint(e.message || String(e), true);
+    }
+  }
+
+  function setupTrackModal() {
+    if (trackBound) return;
+    const modal = document.getElementById("report-track-modal");
+    const visibleBtn = document.getElementById("report-track-visible");
+    if (!modal && !visibleBtn) return;
+    trackBound = true;
+    visibleBtn?.addEventListener("click", (e) => {
+      e.preventDefault();
+      const ids = sortedFindings()
+        .filter((f) => f.state === "confirmed" || f.state === "needs_human")
+        .map((f) => f.id);
+      openTrackModal(ids);
+    });
+    document.getElementById("report-track-close")?.addEventListener("click", closeTrackModal);
+    document.getElementById("report-track-cancel")?.addEventListener("click", closeTrackModal);
+    document.getElementById("report-track-do-preview")?.addEventListener("click", previewTrack);
+    document.getElementById("report-track-publish")?.addEventListener("click", publishTrack);
+    ["report-track-repo", "report-track-needs-human"].forEach((id) => {
+      const el = document.getElementById(id);
+      el?.addEventListener("input", () => invalidateTrackPreview("Changed — preview again."));
+      el?.addEventListener("change", () => invalidateTrackPreview("Changed — preview again."));
+    });
+    document.addEventListener("keydown", (e) => {
+      const m = document.getElementById("report-track-modal");
+      if (e.key === "Escape" && m && m.classList.contains("open")) closeTrackModal();
+    });
+  }
+
+  setupTrackModal();
+  document.addEventListener("DOMContentLoaded", setupTrackModal, { once: true });
 
   // Bind export UI immediately — do not wait for first snapshot / renderReport.
   // Previously handlers only attached inside renderReport → setupChrome, so the

@@ -34,6 +34,8 @@ MUTATE_TOOLS = frozenset(
         "enqueue_develop_poc",
         "enqueue_validate_poc",
         "enqueue_iterate_poc",
+        # Outward-facing (#189): publishes to an external tracker.
+        "track_findings",
     }
 )
 
@@ -884,7 +886,69 @@ def mutation_summary(name: str, args: dict[str, Any]) -> str:
             f"Enqueue sandbox iterate session for finding {args.get('finding_id')} "
             "(same microVM or gVisor guest; caps do not confirm)"
         )
+    if name == "track_findings":
+        return track_findings_summary(args)
     return f"Execute {name} with {args}"
+
+
+def _track_ids(args: dict[str, Any]) -> list[Any]:
+    ids = args.get("finding_ids")
+    if ids is None and args.get("finding_id") is not None:
+        ids = [args.get("finding_id")]
+    if isinstance(ids, (str, int)):
+        ids = [ids]
+    out = []
+    for v in ids or []:
+        fid, err = coerce_finding_id(v)
+        if fid is not None and not err:
+            out.append(fid)
+    return out
+
+
+def track_findings_summary(args: dict[str, Any]) -> str:
+    """Confirm text for the outward-facing publish: destination, ids, scope."""
+    from vulnforge.tracking.base import TrackingError
+    from vulnforge.tracking.service import resolve_destination, tracking_config
+
+    ids = _track_ids(args)
+    try:
+        sink, dest = resolve_destination(
+            tracking_config(), args.get("sink"), args.get("repo")
+        )
+        where = f"{sink} {dest}"
+    except TrackingError as e:
+        where = f"(no destination: {e})"
+    nh = bool(args.get("include_needs_human"))
+    return (
+        f"PUBLISH OUTSIDE VULNFORGE: track {len(ids)} finding(s) {ids} in {where}. "
+        "Creates an issue per finding, or replaces the title and body of the issue "
+        "already linked by stable_key. "
+        + (
+            "Includes needs_human (NOT confirmed) findings. "
+            if nh
+            else "Only confirmed findings; others are skipped. "
+        )
+        + "Not exploit proof. Finding state is unchanged."
+    )
+
+
+def track_findings_impl(run: RunRef, args: dict) -> dict[str, Any]:
+    """Runs only after UI Confirm (MUTATE_TOOLS). Re-checks eligibility now."""
+    from vulnforge.tracking import track_findings
+
+    ids = _track_ids(args)
+    if not ids:
+        return {"ok": False, "error": "finding_ids required"}
+    r = track_findings(
+        run.path,
+        ids,
+        include_needs_human=bool(args.get("include_needs_human")),
+        destination=str(args.get("repo") or "") or None,
+        sink=str(args.get("sink") or "") or None,
+        operator=str(args.get("operator") or "operator_chat"),
+        source="operator_chat",
+    )
+    return {**r, "target_id": run.target_id, "run_id": run.run_id}
 
 
 def enqueue_develop_poc_impl(run: RunRef, args: dict) -> dict[str, Any]:

@@ -39,7 +39,7 @@ The dashboard is the main operator surface:
 | **Mission** | Architecture map of the target; campaign health; light needs-review indicator |
 | **Hunts** | Plan hunts (areas × skills) + residual-risk matrix; re-queue shallow/aborted/none cells |
 | **Explorer** | Browse target, select code, enqueue hunts |
-| **Report** | Structured findings table, Needs review filter, human accept/reject, exports; detail links to Evidence |
+| **Report** | Structured findings table, Needs review filter, human accept/reject, exports, **Track** in GitHub Issues (preview → Publish); detail links to Evidence |
 | **Evidence** | On-disk evidence packs (browse / open from Report) |
 | **Tasks** | Task queue / transcripts, event timeline (mode id `audit`) |
 | **AI** | Campaign co-pilot: start/query hunts, status, findings, runner control (confirm mutators) |
@@ -81,6 +81,7 @@ vulnforge/
   agent_runtime/ # Strands tool-loop (hunt, recon, develop_poc, operator chat)
   control/       # exit codes, ops (Hunts requeue / selection hunt)
   findings/      # stable_key + near-dup merge (not a stage)
+  tracking/      # external issue sinks (GitHub; Jira/Linear later) — confirm-gated
   hunt_profiles/ # operator hunt skills collection (seed + CRUD + import/export)
   stages/        # recon, hunt, validate_mech, render, …
   tools/         # FS jail, file_inventory, grep, codemap, evidence
@@ -192,5 +193,6 @@ VulnForge is **source-code analysis only** (`code_static`). PE / binary reverse-
 - `project/*` is projection, not authority.
 - Do not treat same-model `validate_llm` as strong proof (default on; demote-only).
 - Automation never sets `confirmed`; only human review does.
+- **Track** (GitHub Issues, `vulnforge/tracking/`) is outward-facing: dashboard preview → explicit Publish, or chat Confirm. `confirmed` only unless opted in per publish. Ralph never publishes. See [`docs/harness/TRACKING.md`](docs/harness/TRACKING.md).
 - HITL responses are durable and re-readable. A missing answer is unanswered. See [`docs/harness/validate/HITL.md`](docs/harness/validate/HITL.md).
 - The operator **security policy** (Mission → Policy, `vf policy`) only narrows scope and demotes: exclusions → `rejected_mech` with the rule cited and shown in the Report, rubric caps `severity_claim`. It never promotes or confirms. See [`docs/harness/validate/POLICY.md`](docs/harness/validate/POLICY.md).
