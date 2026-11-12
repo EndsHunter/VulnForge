@@ -701,13 +701,21 @@ def _write_collection(
     for p in coll["profiles"]:
         clean_profiles.append(_profile_public_fields(p))
     coll["profiles"] = clean_profiles
-    # collection.json first, then bodies: a crash in between leaves a review
-    # record whose content hash does not match the old body, which fails closed
-    # (stale → uncleared) instead of loading an unreviewed new body.
+    # Write order fails closed on a crash between files (issue #191):
+    # - rows without a review record (seed / reseed / restore / custom): body
+    #   first, so an old reviewed row never pairs with an unreviewed state;
+    # - rows with a review record: collection.json first, so the new hash does
+    #   not match the old body (stale → uncleared) until the body lands.
+    reviewed = {p["id"] for p in clean_profiles if "review" in p}
+    if bodies:
+        for pid, body in bodies.items():
+            if pid not in reviewed:
+                _atomic_write_text(_body_path(pid, root), body)
     _atomic_write_json(_collection_path(root), coll)
     if bodies:
         for pid, body in bodies.items():
-            _atomic_write_text(_body_path(pid, root), body)
+            if pid in reviewed:
+                _atomic_write_text(_body_path(pid, root), body)
     return coll
 
 
@@ -1819,8 +1827,7 @@ def normalize_class(raw: object) -> str:
     cls = str(raw).strip().lower().replace("_", "-").replace(" ", "-")
     cls = CLASS_ALIASES.get(cls, cls)
     try:
-        # Uncleared import reviews map to the fallback, never to themselves.
-        available = set(cleared_class_ids())
+        available = set(all_class_ids())
     except HuntProfileError:
         available = set()
     if cls in available:
@@ -1828,10 +1835,26 @@ def normalize_class(raw: object) -> str:
     return _fallback_class(available)
 
 
+def schedulable_class(raw: object) -> str:
+    """normalize_class for enqueueing: an uncleared import review never runs.
+
+    normalize_class stays the class identity (coverage, chat filters); this
+    maps an uncleared id to a cleared fallback before a hunt is scheduled.
+    """
+    cls = normalize_class(raw)
+    if is_profile_cleared(cls):
+        return cls
+    try:
+        cleared = set(cleared_class_ids())
+    except HuntProfileError:
+        cleared = set()
+    return _fallback_class(cleared)
+
+
 def _fallback_class(available: Optional[set[str]] = None) -> str:
     if available is None:
         try:
-            available = set(cleared_class_ids())
+            available = set(all_class_ids())
         except HuntProfileError:
             available = set()
     if "wildcard" in available:

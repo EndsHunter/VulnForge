@@ -22,6 +22,7 @@ from vulnforge.hunt_profiles import (
     active_class_ids,
     cleared_class_ids,
     resolve_run_class_ids,
+    schedulable_class,
     skill_policy_from_run_cfg,
 )
 from vulnforge.languages import POC_CODE_EXTS
@@ -981,7 +982,8 @@ def requeue_hunt(
     Optional ``seed_sinks`` tightens the hunt packet to specific preindex sinks
     (Coverage sink-focus requeue). Also records sink_coverage planned rows.
     """
-    cls = _normalize_class(attack_class)
+    # Uncleared import reviews never get scheduled (issue #191).
+    cls = schedulable_class(attack_class)
     area_s = str(area or "app").strip() or "app"
     notes = (operator_notes or "").strip()
     db = _open_db(run_dir)
@@ -1952,7 +1954,7 @@ def hunt_from_selection(
     rel = normalize_relpath(path)
     if not rel or ".." in rel.split("/"):
         return {"ok": False, "error": "invalid path"}
-    cls = _normalize_class(attack_class or "wildcard")
+    cls = schedulable_class(attack_class or "wildcard")
     # area: first path component or operator override
     area_s = (area or "").strip() or (rel.split("/")[0] if "/" in rel else "selection")
     notes = (operator_notes or note or "").strip()

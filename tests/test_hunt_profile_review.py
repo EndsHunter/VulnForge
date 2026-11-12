@@ -518,13 +518,24 @@ def test_mechanical_rerun_after_disk_edit_keeps_stale_llm(hunt_root: Path):
     assert not is_profile_cleared("llm-disk")
 
 
-def test_uncleared_id_normalizes_to_fallback_and_drops_tools(hunt_root: Path):
-    from vulnforge.hunt_profiles import normalize_class
+def test_uncleared_id_is_not_scheduled_and_drops_tools(hunt_root: Path):
+    from vulnforge.hunt_profiles import normalize_class, schedulable_class
     from vulnforge.packet import _load_hunt_class_body
+    from vulnforge.stages.recon import plan_hunt_tasks
 
     _import([{"id": "injection", "body_md": EVIL, "tools": ["read_file"]}])
-    assert normalize_class("injection") == "wildcard"
-    assert normalize_class("sqli") == "wildcard"
+    # Class identity is unchanged (coverage / chat filters keep injection distinct)…
+    assert normalize_class("injection") == "injection"
+    # …but scheduling maps the uncleared id to a cleared fallback.
+    assert schedulable_class("injection") == "wildcard"
+    assert schedulable_class("sqli") == "wildcard"
+    assert schedulable_class("graphql") == "graphql"
+    tasks, _src = plan_hunt_tasks(
+        {"summary": "x", "hunt_focus": [{"area": "api", "class": "injection"}], "components": []},
+        {"entrypoints": ["app.py"], "sample_paths": ["app.py"]},
+        {"run": {"max_tasks": 50}},
+    )
+    assert "injection" not in {t["class"] for t in tasks}
     assert "Ignore all previous" not in _load_hunt_class_body("injection")
 
     from vulnforge.packet import pack_hunt
@@ -543,6 +554,29 @@ def test_uncleared_id_normalizes_to_fallback_and_drops_tools(hunt_root: Path):
     assert "list_dir" in names  # the uncleared profile's allowlist was not applied
     assert pkt.meta.get("tools_allowlist") is None
     assert "Ignore all previous" not in pkt.system
+
+
+@pytest.mark.parametrize("action", ["reseed", "restore"])
+def test_trusted_rewrite_crash_fails_closed(hunt_root: Path, monkeypatch, action: str):
+    """Reseed / seed-restore over an uncleared row: crash after the body write."""
+    import vulnforge.hunt_profiles.store as store
+    from vulnforge.hunt_profiles import reseed_from_package
+    from vulnforge.packet import _load_hunt_class_body
+
+    _import([{"id": "injection", "body_md": EVIL}])
+    assert not is_profile_cleared("injection")
+
+    def boom(path, data):
+        raise OSError("simulated crash")
+
+    monkeypatch.setattr(store, "_atomic_write_json", boom)
+    with pytest.raises(OSError):
+        reseed_from_package() if action == "reseed" else restore_seed_body("injection")
+    monkeypatch.undo()
+    # The seed body landed but the old reviewed row is still there: stale → uncleared,
+    # and the evil text never reaches a prompt.
+    assert not is_profile_cleared("injection")
+    assert "Ignore all previous" not in _load_hunt_class_body("injection")
 
 
 def test_collection_written_before_bodies(hunt_root: Path, monkeypatch):

@@ -23,11 +23,13 @@
    it becomes stale, and the profile stays `INCOMPLETE` until the LLM review runs again.
 4. A profile that has not cleared review never reaches a prompt. It is left out of active sets and
    empty-active fallbacks, run skill resolution, recon's class registry, `list_hunt_profiles`,
-   `request_hunt`, coverage select, and recon `hunt_focus`. `normalize_class` maps an uncleared id to
-   the fallback class. `_load_hunt_class_body` falls back to `wildcard` or a stub, and `pack_hunt`
-   ignores an uncleared profile's tools allowlist.
-5. `collection.json` is written before body files. A crash in between leaves a review hash that does
-   not match the old body, so the profile fails closed (stale, not cleared).
+   `request_hunt`, coverage select, and recon `hunt_focus`. Operator requeue and selection hunts use
+   `schedulable_class`, which maps an uncleared id to a cleared fallback. `normalize_class` keeps
+   class identity for coverage and chat. `_load_hunt_class_body` falls back to `wildcard` or a stub,
+   and `pack_hunt` ignores an uncleared profile's tools allowlist.
+5. Write order fails closed. Rows with a review record write `collection.json` before the body.
+   Rows without one (seed, reseed, restore, custom) write the body first. A crash in between leaves
+   a review hash that does not match the body on disk, so the profile is stale and not cleared.
 
 Mechanical rules live in `review.py` `_RULES`. `tests/test_hunt_profile_review.py` checks that every
 package seed in `seeds/hunt_classes/` stays `PASS`.
