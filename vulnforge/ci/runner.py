@@ -192,6 +192,43 @@ def _init_run(opts: CIOptions, cfg: dict, init_fn: Callable[[Any, dict], int]) -
     return Path(created).resolve()
 
 
+def _diff_precheck(opts: CIOptions, cfg: dict, spec: str) -> dict[str, Any]:
+    """Validate a ``--diff`` spec before init (same checks ``vf init`` runs)."""
+    from vulnforge.diff_scope import DiffScopeError, collect_changes, scope_brief
+
+    target = getattr(opts.init_args, "target", None)
+    if target is None:
+        return {"error": "--diff needs --target"}
+    try:
+        changes = collect_changes(
+            Path(target).resolve(),
+            spec,
+            ignore_globs=list((cfg.get("run") or {}).get("ignore_globs") or []),
+        )
+    except DiffScopeError as e:
+        return {"error": str(e)}
+    if changes.get("changed"):
+        return {}
+    return {"empty": True, "brief": {**(scope_brief(changes) or {}), "empty": True}}
+
+
+def _run_diff_scope(run_dir: Path) -> Optional[dict[str, Any]]:
+    """Scope summary of a diff-scoped run (None for a full audit)."""
+    from vulnforge.diff_scope import scope_brief
+
+    path = run_dir / "diff_scope.json"
+    if not path.is_file():
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return {"error": f"diff_scope.json unreadable: {e}"}
+    brief = scope_brief(manifest)
+    if brief is not None:
+        brief["drift"] = len(((manifest.get("worktree") or {}).get("drift")) or [])
+    return brief
+
+
 def run_ci(
     opts: CIOptions,
     cfg: dict,
@@ -248,6 +285,34 @@ def run_ci(
 
     # 1. init or resume ------------------------------------------------------
     run_dir: Optional[Path] = None
+    diff_spec = str(getattr(opts.init_args, "diff", None) or "").strip()
+    if opts.run_dir is None and diff_spec:
+        # PR mode. A bad spec / unresolvable revision / wrong checkout is exit 2.
+        # A diff with no hunt-able code (docs-only PR) passes explicitly as
+        # "nothing audited" instead of failing init: there is nothing in scope.
+        pre = _diff_precheck(opts, cfg, diff_spec)
+        if pre.get("error"):
+            errors.append(f"diff: {pre['error']}")
+            return finish(None)
+        if pre.get("empty"):
+            record.update(
+                {
+                    "mode": "new",
+                    "diff_scope": pre["brief"],
+                    "completed": True,
+                    "ralph": {"exit_code": None, "stop_reason": "no_changes"},
+                    "tasks": {},
+                    "findings": {},
+                    "coverage_gaps": {},
+                    "matched_findings": [],
+                }
+            )
+            warnings.append(
+                f"--diff {diff_spec}: no hunt-able code changes in the target "
+                f"({pre['brief']['excluded']} changed path(s) excluded); nothing was "
+                "audited and no run was created"
+            )
+            return finish(None)
     if opts.run_dir is not None:
         run_dir = Path(opts.run_dir).resolve()
         if not (run_dir / "harness.db").is_file():
@@ -264,6 +329,12 @@ def run_ci(
             return finish(None)
         record["mode"] = "new"
     record["run_dir"] = str(run_dir)
+    record["diff_scope"] = _run_diff_scope(run_dir)
+    if (record["diff_scope"] or {}).get("drift"):
+        warnings.append(
+            f"diff scope: {record['diff_scope']['drift']} changed file(s) differ from "
+            "the head commit in the working tree; hunts read the working tree"
+        )
 
     stop_file = run_dir / "STOP"
     if stop_file.exists():
@@ -423,6 +494,13 @@ def summary_markdown(record: dict) -> str:
     ralph = record.get("ralph") or {}
     if ralph:
         lines.append(f"- Stop reason: `{ralph.get('stop_reason')}`")
+    scope = record.get("diff_scope")
+    if scope and not scope.get("error"):
+        lines.append(
+            f"- Diff scope `{scope.get('spec')}`: {scope.get('changed')} changed, "
+            f"{scope.get('scope_files')} file(s) in scope, {scope.get('excluded')} excluded "
+            "(code outside the scope was not audited)"
+        )
     if record.get("findings") is not None:
         lines.append(f"- Findings by state: `{record.get('findings')}`")
     gaps = record.get("coverage_gaps") or {}

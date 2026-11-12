@@ -1174,6 +1174,11 @@ def cmd_ci(args, cfg: dict) -> int:
     if getattr(args, "run_dir", None) is None and not getattr(args, "target", None):
         print("vf ci: pass --target (new run) or --run-dir (resume)", file=sys.stderr)
         return CI_ERROR
+    if getattr(args, "run_dir", None) is not None and getattr(args, "diff", None):
+        # A run's diff scope is fixed at init; ignoring --diff here would
+        # silently audit (or report) a different scope than asked.
+        print("vf ci: --diff applies to a new run (--target), not --run-dir", file=sys.stderr)
+        return CI_ERROR
     opts = CIOptions(
         run_dir=args.run_dir,
         init_args=args,

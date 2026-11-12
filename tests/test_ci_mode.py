@@ -587,3 +587,88 @@ def test_github_step_summary_written(offline_ci, toy_sqli: Path, monkeypatch):
     text = summary.read_text(encoding="utf-8")
     assert "VulnForge CI: threshold" in text
     assert "never sets confirmed" in text
+
+
+# diff-scoped PR mode (--diff, #185) -------------------------------------------
+
+
+def _git(repo: Path, *args: str) -> str:
+    import subprocess
+
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
+           "PATH": __import__("os").environ.get("PATH", "")}
+    return subprocess.run(["git", *args], cwd=repo, env=env, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+@pytest.fixture
+def toy_git(toy_sqli: Path) -> dict:
+    """toy_sqli as a repo: base, then a code change, then a docs-only commit."""
+    repo = toy_sqli
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    with (repo / "app.py").open("a", encoding="utf-8") as f:
+        f.write("\n# touched by the PR\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "code change")
+    code = _git(repo, "rev-parse", "HEAD")
+    (repo / "CHANGES.md").write_text("# notes\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "docs only")
+    return {"repo": repo, "base": base, "code": code, "head": _git(repo, "rev-parse", "HEAD")}
+
+
+def test_e2e_diff_pr_mode_scopes_run_and_gates(offline_ci, toy_git: dict):
+    offline_ci.install("vuln")
+    out = offline_ci.tmp / "out"
+    code = _ci(offline_ci, "--target", str(toy_git["repo"]), "--diff",
+               f"{toy_git['base']}..{toy_git['head']}", "--fail-on-state", "needs_human",
+               "--output-dir", str(out), "-q")
+    rec = _result(offline_ci)
+    assert code == ci_codes.CI_THRESHOLD, rec
+    scope = rec["diff_scope"]
+    assert scope["changed"] == 1 and scope["base"]["sha"] == toy_git["base"]
+    assert scope["excluded_by_reason"].get("non_code") == 1  # CHANGES.md
+    assert (Path(rec["run_dir"]) / "diff_scope.json").is_file()
+    assert rec["matched_findings"][0]["path"] == "app.py"
+    assert rec["findings"].get("confirmed", 0) == 0
+
+
+def test_e2e_diff_without_code_changes_passes_as_nothing_audited(offline_ci, toy_git: dict):
+    offline_ci.install("vuln")
+    code = _ci(offline_ci, "--target", str(toy_git["repo"]), "--diff",
+               f"{toy_git['code']}..HEAD", "--fail-on-state", "needs_human",
+               "--output-dir", str(offline_ci.tmp / "out"), "-q")
+    rec = _result(offline_ci)
+    assert code == ci_codes.CI_PASS, rec
+    assert rec["ralph"]["stop_reason"] == "no_changes"
+    assert rec["run_dir"] is None and rec["diff_scope"]["empty"] is True
+    assert any("nothing was audited" in w for w in rec["warnings"])
+    assert not (offline_ci.tmp / "runs").exists() or not any((offline_ci.tmp / "runs").rglob("harness.db"))
+
+
+@pytest.mark.parametrize("spec", ["nope..HEAD", "a...b"])
+def test_e2e_diff_bad_spec_is_error(offline_ci, toy_git: dict, spec: str):
+    offline_ci.install("clean")
+    code = _ci(offline_ci, "--target", str(toy_git["repo"]), "--diff", spec,
+               "--output-dir", str(offline_ci.tmp / "out"), "-q")
+    rec = _result(offline_ci)
+    assert code == ci_codes.CI_ERROR
+    assert rec["errors"][0].startswith("diff:")
+
+
+def test_e2e_diff_head_not_checked_out_is_error(offline_ci, toy_git: dict):
+    offline_ci.install("clean")
+    code = _ci(offline_ci, "--target", str(toy_git["repo"]), "--diff",
+               f"{toy_git['base']}..{toy_git['code']}",
+               "--output-dir", str(offline_ci.tmp / "out"), "-q")
+    assert code == ci_codes.CI_ERROR
+    assert "not head" in _result(offline_ci)["errors"][0]
+
+
+def test_ci_diff_with_run_dir_is_rejected(offline_ci, tmp_path: Path):
+    assert _ci(offline_ci, "--run-dir", str(tmp_path), "--diff", "a..b") == ci_codes.CI_ERROR
