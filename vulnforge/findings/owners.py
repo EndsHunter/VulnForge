@@ -55,6 +55,9 @@ OWNERS_DEFAULTS: dict[str, Any] = {
 CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")
 CODEOWNERS_MAX_BYTES = 1 << 20
 CODEOWNERS_MAX_RULES = 5000
+# Bounds what one hostile rule can add to a report or issue body.
+CODEOWNERS_MAX_OWNERS_PER_RULE = 50
+RENDER_MAX_CODEOWNERS = 20
 MAX_CITATIONS = 10
 MAX_RANGE_LINES = 400
 # A cited file bigger than this gets no blame (history signals still apply).
@@ -383,11 +386,13 @@ class CodeownersPattern:
         self.tokens = tokens
         self.only_direct = only_direct
 
-    def match(self, path: str) -> bool:
+    def match(self, path: str, deadline: float | None = None) -> bool:
         n = len(path)
         reach = [False] * (n + 1)
         reach[0] = True
-        for kind, ch in self.tokens:
+        for step, (kind, ch) in enumerate(self.tokens):
+            if deadline is not None and step % 16 == 0 and time.monotonic() > deadline:
+                raise OwnersError("timeout", "CODEOWNERS match")
             nxt = [False] * (n + 1)
             if kind == "lit":
                 for i in range(n):
@@ -508,7 +513,8 @@ def parse_codeowners(text: str) -> list[tuple[str, CodeownersPattern, list[str]]
         for tok in tokens[1:]:
             if tok.startswith("#"):
                 break
-            owners.append(clean_identity(tok, limit=120))
+            if len(owners) < CODEOWNERS_MAX_OWNERS_PER_RULE:
+                owners.append(clean_identity(tok, limit=120))
         rx = compile_codeowners_pattern(pattern)
         if rx is None:
             continue
@@ -532,7 +538,7 @@ def match_codeowners(
     for idx, (pattern, rx, owners) in enumerate(rules):
         if deadline is not None and idx % 32 == 0 and time.monotonic() > deadline:
             raise OwnersError("timeout", "CODEOWNERS match")
-        if rx.match(repo_path):
+        if rx.match(repo_path, deadline):
             hit = (pattern, owners)
     if hit is None or not hit[1]:
         return None
@@ -1056,7 +1062,7 @@ def owners_flat(owners: dict | None) -> str:
     parts: list[str] = []
     co = owners.get("codeowners")
     if isinstance(co, dict) and co.get("owners"):
-        parts.append("CODEOWNERS " + " ".join(co["owners"]))
+        parts.append("CODEOWNERS " + " ".join(_capped(co["owners"])))
     for s in owners.get("suggestions") or []:
         bits = []
         if s.get("blame_lines"):
@@ -1067,6 +1073,13 @@ def owners_flat(owners: dict | None) -> str:
             bits.append(f"module {s['module_commits']}")
         parts.append(f"{_ident_label(s)} ({', '.join(bits) or 'history'})")
     return "; ".join(parts) or "(no owners found)"
+
+
+def _capped(items: list) -> list[str]:
+    shown = [str(x) for x in items[:RENDER_MAX_CODEOWNERS]]
+    if len(items) > len(shown):
+        shown.append(f"(+{len(items) - len(shown)} more)")
+    return shown
 
 
 def owners_markdown(owners: dict | None) -> list[str]:
@@ -1081,7 +1094,10 @@ def owners_markdown(owners: dict | None) -> list[str]:
     lines: list[str] = []
     co = owners.get("codeowners")
     if isinstance(co, dict) and co.get("owners"):
-        who = " ".join(f"`{_md_code(o)}`" for o in co["owners"])
+        shown = list(co["owners"])[:RENDER_MAX_CODEOWNERS]
+        who = " ".join(f"`{_md_code(o)}`" for o in shown)
+        if len(co["owners"]) > len(shown):
+            who += f" (+{len(co['owners']) - len(shown)} more)"
         lines.append(f"- CODEOWNERS (`{_md_code(co.get('pattern'))}`): {who}")
     for s in owners.get("suggestions") or []:
         bits = []

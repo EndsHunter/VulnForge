@@ -841,3 +841,25 @@ def test_tracker_issue_without_owners_unchanged(tmp_path: Path, repo: Path, monk
     fake = _FakeIssues()
     assert track_findings(run_dir, [fid], transport=fake, cfg=TRACK)["ok"]
     assert "Suggested owners" not in fake.bodies[0]
+
+
+def test_codeowners_owner_lists_are_bounded():
+    many = " ".join(f"@u{i}" for i in range(500))
+    rules = parse_codeowners(f"* {many}\n")
+    assert len(rules[0][2]) == ow.CODEOWNERS_MAX_OWNERS_PER_RULE
+    o = {
+        "available": True,
+        "codeowners": {"file": "CODEOWNERS", "pattern": "*", "owners": rules[0][2]},
+        "suggestions": [],
+    }
+    md = "\n".join(owners_markdown(o))
+    assert md.count("`@u") == ow.RENDER_MAX_CODEOWNERS
+    assert "(+30 more)" in md
+    assert len(md) < 2000
+    assert ow.owners_flat(o).count("@u") == ow.RENDER_MAX_CODEOWNERS
+
+
+def test_codeowners_match_checks_deadline_inside_a_pattern():
+    rx = compile_codeowners_pattern("/" + "*a" * 250)
+    with pytest.raises(OwnersError):
+        rx.match("a" * 4000 + "b", time.monotonic() - 1)
