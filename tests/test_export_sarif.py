@@ -89,10 +89,9 @@ def _make_run(tmp_path: Path) -> tuple[store.RunRef, Path, dict[str, int]]:
         state="confirmed",
         evidence_id="3",
     )
-    ids["xss"] = db.insert_finding(
-        _body("Reflected XSS", "XSS", [{"path": "views/a b.py", "start_line": 10}], severity="medium"),
-        state="needs_human",
-    )
+    xss_body = _body("Reflected XSS", "XSS", [{"path": "views/a b.py", "start_line": 10}], severity="medium")
+    xss_body["severity_rubric"] = {"action": "capped", "rule_id": "sev-2"}
+    ids["xss"] = db.insert_finding(xss_body, state="needs_human")
     ids["cmd"] = db.insert_finding(
         _body("Shell exec", "injection", [{"path": "./run.sh", "start_line": 2}], severity="LOW"),
         state="needs_human",
@@ -237,6 +236,8 @@ def test_result_shape_fingerprints_and_properties(run):
     assert xss["level"] == "warning"
     assert xss["ruleId"] == "client-side"
     assert xss["properties"]["vulnforge/confirmed"] is False
+    assert xss["properties"]["vulnforge/policy_rule"] == "capped:sev-2"
+    assert "vulnforge/policy_rule" not in sqli["properties"]
     assert xss["message"]["text"].startswith(
         "needs_human: Reflected XSS. Mechanical gates passed; not a confirmed vulnerability."
     )

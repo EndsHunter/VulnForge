@@ -358,6 +358,9 @@ def build_sarif(
             props["vulnforge/stable_key"] = stable
         if hr.get("action"):
             props["vulnforge/human_review_action"] = str(hr.get("action"))
+        if r.get("policy_rule"):
+            # Operator security policy effect, e.g. "capped:sev-2".
+            props["vulnforge/policy_rule"] = str(r.get("policy_rule"))
         result["properties"] = props
         pending.append((rid, result))
 
