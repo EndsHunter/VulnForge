@@ -123,32 +123,36 @@ def _header_path(raw: str) -> str | None:
     return s
 
 
-_DIFF_PREFIXES = frozenset({"a", "b", "c", "i", "o", "w"})  # git default + mnemonicPrefix
+# (old side, new side) prefix pairs git emits: default a/b, plus diff.mnemonicPrefix
+# (i=index, w=worktree, c=commit, o=object) in either direction.
+_PREFIX_PAIRS = frozenset(
+    {("a", "b"), ("i", "w"), ("c", "w"), ("c", "i"), ("o", "w"), ("w", "i"), ("w", "c"), ("i", "c"), ("w", "o")}
+)
+_OLD_PREFIXES = frozenset(o for o, _ in _PREFIX_PAIRS)
+_NEW_PREFIXES = frozenset(n for _, n in _PREFIX_PAIRS)
 
 
 def _strip_prefixes(old: str | None, new: str | None) -> tuple[str | None, str | None]:
-    """Strip one git-style prefix component (a/ b/, or mnemonic c/ i/ o/ w/).
+    """Strip one git-style prefix component (a/ b/, or a mnemonic pair like c/ w/).
 
-    Stripped only when every non-/dev/null side has such a prefix and, for a
-    modify, both sides agree after it.
+    A modify strips only a known (old, new) pair whose remainders match. A
+    one-sided header (add/delete) strips only a prefix valid for that side, so
+    ``+++ a/x`` or ``--- b/x`` keep their real directory.
     """
     def split(p: str | None) -> tuple[str, str] | None:
         if p is None:
             return None
         head, sep, rest = p.partition("/")
-        if sep and head in _DIFF_PREFIXES and rest:
-            return head, rest
-        return None
+        return (head, rest) if sep and rest else None
 
     so, sn = split(old), split(new)
     if old is not None and new is not None:
-        if so and sn and so[1] == sn[1] and so[0] != sn[0]:
+        if so and sn and (so[0], sn[0]) in _PREFIX_PAIRS and so[1] == sn[1]:
             return so[1], sn[1]
         return old, new
-    side = so if old is not None else sn
-    if side:
-        return (side[1], None) if old is not None else (None, side[1])
-    return old, new
+    if old is not None:
+        return (so[1], None) if so and so[0] in _OLD_PREFIXES else (old, None)
+    return (None, sn[1]) if sn and sn[0] in _NEW_PREFIXES else (None, new)
 
 
 def _walk_no_symlinks(root: Path, rel: str) -> Path:
@@ -191,7 +195,9 @@ def parse_patch(text: str) -> list[FilePatch]:
     """Parse a unified diff. Raises PatchError on anything unsafe or malformed."""
     if not isinstance(text, str) or not text.strip():
         raise PatchError("empty_patch")
-    lines = text.splitlines(keepends=True)
+    # Split on LF only: form feeds and bare CR are line content, not breaks.
+    parts = text.split("\n")
+    lines = [x + "\n" for x in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
     files: list[FilePatch] = []
     cur: FilePatch | None = None
     i = 0

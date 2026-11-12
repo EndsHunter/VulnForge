@@ -339,3 +339,36 @@ def test_scratch_symlink_refused(tmp_path: Path):
     with pytest.raises(PatchError, match="scratch_symlink_refused"):
         new_scratch_dir(run_dir, 1)
     assert list(elsewhere.iterdir()) == []
+
+
+def test_parser_keeps_form_feed_and_bare_cr_in_context(tmp_path: Path):
+    (tmp_path / "ff.txt").write_bytes(b"a\x0cb\nz\n")
+    (tmp_path / "cr.txt").write_bytes(b"a\rb\nz\n")
+    patch = (
+        "--- a/ff.txt\n+++ b/ff.txt\n@@ -1,2 +1,2 @@\n a\x0cb\n-z\n+Z\n"
+        "--- a/cr.txt\n+++ b/cr.txt\n@@ -1,2 +1,2 @@\n a\rb\n-z\n+Z\n"
+    )
+    dest = tmp_path.parent / "ff_ctx"
+    materialize_patched_tree(tmp_path, patch, dest)
+    assert (dest / "ff.txt").read_bytes() == b"a\x0cb\nZ\n"
+    assert (dest / "cr.txt").read_bytes() == b"a\rb\nZ\n"
+
+
+@pytest.mark.parametrize(
+    "header,want_old,want_new",
+    [
+        ("--- /dev/null\n+++ a/hello.py\n", None, "a/hello.py"),
+        ("--- b/settings.py\n+++ /dev/null\n", "b/settings.py", None),
+        ("--- /dev/null\n+++ w/new.py\n", None, "new.py"),
+        ("--- c/old.py\n+++ /dev/null\n", "old.py", None),
+    ],
+)
+def test_one_sided_prefix_rules(header: str, want_old, want_new):
+    body = "@@ -0,0 +1 @@\n+x\n" if want_old is None else "@@ -1 +0,0 @@\n-x\n"
+    fp = parse_patch(header + body)[0]
+    assert (fp.old_path, fp.new_path) == (want_old, want_new)
+
+
+def test_mismatched_prefix_pair_is_rename():
+    with pytest.raises(PatchError, match="rename_refused"):
+        parse_patch("--- a/x.py\n+++ w/x.py\n@@ -1 +1 @@\n-1\n+2\n")
