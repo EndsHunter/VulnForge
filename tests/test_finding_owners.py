@@ -214,7 +214,8 @@ def test_codeowners_pathological_pattern_is_fast():
     rx = compile_codeowners_pattern(pat)
     t0 = time.monotonic()
     assert rx is not None
-    assert rx.match("a/" * 400 + "y") is None
+    assert rx.match("a/" * 400 + "y") is False
+    assert rx.match("a/" * 400 + "x") is True
     assert time.monotonic() - t0 < 1.0
 
 
@@ -636,3 +637,70 @@ def test_api_owners_disabled(tmp_path: Path, repo: Path, monkeypatch):
         assert data["enabled"] is False and data["reason"] == "disabled"
         r = client.get("/api/runs/tgt/run-001/export?format=json")
         assert "owners" not in r.json()
+
+
+# --------------------------------------------------------------------------
+# review follow-ups
+
+
+def test_codeowners_root_star_owns_root_entries_only():
+    rules = "* @everyone\n/* @root\n"
+    assert _owner(rules, "README.md") == ["@root"]
+    assert _owner(rules, "src/a.py") == ["@everyone"]
+
+
+def test_codeowners_wildcard_redos_is_linear():
+    pat = "/" + "**a" * 170  # 511 chars, inside the length cap
+    rx = compile_codeowners_pattern(pat)
+    assert rx is not None
+    t0 = time.monotonic()
+    assert rx.match("b" * 40) is False
+    assert rx.match("a" * 4000 + "b") is False
+    rx2 = compile_codeowners_pattern("/" + "*a" * 250)
+    assert rx2.match("a" * 4000 + "b") is False
+    assert time.monotonic() - t0 < 2.0
+
+
+def test_codeowners_escaped_space():
+    rules = parse_codeowners("docs/My\\ Documents/* @docs\n")
+    assert len(rules) == 1 and rules[0][2] == ["@docs"]
+    assert match_codeowners(rules, "docs/My Documents/a.md")[1] == ["@docs"]
+
+
+def test_git_stdout_is_capped_while_streaming(repo: Path):
+    with pytest.raises(OwnersError) as ei:
+        ow._run_git(repo, ["cat-file", "blob", "HEAD:src/auth/login.py"], timeout=10, max_bytes=8)
+    assert ei.value.reason == "too_large"
+
+
+def test_huge_cited_blob_skips_blame_not_history(repo: Path, monkeypatch):
+    monkeypatch.setattr(ow, "MAX_BLOB_BYTES", 4)
+    out = suggest_for_finding(repo, body_for(start=1, end=10), ON)
+    assert out["available"] is True
+    assert out["blame"] == [
+        {"path": "src/auth/login.py", "ranges": [], "authors": [], "skipped": "too_large"}
+    ]
+    assert out["suggestions"] and all(s["blame_lines"] == 0 for s in out["suggestions"])
+
+
+def test_section_metadata_unchanged_when_owners_off(run_db):
+    run_dir, db = run_db
+    data = json.loads(export_json(run_dir, db))
+    assert "include_owners" not in data["sections"]
+
+
+def test_settings_put_null_hands_owners_back_to_yaml(tmp_path: Path, repo: Path, monkeypatch):
+    from vulnforge.settings import load_ui_settings
+
+    _isolate_settings(tmp_path, monkeypatch)
+    client, _fid = _client(tmp_path, repo, monkeypatch, {"enabled": True})
+    with client:
+        assert client.put("/api/settings", json={"finding_owners": False}).status_code == 200
+        assert load_ui_settings()["finding_owners"] is False
+        assert client.put("/api/settings", json={"finding_owners": None}).status_code == 200
+        assert load_ui_settings()["finding_owners"] is None
+        # a save that omits the toggles leaves them alone
+        client.put("/api/settings", json={"finding_owners_redact_exports": False})
+        client.put("/api/settings", json={"max_tasks": 9})
+        ui = load_ui_settings()
+        assert ui["finding_owners"] is None and ui["finding_owners_redact_exports"] is False

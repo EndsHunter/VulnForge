@@ -28,6 +28,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -57,7 +58,10 @@ CODEOWNERS_MAX_BYTES = 1 << 20
 CODEOWNERS_MAX_RULES = 5000
 MAX_CITATIONS = 10
 MAX_RANGE_LINES = 400
-MAX_BLOB_BYTES = 16 << 20
+# A cited file bigger than this gets no blame (history signals still apply).
+MAX_BLOB_BYTES = 8 << 20
+# Hard cap on any one git command's stdout.
+MAX_OUTPUT_BYTES = 16 << 20
 
 # Weights for the three history signals (CODEOWNERS is reported separately).
 W_BLAME, W_FILE, W_MODULE = 0.6, 0.25, 0.15
@@ -189,9 +193,13 @@ def _run_git(
     *,
     timeout: float,
     ceiling: str | None = None,
-    max_bytes: int = MAX_BLOB_BYTES,
+    max_bytes: int = MAX_OUTPUT_BYTES,
 ) -> bytes:
-    """Run one read-only git command; return stdout or raise :class:`OwnersError`."""
+    """Run one read-only git command; return stdout or raise :class:`OwnersError`.
+
+    stdout is read in chunks and the process group is killed as soon as it
+    passes ``max_bytes``, so a huge blob or line never lands in memory.
+    """
     git = shutil.which("git")
     if not git:
         raise OwnersError("git_missing")
@@ -211,25 +219,63 @@ def _run_git(
         )
     except OSError as exc:
         raise OwnersError("git_missing", str(exc)) from exc
-    try:
-        out, err = proc.communicate(timeout=max(0.5, float(timeout)))
-    except subprocess.TimeoutExpired:
-        _kill_group(proc)
-        raise OwnersError("timeout", " ".join(args[:2]))
-    if len(out) > max_bytes:
+
+    out = bytearray()
+    err = bytearray()
+    overflow = threading.Event()
+
+    def _pump(stream: Any, buf: bytearray, cap: int, flag: threading.Event | None) -> None:
+        try:
+            while True:
+                chunk = stream.read(65536)
+                if not chunk:
+                    return
+                if len(buf) + len(chunk) > cap:
+                    buf.extend(chunk[: max(0, cap - len(buf))])
+                    if flag is not None:
+                        flag.set()
+                        return
+                    continue  # stderr: keep draining, drop the excess
+                buf.extend(chunk)
+        except (OSError, ValueError):
+            return
+
+    readers = [
+        threading.Thread(target=_pump, args=(proc.stdout, out, max_bytes, overflow), daemon=True),
+        threading.Thread(target=_pump, args=(proc.stderr, err, 65536, None), daemon=True),
+    ]
+    for t in readers:
+        t.start()
+    deadline = time.monotonic() + max(0.5, float(timeout))
+    while proc.poll() is None:
+        if overflow.is_set():
+            _kill_group(proc, readers)
+            raise OwnersError("too_large", " ".join(args[:2]))
+        if time.monotonic() >= deadline:
+            _kill_group(proc, readers)
+            raise OwnersError("timeout", " ".join(args[:2]))
+        overflow.wait(0.02)
+    for t in readers:
+        t.join(timeout=max(0.1, deadline - time.monotonic()))
+    if overflow.is_set():
+        _kill_group(proc, readers)
         raise OwnersError("too_large", " ".join(args[:2]))
+    if any(t.is_alive() for t in readers):
+        # a grandchild kept the pipe open past exit
+        _kill_group(proc, readers)
+        raise OwnersError("timeout", " ".join(args[:2]))
     if proc.returncode != 0:
-        msg = err.decode("utf-8", errors="replace").strip()
+        msg = bytes(err).decode("utf-8", errors="replace").strip()
         low = msg.lower()
         if "dubious ownership" in low or "safe.directory" in low:
             raise OwnersError("unsafe_repository", msg)
         if "not a git repository" in low:
             raise OwnersError("not_a_git_repo", msg)
         raise OwnersError("git_error", msg)
-    return out
+    return bytes(out)
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
+def _kill_group(proc: subprocess.Popen, readers: list[threading.Thread] = ()) -> None:
     try:
         if hasattr(os, "killpg"):
             os.killpg(proc.pid, signal.SIGKILL)
@@ -238,9 +284,17 @@ def _kill_group(proc: subprocess.Popen) -> None:
     except (ProcessLookupError, PermissionError, OSError):
         pass
     try:
-        proc.communicate(timeout=5)
-    except (subprocess.TimeoutExpired, OSError, ValueError):
+        proc.wait(timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
         pass
+    for stream in (proc.stdout, proc.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except OSError:
+            pass
+    for t in readers:
+        t.join(timeout=1)
 
 
 # --------------------------------------------------------------------------
@@ -281,74 +335,138 @@ def _is_bot(name: str, email: str) -> bool:
 # CODEOWNERS
 
 
-def _glob_to_regex(body: str) -> str:
-    out: list[str] = []
+class CodeownersPattern:
+    """Compiled CODEOWNERS glob. Matching is linear (no regex, no backtracking).
+
+    The matcher tracks the set of path positions reachable after each token,
+    so a hostile pattern like ``**a**a**a…`` costs O(tokens × path length).
+    """
+
+    __slots__ = ("pattern", "tokens", "only_direct")
+
+    def __init__(self, pattern: str, tokens: list[tuple[str, str]], only_direct: bool) -> None:
+        self.pattern = pattern
+        self.tokens = tokens
+        self.only_direct = only_direct
+
+    def match(self, path: str) -> bool:
+        n = len(path)
+        reach = [False] * (n + 1)
+        reach[0] = True
+        for kind, ch in self.tokens:
+            nxt = [False] * (n + 1)
+            if kind == "lit":
+                for i in range(n):
+                    if reach[i] and path[i] == ch:
+                        nxt[i + 1] = True
+            elif kind == "any1":  # ?
+                for i in range(n):
+                    if reach[i] and path[i] != "/":
+                        nxt[i + 1] = True
+            elif kind == "star":  # * — any run without a slash
+                carry = False
+                for i in range(n + 1):
+                    carry = carry or reach[i]
+                    if carry:
+                        nxt[i] = True
+                    if i < n and path[i] == "/":
+                        carry = False
+            elif kind == "dstar":  # ** — anything
+                carry = False
+                for i in range(n + 1):
+                    carry = carry or reach[i]
+                    nxt[i] = carry
+            elif kind == "dirs":  # **/ — zero or more leading directories
+                carry = False
+                for i in range(n + 1):
+                    if reach[i]:
+                        nxt[i] = True
+                        carry = True
+                    if carry and i < n and path[i] == "/":
+                        nxt[i + 1] = True
+            reach = nxt
+            if not any(reach):
+                return False
+        if reach[n]:
+            return True
+        if self.only_direct:
+            return False
+        # a matched directory owns everything beneath it
+        return any(reach[i] and path[i] == "/" for i in range(n))
+
+
+def _glob_tokens(body: str) -> list[tuple[str, str]]:
+    toks: list[tuple[str, str]] = []
     i = 0
     n = len(body)
     while i < n:
         if body.startswith("**/", i):
-            # collapse runs of **/ so the regex never nests .* groups
             while body.startswith("**/", i):
                 i += 3
-            out.append("(?:[^\n]*/)?")
+            toks.append(("dirs", ""))
             continue
-        if body.startswith("**", i):
-            while body.startswith("*", i):
-                i += 1
-            out.append("[^\n]*")
+        if body[i] == "*":
+            j = i
+            while j < n and body[j] == "*":
+                j += 1
+            toks.append(("dstar" if j - i >= 2 else "star", ""))
+            i = j
             continue
         c = body[i]
-        if c == "*":
-            while i < n and body[i] == "*":
-                i += 1
-            out.append("[^/]*")
-            continue
         if c == "?":
-            out.append("[^/]")
+            toks.append(("any1", ""))
         elif c == "\\" and i + 1 < n:
             i += 1
-            out.append(re.escape(body[i]))
+            toks.append(("lit", body[i]))
         else:
-            out.append(re.escape(c))
+            toks.append(("lit", c))
         i += 1
-    return "".join(out)
+    # adjacent wildcards add nothing; keep the token list short
+    out: list[tuple[str, str]] = []
+    for t in toks:
+        if out and t[0] in ("star", "dstar") and out[-1][0] in ("star", "dstar"):
+            if t[0] == "dstar":
+                out[-1] = t
+            continue
+        out.append(t)
+    return out
 
 
-def compile_codeowners_pattern(pattern: str) -> re.Pattern[str] | None:
-    """GitHub CODEOWNERS pattern → regex over a repo-relative path.
+def compile_codeowners_pattern(pattern: str) -> CodeownersPattern | None:
+    """GitHub CODEOWNERS pattern → matcher over a repo-relative path.
 
     * a ``/`` anywhere but the end anchors at the repo root
     * otherwise the pattern matches at any depth
     * a match on a directory owns everything under it, except a final ``/*``
-      segment, which owns only the files directly in that directory
+      (including ``/*`` itself), which owns only direct entries
     * ``!`` negation is not supported by GitHub → ``None``
     """
     pat = pattern.strip()
     if not pat or pat.startswith("!") or len(pat) > 512:
         return None
     anchored = "/" in pat.rstrip("/")
+    only_direct = pat.endswith("/*") and not pat.endswith("/**")
     body = pat.strip("/")
     if not body:
         return None
-    only_direct = body.endswith("/*") and not body.endswith("/**")
-    prefix = "^" if anchored else "^(?:[^\n]*/)?"
-    suffix = "$" if only_direct else "(?:/[^\n]*)?$"
-    try:
-        return re.compile(prefix + _glob_to_regex(body) + suffix)
-    except re.error:
-        return None
+    tokens = _glob_tokens(body)
+    if not anchored:
+        tokens = [("dirs", "")] + tokens
+    return CodeownersPattern(pat, tokens, only_direct)
 
 
-def parse_codeowners(text: str) -> list[tuple[str, re.Pattern[str], list[str]]]:
-    rules: list[tuple[str, re.Pattern[str], list[str]]] = []
+_CO_TOKEN_RE = re.compile(r"(?:\\.|\S)+")
+
+
+def parse_codeowners(text: str) -> list[tuple[str, CodeownersPattern, list[str]]]:
+    rules: list[tuple[str, CodeownersPattern, list[str]]] = []
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        tokens = line.split()
+        # backslash escapes a space or a leading # inside the pattern
+        tokens = _CO_TOKEN_RE.findall(line)
         pattern = tokens[0]
-        if pattern.startswith("\\#"):
-            pattern = pattern[1:]
         owners: list[str] = []
         for tok in tokens[1:]:
             if tok.startswith("#"):
@@ -364,7 +482,7 @@ def parse_codeowners(text: str) -> list[tuple[str, re.Pattern[str], list[str]]]:
 
 
 def match_codeowners(
-    rules: list[tuple[str, re.Pattern[str], list[str]]], repo_path: str
+    rules: list[tuple[str, CodeownersPattern, list[str]]], repo_path: str
 ) -> tuple[str, list[str]] | None:
     """Last matching rule wins; a rule with no owners clears ownership."""
     hit: tuple[str, list[str]] | None = None
@@ -489,12 +607,19 @@ class OwnerResolver:
             return self._cache[key]
         _top, head, _p = self.repo()
         try:
-            data = self._git(["cat-file", "blob", f"{head}:{rpath}"])
+            size = int(self._git(["cat-file", "-s", f"{head}:{rpath}"]).strip() or 0)
         except OwnersError as exc:
-            if exc.reason in ("git_error",):
+            if exc.reason == "git_error":
                 self._cache[key] = None
                 return None
             raise
+        except ValueError:
+            self._cache[key] = None
+            return None
+        if size > MAX_BLOB_BYTES:
+            self._cache[key] = -1  # tracked, too big to blame
+            return -1
+        data = self._git(["cat-file", "blob", f"{head}:{rpath}"], max_bytes=MAX_BLOB_BYTES)
         n = data.count(b"\n") + (0 if not data or data.endswith(b"\n") else 1)
         self._cache[key] = n
         return n
@@ -649,6 +774,9 @@ class OwnerResolver:
             if nlines is None:
                 continue
             tracked.add(rel)
+            if nlines < 0:
+                blame_out.append({"path": rel, "ranges": [], "authors": [], "skipped": "too_large"})
+                continue
             clamped: list[tuple[int, int]] = []
             for a, b in ranges:
                 a, b = max(1, min(a, b)), max(a, b)

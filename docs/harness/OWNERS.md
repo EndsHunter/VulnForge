@@ -11,8 +11,9 @@ Opt-in. For each finding, VulnForge suggests who probably owns the cited code:
 
 Weights are normalised over the signals that have data. `[bot]` identities are dropped.
 CODEOWNERS uses GitHub rules: the last matching rule wins, a rule with no owners clears
-ownership, a `/` in the middle anchors the pattern at the repo root, and `docs/*` owns only
-direct files. These are suggestions, not assignments. Renames are not followed.
+ownership, a `/` in the middle anchors the pattern at the repo root, `docs/*` and `/*` own only
+direct entries, and `\ ` escapes a space. Matching is linear in pattern × path length (no
+regex), so a hostile CODEOWNERS cannot stall the dashboard. These are suggestions, not assignments. Renames are not followed.
 
 Code: `vulnforge/findings/owners.py`. Nothing is written to the finding, `harness.db`, or the target.
 
@@ -69,6 +70,8 @@ The target is code under audit, so its `.git/config` and tracked files are hosti
   at a work tree elsewhere) → otherwise `unsafe_repository`. `safe.directory` is never overridden.
 - Citation paths: no absolute paths, `..`, or control characters. Always passed after `--`.
 - Each call has a timeout and runs in its own process group, which is killed on expiry.
+  stdout is streamed with a 16 MiB cap (killed on overflow). A cited blob over 8 MiB is not
+  blamed (`skipped: too_large`); file and module history still apply.
 - Author strings lose control characters; log records use NUL/RS separators.
   CSV/XLSX owner cells that start with `= + - @` or a tab get a leading `'`.
 - The in-repo `.mailmap` is honoured (blame cannot turn it off). It is target data, with the
@@ -77,6 +80,6 @@ The target is code under audit, so its `.git/config` and tracked files are hosti
 ## Unavailable reasons
 
 `disabled`, `git_missing`, `not_a_git_repo`, `unsafe_repository`, `no_head`, `untracked`,
-`no_citations`, `target_missing`, `timeout`, `budget_exhausted`, `git_error`.
+`no_citations`, `target_missing`, `timeout`, `too_large`, `budget_exhausted`, `git_error`.
 
 Tests: `tests/test_finding_owners.py` (temp git repos built in the test).

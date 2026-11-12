@@ -91,11 +91,15 @@ class ExportOptions:
 
     def as_dict(self) -> dict[str, bool]:
         """Report sections only (printed by JSON/HTML/DOCX); SARIF filters excluded."""
-        return {
+        out = {
             f.name: bool(getattr(self, f.name))
             for f in fields(self)
             if f.name.startswith("include_")
         }
+        # Owners are opt-in: when off, section metadata stays as before #190.
+        if not out.get("include_owners"):
+            out.pop("include_owners", None)
+        return out
 
     @classmethod
     def from_kwargs(

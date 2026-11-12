@@ -621,7 +621,10 @@
     for (const [key, sel] of OWNER_TOGGLES) {
       const el = $(sel);
       if (!el) continue;
-      const loaded = ownerLoaded[key] || {};
+      // Never send a toggle that was not loaded from the server: a failed
+      // GET would otherwise write the HTML defaults over YAML owners.*.
+      const loaded = ownerLoaded[key];
+      if (!loaded || typeof loaded.effective !== "boolean") continue;
       if (loaded.stored != null || el.checked !== loaded.effective) {
         out[key] = !!el.checked;
       }
@@ -635,9 +638,9 @@
       const el = $(sel);
       if (!el) continue;
       const stored = s && typeof s[key] === "boolean" ? s[key] : null;
-      const fallback = key === "finding_owners" ? false : true;
       const effective =
-        eff && typeof eff[key] === "boolean" ? eff[key] : stored != null ? stored : fallback;
+        eff && typeof eff[key] === "boolean" ? eff[key] : stored != null ? stored : null;
+      if (effective == null) continue;
       el.checked = effective;
       ownerLoaded[key] = { stored, effective };
     }

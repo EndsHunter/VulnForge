@@ -2994,15 +2994,13 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         if "api_key" in body.model_fields_set:
             updates["api_key"] = body.api_key if body.api_key is not None else ""
         # Explicit bool clears (False is valid)
-        for bkey in (
-            "validate_poc_referee",
-            "validate_llm",
-            "hunt_moa",
-            "finding_owners",
-            "finding_owners_redact_exports",
-        ):
+        for bkey in ("validate_poc_referee", "validate_llm", "hunt_moa"):
             if bkey in body.model_fields_set:
                 updates[bkey] = bool(getattr(body, bkey))
+        # Tri-state: explicit null hands the owner toggles back to YAML.
+        for okey in ("finding_owners", "finding_owners_redact_exports"):
+            if okey in body.model_fields_set:
+                updates[okey] = getattr(body, okey)
         if "validate_models" in body.model_fields_set:
             updates["validate_models"] = body.validate_models or []
         if "hunt_perspectives" in body.model_fields_set:
