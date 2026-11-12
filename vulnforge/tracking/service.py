@@ -356,6 +356,7 @@ def track_findings(
 def _publish_one(db: Database, sk: Any, finding: Any, payload: Any, *, operator: str) -> dict:
     key = finding.stable_key
     sink_name, dest = sk.name, sk.destination
+    claim: Optional[str] = None
     row = db.get_tracking(key, sink_name, dest)
     if row and row.get("status") == "linked" and row.get("external_id"):
         res = sk.update(str(row["external_id"]), payload)
@@ -372,7 +373,8 @@ def _publish_one(db: Database, sk: Any, finding: Any, payload: Any, *, operator:
             try:
                 existing = sk.find_by_marker(key)
                 # The scan can be slow; make sure nobody took the claim over.
-                if not db.refresh_tracking_claim(key, sink_name, dest, claim):
+                claim = db.refresh_tracking_claim(key, sink_name, dest, claim) or ""
+                if not claim:
                     raise TrackingError("publish claim was taken over; retry later")
                 res = (
                     sk.update(existing.external_id, payload)
@@ -387,7 +389,13 @@ def _publish_one(db: Database, sk: Any, finding: Any, payload: Any, *, operator:
         key, sink_name, dest,
         external_id=res.external_id, url=res.url,
         finding_id=finding.id, state_at_track=finding.state, operator=operator,
+        claim_token=claim or None,
     )
+    if rec is None:
+        raise TrackingError(
+            f"{res.action} {res.url} but the publish claim was lost before it was "
+            "recorded; check the tracker for a duplicate"
+        )
     return {
         "finding_id": finding.id,
         "ok": True,

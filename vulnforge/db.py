@@ -591,27 +591,37 @@ class Database:
             """
             UPDATE finding_tracking SET claim_token=?, updated_at=?, operator=?
             WHERE stable_key=? AND sink=? AND destination=? AND status='pending'
-              AND claim_token IS ?
+              AND claim_token IS ? AND updated_at=?
             """,
-            (tok, now, operator, stable_key, sink, destination, row.get("claim_token")),
+            (
+                tok, now, operator, stable_key, sink, destination,
+                row.get("claim_token"), row.get("updated_at"),
+            ),
         )
         self.conn.commit()
         return (tok if int(cur.rowcount or 0) > 0 else None), row
 
     def refresh_tracking_claim(
         self, stable_key: str, sink: str, destination: str, claim_token: str
-    ) -> bool:
-        """Re-assert a pending claim right before an external write. False = lost."""
+    ) -> Optional[str]:
+        """Re-assert a pending claim right before an external write.
+
+        Rotates the token so a taker holding the old token cannot match.
+        Returns the new token, or ``None`` when the claim was lost.
+        """
+        import secrets
+
+        new_tok = secrets.token_hex(16)
         cur = self.conn.execute(
             """
-            UPDATE finding_tracking SET updated_at=?
+            UPDATE finding_tracking SET claim_token=?, updated_at=?
             WHERE stable_key=? AND sink=? AND destination=? AND status='pending'
               AND claim_token=?
             """,
-            (utc_now_iso(), stable_key, sink, destination, claim_token),
+            (new_tok, utc_now_iso(), stable_key, sink, destination, claim_token),
         )
         self.conn.commit()
-        return int(cur.rowcount or 0) > 0
+        return new_tok if int(cur.rowcount or 0) > 0 else None
 
     def release_tracking_claim(
         self, stable_key: str, sink: str, destination: str, claim_token: str
@@ -638,8 +648,32 @@ class Database:
         finding_id: int,
         state_at_track: str,
         operator: str = "",
-    ) -> dict[str, Any]:
+        claim_token: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Link the external issue. With ``claim_token``, only while that claim holds.
+
+        Returns ``None`` when the claim was lost (the caller reports it; another
+        publisher owns the row).
+        """
         now = utc_now_iso()
+        if claim_token is not None:
+            cur = self.conn.execute(
+                """
+                UPDATE finding_tracking SET
+                  status='linked', claim_token=NULL, external_id=?, url=?,
+                  finding_id=?, state_at_track=?, operator=?, updated_at=?
+                WHERE stable_key=? AND sink=? AND destination=? AND status='pending'
+                  AND claim_token=?
+                """,
+                (
+                    str(external_id), url, finding_id, state_at_track, operator, now,
+                    stable_key, sink, destination, claim_token,
+                ),
+            )
+            self.conn.commit()
+            if int(cur.rowcount or 0) == 0:
+                return None
+            return self.get_tracking(stable_key, sink, destination)
         self.conn.execute(
             """
             INSERT INTO finding_tracking(

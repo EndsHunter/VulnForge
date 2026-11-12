@@ -643,3 +643,52 @@ def test_label_change_after_preview_is_skipped(tmp_path):
     r = publish_with_token(run_dir, pv["token"], transport=fake, cfg=cfg2)
     assert "changed since preview" in r["results"][0]["reason"]
     assert fake.calls == []
+
+
+def test_refresh_rotates_token_and_lost_claim_is_not_recorded(tmp_path):
+    run_dir = _run(tmp_path)
+    fid = _add(run_dir)
+    key = _key(run_dir, fid)
+    db = Database.open(run_dir / "harness.db")
+    try:
+        t1, _ = db.claim_tracking(key, "github", REPO, finding_id=fid)
+        t1b = db.refresh_tracking_claim(key, "github", REPO, t1)
+        assert t1b and t1b != t1
+        assert db.refresh_tracking_claim(key, "github", REPO, t1) is None  # old token dead
+        # Another publisher already linked the row: a lost claim must not overwrite it.
+        db.record_tracking(key, "github", REPO, external_id="7", url="u7",
+                           finding_id=fid, state_at_track="confirmed")
+        lost = db.record_tracking(key, "github", REPO, external_id="8", url="u8",
+                                  finding_id=fid, state_at_track="confirmed",
+                                  claim_token=t1b)
+        assert lost is None
+        assert db.get_tracking(key, "github", REPO)["external_id"] == "7"
+    finally:
+        db.close()
+
+
+def test_stale_takeover_requires_same_timestamp(tmp_path):
+    run_dir = _run(tmp_path)
+    fid = _add(run_dir)
+    key = _key(run_dir, fid)
+    db = Database.open(run_dir / "harness.db")
+    try:
+        t1, _ = db.claim_tracking(key, "github", REPO, finding_id=fid)
+        db.conn.execute("UPDATE finding_tracking SET updated_at='2000-01-01T00:00:00Z'")
+        db.conn.commit()
+        real_get = db.get_tracking
+
+        def get_then_holder_refreshes(*a):
+            row = real_get(*a)
+            # Holder refreshes between the taker's read and its UPDATE.
+            db.conn.execute(
+                "UPDATE finding_tracking SET updated_at='2099-01-01T00:00:00Z'"
+            )
+            db.conn.commit()
+            return row
+
+        db.get_tracking = get_then_holder_refreshes
+        t2, _ = db.claim_tracking(key, "github", REPO, finding_id=fid)
+        assert t2 is None
+    finally:
+        db.close()

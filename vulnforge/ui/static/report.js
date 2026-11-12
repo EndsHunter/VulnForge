@@ -2678,7 +2678,7 @@
           : "create (or replace the issue already carrying this stable_key)";
         const labels = (it.issue_labels || []).map((l) => esc(l)).join(", ");
         return `<li>#${esc(it.finding_id)} <span class="mono">${esc(it.state)}</span> — ${what}${
-          labels ? ` · labels on create: <span class="mono">${labels}</span>` : ""
+          labels && !it.existing_url ? ` · labels on create: <span class="mono">${labels}</span>` : ""
         }
           <details><summary>${esc(it.issue_title || "")}</summary><pre class="mono report-track-body">${esc(
             it.issue_body || ""
@@ -2728,6 +2728,7 @@
     if (!base || !api || !trackToken) return;
     const token = trackToken;
     invalidateTrackPreview("Publishing…");
+    const gen = trackGen;
     try {
       const r = await api(`${base}/findings/track`, {
         method: "POST",
@@ -2735,6 +2736,8 @@
         body: JSON.stringify({ token, operator: "operator" }),
       });
       const res = r.results || [];
+      if (typeof window.loadRunFull === "function") window.loadRunFull();
+      if (gen !== trackGen) return; // dialog changed meanwhile; keep the newer view
       const prev = document.getElementById("report-track-preview");
       if (prev) {
         prev.innerHTML = `<ul class="report-reasons">${res
@@ -2750,9 +2753,8 @@
           .join("")}</ul>`;
       }
       setTrackHint(`Published ${r.published || 0} of ${res.length}.`, !r.ok);
-      if (typeof window.loadRunFull === "function") await window.loadRunFull();
     } catch (e) {
-      setTrackHint(e.message || String(e), true);
+      if (gen === trackGen) setTrackHint(e.message || String(e), true);
     }
   }
 
