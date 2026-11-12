@@ -2379,6 +2379,21 @@
     updateExportHint();
   }
 
+  function readSarifFilters() {
+    return {
+      needsHuman: !!document.getElementById("export-sarif-needs-human")?.checked,
+      rejected: !!document.getElementById("export-sarif-rejected")?.checked,
+    };
+  }
+
+  function readSarifStatesLabel() {
+    const f = readSarifFilters();
+    const parts = ["confirmed"];
+    if (f.needsHuman) parts.push("needs_human");
+    if (f.rejected) parts.push("rejected");
+    return parts.join(" + ");
+  }
+
   function updateExportHint() {
     const hint = $("#report-export-hint");
     if (!hint) return;
@@ -2403,8 +2418,11 @@
       (secs.architecture || secs.hunts || secs.summary || secs.codemap)
         ? " CSV is findings-only."
         : "";
+    const sarifNote = fmts.includes("sarif")
+      ? ` SARIF is findings-only (${readSarifStatesLabel()}).`
+      : "";
     hint.style.color = "";
-    hint.textContent = `Will download: ${fmts.join(", ")}${multi}. Sections: ${secNames.join(", ")}.${csvNote}`;
+    hint.textContent = `Will download: ${fmts.join(", ")}${multi}. Sections: ${secNames.join(", ")}.${csvNote}${sarifNote}`;
   }
 
   function exportReport(opts) {
@@ -2441,6 +2459,11 @@
     params.set("include_summary", sections.summary ? "true" : "false");
     params.set("include_codemap", sections.codemap ? "true" : "false");
     params.set("include_poc", sections.poc ? "true" : "false");
+    if (formats.includes("sarif")) {
+      const sarif = readSarifFilters();
+      params.set("sarif_include_needs_human", sarif.needsHuman ? "true" : "false");
+      params.set("sarif_include_rejected", sarif.rejected ? "true" : "false");
+    }
     const url =
       `/api/runs/${encodeURIComponent(meta.target_id)}/${encodeURIComponent(meta.run_id)}/export?` +
       params.toString();

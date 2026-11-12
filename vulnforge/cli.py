@@ -2,8 +2,8 @@
 CLI entrypoints for vulnforge.
 
 Commands: vf init | run-once | status | project | apply-candidate | delete-run |
-dashboard | tool-gaps | export-validation-job | validate-poc | develop-fix |
-verify-fix | hitl
+dashboard | tool-gaps | export | export-validation-job | validate-poc |
+develop-fix | verify-fix | hitl
 """
 
 from __future__ import annotations
@@ -63,6 +63,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_delete_run(args, cfg)
         if cmd == "tool-gaps":
             return cmd_tool_gaps(args, cfg)
+        if cmd == "export":
+            return cmd_export(args, cfg)
         if cmd == "export-validation-job":
             return cmd_export_validation_job(args, cfg)
         if cmd == "validate-poc":
@@ -266,6 +268,50 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Hard-stop runner if alive; allow delete even without harness.db",
     )
+
+    exp = sub.add_parser(
+        "export",
+        help="Export findings report (json|md|csv|html|xlsx|docx|sarif; comma list → zip)",
+    )
+    exp.add_argument("--run-dir", type=Path, default=None)
+    exp.add_argument(
+        "--format",
+        default="json",
+        help="One format or comma-separated list (multi → zip). Default: json",
+    )
+    exp.add_argument(
+        "--out",
+        default=None,
+        help="Output file, or - for stdout (default: <run>/exports/<report file>)",
+    )
+    exp.add_argument(
+        "--include-needs-human",
+        action="store_true",
+        help="SARIF: also export needs_human (default: confirmed only)",
+    )
+    exp.add_argument(
+        "--include-rejected",
+        action="store_true",
+        help="SARIF: also export rejected_* and superseded",
+    )
+    exp.add_argument(
+        "--state",
+        action="append",
+        default=None,
+        help="SARIF: explicit finding state to export (repeatable; overrides the include flags)",
+    )
+    for flag, label in (
+        ("architecture", "recon architecture map"),
+        ("hunts", "hunt coverage + hunt tasks"),
+        ("summary", "campaign / task summary"),
+        ("codemap", "mechanical codemap brief"),
+        ("poc", "PoC / evidence pack contents"),
+    ):
+        exp.add_argument(
+            f"--{flag}",
+            action="store_true",
+            help=f"Include {label} (narrative formats; SARIF/CSV are findings-only)",
+        )
 
     evj = sub.add_parser(
         "export-validation-job",
@@ -1635,6 +1681,56 @@ def cmd_project(args, cfg: dict) -> int:
     finally:
         db.close()
 
+
+
+def cmd_export(args, cfg: dict) -> int:
+    """Write a findings report export (same exporters as the dashboard Report menu)."""
+    from vulnforge.export_findings import ExportOptions, export_bundle, export_filename
+
+    try:
+        run_dir = resolve_run_dir(args, cfg)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_CONFIG
+    db_path = run_dir / "harness.db"
+    if not db_path.is_file():
+        print(f"harness.db not found in {run_dir}", file=sys.stderr)
+        return EXIT_CONFIG
+    opts = ExportOptions(
+        include_findings=True,
+        include_architecture=bool(args.architecture),
+        include_hunts=bool(args.hunts),
+        include_summary=bool(args.summary),
+        include_poc=bool(args.poc),
+        include_codemap=bool(args.codemap),
+        sarif_include_needs_human=bool(args.include_needs_human),
+        sarif_include_rejected=bool(args.include_rejected),
+        sarif_states=tuple(args.state) if args.state else None,
+    )
+    db = Database.open(db_path)
+    try:
+        try:
+            payload, ext, _media = export_bundle(args.format, run_dir, db, options=opts)
+        except (ValueError, ImportError) as e:
+            print(str(e), file=sys.stderr)
+            return EXIT_CONFIG
+    finally:
+        db.close()
+    if args.out == "-":
+        sys.stdout.buffer.write(payload)
+        sys.stdout.flush()
+        return EXIT_PROGRESS
+    if args.out:
+        out = Path(args.out)
+    else:
+        name = export_filename(
+            run_dir.parent.name, run_dir.name, ext, include_poc=bool(args.poc)
+        )
+        out = run_dir / "exports" / name
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(payload)
+    print(f"wrote {out} ({len(payload)} bytes)")
+    return EXIT_PROGRESS
 
 
 def cmd_export_validation_job(args, cfg: dict) -> int:

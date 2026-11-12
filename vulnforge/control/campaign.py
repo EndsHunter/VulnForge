@@ -105,7 +105,9 @@ _SPECS: tuple[dict[str, Any], ...] = (
         "chat": "list_findings",
         "effect": (
             "Read findings from harness.db. Filters: state, class, q, limit. "
-            "Does not change finding state."
+            "format=sarif returns a SARIF 2.1.0 log (confirmed by default; "
+            "include_needs_human / include_rejected widen it, state overrides; "
+            "class filters; q and limit ignored). Does not change finding state."
         ),
     },
     {
@@ -195,7 +197,53 @@ def _status(run: RunRef, _args: dict[str, Any]) -> dict[str, Any]:
     return base
 
 
+FINDINGS_FORMATS = ("rows", "sarif")
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _findings_sarif(run: RunRef, args: dict[str, Any]) -> dict[str, Any]:
+    """Full filtered SARIF log via the same exporter as Report / ``vf export``."""
+    from vulnforge.export_findings import ExportOptions, sarif_document
+
+    state = str(args.get("state") or "").strip()
+    cls = str(args.get("class") or args.get("attack_class") or "").strip()
+    opts = ExportOptions(
+        sarif_include_needs_human=_truthy(args.get("include_needs_human")),
+        sarif_include_rejected=_truthy(args.get("include_rejected")),
+        sarif_states=(state,) if state else None,
+    )
+    db = Database.open(run.path / "harness.db")
+    try:
+        doc = sarif_document(run.path, db, options=opts, weakness_class=cls or None)
+    finally:
+        db.close()
+    results = doc["runs"][0]["results"]
+    props = doc["runs"][0].get("properties") or {}
+    return {
+        "ok": True,
+        "format": "sarif",
+        "count": len(results),
+        "states": props.get("vulnforge/states_included") or [],
+        "skipped_no_location": int(props.get("vulnforge/skipped_no_location") or 0),
+        "sarif": doc,
+    }
+
+
 def _findings(run: RunRef, args: dict[str, Any]) -> dict[str, Any]:
+    fmt = str(args.get("format") or "rows").strip().lower()
+    if fmt not in FINDINGS_FORMATS:
+        return {
+            "ok": False,
+            "error": f"unknown findings format: {fmt} (expected rows or sarif)",
+            "http": 400,
+        }
+    if fmt == "sarif":
+        return _findings_sarif(run, args)
     return list_findings_impl(run, args)
 
 

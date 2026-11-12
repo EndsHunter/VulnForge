@@ -44,7 +44,7 @@ The dashboard is the main operator surface:
 | **Mission** | Architecture map of the target; campaign health; light needs-review indicator |
 | **Hunts** | Plan hunts (areas × skills) + residual-risk matrix; re-queue shallow/aborted/none cells |
 | **Explorer** | Browse target, select code, enqueue hunts |
-| **Report** | Structured findings table, Needs review filter, human accept/reject, exports, **Track** in GitHub Issues (preview → Publish); detail links to Evidence |
+| **Report** | Structured findings table, Needs review filter, human accept/reject, exports (incl. SARIF 2.1.0, [`docs/harness/SARIF.md`](docs/harness/SARIF.md)), **Track** in GitHub Issues (preview → Publish); detail links to Evidence |
 | **Evidence** | On-disk evidence packs (browse / open from Report) |
 | **Tasks** | Task queue / transcripts, event timeline (mode id `audit`) |
 | **AI** | Campaign co-pilot: start/query hunts, status, findings, runner control (confirm mutators) |
@@ -72,6 +72,7 @@ Seven verbs — `start`, `stop`, `pause`, `resume`, `status`, `findings`, `gate`
 CLI handoff / harness:
 
 ```bash
+vf export --run-dir runs/<target_id>/run-001 --format sarif --include-needs-human --out findings.sarif
 vf export-validation-job --run-dir runs/<target_id>/run-001 --finding-id 3
 vf validate-poc --run-dir runs/<target_id>/run-001 --finding-id 3 --execute
 ```

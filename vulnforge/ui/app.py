@@ -63,6 +63,9 @@ def _campaign_finding_args(
     attack_class: str,
     q: str,
     limit: int,
+    fmt: str = "",
+    include_needs_human: bool = False,
+    include_rejected: bool = False,
 ) -> dict[str, Any]:
     picked_state = ((body.state if body and body.state else "") or state).strip()
     picked_class = (
@@ -77,6 +80,16 @@ def _campaign_finding_args(
         args["class"] = picked_class
     if picked_q:
         args["q"] = picked_q
+    picked_fmt = ((body.format if body and body.format else "") or fmt).strip()
+    if picked_fmt:
+        args["format"] = picked_fmt
+    for key, query_val in (
+        ("include_needs_human", include_needs_human),
+        ("include_rejected", include_rejected),
+    ):
+        body_val = getattr(body, key, None) if body else None
+        if body_val if body_val is not None else query_val:
+            args[key] = True
     return args
 
 
@@ -151,6 +164,10 @@ class CampaignControlBody(ControlBody):
     attack_class: Optional[str] = Field(default=None, alias="class")
     q: Optional[str] = None
     limit: Optional[int] = None
+    # findings verb: rows (default) | sarif
+    format: Optional[str] = None
+    include_needs_human: Optional[bool] = None
+    include_rejected: Optional[bool] = None
 
     model_config = {"populate_by_name": True}
 
@@ -1421,7 +1438,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         format: str = Query(
             "json",
             alias="format",
-            description="One format or comma-separated list (multi → zip): json,md,csv,html,xlsx,docx",
+            description="One format or comma-separated list (multi → zip): json,md,csv,html,xlsx,docx,sarif",
         ),
         include_poc: bool = Query(
             False,
@@ -1440,8 +1457,14 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         include_codemap: bool = Query(
             False, description="Include mechanical codemap brief"
         ),
+        sarif_include_needs_human: bool = Query(
+            False, description="SARIF: also export needs_human (default: confirmed only)"
+        ),
+        sarif_include_rejected: bool = Query(
+            False, description="SARIF: also export rejected_* and superseded"
+        ),
     ):
-        """Download audit report for a run (json|md|csv|html|xlsx|docx; multi → zip)."""
+        """Download audit report for a run (json|md|csv|html|xlsx|docx|sarif; multi → zip)."""
         from vulnforge.db import Database
         from vulnforge.export_findings import (
             ExportOptions,
@@ -1460,6 +1483,8 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             include_summary=bool(include_summary),
             include_poc=bool(include_poc),
             include_codemap=bool(include_codemap),
+            sarif_include_needs_human=bool(sarif_include_needs_human),
+            sarif_include_rejected=bool(sarif_include_rejected),
         )
         db = Database.open(db_path)
         try:
@@ -3873,6 +3898,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         attack_class: str,
         q: str,
         limit: int,
+        fmt: str = "",
+        include_needs_human: bool = False,
+        include_rejected: bool = False,
     ) -> dict[str, Any]:
         name = verb.strip().lower()
         if name not in campaign_ctl.VERBS:
@@ -3895,6 +3923,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 attack_class=attack_class,
                 q=q,
                 limit=limit,
+                fmt=fmt,
+                include_needs_human=include_needs_human,
+                include_rejected=include_rejected,
             )
         else:
             args = {}
@@ -3911,6 +3942,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         attack_class: str = Query("", alias="class"),
         q: str = "",
         limit: int = Query(40, ge=1),
+        fmt: str = Query("", alias="format"),
+        include_needs_human: bool = False,
+        include_rejected: bool = False,
     ):
         run = _get_run(target_id, run_id)
         return _dispatch_campaign(
@@ -3922,6 +3956,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             attack_class=attack_class,
             q=q,
             limit=limit,
+            fmt=fmt,
+            include_needs_human=include_needs_human,
+            include_rejected=include_rejected,
         )
 
     @app.post("/api/runs/{target_id}/{run_id}/campaign/{verb}")
@@ -3934,6 +3971,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         attack_class: str = Query("", alias="class"),
         q: str = "",
         limit: int = Query(40, ge=1),
+        fmt: str = Query("", alias="format"),
+        include_needs_human: bool = False,
+        include_rejected: bool = False,
     ):
         run = _get_run(target_id, run_id)
         return _dispatch_campaign(
@@ -3945,6 +3985,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             attack_class=attack_class,
             q=q,
             limit=limit,
+            fmt=fmt,
+            include_needs_human=include_needs_human,
+            include_rejected=include_rejected,
         )
 
     @app.delete("/api/runs/{target_id}/{run_id}")
