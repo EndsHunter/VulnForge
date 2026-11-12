@@ -148,6 +148,23 @@
           <button type="button" class="btn" id="set-hunt-perspective-add">Add perspective</button>
         </section>
 
+        <section class="card settings-card settings-card-owners">
+          <h2 id="settings-finding-owners">Report and exports</h2>
+          <p class="controls-hint" style="margin-top:0">
+            Suggested owners come from read-only git on the target: blame on the cited lines,
+            recent file and module authors, and CODEOWNERS. Off by default. Suggestions, not assignments.
+            Finding detail always shows real identities. Exports follow the redaction toggle.
+          </p>
+          <label class="settings-check">
+            <input type="checkbox" id="set-finding-owners" />
+            Suggest finding owners from git history
+          </label>
+          <label class="settings-check">
+            <input type="checkbox" id="set-finding-owners-redact" checked />
+            Hide author identities in exports (pseudonyms)
+          </label>
+        </section>
+
         <section class="card settings-card settings-card-budget">
           <h2>Agent budget</h2>
           <div class="grid-2">

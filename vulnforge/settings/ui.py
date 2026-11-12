@@ -69,6 +69,10 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     # Sandbox iterate session caps. Applied onto poc_harness.
     "poc_iterate_max_cycles": 5,
     "poc_iterate_wall_ttl_min": 15,
+    # Suggested finding owners (issue #190). None = not set here, so YAML
+    # ``owners.enabled`` / ``owners.redact_in_exports`` stay authoritative.
+    "finding_owners": None,
+    "finding_owners_redact_exports": None,
 }
 
 _ROLE_KEYS = ("model", *STAGE_ROLE_FIELDS)
@@ -88,6 +92,13 @@ _GLOBAL_KEYS = (
     "poc_iterate_max_cycles",
     "poc_iterate_wall_ttl_min",
 )
+
+
+# UI key → ``owners`` config key. Tri-state: None leaves YAML alone.
+_OWNER_KEYS = {
+    "finding_owners": "enabled",
+    "finding_owners_redact_exports": "redact_in_exports",
+}
 
 
 def _clamp_int(value: Any, *, default: int, lo: int, hi: int) -> int:
@@ -420,6 +431,9 @@ def _normalize_ui_settings(current: dict[str, Any]) -> dict[str, Any]:
     current["validate_llm"] = bool(current.get("validate_llm", True))
     current["hunt_moa"] = _coerce_bool(current.get("hunt_moa"), False)
     current["hunt_perspectives"] = normalize_hunt_perspectives(current.get("hunt_perspectives"))
+    for key in _OWNER_KEYS:
+        if current.get(key) is not None:
+            current[key] = _coerce_bool(current.get(key), False)
     return current
 
 
@@ -692,6 +706,10 @@ def save_ui_settings(updates: dict[str, Any]) -> dict[str, Any]:
     for key in ("validate_poc_referee", "validate_llm"):
         if key in updates:
             current[key] = bool(updates.get(key))
+    for key in _OWNER_KEYS:
+        if key in updates:
+            val = updates.get(key)
+            current[key] = None if val is None else _coerce_bool(val, False)
     for key in (
         "validate_consensus",
         "max_concurrent_agents",
@@ -753,6 +771,13 @@ def _apply_globals(out: dict, ui: dict[str, Any]) -> None:
     harness["iterate_wall_ttl_min"] = _clamp_int(
         ui.get("poc_iterate_wall_ttl_min"), default=15, lo=1, hi=240
     )
+    owners = out.get("owners")
+    if not isinstance(owners, dict):
+        owners = {}
+        out["owners"] = owners
+    for ui_key, cfg_key in _OWNER_KEYS.items():
+        if ui.get(ui_key) is not None:
+            owners[cfg_key] = _coerce_bool(ui.get(ui_key), False)
 
 
 def _bind_default_host(llm: dict, ui: dict[str, Any]) -> None:

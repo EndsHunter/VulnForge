@@ -604,7 +604,46 @@
       poc_iterate_max_cycles: parseInt($("#set-poc-iterate-cycles")?.value || "5", 10),
       poc_iterate_wall_ttl_min: parseInt($("#set-poc-iterate-ttl")?.value || "15", 10),
       available: readAvailableBudgets(),
+      ...ownerToggleBody(),
     };
+  }
+
+  /** Owner toggles. Sent only once the operator has set them here or changed
+   * them, so saving other settings never overrides YAML owners.*. */
+  const OWNER_TOGGLES = [
+    ["finding_owners", "#set-finding-owners"],
+    ["finding_owners_redact_exports", "#set-finding-owners-redact"],
+  ];
+  let ownerLoaded = {};
+
+  function ownerToggleBody() {
+    const out = {};
+    for (const [key, sel] of OWNER_TOGGLES) {
+      const el = $(sel);
+      if (!el) continue;
+      // Never send a toggle that was not loaded from the server: a failed
+      // GET would otherwise write the HTML defaults over YAML owners.*.
+      const loaded = ownerLoaded[key];
+      if (!loaded || typeof loaded.effective !== "boolean") continue;
+      if (loaded.stored != null || el.checked !== loaded.effective) {
+        out[key] = !!el.checked;
+      }
+    }
+    return out;
+  }
+
+  function fillOwnerToggles(s, eff) {
+    ownerLoaded = {};
+    for (const [key, sel] of OWNER_TOGGLES) {
+      const el = $(sel);
+      if (!el) continue;
+      const stored = s && typeof s[key] === "boolean" ? s[key] : null;
+      const effective =
+        eff && typeof eff[key] === "boolean" ? eff[key] : stored != null ? stored : null;
+      if (effective == null) continue;
+      el.checked = effective;
+      ownerLoaded[key] = { stored, effective };
+    }
   }
 
   function fillForm(s, eff) {
@@ -636,6 +675,7 @@
     if ($("#set-hunt-moa")) {
       $("#set-hunt-moa").checked = s.hunt_moa === true;
     }
+    fillOwnerToggles(s, eff);
     if ($("#set-hunt-perspectives")) {
       renderHuntPerspectives(perspectiveSlotsForForm(s, eff));
     }

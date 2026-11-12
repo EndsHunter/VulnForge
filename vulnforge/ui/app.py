@@ -21,6 +21,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from vulnforge.cli import PROJECT_ROOT, load_config, resolve_runs_root
+from vulnforge.errors import note_swallowed
 from vulnforge.settings import load_ui_settings, redact_secrets, save_ui_settings
 from vulnforge.step_io import build_graph_snapshot, build_task_io
 from vulnforge.transcript import (
@@ -353,6 +354,9 @@ class SettingsBody(BaseModel):
     # Sandbox iterate caps. Defaults 5 cycles and 15 minutes.
     poc_iterate_max_cycles: Optional[int] = None
     poc_iterate_wall_ttl_min: Optional[int] = None
+    # Suggested finding owners (issue #190). Unset keeps YAML owners.*.
+    finding_owners: Optional[bool] = None
+    finding_owners_redact_exports: Optional[bool] = None
 
 
 class VerifyModelBody(BaseModel):
@@ -1463,6 +1467,13 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         sarif_include_rejected: bool = Query(
             False, description="SARIF: also export rejected_* and superseded"
         ),
+        include_owners: bool = Query(
+            True,
+            description=(
+                "Include suggested owners when owners.enabled is on. Redaction "
+                "follows owners.redact_in_exports and cannot be lifted here."
+            ),
+        ),
     ):
         """Download audit report for a run (json|md|csv|html|xlsx|docx|sarif; multi → zip)."""
         from vulnforge.db import Database
@@ -1471,6 +1482,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             export_bundle,
             export_filename,
         )
+        from vulnforge.findings.owners import owners_config
+
+        owners_cfg = owners_config(load_config())
 
         run = _get_run(target_id, run_id)
         db_path = run.path / "harness.db"
@@ -1485,6 +1499,9 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             include_codemap=bool(include_codemap),
             sarif_include_needs_human=bool(sarif_include_needs_human),
             sarif_include_rejected=bool(sarif_include_rejected),
+            include_owners=bool(include_owners) and owners_cfg["enabled"],
+            redact_owners=owners_cfg["redact_in_exports"],
+            owners_cfg=owners_cfg,
         )
         db = Database.open(db_path)
         try:
@@ -2561,6 +2578,45 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             raise HTTPException(400, r.get("error") or "respond failed")
         return r
 
+    @app.get("/api/runs/{target_id}/{run_id}/findings/{finding_id}/owners")
+    def api_finding_owners(target_id: str, run_id: str, finding_id: int):
+        """Suggested owners from read-only git history (opt-in; not redacted)."""
+        from vulnforge.db import Database
+        from vulnforge.findings.owners import (
+            owners_config,
+            suggest_for_finding,
+            unavailable,
+        )
+
+        run = _get_run(target_id, run_id)
+        cfg = owners_config(load_config())
+        if not cfg["enabled"]:
+            out = unavailable("disabled")
+            out["enabled"] = False
+            return out
+        db_path = run.path / "harness.db"
+        if not db_path.is_file():
+            raise HTTPException(404, "harness.db not found")
+        db = Database.open(db_path)
+        try:
+            f = db.get_finding(int(finding_id))
+            if f is None:
+                raise HTTPException(404, "finding not found")
+            row = db.get_run()
+            target = (row["target_path"] if row is not None else "") or ""
+            try:
+                codemap = db.get_codemap()
+            except Exception as exc:
+                note_swallowed(exc, context="ui.finding_owners.codemap")
+                codemap = None
+            body = f.body if isinstance(f.body, dict) else {}
+        finally:
+            db.close()
+        out = suggest_for_finding(target, body, cfg, codemap=codemap)
+        out["enabled"] = True
+        out["redact_in_exports"] = cfg["redact_in_exports"]
+        return out
+
     @app.get("/api/runs/{target_id}/{run_id}/findings/{finding_id}/poc")
     def api_finding_poc_get(target_id: str, run_id: str, finding_id: int):
         """Load current PoC draft or scaffold (no write)."""
@@ -2871,6 +2927,8 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             resolve_hunt_perspectives,
         )
 
+        from vulnforge.findings.owners import owners_config
+
         ui = load_ui_settings()
         # effective config after merge
         eff = load_config()
@@ -2921,6 +2979,10 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 "poc_iterate_wall_ttl_min": (eff.get("poc_harness") or {}).get(
                     "iterate_wall_ttl_min", ui.get("poc_iterate_wall_ttl_min", 15)
                 ),
+                "finding_owners": owners_config(eff)["enabled"],
+                "finding_owners_redact_exports": owners_config(eff)[
+                    "redact_in_exports"
+                ],
             },
         })
 
@@ -2935,6 +2997,10 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         for bkey in ("validate_poc_referee", "validate_llm", "hunt_moa"):
             if bkey in body.model_fields_set:
                 updates[bkey] = bool(getattr(body, bkey))
+        # Tri-state: explicit null hands the owner toggles back to YAML.
+        for okey in ("finding_owners", "finding_owners_redact_exports"):
+            if okey in body.model_fields_set:
+                updates[okey] = getattr(body, okey)
         if "validate_models" in body.model_fields_set:
             updates["validate_models"] = body.validate_models or []
         if "hunt_perspectives" in body.model_fields_set:
