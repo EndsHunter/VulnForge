@@ -28,6 +28,8 @@ The expansion is **not** a resolved call graph or taint proof. Generic or multip
 ## Refusals (before any run dir is created)
 
 - not a git work tree, unknown revision, base == head
+- the repo's work tree does not contain the target at its prefix (for example `core.worktree`
+  pointing elsewhere)
 - target checkout `HEAD` is not *head*. Hunts read the working tree, so check the head revision
   out (for example in a separate `git worktree`) or use `base..HEAD`
 - no hunt-able code change (for example a docs-only diff). An empty run would read as a clean audit
@@ -49,7 +51,8 @@ Python. Nothing is checked out, fetched, or written in the target.
 | recon finalize hunt plan | hints rewritten to scope **files** (module dirs never survive: the soft jail treats a dir hint as a prefix); out-of-scope tasks dropped; uncovered changed files get allowed-class tasks; then class routing and `run.max_tasks` |
 | file_by_file | changed files first, then callers/callees |
 | dynamic run skills, `request_hunt`, `continue_hunt`, split / shallow children | hints clipped to the scope; `diff_scope` carried |
-| hunt soft widen | grep widens to the scope files, not the whole tree; reading files for context stays allowed |
+| hunt scans (`grep`, `find_symbol`, `query_flows`, `query_sinks`) | limited to the hunt hints + scope files, before and after a soft widen (`tools/scope.py` `clamp_scan_roots`); `query_sinks(rescan=true)` uses the stored index. Reading a specific file for context stays allowed |
+| `run.max_tasks` budget | one task per changed file is kept first, then the rest is spread across areas/classes; the report names changed files that still got no hunt task |
 | operator enqueues (Explorer, Hunts matrix, operator chat) | **unscoped**: an explicit human choice |
 
 Each scoped hunt payload carries a short `diff_scope` block (changed files + hunks in its hints,

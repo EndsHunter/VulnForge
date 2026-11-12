@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from vulnforge.tools.grep_index import _ignored, _iter_candidate_files, _norm_grep_extension
-from vulnforge.tools.scope import attach_scope_warning, maybe_soft_jail, scope_roots_for_scan
+from vulnforge.tools.scope import (
+    attach_scope_warning,
+    clamp_scan_roots,
+    maybe_soft_jail,
+    out_of_diff_scope,
+    scope_roots_for_scan,
+)
 from vulnforge.util import normalize_relpath
 
 # Language-ish definition patterns. {name} is replaced with escaped symbol.
@@ -68,6 +74,9 @@ def find_symbol(
         ignore = list((ctx.get("cfg") or {}).get("run", {}).get("ignore_globs") or [])
         scope_roots = scope_roots_for_scan(ctx)
         scan_roots = [normalize_relpath(path)] if path else scope_roots
+        scan_roots = clamp_scan_roots(ctx, scan_roots)
+        if scan_roots == []:
+            return out_of_diff_scope(path)
         ext_f = _norm_grep_extension(extension)
         glob_pat = str(glob).strip() if glob else None
         if ext_f and not glob_pat:

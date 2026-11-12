@@ -161,7 +161,11 @@ def _md_diff_scope_section(ctx: dict[str, Any]) -> list[str]:
     from vulnforge.diff_scope import report_md_lines
 
     paths = [str(r.get("path") or "") for r in ctx.get("rows") or []]
-    return report_md_lines(manifest, paths)
+    tasks = ctx.get("hunt_tasks")
+    hunted = (
+        [h for t in tasks for h in t.get("path_hints") or []] if tasks else None
+    )
+    return report_md_lines(manifest, paths, hunted)
 
 
 def _safe_coverage(db: Any) -> dict[str, Any] | None:

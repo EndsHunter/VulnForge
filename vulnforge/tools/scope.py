@@ -120,12 +120,7 @@ def scope_roots_for_scan(ctx: dict) -> list[str] | None:
     scope = ctx.get("scope") or {}
     if scope.get("widened"):
         # Diff-scoped run: widen to hints + scope files, not the whole tree.
-        ceiling = [normalize_relpath(str(r)) for r in scope.get("widen_roots") or [] if r]
-        if ceiling:
-            out = list(scope_hints(ctx))
-            out.extend(r for r in ceiling if r not in out)
-            return out
-        return None
+        return diff_ceiling(ctx)
     hints = scope_hints(ctx)
     if not hints:
         return None
@@ -138,6 +133,62 @@ def scope_roots_for_scan(ctx: dict) -> list[str] | None:
         # if looks like file, use parent + file itself as candidates
         roots.append(h_n)
     return roots or None
+
+
+def diff_ceiling(ctx: dict) -> list[str] | None:
+    """Diff-scoped run: hunt hints + scope files, the most any scan may cover.
+
+    None on whole-tree runs (no ceiling). Applies before and after a soft widen.
+    """
+    scope = ctx.get("scope") or {}
+    ceiling = [normalize_relpath(str(r)) for r in scope.get("widen_roots") or [] if r]
+    if not ceiling:
+        return None
+    out = list(scope_hints(ctx))
+    out.extend(r for r in ceiling if r not in out)
+    return out
+
+
+def clamp_scan_roots(ctx: dict, roots: list[str] | None) -> list[str] | None:
+    """Intersect scan roots with the diff ceiling.
+
+    Returns *roots* unchanged on whole-tree runs. On a diff run, ``None`` or
+    ``.`` becomes the ceiling; a directory keeps only ceiling paths beneath
+    it. ``[]`` means nothing in scope (callers must not treat it as "all").
+    """
+    ceiling = diff_ceiling(ctx)
+    if ceiling is None:
+        return roots
+    if not roots:
+        return ceiling
+    out: list[str] = []
+    for r in roots:
+        rn = normalize_relpath(str(r or ""))
+        if rn in ("", "."):
+            return ceiling
+        for c in ceiling:
+            if c == rn or c.startswith(rn.rstrip("/") + "/"):
+                pick = c
+            elif rn.startswith(c.rstrip("/") + "/"):
+                pick = rn
+            else:
+                continue
+            if pick not in out:
+                out.append(pick)
+    return out
+
+
+def out_of_diff_scope(path: str | None) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": "out_of_diff_scope",
+        "code": "out_of_diff_scope",
+        "path": normalize_relpath(str(path or ".")),
+        "hint": (
+            "This run is diff-scoped: scans are limited to the changed files and their "
+            "callers/callees. read_file still works for context on a specific file."
+        ),
+    }
 
 
 def attach_scope_warning(result: dict, ctx: dict) -> dict:

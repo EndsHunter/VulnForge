@@ -554,3 +554,108 @@ def test_api_init_accepts_diff(tmp_path: Path, diff_repo: dict):
         json={"target": str(diff_repo["repo"]), "start": False, "diff": "a...b"},
     )
     assert bad.status_code != 200 or not bad.json().get("ok", True)
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: scan ceiling, subdir hunks, core.worktree, budget, report
+# ---------------------------------------------------------------------------
+
+
+def _diff_ctx(repo: Path, *, widened: bool) -> dict:
+    return {
+        "target_root": str(repo),
+        "cfg": {"run": {"ignore_globs": []}, "tools": {}},
+        "session": {},
+        "scope": {
+            "enabled": True,
+            "path_hints": ["app/util.py"],
+            "widened": widened,
+            "widen_roots": ["app/util.py", "app/handlers.py", "app/cmd.py"],
+        },
+    }
+
+
+@pytest.mark.parametrize("widened", [False, True])
+def test_scans_stay_inside_diff_scope(diff_repo: dict, widened: bool):
+    from vulnforge.tools.agent import query_flows, query_sinks
+    from vulnforge.tools.symbol_find import find_symbol
+
+    repo = diff_repo["repo"]
+    ctx = _diff_ctx(repo, widened=widened)
+
+    # A sibling dir of a hint passes the soft jail but must not scan billing/.
+    hits = find_symbol(ctx, "charge_card", path="billing", definitions_only=False)
+    assert hits.get("code") in ("out_of_diff_scope", "out_of_scope"), hits
+    ok = find_symbol(ctx, "run_report", path="app", definitions_only=False)
+    assert ok.get("ok"), ok
+    paths = {m.get("path") for m in ok.get("matches") or ok.get("hits") or []}
+    assert paths and paths <= {"app/util.py", "app/handlers.py", "app/cmd.py"}
+
+    # billing/ledger.py calls dict(...); a whole-tree call scan would report it.
+    flows = query_flows.run(ctx, symbol="dict", mode="calls")
+    calls = flows.get("calls") or {}
+    assert not any(str(c.get("path", "")).startswith("billing") for c in calls.get("calls") or [])
+
+    sinks = query_sinks.run(ctx, rescan=True)
+    if widened:
+        assert sinks.get("rescan_skipped") == "diff_scope"
+    assert not any(str(s.get("path", "")).startswith("billing") for s in sinks.get("sinks") or [])
+
+
+def test_subdir_target_keeps_hunks(tmp_path: Path):
+    repo = tmp_path / "mono"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _write(repo, "pkg/util.py", "def a():\n    return 1\n\n\ndef b():\n    return 2\n")
+    _write(repo, "other/x.py", "x = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    _write(repo, "pkg/util.py", "def a():\n    return 1\n\n\ndef b():\n    return 3\n")
+    _write(repo, "other/x.py", "x = 2\n")
+    _git(repo, "commit", "-q", "-am", "head")
+    changes = collect_changes(repo / "pkg", "HEAD~1..HEAD")
+    util = next(c for c in changes["changed"] if c["path"] == "util.py")
+    assert util["hunks"] == [[6, 6]] and util["whole_file"] is False
+
+
+def test_refuses_core_worktree_elsewhere(tmp_path: Path, diff_repo: dict, monkeypatch):
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    repo = diff_repo["repo"]
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _git(repo, "config", "core.worktree", str(elsewhere))
+    with pytest.raises(DiffScopeError, match="does not contain the target"):
+        collect_changes(repo, f"{diff_repo['base']}..HEAD")
+
+
+def test_budget_keeps_a_task_per_changed_file():
+    from vulnforge.stages.recon import apply_diff_scope_to_plan
+
+    manifest = {
+        **_MANIFEST,
+        "changed": [
+            {"path": "app/util.py", "status": "M", "hunks": [[9, 9]]},
+            {"path": "app/z_last.py", "status": "M", "hunks": [[1, 1]]},
+        ],
+        "scope_files": ["app/handlers.py", "app/util.py", "app/z_last.py"],
+    }
+    tasks = [
+        {"area": "app", "class": c, "path_hints": ["app/handlers.py"]}
+        for c in ("injection", "access-control", "ssrf", "crypto")
+    ]
+    out = apply_diff_scope_to_plan(
+        tasks, manifest, {}, {"run": {"max_tasks": 2, "hunt_skill_mode": "explicit",
+                                      "hunt_skill_ids": ["injection"]}}
+    )
+    covered = {h for t in out for h in t["path_hints"]}
+    assert len(out) == 2
+    assert {"app/util.py", "app/z_last.py"} <= covered
+
+
+def test_report_names_changed_files_without_hunts():
+    from vulnforge.diff_scope import report_md_lines
+
+    lines = "\n".join(report_md_lines(_MANIFEST, [], hunted_paths=["app/handlers.py"]))
+    assert "no hunt task yet" in lines and "`app/util.py`" in lines
+    lines = "\n".join(report_md_lines(_MANIFEST, [], hunted_paths=["app/util.py"]))
+    assert "no hunt task yet" not in lines

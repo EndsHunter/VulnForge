@@ -361,6 +361,15 @@ def collect_changes(
     except DiffScopeError as e:
         raise DiffScopeError(f"target is not inside a git work tree: {target}") from e
     prefix = prefix.rstrip("/")
+    # The repo's work tree must contain the target at exactly that prefix. A
+    # repo-config core.worktree pointing elsewhere would aim hashing/reads at
+    # another directory, so refuse it.
+    expected = (toplevel / prefix).resolve() if prefix else toplevel
+    if expected != target:
+        raise DiffScopeError(
+            f"git work tree {toplevel} does not contain the target at {prefix or '.'!r} "
+            "(core.worktree or an unusual checkout); --diff needs the target inside its own work tree"
+        )
     base_sha = resolve_commit(target, base_ref)
     head_sha = resolve_commit(target, head_ref)
     if base_sha == head_sha:
@@ -417,7 +426,8 @@ def collect_changes(
             entry["hunks"] = []  # whole file is new / not itemized
             entry["whole_file"] = True
             continue
-        entry["hunks"] = _hunks_for(target, base_sha, head_sha, row)
+        # Repo-root paths: run from the top level (a subdir cwd would not match).
+        entry["hunks"] = _hunks_for(toplevel, base_sha, head_sha, row)
         entry["whole_file"] = not entry["hunks"]
 
     drift_repo = _worktree_drift(
@@ -927,8 +937,16 @@ def scope_brief(manifest: Optional[dict]) -> Optional[dict[str, Any]]:
     }
 
 
-def report_md_lines(manifest: Optional[dict], finding_paths: Iterable[str] = ()) -> list[str]:
-    """Markdown "Diff scope" section for REPORT.md / exports."""
+def report_md_lines(
+    manifest: Optional[dict],
+    finding_paths: Iterable[str] = (),
+    hunted_paths: Optional[Iterable[str]] = None,
+) -> list[str]:
+    """Markdown "Diff scope" section for REPORT.md / exports.
+
+    *hunted_paths* (path hints of hunt tasks) lets the section name changed
+    files that got no hunt task (e.g. ``run.max_tasks`` budget).
+    """
     if not isinstance(manifest, dict):
         return []
     b = scope_brief(manifest) or {}
@@ -939,7 +957,7 @@ def report_md_lines(manifest: Optional[dict], finding_paths: Iterable[str] = ())
         "",
         f"- **Diff:** `{base.get('ref')}..{head.get('ref')}` "
         f"(`{str(base.get('sha'))[:12]}` → `{str(head.get('sha'))[:12]}`, two-tree compare)",
-        f"- **Changed (hunted):** {b.get('changed', 0)} | **Callers/callees:** "
+        f"- **Changed:** {b.get('changed', 0)} | **Callers/callees:** "
         f"{b.get('expanded', 0)} (depth {b.get('expand_depth')}) | **Excluded:** "
         f"{b.get('excluded', 0)} | **Untouched modules:** {b.get('untouched_modules', 0)}",
         "",
@@ -964,8 +982,19 @@ def report_md_lines(manifest: Optional[dict], finding_paths: Iterable[str] = ())
         lines += ["", "### Excluded from the scope", ""]
         for e in excl[:100]:
             lines.append(f"- `{e.get('path')}` — {e.get('reason')}")
+        if any(e.get("reason") == "outside_target" for e in excl):
+            lines.append("- (`outside_target` paths are repo-root relative)")
         if len(excl) > 100:
             lines.append(f"- … {len(excl) - 100} more")
+    if hunted_paths is not None:
+        hunted = {normalize_relpath(str(p)) for p in hunted_paths if p}
+        unhunted = [p for p in changed_paths(manifest) if p not in hunted]
+        if unhunted:
+            lines += [
+                "",
+                "**Changed files with no hunt task yet** (budget or not planned): "
+                + ", ".join(f"`{p}`" for p in unhunted[:30]),
+            ]
     um = manifest.get("untouched_modules") or {}
     if um.get("count"):
         sample = ", ".join(f"`{m}`" for m in um.get("sample") or [])

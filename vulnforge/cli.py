@@ -837,7 +837,10 @@ def cmd_init(args, cfg: dict) -> int:
         merged = (brief + "\n\n" + prior) if prior else brief
         recon_pl["operator_notes"] = merged
         recon_pl["operator_brief"] = merged
-        recon_pl["focus_paths"] = scope_files(diff_scope)[:40]
+        changed = changed_paths(diff_scope)
+        recon_pl["focus_paths"] = (
+            changed + [p for p in scope_files(diff_scope) if p not in changed]
+        )[:40]
         recon_pl["diff_scoped"] = True
 
     from vulnforge.stages.recon import enqueue_recon_agent_tasks, resolve_recon_agent_ids

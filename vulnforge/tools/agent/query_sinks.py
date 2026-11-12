@@ -6,7 +6,14 @@ from pathlib import Path
 from typing import Any
 
 from vulnforge.tools.base import ToolSpec
-from vulnforge.tools.scope import attach_scope_warning, maybe_soft_jail, scope_hints
+from vulnforge.tools.scope import (
+    attach_scope_warning,
+    clamp_scan_roots,
+    diff_ceiling,
+    maybe_soft_jail,
+    out_of_diff_scope,
+    scope_hints,
+)
 from vulnforge.util import normalize_relpath
 
 SPEC = ToolSpec(
@@ -120,6 +127,10 @@ def run(ctx: dict, **args: Any) -> dict[str, Any]:
         top_k = 24
     top_k = max(1, min(100, top_k))
     rescan = bool(args.get("rescan"))
+    rescan_skipped = False
+    if rescan and diff_ceiling(ctx) is not None:
+        # Diff-scoped run: a live rescan would walk the whole tree; use the index.
+        rescan, rescan_skipped = False, True
 
     sinks, sink_meta = _load_sinks(ctx, rescan=rescan)
     # Soft path_hints when no explicit path
@@ -130,6 +141,10 @@ def run(ctx: dict, **args: Any) -> dict[str, Any]:
         hints = scope_hints(ctx)
         if hints and not (ctx.get("scope") or {}).get("widened"):
             path_filter = hints
+    clamped = clamp_scan_roots(ctx, path_filter or None)
+    if clamped == []:
+        return out_of_diff_scope(path)
+    path_filter = clamped or []
 
     from vulnforge.tools.sink_preindex import filter_sinks_for_paths
 
@@ -157,6 +172,8 @@ def run(ctx: dict, **args: Any) -> dict[str, Any]:
         "index_size": len(sinks),
         "index_truncated": index_truncated,
     }
+    if rescan_skipped:
+        result["rescan_skipped"] = "diff_scope"
     if isinstance(sink_meta, dict) and index_truncated:
         result["index_meta"] = {
             "files_scanned": sink_meta.get("files_scanned"),

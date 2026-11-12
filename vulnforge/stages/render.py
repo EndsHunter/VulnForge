@@ -414,7 +414,11 @@ def _diff_scope_report_lines(db) -> list[str]:
             if isinstance(c, dict) and c.get("path"):
                 paths.append(str(c["path"]))
                 break
-    return report_md_lines(manifest, paths)
+    hunted: list[str] = []
+    for t in db.list_tasks(limit=100_000):
+        if t.kind == "hunt" and isinstance(t.payload, dict):
+            hunted.extend(str(h) for h in t.payload.get("path_hints") or [])
+    return report_md_lines(manifest, paths, hunted)
 
 
 def write_report_md(path: Path, db) -> None:

@@ -12,7 +12,14 @@ from vulnforge.tools.flows import (
     import_neighborhood,
     tag_sinks_on_nodes,
 )
-from vulnforge.tools.scope import attach_scope_warning, maybe_soft_jail, scope_hints
+from vulnforge.tools.scope import (
+    attach_scope_warning,
+    clamp_scan_roots,
+    diff_ceiling,
+    maybe_soft_jail,
+    out_of_diff_scope,
+    scope_hints,
+)
 from vulnforge.util import normalize_relpath
 
 SPEC = ToolSpec(
@@ -213,6 +220,11 @@ def run(ctx: dict, **args: Any) -> dict[str, Any]:
             if sh and not (ctx.get("scope") or {}).get("widened"):
                 hints = sh
 
+        clamped = clamp_scan_roots(ctx, hints or None)
+        if clamped == []:
+            result["calls"] = out_of_diff_scope(path)
+            return attach_scope_warning(result, ctx)
+        hints = clamped or []
         root = Path(str(ctx["target_root"]))
         ignore = list((ctx.get("cfg") or {}).get("run", {}).get("ignore_globs") or [])
         calls = call_sites(

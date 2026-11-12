@@ -2503,7 +2503,23 @@ def apply_diff_scope_to_plan(
     )
     scoped = _apply_class_routing(scoped, inventory)
     max_tasks = max(0, int((cfg.get("run") or {}).get("max_tasks", 50)))
-    return diversify_clip_tasks(scoped, max_tasks)
+    if len(scoped) <= max_tasks:
+        return scoped
+    # Budget: first keep one task per changed file (in change order), then
+    # spread the rest across areas/classes.
+    from vulnforge.diff_scope import changed_paths
+
+    reserved: list[dict] = []
+    for p in changed_paths(manifest):
+        if len(reserved) >= max_tasks:
+            break
+        if any(p in (t.get("path_hints") or []) for t in reserved):
+            continue
+        pick = next((t for t in scoped if p in (t.get("path_hints") or [])), None)
+        if pick is not None and all(pick is not r for r in reserved):
+            reserved.append(pick)
+    rest = [t for t in scoped if all(t is not r for r in reserved)]
+    return reserved + diversify_clip_tasks(rest, max_tasks - len(reserved))
 
 
 def diversify_clip_tasks(tasks: list[dict], max_tasks: int) -> list[dict]:
