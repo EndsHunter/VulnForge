@@ -207,14 +207,20 @@ def test_citation_missing_line_rejected(tmp_path: Path, toy_sqli: Path):
 
 def test_citation_content_mismatch_rejected(tmp_path: Path, toy_sqli: Path):
     """Cite a blank/comment line that does not mention the claim tokens."""
+    # Deliberate comment-only line with no claim tokens (fixture is a tmp copy).
+    # Written before _setup_run so the manifest fingerprint includes it.
+    app = toy_sqli / "app.py"
+    app.write_text(
+        app.read_text(encoding="utf-8") + "\n# unrelated filler comment\n",
+        encoding="utf-8",
+    )
     run_dir, db = _setup_run(tmp_path, toy_sqli)
     body = _good_body()
     body["sink_symbol"] = "search_users"
-    # Line after the function is "# mutated" only — no claim tokens
-    text = (toy_sqli / "app.py").read_text(encoding="utf-8")
+    text = app.read_text(encoding="utf-8")
     wrong = None
     for i, line in enumerate(text.splitlines(), 1):
-        if line.strip() == "# mutated":
+        if line.strip() == "# unrelated filler comment":
             wrong = i
             break
     assert wrong is not None
