@@ -197,6 +197,12 @@ codemap:
   packet_max_symbols: 60
   packet_prefer_kinds: [function, method, class]
 
+# Diff-scoped audits (vf init --diff base..head). Two-tree compare, never merge-base.
+diff:
+  expand_depth: 1            # caller/callee hops from changed symbols (0 = changed files only, max 3)
+  max_expanded_files: 40     # cap on callers/callees added to the scope
+  max_scan_files: 2000       # source files scanned for heuristic call sites
+
 packet:
   max_architecture_chars: 1800   # P1.2 slim hunt packet (area slice)
   max_architecture_merge_chars: 6000  # prior+incoming JSON budget for LLM merge

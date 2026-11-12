@@ -31,6 +31,10 @@ python scripts/ralph.py --run-dir runs/<target_id>/run-001 --task-timeout 900 --
 # or: vf dashboard → http://127.0.0.1:8787
 ```
 
+**Diff-scoped audit** (PR / commit / branch): `vf init --target <repo> --diff base..head` hunts only the
+files changed between the two commit trees plus their codemap callers/callees. See
+[`docs/harness/DIFF_SCOPE.md`](docs/harness/DIFF_SCOPE.md).
+
 ## Research cockpit (UI)
 
 The dashboard is the main operator surface:

@@ -1548,6 +1548,8 @@ async function submitInit(ev) {
     strategy,
   };
   if (docs_path) body.docs_path = docs_path;
+  const diffSpec = ($("#init-diff")?.value || "").trim();
+  if (diffSpec) body.diff = diffSpec;
   if (strategy === "discovery" || strategy === "recon_docs") {
     const agent_ids = selectedReconAgentIds($("#init-recon-agents"));
     if (agent_ids.length) body.agent_ids = agent_ids;

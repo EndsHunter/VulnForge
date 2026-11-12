@@ -10,6 +10,8 @@ Ralph (`scripts/ralph.py` / `vf run-once`) leases one task, runs the stage handl
 
 Campaign control (start / stop / pause / resume / status / findings / gate) is one grammar over that loop: [CAMPAIGN.md](CAMPAIGN.md). It does not add a second runner.
 
+Diff-scoped audits (`vf init --diff base..head`) restrict recon focus and automatic hunt enqueueing to the changed files plus codemap callers/callees: [DIFF_SCOPE.md](DIFF_SCOPE.md).
+
 | Stage | Task kind | LLM? | Maintainer docs |
 |-------|-----------|------|-----------------|
 | **Recon** | `recon` | Yes | [recon/](recon/) |

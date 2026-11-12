@@ -191,6 +191,7 @@ class Database:
         self._ensure_lease_host_column()
         self._ensure_hitl_tables()
         self._ensure_finding_tracking_table()
+        self._ensure_diff_scope_column()
 
     @classmethod
     def create(cls, path: Path) -> "Database":
@@ -426,6 +427,16 @@ class Database:
         }
         if "codemap_json" not in cols:
             self.conn.execute("ALTER TABLE runs ADD COLUMN codemap_json TEXT")
+            self.conn.commit()
+
+    def _ensure_diff_scope_column(self) -> None:
+        """Add runs.diff_scope_json if missing (diff-scoped audits, #185)."""
+        cols = {
+            r[1]
+            for r in self.conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        if "diff_scope_json" not in cols:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN diff_scope_json TEXT")
             self.conn.commit()
 
     def _ensure_sink_coverage_table(self) -> None:
@@ -834,6 +845,36 @@ class Database:
             return None
         try:
             raw = row["codemap_json"]
+        except (KeyError, IndexError):
+            return None
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def set_diff_scope(self, manifest: dict) -> None:
+        """Store the diff scope manifest (``vulnforge/diff-scope@1``)."""
+        row = self.get_run()
+        if not row:
+            raise RuntimeError("no run row")
+        if not isinstance(manifest, dict):
+            raise TypeError("diff scope must be a dict")
+        self.conn.execute(
+            "UPDATE runs SET diff_scope_json=? WHERE id=?",
+            (json.dumps(manifest), row["id"]),
+        )
+        self.conn.commit()
+
+    def get_diff_scope(self) -> Optional[dict]:
+        """Diff scope manifest, or None for a whole-tree run."""
+        row = self.get_run()
+        if not row:
+            return None
+        try:
+            raw = row["diff_scope_json"]
         except (KeyError, IndexError):
             return None
         if not raw:
@@ -2418,7 +2459,7 @@ class Database:
         run = self.get_run()
         run_dict = None
         if run:
-            skip_large = {"architecture_json", "codemap_json"}
+            skip_large = {"architecture_json", "codemap_json", "diff_scope_json"}
             run_dict = {
                 k: run[k]
                 for k in run.keys()
@@ -2430,6 +2471,9 @@ class Database:
                 run_dict["has_codemap"] = bool(run["codemap_json"])
             except (KeyError, IndexError):
                 run_dict["has_codemap"] = False
+            from vulnforge.diff_scope import scope_brief
+
+            run_dict["diff_scope"] = scope_brief(self.get_diff_scope())
         return {
             "run": run_dict,
             "tasks": self.count_tasks_by_state(),

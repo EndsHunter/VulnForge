@@ -30,6 +30,20 @@ from vulnforge.util import append_event, normalize_relpath
 ABORT_ERRORS = frozenset({"max_tool_rounds", "no_submit", "aborted_scope"})
 
 
+
+def _diff_widen_roots(db) -> list[str] | None:
+    """Scope files of a diff-scoped run (soft-widen ceiling for grep), else None."""
+    try:
+        manifest = db.get_diff_scope() if db is not None else None
+    except Exception as exc:
+        note_swallowed(exc, context="hunt.diff_widen_roots")
+        return None
+    if not manifest:
+        return None
+    from vulnforge.diff_scope import scope_files
+
+    return scope_files(manifest) or None
+
 def shallow_none_should_requeue(session: dict, payload: dict, shallow: bool) -> bool:
     """Shallow submit_none requeues once, unless the operator forced submit_none.
 
@@ -187,6 +201,8 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "path_prefix": payload.get("path_prefix") or "",
             "force_depth": bool(payload.get("force_depth")),
             "widened": False,
+            # Diff-scoped run: a soft widen reaches the scope files, not the tree.
+            "widen_roots": _diff_widen_roots(db),
         },
     }
     # Ensure pack_hunt sees run profile for tool schemas
@@ -859,6 +875,8 @@ def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "path_prefix": payload.get("path_prefix") or "",
             "force_depth": bool(payload.get("force_depth")),
             "widened": False,
+            # Diff-scoped run: a soft widen reaches the scope files, not the tree.
+            "widen_roots": _diff_widen_roots(db),
         },
     }
     if isinstance(cfg.get("run"), dict):
@@ -1645,6 +1663,8 @@ def maybe_auto_split(task, db, cfg: dict, run_dir: Path) -> dict[str, Any] | Non
             "force_depth": True,
             "seed_sinks": payload.get("seed_sinks") or [],
         }
+        if payload.get("diff_scope"):
+            child_payload["diff_scope"] = payload["diff_scope"]
         # Prefer sinks that match this chunk
         if payload.get("seed_sinks"):
             from vulnforge.tools.sink_preindex import filter_sinks_for_paths

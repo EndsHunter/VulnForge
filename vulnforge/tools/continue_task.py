@@ -32,6 +32,7 @@ _HUNT_INHERIT = (
     "operator_reason",
     "spawn_chain",
     "shallow_requeued",
+    "diff_scope",
 )
 
 _RECON_INHERIT = (
@@ -263,6 +264,23 @@ def enqueue_continuation(
     for key in inherit:
         if key in parent_payload and parent_payload[key] is not None:
             child[key] = parent_payload[key]
+
+    if remaining and kind_s == "hunt" and db is not None:
+        # Diff-scoped run (#185): continuation paths stay inside the scope.
+        try:
+            diff_manifest = db.get_diff_scope()
+        except Exception as exc:
+            from vulnforge.errors import note_swallowed
+
+            note_swallowed(exc, context="continue_task.diff_scope")
+            diff_manifest = None
+        if diff_manifest:
+            from vulnforge.diff_scope import clip_hints_to_scope, hunt_diff_context
+
+            remaining = clip_hints_to_scope(remaining, diff_manifest) or clip_hints_to_scope(
+                parent_payload.get("path_hints") or [], diff_manifest
+            )
+            child["diff_scope"] = hunt_diff_context(diff_manifest, remaining)
 
     if remaining:
         if kind_s == "hunt":

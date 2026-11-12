@@ -119,6 +119,12 @@ def scope_roots_for_scan(ctx: dict) -> list[str] | None:
         return None
     scope = ctx.get("scope") or {}
     if scope.get("widened"):
+        # Diff-scoped run: widen to hints + scope files, not the whole tree.
+        ceiling = [normalize_relpath(str(r)) for r in scope.get("widen_roots") or [] if r]
+        if ceiling:
+            out = list(scope_hints(ctx))
+            out.extend(r for r in ceiling if r not in out)
+            return out
         return None
     hints = scope_hints(ctx)
     if not hints:
