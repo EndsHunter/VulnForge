@@ -32,6 +32,7 @@ from vulnforge.fix_patch import (
     FIX_PATCH_RELPATH,
     VERIFY_FIX_RELPATH,
     PatchError,
+    assert_outside,
     check_patch,
     cited_region_diff,
     export_git_tree,
@@ -39,6 +40,7 @@ from vulnforge.fix_patch import (
     materialize_patched_tree,
     new_scratch_dir,
     remove_scratch_dir,
+    scratch_root,
 )
 from vulnforge.languages import POC_CODE_EXTS
 from vulnforge.llm import InfraError, classify_llm_failure
@@ -103,6 +105,10 @@ def _resolve_tree(
             raise PatchError("patched_path_inside_evidence")
         return real, {"source": "patched_path", "path": str(real)}, None
 
+    # Never create scratch inside the target (or the repo being exported).
+    assert_outside(tool_root, scratch_root(run_dir))
+    if src == "git_rev" and payload.get("repo_path"):
+        assert_outside(Path(str(payload["repo_path"])).expanduser(), scratch_root(run_dir))
     scratch = new_scratch_dir(run_dir, task_id)
     tree = scratch / "tree"
     try:
@@ -144,7 +150,9 @@ def _poc_code_files(pack_dir: Path) -> list[Path]:
     out: list[Path] = []
     try:
         for child in sorted(pack_dir.iterdir()):
-            if child.is_file() and not child.is_symlink() and child.suffix.lower() in POC_CODE_EXTS:
+            # Symlinks count as present (and are then refused), so a linked poc.py
+            # can never make the pack look PoC-free.
+            if (child.is_file() or child.is_symlink()) and child.suffix.lower() in POC_CODE_EXTS:
                 out.append(child)
     except OSError:
         return []
@@ -154,6 +162,8 @@ def _poc_code_files(pack_dir: Path) -> list[Path]:
 def _target_bound(files: list[Path]) -> bool:
     """PoC code must reference the /target mount, or its result says nothing about the tree."""
     for f in files:
+        if f.is_symlink():
+            continue
         try:
             if "/target" in f.read_text(encoding="utf-8", errors="replace"):
                 return True
@@ -207,6 +217,14 @@ def _poc_phase(
         "reasons": [],
         "would_resolve": [],
     }
+    linked = [f.name for f in files if f.is_symlink()]
+    if linked:
+        info.update(evidence=POC_NOT_RUN)
+        info["reasons"].append("poc_symlink_refused:" + ",".join(linked))
+        info["would_resolve"].append(
+            "Replace symlinked PoC files in the evidence pack with regular files, then re-run verify_fix."
+        )
+        return info
     hc = harness_config(cfg)
     if not hc["enabled"] and not payload.get("force"):
         info.update(evidence=POC_NOT_RUN)
@@ -371,7 +389,8 @@ def pack_verify_fix(
         if poc.get(k):
             poc_view[k] = {
                 kk: poc[k].get(kk)
-                for kk in ("verdict", "signal_matched", "exit_code", "target_mounted", "stdout_excerpt")
+                # No stdout/stderr: the PoC can read the pack (/work), including fix_notes.md.
+                for kk in ("verdict", "signal_matched", "exit_code", "target_mounted")
             }
     user = (
         stage_md

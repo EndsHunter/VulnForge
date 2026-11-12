@@ -559,3 +559,54 @@ def test_fix_api_routes(tmp_path: Path, toy_sqli: Path):
     assert v.status_code == 200 and v.json()["kind"] == "verify_fix"
     bad = client.post(f"{base}/verify-fix", json={})
     assert bad.status_code == 400
+
+
+# --------------------------------------------------------------------------- review regressions
+
+
+def test_verify_fix_symlinked_poc_blocks_static_fixed(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup(tmp_path, toy_sqli)
+    fid = _with_fix_patch(run_dir, db)
+    real = tmp_path / "real_poc.py"
+    real.write_text("import sys\nsys.path.insert(0, '/target')\n", encoding="utf-8")
+    os.symlink(real, run_dir / "evidence" / "e-fix" / "poc.py")
+    task = _lease(db, "verify_fix", {"finding_id": fid, "use_fix_patch": True})
+    r = verify_fix.run(task, db, run_dir, _cfg([_verdict("fixed", "high")]))
+    assert r["verdict"] == "inconclusive"
+    assert r["poc_evidence"] == "not_run"
+    db.close()
+
+
+def test_verifier_never_sees_poc_stdout(tmp_path: Path, toy_sqli: Path, monkeypatch):
+    """The PoC can read /work/fix_notes.md; its output must not reach the verifier."""
+    import vulnforge.poc_runner as pr
+
+    run_dir, db = _setup(tmp_path, toy_sqli)
+    fid = _with_fix_patch(run_dir, db)
+    _add_poc(run_dir)
+    base = _fake_exec({str(toy_sqli)})
+
+    def leaky(pack_dir, **kw):
+        out = base(pack_dir, **kw)
+        out["stdout_excerpt"] = f"cat /work/fix_notes.md -> {NOTES_MARKER}"
+        return out
+
+    monkeypatch.setattr(pr, "execute_poc_for_pack", leaky)
+    task = _lease(db, "verify_fix", {"finding_id": fid, "use_fix_patch": True})
+    r = verify_fix.run(task, db, run_dir, _cfg([_verdict("fixed", "high")]))
+    assert r["verdict"] == "fixed"
+    assert NOTES_MARKER not in _all_text_outside_evidence(run_dir)
+    db.close()
+
+
+def test_verify_fix_run_dir_inside_target_refused(tmp_path: Path, toy_sqli: Path):
+    inner = toy_sqli / "runs"
+    inner.mkdir()
+    run_dir, db = _setup(inner, toy_sqli)
+    fid = _with_fix_patch(run_dir, db)
+    task = SimpleNamespace(id=0, kind="verify_fix", payload={"finding_id": fid, "use_fix_patch": True})
+    r = verify_fix.run(task, db, run_dir, _cfg([]))
+    assert r["status"] == "failed_task"
+    assert "scratch_inside_source" in r["error"]
+    assert not (run_dir / "scratch").exists()
+    db.close()

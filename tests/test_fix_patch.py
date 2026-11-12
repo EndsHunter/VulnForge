@@ -238,3 +238,104 @@ def test_export_git_tree_raw_blobs_no_filters(tmp_path: Path):
     assert _snapshot(repo) == before
     with pytest.raises(PatchError):
         export_git_tree(repo, "no-such-rev", tmp_path / "out2")
+
+
+# --------------------------------------------------------------------------- review regressions
+
+
+def test_modes_preserved_in_scratch_copy(tmp_path: Path):
+    src = tmp_path / "src"
+    (src / "open_dir").mkdir(parents=True)
+    (src / "ro_dir").mkdir()
+    (src / "config.yml").write_text("k: v\n", encoding="utf-8")
+    (src / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (src / "ro_dir" / "locked.py").write_text("y = 1\n", encoding="utf-8")
+    os.chmod(src / "config.yml", 0o666)
+    os.chmod(src / "open_dir", 0o777)
+    os.chmod(src / "ro_dir" / "locked.py", 0o444)
+    os.chmod(src / "ro_dir", 0o555)
+    patch = (
+        "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+        "--- a/ro_dir/locked.py\n+++ b/ro_dir/locked.py\n@@ -1 +1 @@\n-y = 1\n+y = 2\n"
+    )
+    dest = tmp_path / "dest"
+    try:
+        materialize_patched_tree(src, patch, dest)
+        mode = lambda p: os.stat(p).st_mode & 0o7777  # noqa: E731
+        assert mode(dest / "config.yml") == 0o666
+        assert mode(dest / "open_dir") == 0o777
+        assert mode(dest / "ro_dir") == 0o555
+        assert mode(dest / "ro_dir" / "locked.py") == 0o444
+        assert (dest / "ro_dir" / "locked.py").read_text() == "y = 2\n"
+        run_dir = tmp_path / "run"
+        scratch = new_scratch_dir(run_dir, 1)
+        materialize_patched_tree(src, patch, scratch / "tree")
+        assert remove_scratch_dir(run_dir, scratch) is True
+    finally:
+        os.chmod(src / "ro_dir", 0o755)
+        if (dest / "ro_dir").exists():
+            os.chmod(dest / "ro_dir", 0o755)
+
+
+def test_mixed_newlines_and_form_feed_untouched(tmp_path: Path):
+    (tmp_path / "m.txt").write_bytes(b"a\nb\r\nc\n")
+    (tmp_path / "ff.txt").write_bytes(b"a\x0cb\nz\n")
+    patch = (
+        "--- a/m.txt\n+++ b/m.txt\n@@ -3 +3 @@\n-c\n+C\n"
+        "--- a/ff.txt\n+++ b/ff.txt\n@@ -2 +2 @@\n-z\n+Z\n"
+    )
+    dest = tmp_path.parent / "nl_mixed"
+    materialize_patched_tree(tmp_path, patch, dest)
+    assert (dest / "m.txt").read_bytes() == b"a\nb\r\nC\n"
+    assert (dest / "ff.txt").read_bytes() == b"a\x0cb\nZ\n"
+
+
+def test_crlf_file_keeps_crlf(tmp_path: Path):
+    (tmp_path / "w.txt").write_bytes(b"one\r\ntwo\r\n")
+    patch = "--- a/w.txt\n+++ b/w.txt\n@@ -1,2 +1,3 @@\n one\n-two\n+TWO\n+three\n"
+    dest = tmp_path.parent / "crlf"
+    materialize_patched_tree(tmp_path, patch, dest)
+    assert (dest / "w.txt").read_bytes() == b"one\r\nTWO\r\nthree\r\n"
+
+
+def test_patch_without_final_newline_keeps_file_newline(toy_sqli: Path, tmp_path: Path):
+    r = check_patch(toy_sqli, SQLI_FIX.rstrip("\n"))
+    assert r["applies"], r
+    dest = tmp_path / "t"
+    materialize_patched_tree(toy_sqli, SQLI_FIX.rstrip("\n"), dest)
+    assert (dest / "app.py").read_bytes().endswith(b"(q,))\n")
+
+
+@pytest.mark.parametrize("old,new", [("c", "w"), ("i", "w"), ("a", "b")])
+def test_mnemonic_prefixes(toy_sqli: Path, old: str, new: str):
+    text = SQLI_FIX.replace("--- a/", f"--- {old}/").replace("+++ b/", f"+++ {new}/")
+    files = parse_patch(text)
+    assert files[0].path == "app.py"
+    assert check_patch(toy_sqli, text)["applies"]
+
+
+def test_unprefixed_real_dir_named_a_not_stripped():
+    files = parse_patch("--- a/x.py\n+++ a/x.py\n@@ -1 +1 @@\n-1\n+2\n")
+    assert files[0].path == "a/x.py"
+
+
+def test_scratch_inside_source_refused(tmp_path: Path):
+    src = tmp_path / "target"
+    src.mkdir()
+    (src / "f.py").write_text("x = 1\n", encoding="utf-8")
+    before = _snapshot(src)
+    with pytest.raises(PatchError, match="scratch_inside_source"):
+        materialize_patched_tree(src, "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n", src / "runs" / "tree")
+    assert _snapshot(src) == before
+    assert not (src / "runs").exists()
+
+
+def test_scratch_symlink_refused(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, run_dir / "scratch")
+    with pytest.raises(PatchError, match="scratch_symlink_refused"):
+        new_scratch_dir(run_dir, 1)
+    assert list(elsewhere.iterdir()) == []

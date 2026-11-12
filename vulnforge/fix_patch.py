@@ -123,13 +123,31 @@ def _header_path(raw: str) -> str | None:
     return s
 
 
+_DIFF_PREFIXES = frozenset({"a", "b", "c", "i", "o", "w"})  # git default + mnemonicPrefix
+
+
 def _strip_prefixes(old: str | None, new: str | None) -> tuple[str | None, str | None]:
-    """Strip git-style a/ b/ prefixes when both sides use them."""
-    old_ok = old is None or old.startswith("a/")
-    new_ok = new is None or new.startswith("b/")
-    if old_ok and new_ok and not (old is None and new is None):
-        old = old[2:] if old is not None else None
-        new = new[2:] if new is not None else None
+    """Strip one git-style prefix component (a/ b/, or mnemonic c/ i/ o/ w/).
+
+    Stripped only when every non-/dev/null side has such a prefix and, for a
+    modify, both sides agree after it.
+    """
+    def split(p: str | None) -> tuple[str, str] | None:
+        if p is None:
+            return None
+        head, sep, rest = p.partition("/")
+        if sep and head in _DIFF_PREFIXES and rest:
+            return head, rest
+        return None
+
+    so, sn = split(old), split(new)
+    if old is not None and new is not None:
+        if so and sn and so[1] == sn[1] and so[0] != sn[0]:
+            return so[1], sn[1]
+        return old, new
+    side = so if old is not None else sn
+    if side:
+        return (side[1], None) if old is not None else (None, side[1])
     return old, new
 
 
@@ -221,10 +239,9 @@ def parse_patch(text: str) -> list[FilePatch]:
                     tag, text_part = " ", body
                 if tag not in (" ", "-", "+"):
                     raise PatchError(f"bad_hunk_line:{body[:60]!r}")
-                has_nl = text_part.endswith("\n")
                 content = text_part.rstrip("\r\n")
-                if i + 1 < n and lines[i + 1].startswith("\\"):
-                    has_nl = False
+                # Only a "\\ No newline at end of file" marker drops the ending.
+                has_nl = not (i + 1 < n and lines[i + 1].startswith("\\"))
                 hunk.lines.append((tag, content, has_nl))
                 if tag in (" ", "-"):
                     old_seen += 1
@@ -257,12 +274,25 @@ def parse_patch(text: str) -> list[FilePatch]:
 # --------------------------------------------------------------------------- apply
 
 
-def _split_lines(data: bytes) -> tuple[list[str], str, bool]:
+def _split_lines(data: bytes) -> tuple[list[tuple[str, str]], str]:
+    """(content, ending) per line, splitting on LF only. Each line keeps its own
+    ending ("\n", "\r\n", or "" for a last line without one). Returns the
+    dominant ending for lines the patch adds."""
     text = data.decode("utf-8")
-    nl = "\r\n" if "\r\n" in text else "\n"
-    raw = text.splitlines(keepends=True)
-    ends_nl = bool(raw) and raw[-1].endswith(("\n", "\r"))
-    return [ln.rstrip("\r\n") for ln in raw], nl, ends_nl
+    parts = text.split("\n")
+    out: list[tuple[str, str]] = []
+    for i, part in enumerate(parts):
+        if i == len(parts) - 1:
+            if part:
+                out.append((part, ""))
+            break
+        if part.endswith("\r"):
+            out.append((part[:-1], "\r\n"))
+        else:
+            out.append((part, "\n"))
+    crlf = sum(1 for _, e in out if e == "\r\n")
+    lf = sum(1 for _, e in out if e == "\n")
+    return out, ("\r\n" if crlf > lf else "\n")
 
 
 def _find_unique(haystack: list[str], needle: list[str], start: int) -> list[int]:
@@ -280,25 +310,29 @@ def _find_unique(haystack: list[str], needle: list[str], start: int) -> list[int
 
 
 def apply_file_patch(original: bytes | None, fp: FilePatch) -> tuple[bytes | None, list[int]]:
-    """Apply one file's hunks. Returns (new_bytes or None for delete, offsets)."""
+    """Apply one file's hunks. Returns (new_bytes or None for delete, offsets).
+
+    Untouched lines keep their exact bytes and line endings. Added lines take
+    the file's dominant ending.
+    """
     if fp.op == "add":
         if original is not None:
             raise PatchError(f"add_target_exists:{fp.path}")
-        lines: list[str] = []
-        nl, ends_nl = "\n", True
+        lines: list[tuple[str, str]] = []
+        nl = "\n"
     else:
         if original is None:
             raise PatchError(f"missing_file:{fp.path}")
         try:
-            lines, nl, ends_nl = _split_lines(original)
+            lines, nl = _split_lines(original)
         except UnicodeDecodeError as e:
             raise PatchError(f"non_utf8_file:{fp.path}") from e
-    out: list[str] = []
+    contents = [c for c, _ in lines]
+    out: list[tuple[str, str]] = []
     cursor = 0
     offsets: list[int] = []
     for h in fp.hunks:
         old = [t for tag, t, _ in h.lines if tag in (" ", "-")]
-        new = [t for tag, t, _ in h.lines if tag in (" ", "+")]
         if not old:
             # Pure insertion: header old_start is the line after which to insert.
             pos = h.old_start
@@ -306,10 +340,10 @@ def apply_file_patch(original: bytes | None, fp: FilePatch) -> tuple[bytes | Non
                 raise PatchError(f"insert_out_of_range:{fp.path}@-{h.old_start}")
         else:
             expected = h.old_start - 1
-            if lines[expected : expected + len(old)] == old and expected >= cursor:
+            if expected >= cursor and contents[expected : expected + len(old)] == old:
                 pos = expected
             else:
-                hits = _find_unique(lines, old, cursor)
+                hits = _find_unique(contents, old, cursor)
                 if not hits:
                     raise PatchError(f"context_mismatch:{fp.path}@-{h.old_start}")
                 if len(hits) > 1:
@@ -317,21 +351,26 @@ def apply_file_patch(original: bytes | None, fp: FilePatch) -> tuple[bytes | Non
                 pos = hits[0]
         offsets.append(pos - (h.old_start - 1 if old else h.old_start))
         out.extend(lines[cursor:pos])
-        out.extend(new)
+        k = pos
+        for tag, text, has_nl in h.lines:
+            if tag == " ":
+                out.append(lines[k])  # original bytes and ending
+                k += 1
+            elif tag == "-":
+                k += 1
+            else:
+                out.append((text, nl if has_nl else ""))
         cursor = pos + len(old)
-        # Track the newline state of the very last line written.
-        last_new = [x for x in h.lines if x[0] in (" ", "+")]
-        if cursor >= len(lines) and last_new:
-            ends_nl = last_new[-1][2]
     out.extend(lines[cursor:])
     if fp.op == "delete":
         if out:
             raise PatchError(f"delete_leaves_content:{fp.path}")
         return None, offsets
-    if not out:
-        return b"", offsets
-    text = nl.join(out) + (nl if ends_nl else "")
-    return text.encode("utf-8"), offsets
+    # Only the last line may lack an ending.
+    for i in range(len(out) - 1):
+        if out[i][1] == "":
+            out[i] = (out[i][0], nl)
+    return "".join(c + e for c, e in out).encode("utf-8"), offsets
 
 
 def apply_patch_in_memory(
@@ -395,12 +434,29 @@ def scratch_root(run_dir: Path) -> Path:
 
 
 def new_scratch_dir(run_dir: Path, task_id: Any) -> Path:
-    """Create a fresh, task-owned scratch directory under run_dir."""
-    base = scratch_root(run_dir)
-    base.mkdir(parents=True, exist_ok=True)
-    d = base / f"task-{task_id}-{uuid.uuid4().hex[:8]}"
+    """Create a fresh, task-owned scratch directory under run_dir.
+
+    Refuses a symlink at run_dir/scratch or run_dir/scratch/verify_fix, so the
+    task dir cannot be redirected elsewhere.
+    """
+    cur = Path(run_dir)
+    cur.mkdir(parents=True, exist_ok=True)
+    for part in SCRATCH_SUBDIR.parts:
+        cur = cur / part
+        if cur.is_symlink():
+            raise PatchError(f"scratch_symlink_refused:{cur}")
+        cur.mkdir(exist_ok=True)
+    d = cur / f"task-{task_id}-{uuid.uuid4().hex[:8]}"
     d.mkdir()
     return d
+
+
+def assert_outside(tree: Path, dest: Path) -> None:
+    """Refuse a scratch destination that resolves inside (or equals) a source tree."""
+    t = Path(tree).resolve()
+    d = Path(dest).resolve()
+    if d == t or t in d.parents:
+        raise PatchError(f"scratch_inside_source:{d} is inside {t} (move the run dir out of the target)")
 
 
 def remove_scratch_dir(run_dir: Path, path: Path) -> bool:
@@ -414,8 +470,14 @@ def remove_scratch_dir(run_dir: Path, path: Path) -> bool:
         return False
     if Path(path).is_symlink() or not real.is_dir():
         return False
+    # Copied read-only dirs would block rmtree: make dirs owner-writable first.
+    for dirpath, _dirs, _files in os.walk(real, followlinks=False):
+        try:
+            os.chmod(dirpath, stat.S_IMODE(os.lstat(dirpath).st_mode) | stat.S_IRWXU)
+        except OSError:
+            pass
     shutil.rmtree(real, ignore_errors=True)
-    return True
+    return not real.exists()
 
 
 def _copy_tree(
@@ -425,11 +487,17 @@ def _copy_tree(
     max_bytes: int = DEFAULT_MAX_TREE_BYTES,
     max_files: int = DEFAULT_MAX_TREE_FILES,
 ) -> dict[str, Any]:
-    """Copy regular files and dirs only. Symlinks and .git are skipped."""
+    """Copy regular files and dirs only, keeping permission bits. Symlinks and .git are skipped.
+
+    Directory modes are returned (not applied) so the caller can write the patch
+    first and then restore them, even for read-only directories.
+    """
     src = Path(src).resolve()
+    assert_outside(src, dest)
     total = 0
     count = 0
     skipped_symlinks = 0
+    dir_modes: list[tuple[Path, int]] = []
     dest.mkdir(parents=True, exist_ok=True)
     for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
         dp = Path(dirpath)
@@ -444,6 +512,10 @@ def _copy_tree(
             keep_dirs.append(d)
         dirnames[:] = keep_dirs
         (dest / rel_dir).mkdir(parents=True, exist_ok=True)
+        try:
+            dir_modes.append((dest / rel_dir, stat.S_IMODE(os.lstat(dp).st_mode)))
+        except OSError:
+            pass
         for fn in filenames:
             sp = dp / fn
             try:
@@ -463,11 +535,21 @@ def _copy_tree(
                     "(pass patched_path to an existing patched checkout instead)"
                 )
             shutil.copyfile(sp, dest / rel_dir / fn, follow_symlinks=False)
-            try:
-                os.chmod(dest / rel_dir / fn, stat.S_IMODE(st.st_mode) & 0o755)
-            except OSError:
-                pass
-    return {"files": count, "bytes": total, "skipped_symlinks": skipped_symlinks}
+            # Same permission bits as the source, so a mode-sensitive PoC sees
+            # only the patch as the difference between baseline and patched runs.
+            os.chmod(dest / rel_dir / fn, stat.S_IMODE(st.st_mode))
+    return {
+        "files": count,
+        "bytes": total,
+        "skipped_symlinks": skipped_symlinks,
+        "_dir_modes": dir_modes,
+    }
+
+
+def _restore_dir_modes(dir_modes: list[tuple[Path, int]]) -> None:
+    # Deepest first, so a read-only parent does not block its children.
+    for path, mode in sorted(dir_modes, key=lambda x: len(x[0].parts), reverse=True):
+        os.chmod(path, mode)
 
 
 def _write_no_follow(dest_root: Path, rel: str, data: bytes | None) -> None:
@@ -483,10 +565,21 @@ def _write_no_follow(dest_root: Path, rel: str, data: bytes | None) -> None:
     _walk_no_symlinks(dest_root, rel)
     if real_root not in target.parent.resolve().parents and target.parent.resolve() != real_root:
         raise PatchError(f"write_escapes_tree:{rel}")
+    keep_mode: int | None = None
+    try:
+        st = os.lstat(target)
+        if stat.S_ISREG(st.st_mode):
+            keep_mode = stat.S_IMODE(st.st_mode)
+            if not keep_mode & stat.S_IWUSR:
+                os.chmod(target, keep_mode | stat.S_IWUSR)
+    except FileNotFoundError:
+        pass
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(target, flags, 0o644)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
+    if keep_mode is not None:
+        os.chmod(target, keep_mode)
 
 
 def materialize_patched_tree(
@@ -500,8 +593,10 @@ def materialize_patched_tree(
     files = parse_patch(patch_text)
     applied = apply_patch_in_memory(Path(target_root), files)
     copy_info = _copy_tree(Path(target_root), Path(dest), max_bytes=max_bytes)
+    dir_modes = copy_info.pop("_dir_modes", [])
     for rel, (data, _off) in applied.items():
         _write_no_follow(Path(dest), rel, data)
+    _restore_dir_modes(dir_modes)
     return {
         "source": "fix_patch",
         "copy": copy_info,
@@ -598,6 +693,7 @@ def export_git_tree(
     repo = Path(repo)
     if not repo.is_dir():
         raise PatchError(f"repo_not_dir:{repo}")
+    assert_outside(repo, dest)
     sha = resolve_git_commit(repo, rev)
     sub = safe_relpath(subdir) if subdir else ""
     treeish = f"{sha}:{sub}" if sub else sha
@@ -647,6 +743,8 @@ def export_git_tree(
             if total > max_bytes:
                 raise PatchError(f"tree_too_large:bytes>{max_bytes}")
             data = proc.stdout.read(size)
+            if len(data) != size:
+                raise PatchError(f"git_cat_file_short_read:{rel}")
             proc.stdout.read(1)  # trailing LF
             _write_no_follow(dest, rel, data)
             if mode == "100755":
@@ -672,6 +770,9 @@ def export_git_tree(
         "files": len(entries),
         "bytes": total,
         "skipped_non_regular": skipped,
+        "caveats": [
+            "git stores only 0644/0755 file modes; other permission bits are not reproduced.",
+        ],
     }
 
 
