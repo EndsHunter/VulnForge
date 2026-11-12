@@ -26,7 +26,7 @@ def export_dev_setup() -> dict[str, Any]:
     from vulnforge.hunt_profiles import export_collection as export_hunts
     from vulnforge.hunt_profiles.author_prompt import get_author_prompt
     from vulnforge.recon_agents import export_collection as export_recon
-    from vulnforge.settings import load_ui_settings
+    from vulnforge.settings import load_ui_settings, redact_secrets
     from vulnforge.toolgen.store import export_all_drafts
 
     hunt = export_hunts()
@@ -44,7 +44,8 @@ def export_dev_setup() -> dict[str, Any]:
         # only when explicitly present as override; export null section otherwise.
         skill_gen = None
 
-    ui = load_ui_settings()
+    # Shareable file: never carry API keys. Import keeps stored keys by host id.
+    ui = redact_secrets(load_ui_settings())
 
     return {
         "format": SETUP_FORMAT,

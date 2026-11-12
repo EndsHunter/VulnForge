@@ -19,6 +19,7 @@ from vulnforge.settings.ui import (
     normalize_api_key,
     normalize_api_mode,
     normalize_hunt_perspectives,
+    redact_secrets,
     save_ui_settings,
     settings_path,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "normalize_api_key",
     "normalize_api_mode",
     "normalize_hunt_perspectives",
+    "redact_secrets",
     "save_ui_settings",
     "settings_path",
 ]

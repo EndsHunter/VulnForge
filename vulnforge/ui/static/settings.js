@@ -141,11 +141,22 @@
     key.type = "password";
     key.dataset.field = "api_key";
     key.autocomplete = "off";
-    key.placeholder = "blank or none";
-    key.value = host?.api_key || "";
+    // The server never returns keys. Blank keeps the stored key; Clear removes it.
+    const keySet = !!host?.api_key_set;
+    key.placeholder = keySet ? "key set (leave blank to keep)" : "blank or none";
+    key.value = "";
     key.setAttribute("aria-label", "API key");
     keyField.appendChild(keyLabel);
     keyField.appendChild(key);
+    if (keySet) {
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "btn";
+      clear.dataset.action = "clear-host-key";
+      clear.textContent = "Clear";
+      clear.title = "Remove the stored API key on Save";
+      keyField.appendChild(clear);
+    }
 
     const remove = document.createElement("button");
     remove.type = "button";
@@ -168,8 +179,11 @@
       const host = {
         base_url,
         api_mode: row.querySelector("[data-field=api_mode]")?.value || "chat_completions",
-        api_key: row.querySelector("[data-field=api_key]")?.value ?? "",
       };
+      // Omit api_key to keep the stored key; send "" only on an explicit Clear.
+      const typed = (row.querySelector("[data-field=api_key]")?.value ?? "").trim();
+      if (typed) host.api_key = typed;
+      else if (row.dataset.clearKey === "1" || !row.dataset.hostId) host.api_key = "";
       if (row.dataset.hostId) host.id = row.dataset.hostId;
       out.push(host);
     });
@@ -840,6 +854,18 @@
       $("#set-hosts")?.appendChild(hostRow({}));
     });
     $("#set-hosts")?.addEventListener("click", (ev) => {
+      const clear = ev.target.closest?.("[data-action=clear-host-key]");
+      if (clear) {
+        const row = clear.closest(".host-row");
+        if (row) row.dataset.clearKey = "1";
+        const input = row?.querySelector("[data-field=api_key]");
+        if (input) {
+          input.value = "";
+          input.placeholder = "key will be removed on Save";
+        }
+        clear.disabled = true;
+        return;
+      }
       const btn = ev.target.closest?.("[data-action=remove-host]");
       if (!btn) return;
       btn.closest(".host-row")?.remove();

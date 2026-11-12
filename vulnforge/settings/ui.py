@@ -119,6 +119,48 @@ def normalize_api_mode(value: Any) -> str:
     return mode
 
 
+def redact_secrets(value: Any) -> Any:
+    """Deep copy with every ``api_key`` replaced by ``api_key_set: bool``.
+
+    Use on anything an HTTP route returns. Keys never leave the server; the
+    settings page shows only whether a key is configured.
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if k == "api_key":
+                out.setdefault("api_key_set", bool(normalize_api_key(v)))
+                continue
+            out[k] = redact_secrets(v)
+        return out
+    if isinstance(value, list):
+        return [redact_secrets(v) for v in value]
+    return value
+
+
+def keep_host_keys(old_hosts: Any, new_hosts: Any) -> Any:
+    """A host saved without an ``api_key`` field keeps its stored key (same id).
+
+    Responses never carry keys, so a page that round-trips ``hosts`` omits them.
+    An explicit ``api_key`` (including ``""``) still sets or clears the key.
+    """
+    if not isinstance(new_hosts, list):
+        return new_hosts
+    old_keys = {
+        str(h.get("id")): h.get("api_key") or ""
+        for h in (old_hosts or [])
+        if isinstance(h, dict) and h.get("id")
+    }
+    out = []
+    for raw in new_hosts:
+        if isinstance(raw, dict) and "api_key" not in raw:
+            hid = str(raw.get("id") or "")
+            if hid in old_keys:
+                raw = {**raw, "api_key": old_keys[hid]}
+        out.append(raw)
+    return out
+
+
 def normalize_api_key(value: Any) -> str:
     """Return a usable API key string, or \"\" when blank/none is intended.
 
@@ -585,7 +627,7 @@ def save_ui_settings(updates: dict[str, Any]) -> dict[str, Any]:
 
     if "hosts" in updates and updates.get("hosts") is not None:
         old_hosts = list(current.get("hosts") or [])
-        new_hosts = normalize_hosts(updates.get("hosts") or [])
+        new_hosts = normalize_hosts(keep_host_keys(old_hosts, updates.get("hosts") or []))
         catalog, available = sync_catalog_for_host_edit(
             old_hosts,
             new_hosts,

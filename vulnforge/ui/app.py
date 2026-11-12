@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from vulnforge.cli import PROJECT_ROOT, load_config, resolve_runs_root
-from vulnforge.settings import load_ui_settings, save_ui_settings
+from vulnforge.settings import load_ui_settings, redact_secrets, save_ui_settings
 from vulnforge.step_io import build_graph_snapshot, build_task_io
 from vulnforge.transcript import (
     list_transcript_ids,
@@ -2569,7 +2569,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         stages = eff.get("stages") or {}
         key = normalize_api_key(llm.get("api_key") if "api_key" in llm else "")
         vmodels = resolve_validate_models(eff)
-        return {
+        return redact_secrets({
             "settings": ui,
             "effective": {
                 "base_url": llm.get("base_url"),
@@ -2612,7 +2612,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                     "iterate_wall_ttl_min", ui.get("poc_iterate_wall_ttl_min", 15)
                 ),
             },
-        }
+        })
 
     @app.put("/api/settings")
     def api_put_settings(body: SettingsBody):
@@ -2652,7 +2652,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             raise HTTPException(400, str(e)) from e
         # refresh app config for init paths in this process
         app.state.config = load_config()
-        return {"ok": True, "settings": saved}
+        return redact_secrets({"ok": True, "settings": saved})
 
     @app.post("/api/settings/optimize")
     def api_optimize_settings(body: SettingsOptimizeBody = Body(default_factory=SettingsOptimizeBody)):
@@ -2689,7 +2689,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             raise HTTPException(500, f"optimize failed: {e}") from e
         if result.get("applied"):
             app.state.config = load_config()
-        return result
+        return redact_secrets(result)
 
     @app.post("/api/settings/hosts/{host_id}/catalog")
     def api_refresh_host_catalog(host_id: str):
@@ -2704,12 +2704,12 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         try:
             listed = list_model_ids(str(host.get("base_url") or ""), str(host.get("api_key") or ""))
         except Exception as e:
-            return {
+            return redact_secrets({
                 "ok": False,
                 "host_id": host_id,
                 "error": f"catalog refresh failed: {e}",
                 "settings": ui,
-            }
+            })
         catalog, available = merge_refresh(
             list(ui.get("catalog") or []),
             list(ui.get("available") or []),
@@ -2718,12 +2718,12 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         )
         saved = save_ui_settings({"catalog": catalog, "available": available})
         app.state.config = load_config()
-        return {
+        return redact_secrets({
             "ok": True,
             "host_id": host_id,
             "models": listed,
             "settings": saved,
-        }
+        })
 
     @app.post("/api/settings/hosts/{host_id}/verify")
     def api_verify_host_model(host_id: str, body: VerifyModelBody):
@@ -2752,23 +2752,23 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             model_id=model_id,
         )
         if not probed.get("ok"):
-            return {
+            return redact_secrets({
                 "ok": False,
                 "host_id": host_id,
                 "model_id": model_id,
                 "error": probed.get("detail") or "verify failed",
                 "settings": ui,
-            }
+            })
         available = mark_available(list(ui.get("available") or []), host_id, model_id)
         saved = save_ui_settings({"available": available})
         app.state.config = load_config()
-        return {
+        return redact_secrets({
             "ok": True,
             "host_id": host_id,
             "model_id": model_id,
             "detail": probed.get("detail") or "",
             "settings": saved,
-        }
+        })
 
     # ---------- API: hunt profiles (Dev dashboard) ----------
 
