@@ -42,8 +42,11 @@ Or **Settings → Report and exports** (`finding_owners`, `finding_owners_redact
 - **Exports** (`/export`): JSON `findings[].owners` + `rows[].suggested_owners`; a
   `suggested_owners` column in CSV/XLSX (only when on); a bullet in MD/HTML/DOCX.
   `include_owners=false` omits them. No query flag lifts redaction.
-- **Trackers / SARIF**: use `owners_markdown()` (every identity in backticks, so GitHub never
-  sends a mention) or `owners_flat()`.
+- **Tracker issues** (#189, `vulnforge/tracking/`): a "Suggested owners" section in the issue
+  body, built by `owners_markdown()`. Every identity sits in a code span, so GitHub never sends
+  a mention. Issues leave the machine like exports, so they follow `redact_in_exports`.
+  Preview and publish render the same text, so the preview token hash still matches.
+- Other sinks (SARIF, …): `owners_markdown()` or `owners_flat()`.
 
 Redaction replaces author names, emails, and every CODEOWNERS token (users and teams) with
 `owner-<16 hex>` (SHA-256 salted with the run id). It is stable within a run and differs

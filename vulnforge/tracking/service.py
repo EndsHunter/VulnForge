@@ -45,6 +45,70 @@ def tracking_config(cfg: Optional[dict] = None) -> dict[str, Any]:
     return dict(tc) if isinstance(tc, dict) else {}
 
 
+def owners_settings(cfg: Optional[dict] = None) -> dict[str, Any]:
+    """Effective ``owners`` block (#190). Issues leave the machine like exports,
+    so they follow ``owners.redact_in_exports``."""
+    from vulnforge.findings.owners import owners_config
+
+    if cfg is None:
+        try:
+            from vulnforge.settings.load import load_config
+
+            cfg = load_config()
+        except Exception:  # noqa: BLE001 — missing config → defaults (off)
+            cfg = {}
+    return owners_config(cfg)
+
+
+class _IssueOwners:
+    """Lazy per-plan owner lookups (one resolver, one budget)."""
+
+    def __init__(self, db: Database, run_dir: Path, ocfg: Optional[dict]) -> None:
+        self.ocfg = ocfg or {}
+        self.on = bool(self.ocfg.get("enabled"))
+        self._db = db
+        self._run_dir = run_dir
+        self._ready = False
+
+    def _setup(self) -> None:
+        from vulnforge.findings.owners import OwnerResolver
+
+        row = self._db.get_run()
+        self.target = (row["target_path"] if row is not None else "") or ""
+        self.salt = str((row["id"] if row is not None else "") or self._run_dir.name)
+        try:
+            self.codemap = self._db.get_codemap()
+        except Exception as exc:  # noqa: BLE001
+            from vulnforge.errors import note_swallowed
+
+            note_swallowed(exc, context="tracking.owners.codemap")
+            self.codemap = None
+        self.resolver = OwnerResolver(
+            self.target,
+            self.ocfg,
+            deadline=time.monotonic() + float(self.ocfg.get("export_budget_seconds") or 60),
+        )
+        self._ready = True
+
+    def for_finding(self, finding: Any) -> Optional[dict]:
+        if not self.on:
+            return None
+        from vulnforge.findings.owners import redact_owners, suggest_for_finding
+
+        if not self._ready:
+            self._setup()
+        owners = suggest_for_finding(
+            self.target,
+            dict(getattr(finding, "body", None) or {}),
+            self.ocfg,
+            codemap=self.codemap,
+            resolver=self.resolver,
+        )
+        if self.ocfg.get("redact_in_exports", True):
+            owners = redact_owners(owners, self.salt)
+        return owners
+
+
 def resolve_destination(
     tcfg: dict[str, Any], sink: Optional[str], destination: Optional[str]
 ) -> tuple[str, str]:
@@ -97,9 +161,11 @@ def _plan(
     sink: str,
     destination: str,
     labels: list[str],
+    owners_cfg: Optional[dict] = None,
 ) -> list[dict[str, Any]]:
     allowed = eligible_states(include_needs_human)
     items: list[dict[str, Any]] = []
+    issue_owners = _IssueOwners(db, run_dir, owners_cfg)
     for fid in ids:
         f = db.get_finding(fid)
         if not f:
@@ -120,7 +186,13 @@ def _plan(
             item.update(eligible=False, reason=f"state {f.state!r} is not eligible{hint}")
             items.append(item)
             continue
-        payload = render_issue(f, run_dir=run_dir, run_id=run_dir.name, labels=labels)
+        payload = render_issue(
+            f,
+            run_dir=run_dir,
+            run_id=run_dir.name,
+            labels=labels,
+            owners=issue_owners.for_finding(f),
+        )
         row = db.get_tracking(f.stable_key, sink, destination)
         linked = bool(row and row.get("status") == "linked" and row.get("external_id"))
         item.update(
@@ -194,6 +266,7 @@ def preview_track(
             db, run_dir, ids,
             include_needs_human=bool(include_needs_human),
             sink=sink_name, destination=dest, labels=_labels(tcfg, sink_name),
+            owners_cfg=owners_settings(cfg),
         )
     finally:
         db.close()
@@ -305,6 +378,7 @@ def track_findings(
             db, run_dir, ids,
             include_needs_human=bool(include_needs_human),
             sink=sink_name, destination=dest, labels=_labels(tcfg, sink_name),
+            owners_cfg=owners_settings(cfg),
         )
         for it in items:
             fid = it["finding_id"]

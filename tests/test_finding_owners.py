@@ -757,3 +757,87 @@ def test_stderr_flood_is_drained(tmp_path: Path, monkeypatch):
     fake.chmod(0o755)
     monkeypatch.setattr(ow.shutil, "which", lambda _n: str(fake))
     assert ow._run_git(tmp_path, ["x"], timeout=10) == b"ok\n"
+
+
+# --------------------------------------------------------------------------
+# tracker issues (#189 sink)
+
+
+class _FakeIssues:
+    def __init__(self):
+        self.bodies: list[str] = []
+
+    def __call__(self, method, path, body=None):
+        if method == "GET" and "?" in path:
+            return []
+        if method == "POST":
+            self.bodies.append(body["body"])
+            n = len(self.bodies)
+            return {
+                "number": n,
+                "title": body["title"],
+                "body": body["body"],
+                "state": "open",
+                "labels": [{"name": "vulnforge"}],
+                "html_url": f"https://github.com/acme/w/issues/{n}",
+            }
+        raise AssertionError(f"unexpected {method} {path}")
+
+
+def _track_run(tmp_path: Path, repo: Path) -> tuple[Path, int]:
+    run_dir = tmp_path / "runs" / "tgt" / "run-001"
+    (run_dir / "evidence").mkdir(parents=True)
+    db = Database.create(run_dir / "harness.db")
+    db.insert_run("run-001", str(repo), "code_static", "pin", {})
+    fid = db.insert_finding(body_for(start=1, end=10), state="confirmed")
+    db.close()
+    return run_dir, fid
+
+
+TRACK = {"tracking": {"sink": "github", "github": {"repo": "acme/w"}}}
+
+
+def test_tracker_issue_carries_redacted_owners(tmp_path: Path, repo: Path):
+    from vulnforge.tracking import preview_track, track_findings
+
+    run_dir, fid = _track_run(tmp_path, repo)
+    cfg = {**TRACK, "owners": {"enabled": True}}  # redact_in_exports defaults on
+    fake = _FakeIssues()
+    r = track_findings(run_dir, [fid], transport=fake, cfg=cfg)
+    assert r["ok"], r
+    body = fake.bodies[0]
+    assert "## Suggested owners" in body and "owner-" in body
+    for ident in ("Alice", "alice@example.com", "Bob", "@org/auth", "@alice"):
+        assert ident not in body
+    # preview and publish render the same text, so the token hash still matches
+    p1 = preview_track(run_dir, [fid], cfg=cfg)
+    p2 = preview_track(run_dir, [fid], cfg=cfg)
+    assert p1["items"][0]["body_hash"] == p2["items"][0]["body_hash"]
+    assert p1["items"][0]["issue_body"] == body
+
+
+def test_tracker_issue_identities_never_mention(tmp_path: Path, repo: Path):
+    from vulnforge.tracking import track_findings
+
+    run_dir, fid = _track_run(tmp_path, repo)
+    cfg = {**TRACK, "owners": {"enabled": True, "redact_in_exports": False}}
+    fake = _FakeIssues()
+    assert track_findings(run_dir, [fid], transport=fake, cfg=cfg)["ok"]
+    section = fake.bodies[0].split("## Suggested owners", 1)[1].split("##", 1)[0]
+    assert "Alice <alice@example.com>" in section
+    for line in section.splitlines():
+        outside = "".join(p for i, p in enumerate(line.split("`")) if i % 2 == 0)
+        assert "@" not in outside, line
+
+
+def test_tracker_issue_without_owners_unchanged(tmp_path: Path, repo: Path, monkeypatch):
+    from vulnforge.tracking import track_findings
+
+    def boom(*a, **k):
+        raise AssertionError("git must not run when owners are disabled")
+
+    monkeypatch.setattr(ow, "_run_git", boom)
+    run_dir, fid = _track_run(tmp_path, repo)
+    fake = _FakeIssues()
+    assert track_findings(run_dir, [fid], transport=fake, cfg=TRACK)["ok"]
+    assert "Suggested owners" not in fake.bodies[0]

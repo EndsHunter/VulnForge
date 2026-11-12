@@ -42,6 +42,10 @@ def neutralize(text: Any) -> str:
     return _MARKER_RE.sub(lambda m: m.group(0)[:9] + _ZWSP + m.group(0)[9:], s)
 
 
+def _break_marker(text: str) -> str:
+    return _MARKER_RE.sub(lambda m: m.group(0)[:9] + _ZWSP + m.group(0)[9:], text)
+
+
 def _code(text: Any, limit: int) -> str:
     """Inline code span that a backtick in the value cannot close."""
     return "`" + _one_line(neutralize(text), limit).replace("`", "'") + "`"
@@ -110,6 +114,7 @@ def render_issue(
     run_dir: Path,
     run_id: str = "",
     labels: Optional[list[str]] = None,
+    owners: Optional[dict] = None,
 ) -> TrackPayload:
     body: dict = dict(getattr(finding, "body", None) or {})
     state = str(getattr(finding, "state", "") or "")
@@ -154,6 +159,15 @@ def render_issue(
             lines.append(f"- {_code(loc, 320)}{sym}")
     else:
         lines.append("- none recorded")
+    if isinstance(owners, dict) and owners.get("reason") != "disabled":
+        from vulnforge.findings.owners import owners_markdown
+
+        # owners_markdown puts every identity in a code span a backtick cannot
+        # close, so GitHub never mentions it; only break marker-like text here
+        # (a ZWSP after @ would corrupt emails people copy).
+        lines += ["", "## Suggested owners", ""]
+        lines += [_break_marker(ln) for ln in owners_markdown(owners)]
+        lines += ["", "_From git history and CODEOWNERS (#190). Suggestions, not assignments._"]
     eid = getattr(finding, "evidence_id", None) or body.get("evidence_id")
     rel, excerpt = evidence_excerpt(run_dir, eid)
     if eid:
