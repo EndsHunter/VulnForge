@@ -1070,6 +1070,11 @@
             <button type="button" class="btn btn-good report-review-btn" data-action="confirm" data-fid="${f.id}"${acceptButtonAttrs(f)}>Accept (confirmed)</button>
             <button type="button" class="btn btn-bad report-review-btn" data-action="reject" data-fid="${f.id}">Reject</button>
             <button type="button" class="btn report-review-btn" data-action="needs_human" data-fid="${f.id}">Needs human review</button>
+            ${
+              window.ReportPolicyPromote && window.ReportPolicyPromote.canPromote(f)
+                ? `<button type="button" class="btn report-promote-policy-btn" data-fid="${f.id}" title="Draft a security-policy rule from this reject (edit, then Save; nothing is applied until you save)">Promote to policy</button>`
+                : ""
+            }
           </div>
           ${reviewHist}
         </div>
@@ -2016,6 +2021,13 @@
   }
 
   function bindDetailActions(root) {
+    root.querySelectorAll(".report-promote-policy-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const fid = Number(btn.getAttribute("data-fid"));
+        if (fid) openPolicyPromote(fid);
+      });
+    });
     root.querySelectorAll(".report-review-btn").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -2900,6 +2912,214 @@
 
   setupTrackModal();
   document.addEventListener("DOMContentLoaded", setupTrackModal, { once: true });
+
+  // --- Report → Reject → Promote to policy (#184) ---------------------------
+  // Draft only. Save is an explicit click; provenance is stamped server-side.
+  let promoteFid = null;
+  let promoteBase = null;
+  let promoteBound = false;
+
+  function promoteEl(id) {
+    return document.getElementById(id);
+  }
+
+  function setPromoteHint(msg, isErr) {
+    const el = promoteEl("policy-promote-hint");
+    if (!el) return;
+    el.textContent = msg || "";
+    el.style.color = isErr ? "var(--danger,#c44)" : "";
+  }
+
+  function promoteForm() {
+    return {
+      target_list: promoteEl("policy-promote-target")?.value || "exclusions",
+      id: promoteEl("policy-promote-id")?.value || "",
+      paths: promoteEl("policy-promote-paths")?.value || "",
+      weakness_class: promoteEl("policy-promote-class")?.value || "",
+      all_classes: !!promoteEl("policy-promote-all-classes")?.checked,
+      reason: promoteEl("policy-promote-reason")?.value || "",
+      base_revision: promoteBase,
+    };
+  }
+
+  function syncPromoteClassRow() {
+    const row = promoteEl("policy-promote-class-row");
+    const target = promoteEl("policy-promote-target")?.value;
+    if (row) row.hidden = target !== "exclusions";
+    const cls = promoteEl("policy-promote-class");
+    if (cls) cls.disabled = !!promoteEl("policy-promote-all-classes")?.checked;
+  }
+
+  function fillPromoteDraft(d) {
+    const rule = d.rule || {};
+    promoteBase = d.base_revision == null ? null : Number(d.base_revision);
+    const set = (id, v) => {
+      const el = promoteEl(id);
+      if (el) el.value = v == null ? "" : String(v);
+    };
+    set("policy-promote-target", d.target_list || "exclusions");
+    set("policy-promote-id", rule.id || "");
+    set("policy-promote-paths", (rule.paths || []).join("\n"));
+    set("policy-promote-class", rule.weakness_class || "");
+    set("policy-promote-reason", rule.reason || "");
+    const all = promoteEl("policy-promote-all-classes");
+    if (all) all.checked = false;
+    syncPromoteClassRow();
+    const h = d.hitl || {};
+    const prov = promoteEl("policy-promote-provenance");
+    if (prov) {
+      prov.textContent = `Provenance (stamped on save): finding #${d.finding_id} · HITL ${h.report_id || "?"}/${
+        h.block_id || "?"
+      } = ${h.value || "?"} @ ${h.at || "?"} · policy base rev ${promoteBase == null ? "none" : promoteBase}`;
+    }
+    const eff = promoteEl("policy-promote-effect");
+    if (eff && d.effect) eff.textContent = d.effect;
+    const warn = promoteEl("policy-promote-warnings");
+    if (warn) {
+      warn.innerHTML = (d.warnings || []).map((w) => `<div>⚠ ${esc(w)}</div>`).join("");
+    }
+    showPromoteMatches(d.would_match);
+  }
+
+  function showPromoteMatches(wm) {
+    const box = promoteEl("policy-promote-matches");
+    if (!box || !window.ReportPolicyPromote) return;
+    box.innerHTML = window.ReportPolicyPromote.wouldMatchHtml(wm, esc);
+    box.querySelectorAll(".policy-promote-open").forEach((b) =>
+      b.addEventListener("click", () => {
+        const fid = Number(b.getAttribute("data-fid"));
+        closePolicyPromote();
+        if (fid) openFinding(fid);
+      })
+    );
+  }
+
+  /** Re-draft. With keepEdits, only the base revision / provenance refresh; the operator's fields stay. */
+  async function loadPromoteDraft(targetList, keepEdits) {
+    const base = trackRunBase();
+    if (!base || promoteFid == null) return;
+    setPromoteHint("Drafting…");
+    try {
+      const r = await fetch(
+        `${base}/findings/${encodeURIComponent(promoteFid)}/policy-draft?target_list=${encodeURIComponent(
+          targetList || "exclusions"
+        )}`
+      );
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setPromoteHint(window.ReportPolicyPromote.errorLines(data).join("; "), true);
+        return;
+      }
+      if (keepEdits) {
+        const kept = promoteForm();
+        fillPromoteDraft(data);
+        const put = (id, v) => {
+          const el = promoteEl(id);
+          if (el) el.value = v;
+        };
+        put("policy-promote-id", kept.id);
+        put("policy-promote-paths", kept.paths);
+        put("policy-promote-class", kept.weakness_class);
+        put("policy-promote-reason", kept.reason);
+        const all = promoteEl("policy-promote-all-classes");
+        if (all) all.checked = kept.all_classes;
+        syncPromoteClassRow();
+        return true;
+      }
+      fillPromoteDraft(data);
+      setPromoteHint("Draft only — edit it, Preview, then Save to policy.");
+      return true;
+    } catch (e) {
+      setPromoteHint(e.message || String(e), true);
+    }
+  }
+
+  async function sendPromote(dryRun) {
+    const base = trackRunBase();
+    if (!base || promoteFid == null || !window.ReportPolicyPromote) return;
+    const body = window.ReportPolicyPromote.buildPromoteBody(promoteForm(), dryRun);
+    setPromoteHint(dryRun ? "Checking…" : "Saving…");
+    try {
+      const r = await fetch(`${base}/findings/${encodeURIComponent(promoteFid)}/promote-to-policy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const lines = window.ReportPolicyPromote.errorLines(data);
+        if (r.status === 409) await loadPromoteDraft(body.target_list, true);
+        setPromoteHint(
+          r.status === 409
+            ? `${lines.join("; ")} — nothing was saved. Your edits are kept on the new base; Preview, then Save again.`
+            : lines.join("; "),
+          true
+        );
+        return;
+      }
+      showPromoteMatches(data.would_match);
+      if (dryRun) {
+        setPromoteHint(`Valid. Rule ${data.rule && data.rule.id} is not saved yet.`);
+        return;
+      }
+      toast(`Saved rule ${data.rule && data.rule.id} to security policy (rev ${data.revision})`);
+      closePolicyPromote();
+      if (typeof window.loadRunFull === "function") window.loadRunFull();
+    } catch (e) {
+      setPromoteHint(e.message || String(e), true);
+    }
+  }
+
+  async function openPolicyPromote(fid) {
+    const modal = promoteEl("policy-promote-modal");
+    if (!modal || !window.ReportPolicyPromote) {
+      toast("Promote dialog unavailable", true);
+      return;
+    }
+    setupPolicyPromote();
+    promoteFid = Number(fid);
+    promoteBase = null;
+    const title = promoteEl("policy-promote-title");
+    if (title) title.textContent = `Promote finding #${promoteFid} to policy`;
+    modal.removeAttribute("hidden");
+    modal.hidden = false;
+    modal.classList.add("open");
+    await loadPromoteDraft("exclusions");
+  }
+
+  function closePolicyPromote() {
+    const modal = promoteEl("policy-promote-modal");
+    if (!modal) return;
+    modal.classList.remove("open");
+    modal.hidden = true;
+    promoteFid = null;
+  }
+
+  function setupPolicyPromote() {
+    if (promoteBound || !promoteEl("policy-promote-modal")) return;
+    promoteBound = true;
+    promoteEl("policy-promote-close")?.addEventListener("click", closePolicyPromote);
+    promoteEl("policy-promote-cancel")?.addEventListener("click", closePolicyPromote);
+    promoteEl("policy-promote-preview")?.addEventListener("click", () => sendPromote(true));
+    promoteEl("policy-promote-save")?.addEventListener("click", () => sendPromote(false));
+    promoteEl("policy-promote-target")?.addEventListener("change", async (e) => {
+      // New suggested id / class row for the other list; keep the operator's paths and reason.
+      const paths = promoteEl("policy-promote-paths")?.value;
+      const reason = promoteEl("policy-promote-reason")?.value;
+      await loadPromoteDraft(e.target.value);
+      if (paths != null && promoteEl("policy-promote-paths")) promoteEl("policy-promote-paths").value = paths;
+      if (reason != null && promoteEl("policy-promote-reason")) promoteEl("policy-promote-reason").value = reason;
+    });
+    promoteEl("policy-promote-all-classes")?.addEventListener("change", syncPromoteClassRow);
+    document.addEventListener("keydown", (e) => {
+      const m = promoteEl("policy-promote-modal");
+      if (e.key === "Escape" && m && m.classList.contains("open")) closePolicyPromote();
+    });
+  }
+
+  setupPolicyPromote();
+  document.addEventListener("DOMContentLoaded", setupPolicyPromote, { once: true });
+
 
   // Bind export UI immediately — do not wait for first snapshot / renderReport.
   // Previously handlers only attached inside renderReport → setupChrome, so the

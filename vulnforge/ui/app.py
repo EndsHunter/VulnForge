@@ -790,6 +790,18 @@ class SecurityPolicyBody(BaseModel):
     note: str = ""
 
 
+class PolicyPromoteBody(BaseModel):
+    """Report → Reject → Promote to policy (#184). Saved only when dry_run is false."""
+
+    rule: dict[str, Any]
+    target_list: str = "exclusions"
+    base_revision: Optional[int] = None
+    all_classes: bool = False
+    note: str = ""
+    operator: str = "operator"
+    dry_run: bool = False
+
+
 class ToolGapsBody(BaseModel):
     """POST /api/runs/{target}/{run}/tool-gaps. Module scope so OpenAPI can resolve it."""
 
@@ -2165,6 +2177,69 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 },
             )
             return {"ok": True, **(db.get_security_policy() or {})}
+        finally:
+            db.close()
+
+    _PROMOTE_STATUS = {
+        "finding_not_found": 404,
+        "policy_changed": 409,
+        "hitl_response_changed": 409,
+    }
+
+    def _promote_http(r: dict):
+        if r.get("ok"):
+            return r
+        raise HTTPException(_PROMOTE_STATUS.get(str(r.get("error")), 400), r)
+
+    @app.get("/api/runs/{target_id}/{run_id}/findings/{finding_id}/policy-draft")
+    def api_finding_policy_draft(
+        target_id: str,
+        run_id: str,
+        finding_id: int,
+        target_list: str = Query("exclusions"),
+    ):
+        """Unsaved rule pre-filled from a human reject (location, class, reject note)."""
+        from vulnforge.db import Database
+        from vulnforge.policy_promote import draft_rule_from_finding
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            return _promote_http(
+                draft_rule_from_finding(db, finding_id, target_list=target_list)
+            )
+        finally:
+            db.close()
+
+    @app.post("/api/runs/{target_id}/{run_id}/findings/{finding_id}/promote-to-policy")
+    def api_finding_promote_to_policy(
+        target_id: str, run_id: str, finding_id: int, body: PolicyPromoteBody
+    ):
+        """Explicit Save of an operator-edited rule (dry_run previews only).
+
+        Never changes finding state; demote-only rule lists; provenance is
+        stamped from the stored HITL reject response.
+        """
+        from vulnforge.db import Database
+        from vulnforge.policy_promote import promote_rule
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            return _promote_http(
+                promote_rule(
+                    db,
+                    run.path,
+                    finding_id,
+                    body.rule,
+                    target_list=body.target_list,
+                    base_revision=body.base_revision,
+                    all_classes=body.all_classes,
+                    operator=body.operator or "operator",
+                    note=body.note or "",
+                    dry_run=body.dry_run,
+                )
+            )
         finally:
             db.close()
 

@@ -16,6 +16,7 @@ packet guidance only (no gate). See ``docs/harness/validate/POLICY.md``.
 
 from __future__ import annotations
 
+import json
 import posixpath
 import re
 from pathlib import Path
@@ -59,10 +60,15 @@ _LISTS: dict[str, tuple[str, frozenset[str], bool, str | None]] = {
         "description",
     ),
     "in_scope": ("scope", frozenset({"id", "paths", "note"}), True, None),
-    "out_of_scope": ("oos", frozenset({"id", "paths", "reason"}), True, "reason"),
+    "out_of_scope": (
+        "oos",
+        frozenset({"id", "paths", "reason", "provenance"}),
+        True,
+        "reason",
+    ),
     "exclusions": (
         "ex",
-        frozenset({"id", "paths", "weakness_class", "reason"}),
+        frozenset({"id", "paths", "weakness_class", "reason", "provenance"}),
         True,
         "reason",
     ),
@@ -86,6 +92,20 @@ class PolicyError(ValueError):
     def __init__(self, errors: list[str]):
         super().__init__("; ".join(errors))
         self.errors = list(errors)
+
+
+class PolicyConflictError(PolicyError):
+    """The stored policy moved past the revision a save was built from."""
+
+    def __init__(self, expected: int | None, current: int | None):
+        super().__init__(
+            [
+                f"policy changed: expected revision {expected}, current is {current} "
+                "(reload and try again)"
+            ]
+        )
+        self.expected = expected
+        self.current = current
 
 
 def empty_policy() -> dict[str, Any]:
@@ -326,6 +346,13 @@ def normalize_policy(raw: Any) -> tuple[dict[str, Any], list[str]]:
                     wc = ""
                 rule["weakness_class"] = str(wc or "*").strip().lower() or "*"
 
+            if "provenance" in allowed and item.get("provenance") is not None:
+                prov, perr = normalize_provenance(item.get("provenance"))
+                if perr:
+                    errors.append(f"{where}: {perr}")
+                else:
+                    rule["provenance"] = prov
+
             if list_key == "severity_rubric":
                 ms = item.get("max_severity")
                 if ms is None or (isinstance(ms, str) and not ms.strip()):
@@ -364,6 +391,103 @@ def normalize_policy(raw: Any) -> tuple[dict[str, Any], list[str]]:
         rule.update({k: v for k, v in items.items() if k != "id"})
 
     return out, errors
+
+
+# ---------------------------------------------------------------------------
+# Rule provenance (#184: Report → Reject → Promote to policy)
+# ---------------------------------------------------------------------------
+
+PROVENANCE_KIND_HUMAN_REJECT = "human_reject"
+# Lists a human reject may be promoted into. Both only demote, through the
+# visible validate_mech exclusion gate (policy_match on the finding).
+PROVENANCE_LISTS: tuple[str, ...] = ("exclusions", "out_of_scope")
+MAX_PROVENANCE_NOTE_CHARS = 2000
+
+_PROV_STR_KEYS = (
+    "hitl_report_id",
+    "hitl_block_id",
+    "hitl_response_value",
+    "hitl_response_at",
+    "operator",
+    "promoted_at",
+    "origin_weakness_class",
+)
+_PROV_KEYS = frozenset(
+    {"kind", "finding_id", "hitl_note", "origin_paths", *_PROV_STR_KEYS}
+)
+
+
+def normalize_provenance(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Canonical provenance object, or an error.
+
+    Strict and canonical (fixed key order, trimmed strings) so a later manual
+    save that carries the object forward compares equal to the stored copy.
+    Only the promote path may introduce a new one (see
+    ``Database.set_security_policy``); this function only checks shape.
+    """
+    if not isinstance(raw, dict):
+        return None, "provenance must be an object"
+    unknown = sorted(k for k in raw if k not in _PROV_KEYS)
+    if unknown:
+        return None, f"provenance: unknown key(s) {', '.join(map(repr, unknown))}"
+    if raw.get("kind") != PROVENANCE_KIND_HUMAN_REJECT:
+        return None, f"provenance.kind must be {PROVENANCE_KIND_HUMAN_REJECT!r}"
+    fid = raw.get("finding_id")
+    if isinstance(fid, bool) or not isinstance(fid, int) or fid <= 0:
+        return None, "provenance.finding_id must be a positive integer"
+    out: dict[str, Any] = {"kind": PROVENANCE_KIND_HUMAN_REJECT, "finding_id": fid}
+    for key in _PROV_STR_KEYS:
+        val = raw.get(key)
+        if not isinstance(val, str) or not val.strip():
+            return None, f"provenance.{key} must be a non-empty string"
+        out[key] = val.strip()[:200]
+    if out["hitl_response_value"] != "changes-requested":
+        return None, "provenance.hitl_response_value must be 'changes-requested'"
+    note = raw.get("hitl_note", "")
+    if not isinstance(note, str):
+        return None, "provenance.hitl_note must be a string"
+    out["hitl_note"] = note.strip()[:MAX_PROVENANCE_NOTE_CHARS]
+    paths = raw.get("origin_paths", [])
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+        return None, "provenance.origin_paths must be a list of strings"
+    out["origin_paths"] = [p.strip() for p in paths if p.strip()][:50]
+    return out, None
+
+
+def provenance_entries(policy: dict | None) -> set[tuple[str, str, str]]:
+    """``{(list_key, rule_id, canonical provenance json)}`` for rules carrying one."""
+    out: set[tuple[str, str, str]] = set()
+    if not isinstance(policy, dict):
+        return out
+    for key in PROVENANCE_LISTS:
+        for r in policy.get(key) or []:
+            if isinstance(r, dict) and isinstance(r.get("provenance"), dict):
+                prov, err = normalize_provenance(r["provenance"])
+                if prov is not None and not err:
+                    out.add((key, str(r.get("id") or ""), json.dumps(prov, sort_keys=True)))
+    return out
+
+
+def provenance_summary(entries: set[tuple[str, str, str]]) -> list[dict[str, Any]]:
+    """Small display rows for history: list, rule id, finding id, HITL response."""
+    rows: list[dict[str, Any]] = []
+    for list_key, rule_id, prov_json in sorted(entries):
+        try:
+            prov = json.loads(prov_json)
+        except (TypeError, ValueError):
+            continue
+        rows.append(
+            {
+                "list": list_key,
+                "rule_id": rule_id,
+                "finding_id": prov.get("finding_id"),
+                "hitl_report_id": prov.get("hitl_report_id"),
+                "hitl_block_id": prov.get("hitl_block_id"),
+                "hitl_response_at": prov.get("hitl_response_at"),
+                "operator": prov.get("operator"),
+            }
+        )
+    return rows
 
 
 def require_policy(raw: Any) -> dict[str, Any]:
