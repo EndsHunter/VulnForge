@@ -33,6 +33,7 @@ from vulnforge.operator_chat.tools_common import (
     requeue_hunt_impl,
     requeue_hunts_bulk_impl,
     runner_action,
+    track_findings_impl,
 )
 from vulnforge.ui.store import RunRef
 
@@ -232,6 +233,18 @@ def schemas() -> list[dict]:
             },
             ["finding_id"],
         ),
+        openai_tool(
+            "track_findings",
+            "Publish findings to the external tracker (GitHub Issues). Outward-facing; "
+            "confirm. Only confirmed findings unless include_needs_human. Re-tracking "
+            "updates the issue linked by stable_key. Never changes finding state.",
+            {
+                "finding_ids": {"type": "array", "items": {"type": "integer"}},
+                "repo": {"type": "string", "description": "owner/name; default from config"},
+                "include_needs_human": {"type": "boolean"},
+            },
+            ["finding_ids"],
+        ),
         openai_tool("explain_product", "Short product handbook.", {}),
     ]
 
@@ -304,6 +317,8 @@ def dispatch(
         return enqueue_validate_poc_impl(run, args)
     if name == "enqueue_iterate_poc":
         return enqueue_iterate_poc_impl(run, args)
+    if name == "track_findings":
+        return track_findings_impl(run, args)
     if name == "explain_product":
         return explain_product_impl(args)
     return {"ok": False, "error": f"unknown tool: {name}"}

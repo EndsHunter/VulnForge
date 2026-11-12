@@ -190,6 +190,7 @@ class Database:
         self._ensure_lease_model_column()
         self._ensure_lease_host_column()
         self._ensure_hitl_tables()
+        self._ensure_finding_tracking_table()
 
     @classmethod
     def create(cls, path: Path) -> "Database":
@@ -489,6 +490,154 @@ class Database:
             """
         )
         self.conn.commit()
+
+    def _ensure_finding_tracking_table(self) -> None:
+        """External issue links per finding (#189). Additive; no schema bump.
+
+        Keyed by ``stable_key`` + sink + destination so re-tracking updates the
+        same external issue instead of creating a duplicate. ``status`` is
+        ``pending`` while a create is in flight (claim) and ``linked`` once the
+        external id is known.
+        """
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS finding_tracking (
+              stable_key TEXT NOT NULL,
+              sink TEXT NOT NULL,
+              destination TEXT NOT NULL,
+              status TEXT NOT NULL,
+              external_id TEXT,
+              url TEXT,
+              finding_id INTEGER,
+              state_at_track TEXT,
+              operator TEXT NOT NULL DEFAULT '',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (stable_key, sink, destination)
+            );
+            """
+        )
+        self.conn.commit()
+
+    def get_tracking(
+        self, stable_key: str, sink: str, destination: str
+    ) -> Optional[dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT * FROM finding_tracking WHERE stable_key=? AND sink=? AND destination=?",
+            (stable_key, sink, destination),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_tracking(self, stable_key: Optional[str] = None) -> list[dict[str, Any]]:
+        if stable_key is None:
+            rows = self.conn.execute(
+                "SELECT * FROM finding_tracking ORDER BY stable_key, sink, destination"
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM finding_tracking WHERE stable_key=? ORDER BY sink, destination",
+                (stable_key,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def claim_tracking(
+        self,
+        stable_key: str,
+        sink: str,
+        destination: str,
+        *,
+        finding_id: int,
+        operator: str = "",
+        stale_after_s: int = 300,
+    ) -> tuple[bool, Optional[dict[str, Any]]]:
+        """Claim the right to create an external issue for this key.
+
+        Returns ``(claimed, existing_row)``. A ``linked`` row is never claimed
+        (caller updates it instead). A fresh ``pending`` row belongs to another
+        in-flight publish. A stale ``pending`` row (crash between create and
+        record) is taken over so the caller can look the issue up remotely.
+        """
+        now = utc_now_iso()
+        cur = self.conn.execute(
+            """
+            INSERT OR IGNORE INTO finding_tracking(
+              stable_key, sink, destination, status, finding_id, operator,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+            """,
+            (stable_key, sink, destination, finding_id, operator, now, now),
+        )
+        self.conn.commit()
+        if int(cur.rowcount or 0) > 0:
+            return True, None
+        row = self.get_tracking(stable_key, sink, destination)
+        if not row or row.get("status") != "pending":
+            return False, row
+        try:
+            age = time.time() - datetime.strptime(
+                str(row["updated_at"]), "%Y-%m-%dT%H:%M:%SZ"
+            ).replace(tzinfo=timezone.utc).timestamp()
+        except (TypeError, ValueError):
+            age = float(stale_after_s) + 1
+        if age <= stale_after_s:
+            return False, row
+        cur = self.conn.execute(
+            """
+            UPDATE finding_tracking SET updated_at=?, operator=?
+            WHERE stable_key=? AND sink=? AND destination=? AND status='pending'
+              AND updated_at=?
+            """,
+            (now, operator, stable_key, sink, destination, row["updated_at"]),
+        )
+        self.conn.commit()
+        return int(cur.rowcount or 0) > 0, row
+
+    def release_tracking_claim(self, stable_key: str, sink: str, destination: str) -> None:
+        """Drop a pending claim after a create that failed (nothing was published)."""
+        self.conn.execute(
+            """
+            DELETE FROM finding_tracking
+            WHERE stable_key=? AND sink=? AND destination=? AND status='pending'
+            """,
+            (stable_key, sink, destination),
+        )
+        self.conn.commit()
+
+    def record_tracking(
+        self,
+        stable_key: str,
+        sink: str,
+        destination: str,
+        *,
+        external_id: str,
+        url: str,
+        finding_id: int,
+        state_at_track: str,
+        operator: str = "",
+    ) -> dict[str, Any]:
+        now = utc_now_iso()
+        self.conn.execute(
+            """
+            INSERT INTO finding_tracking(
+              stable_key, sink, destination, status, external_id, url,
+              finding_id, state_at_track, operator, created_at, updated_at
+            ) VALUES (?, ?, ?, 'linked', ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(stable_key, sink, destination) DO UPDATE SET
+              status='linked',
+              external_id=excluded.external_id,
+              url=excluded.url,
+              finding_id=excluded.finding_id,
+              state_at_track=excluded.state_at_track,
+              operator=excluded.operator,
+              updated_at=excluded.updated_at
+            """,
+            (
+                stable_key, sink, destination, str(external_id), url,
+                finding_id, state_at_track, operator, now, now,
+            ),
+        )
+        self.conn.commit()
+        return self.get_tracking(stable_key, sink, destination) or {}
 
     def insert_run(
         self,

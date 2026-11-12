@@ -228,3 +228,16 @@ tools:
   max_flow_edges: 40
   max_flow_depth: 2
   max_flow_call_files: 200
+
+# Track findings in an external issue tracker (#189). Outward-facing: every
+# publish needs explicit human confirmation (dashboard preview → Publish, or
+# operator-chat Confirm). Ralph never publishes. Only `confirmed` findings are
+# eligible by default; `needs_human` needs a per-publish opt-in (no config key).
+tracking:
+  sink: github            # github (jira / linear reserved for later)
+  github:
+    repo: ""              # owner/name; Track dialog / chat can pass one per publish
+    labels: [security]    # the `vulnforge` label is always added (dedupe scan)
+    transport: auto       # auto (gh if on PATH, else token) | gh | token
+    # token transport reads VF_GITHUB_TOKEN or GITHUB_TOKEN from the environment;
+    # never put a token in this file.
