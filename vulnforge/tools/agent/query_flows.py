@@ -79,6 +79,9 @@ SPEC = ToolSpec(
 
 def _load_codemap(ctx: dict, *, rebuild: bool) -> dict[str, Any]:
     # Same load path as query_codemap
+    if rebuild and diff_ceiling(ctx) is not None:
+        # Diff-scoped run: the map was built at init; a rebuild walks the whole tree.
+        rebuild = False
     cm: dict[str, Any] = {}
     db = ctx.get("db")
     if db is not None:

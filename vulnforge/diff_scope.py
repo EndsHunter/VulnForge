@@ -866,20 +866,25 @@ def scope_hunt_tasks(
     covered = {h for t in out for h in t["path_hints"]}
     uncovered = [p for p in changed_paths(manifest) if p not in covered]
     if uncovered:
-        from vulnforge.stages.recon import balanced_product_tasks
-
         by_area: dict[str, list[str]] = defaultdict(list)
         for p in uncovered:
             by_area[_area_for(p, codemap)].append(p)
         units = []
-        for area, paths in sorted(by_area.items()):
-            ctx_files = [
-                e["path"]
-                for e in manifest.get("expanded") or []
-                if e.get("from") in paths and e["path"] not in paths
-            ]
-            units.append((area, (paths + ctx_files)[:15]))
-        out.extend(balanced_product_tasks(units, list(classes or []), max_tasks=None))
+        for area, all_paths in sorted(by_area.items()):
+            # Chunk so no changed file is cut by the 15-hint cap.
+            for i in range(0, len(all_paths), 10):
+                paths = all_paths[i : i + 10]
+                ctx_files = [
+                    e["path"]
+                    for e in manifest.get("expanded") or []
+                    if e.get("from") in paths and e["path"] not in paths
+                ]
+                units.append((area, (paths + ctx_files)[:15]))
+        # Unit-major so a budget clip still spreads across changed files. Not
+        # balanced_product_tasks: it dedups on (area, class), merging chunks.
+        for area, hints in units:
+            for cls in classes or []:
+                out.append({"area": area, "class": cls, "path_hints": list(hints)})
 
     for t in out:
         t["diff_scope"] = hunt_diff_context(manifest, t.get("path_hints") or [])
@@ -993,7 +998,8 @@ def report_md_lines(
             lines += [
                 "",
                 "**Changed files with no hunt task yet** (budget or not planned): "
-                + ", ".join(f"`{p}`" for p in unhunted[:30]),
+                + ", ".join(f"`{p}`" for p in unhunted[:30])
+                + (f" … and {len(unhunted) - 30} more" if len(unhunted) > 30 else ""),
             ]
     um = manifest.get("untouched_modules") or {}
     if um.get("count"):

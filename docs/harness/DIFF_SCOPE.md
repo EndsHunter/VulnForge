@@ -51,7 +51,7 @@ Python. Nothing is checked out, fetched, or written in the target.
 | recon finalize hunt plan | hints rewritten to scope **files** (module dirs never survive: the soft jail treats a dir hint as a prefix); out-of-scope tasks dropped; uncovered changed files get allowed-class tasks; then class routing and `run.max_tasks` |
 | file_by_file | changed files first, then callers/callees |
 | dynamic run skills, `request_hunt`, `continue_hunt`, split / shallow children | hints clipped to the scope; `diff_scope` carried |
-| hunt scans (`grep`, `find_symbol`, `query_flows`, `query_sinks`) | limited to the hunt hints + scope files, before and after a soft widen (`tools/scope.py` `clamp_scan_roots`); `query_sinks(rescan=true)` uses the stored index. Reading a specific file for context stays allowed |
+| hunt scans (`grep`, `find_symbol`, `query_flows`, `query_sinks`) | limited to the hunt hints + scope files, before and after a soft widen (`tools/scope.py` `clamp_scan_roots`); `query_sinks(rescan=true)` uses the stored index and codemap `rebuild=true` is ignored (the map is built at init). `read_file`, `list_dir` and `file_inventory` keep the normal soft jail: after one widen a hunt may read and list outside the scope for context, because data flow can leave the diff |
 | `run.max_tasks` budget | one task per changed file is kept first, then the rest is spread across areas/classes; the report names changed files that still got no hunt task |
 | operator enqueues (Explorer, Hunts matrix, operator chat) | **unscoped**: an explicit human choice |
 

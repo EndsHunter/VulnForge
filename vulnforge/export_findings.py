@@ -154,6 +154,22 @@ def _safe_diff_scope(db: Any) -> dict[str, Any] | None:
         return None
 
 
+def _diff_hunted_paths(db: Any) -> list[str] | None:
+    """Every hunt hint on a diff-scoped run (full DB read, not the export rows)."""
+    if _safe_diff_scope(db) is None:
+        return None
+    try:
+        return [
+            str(h)
+            for t in db.list_tasks(limit=100_000)
+            if t.kind == "hunt" and isinstance(t.payload, dict)
+            for h in t.payload.get("path_hints") or []
+        ]
+    except Exception as exc:
+        note_swallowed(exc, context="export_findings.diff_hunted_paths")
+        return None
+
+
 def _md_diff_scope_section(ctx: dict[str, Any]) -> list[str]:
     manifest = ctx.get("diff_scope")
     if not manifest:
@@ -161,11 +177,7 @@ def _md_diff_scope_section(ctx: dict[str, Any]) -> list[str]:
     from vulnforge.diff_scope import report_md_lines
 
     paths = [str(r.get("path") or "") for r in ctx.get("rows") or []]
-    tasks = ctx.get("hunt_tasks")
-    hunted = (
-        [h for t in tasks for h in t.get("path_hints") or []] if tasks else None
-    )
-    return report_md_lines(manifest, paths, hunted)
+    return report_md_lines(manifest, paths, ctx.get("diff_hunted_paths"))
 
 
 def _safe_coverage(db: Any) -> dict[str, Any] | None:
@@ -330,6 +342,7 @@ def collect_report_context(
         "codemap": codemap,
         # Diff-scoped run (#185): always exported — it defines what was audited.
         "diff_scope": _safe_diff_scope(db),
+        "diff_hunted_paths": _diff_hunted_paths(db),
     }
 
 

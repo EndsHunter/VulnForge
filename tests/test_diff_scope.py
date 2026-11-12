@@ -659,3 +659,40 @@ def test_report_names_changed_files_without_hunts():
     assert "no hunt task yet" in lines and "`app/util.py`" in lines
     lines = "\n".join(report_md_lines(_MANIFEST, [], hunted_paths=["app/util.py"]))
     assert "no hunt task yet" not in lines
+
+
+def test_export_unhunted_uses_full_task_list(tmp_path: Path, diff_repo: dict):
+    from vulnforge.export_findings import export_bytes
+
+    run_dir = _init(diff_repo["repo"], tmp_path / "runs", "--diff", f"{diff_repo['base']}..")
+    db = Database.open(run_dir / "harness.db")
+    md, _e, _m = export_bytes("md", run_dir, db)  # default: hunts section off
+    assert b"no hunt task yet" in md  # recon has not planned hunts yet
+    db.enqueue_task("hunt", {"area": "app", "class": "injection", "path_hints": ["app/util.py"]})
+    md, _e, _m = export_bytes("md", run_dir, db)
+    assert b"no hunt task yet" not in md
+    db.close()
+
+
+def test_codemap_rebuild_skipped_on_diff_run(diff_repo: dict, monkeypatch):
+    from vulnforge.tools.agent import query_codemap
+
+    called = []
+    monkeypatch.setattr(
+        "vulnforge.tools.codemap.build_codemap", lambda *a, **k: called.append(1) or {}
+    )
+    ctx = _diff_ctx(diff_repo["repo"], widened=True)
+    query_codemap._load_codemap(ctx, rebuild=True)
+    assert called == []
+
+
+def test_many_changed_files_in_one_area_all_get_tasks():
+    files = [f"app/m{i:02d}.py" for i in range(25)]
+    manifest = {
+        "changed": [{"path": f, "status": "M", "hunks": [[1, 1]]} for f in files],
+        "expanded": [],
+        "scope_files": files,
+    }
+    out = scope_hunt_tasks([], manifest, classes=["injection"])
+    covered = {h for t in out for h in t["path_hints"]}
+    assert covered == set(files)

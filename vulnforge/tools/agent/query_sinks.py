@@ -182,7 +182,12 @@ def run(ctx: dict, **args: Any) -> dict[str, Any]:
             "max_files": sink_meta.get("max_files"),
             "max_sinks": sink_meta.get("max_sinks"),
         }
-    if not sinks:
+    if not sinks and rescan_skipped:
+        result["hint"] = (
+            "No sink index, and rescan is off on a diff-scoped run. "
+            "grep the scope files for sql/exec patterns yourself."
+        )
+    elif not sinks:
         result["hint"] = (
             "No sink index in session/architecture. Call with rescan=true for a "
             "bounded live scan, or grep for sql/exec patterns yourself."
