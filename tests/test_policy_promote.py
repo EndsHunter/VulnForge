@@ -509,3 +509,112 @@ def test_report_ui_wires_promote_modal():
     assert "report-promote-policy-btn" in report and "ReportPolicyPromote.canPromote(f)" in report
     assert "/promote-to-policy" in report and "/policy-draft" in report
     assert "historyProvenanceHtml(rev.promoted_rules" in policy
+
+
+# --- interleavings inside the save transaction (Grok diff review) -------------
+
+
+def _wrap_precheck(db: Database, before):
+    """Run ``before(db)`` inside set_security_policy's transaction, then the real precheck."""
+    orig = db.set_security_policy
+    seen: dict = {}
+
+    def wrapped(policy, **kw):
+        real = kw.get("precheck")
+
+        def pc():
+            before(db)
+            err = real() if real else None
+            seen["in_tx_after_precheck"] = db.conn.in_transaction
+            return err
+
+        kw["precheck"] = pc
+        return orig(policy, **kw)
+
+    db.set_security_policy = wrapped  # type: ignore[method-assign]
+    return seen
+
+
+def test_promote_holds_write_lock_through_precheck(run_dir: Path, toy_sqli: Path):
+    import sqlite3
+
+    fid = _rejected(run_dir, toy_sqli)
+    db = _db(run_dir)
+    try:
+        d = draft_rule_from_finding(db, fid)
+        locked: dict = {}
+
+        def other_writer(_db):
+            other = sqlite3.connect(str(run_dir / "harness.db"), timeout=0.2)
+            try:
+                other.execute(
+                    "INSERT INTO security_policy_revisions(created_at, source, note, policy_json)"
+                    " VALUES ('x', 'manual', '', '{}')"
+                )
+                other.commit()
+                locked["blocked"] = False
+            except sqlite3.OperationalError as e:
+                locked["blocked"] = "locked" in str(e)
+            finally:
+                other.close()
+
+        seen = _wrap_precheck(db, other_writer)
+        r = promote_rule(db, run_dir, fid, d["rule"], base_revision=None)
+        assert r["ok"], r
+        assert locked["blocked"] is True
+        assert seen["in_tx_after_precheck"] is True
+        hist = db.list_security_policy_revisions()
+        assert len(hist) == 1 and hist[0]["source"] == "human_reject"
+    finally:
+        db.close()
+
+
+def test_reopen_inside_save_window_stores_nothing(run_dir: Path, toy_sqli: Path):
+    fid = _rejected(run_dir, toy_sqli)
+    db = _db(run_dir)
+    try:
+        d = draft_rule_from_finding(db, fid)
+
+        def reopen(_db):
+            _db.conn.execute(
+                "DELETE FROM hitl_responses WHERE report_id=? AND block_id=?",
+                (finding_report_id(fid), approval_block_id(fid)),
+            )
+
+        _wrap_precheck(db, reopen)
+        r = promote_rule(db, run_dir, fid, d["rule"], base_revision=None)
+        assert r["error"] == "no_hitl_reject_response", r
+        assert db.get_security_policy() is None
+        assert not db.conn.in_transaction
+    finally:
+        db.close()
+
+
+def test_same_second_note_rewrite_is_detected(run_dir: Path, toy_sqli: Path):
+    fid = _rejected(run_dir, toy_sqli)
+    db = _db(run_dir)
+    try:
+        d = draft_rule_from_finding(db, fid)
+
+        def rewrite(_db):
+            _db.conn.execute(
+                "UPDATE hitl_responses SET note='different' WHERE report_id=? AND block_id=?",
+                (finding_report_id(fid), approval_block_id(fid)),
+            )
+
+        _wrap_precheck(db, rewrite)
+        r = promote_rule(db, run_dir, fid, d["rule"], base_revision=None)
+        assert r["error"] == "hitl_response_changed", r
+        assert db.get_security_policy() is None
+    finally:
+        db.close()
+
+
+def test_precheck_that_commits_cannot_insert(run_dir: Path, toy_sqli: Path):
+    db = _db(run_dir)
+    try:
+        with pytest.raises(RuntimeError, match="ended the transaction"):
+            db.set_security_policy({"notes": "x"}, precheck=lambda: db.conn.commit())
+        assert db.get_security_policy() is None
+    finally:
+        db.close()

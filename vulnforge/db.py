@@ -1092,9 +1092,13 @@ class Database:
             if expected_revision is not _NO_REVISION_CHECK and expected_revision != head_id:
                 raise PolicyConflictError(expected_revision, head_id)
             if precheck is not None:
+                # precheck must only SELECT on self.conn: anything that commits
+                # (executescript, *_ensure_* helpers) would end the lock early.
                 err = precheck()
                 if err:
                     raise PolicyError([err])
+                if not self.conn.in_transaction:
+                    raise RuntimeError("set_security_policy precheck ended the transaction")
             entries = provenance_entries(normalized)
             if entries:
                 known: set[tuple[str, str, str]] = set()
@@ -1148,9 +1152,12 @@ class Database:
                     """,
                     (rev_id, n - SECURITY_POLICY_REVISION_CAP),
                 )
+            if not self.conn.in_transaction:
+                raise RuntimeError("set_security_policy lost its transaction before commit")
             self.conn.execute("COMMIT")
         except BaseException:
-            self.conn.execute("ROLLBACK")
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
             raise
         return rev_id
 

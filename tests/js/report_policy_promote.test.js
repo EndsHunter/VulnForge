@@ -99,3 +99,13 @@ describe("report_policy_promote", () => {
     assert.match(html, /finding-3\/finding-3-review/);
   });
 });
+
+describe("report_policy_promote truncation", () => {
+  it("says when the would-match list is capped", () => {
+    const html = P.wouldMatchHtml({
+      needs_human: [{ finding_id: 1, title: "t", matched_paths: [] }],
+      truncated: true,
+    });
+    assert.match(html, /more exist/);
+  });
+});

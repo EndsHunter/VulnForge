@@ -149,6 +149,7 @@ def would_match(
     """
     single = {list_key: [rule]}
     hits: list[dict[str, Any]] = []
+    truncated = False
     matches_source: Optional[bool] = None
     for f in db.list_findings():
         body = f.body if isinstance(f.body, dict) else {}
@@ -158,7 +159,9 @@ def would_match(
         if f.state != "needs_human":
             continue
         m = match_exclusion(single, body, root=root)
-        if m and len(hits) < _WOULD_MATCH_MAX:
+        if m and len(hits) >= _WOULD_MATCH_MAX:
+            truncated = True
+        elif m:
             hits.append(
                 {
                     "finding_id": f.id,
@@ -167,7 +170,7 @@ def would_match(
                     "matched_paths": m.get("matched_paths") or [],
                 }
             )
-    return {"needs_human": hits, "matches_source": matches_source}
+    return {"needs_human": hits, "truncated": truncated, "matches_source": matches_source}
 
 
 def draft_rule_from_finding(
@@ -222,7 +225,7 @@ def draft_rule_from_finding(
             db, target_list, rule, root=root, source_finding_id=finding.id
         )
         if paths
-        else {"needs_human": [], "matches_source": None},
+        else {"needs_human": [], "truncated": False, "matches_source": None},
     }
 
 
@@ -296,12 +299,23 @@ def promote_rule(
 
     fid = int(finding.id)
     at = str(hitl.get("at") or "")
+    stamped_note = str(hitl.get("note") or "")
 
     def _still_rejected() -> Optional[str]:
-        again = reject_context(db, fid)
-        if not again.get("ok"):
-            return str(again.get("error"))
-        if str(again["hitl"].get("at") or "") != at:
+        # Runs inside set_security_policy's BEGIN IMMEDIATE: plain SELECTs on
+        # db.conn only (db helpers that ensure tables would commit the lock).
+        row = db.conn.execute("SELECT state FROM findings WHERE id=?", (fid,)).fetchone()
+        if row is None:
+            return "finding_not_found"
+        if row["state"] != "rejected_human":
+            return "not_human_rejected"
+        resp = db.conn.execute(
+            "SELECT value, note, at FROM hitl_responses WHERE report_id=? AND block_id=?",
+            (finding_report_id(fid), approval_block_id(fid)),
+        ).fetchone()
+        if resp is None or resp["value"] != "changes-requested":
+            return "no_hitl_reject_response"
+        if str(resp["at"] or "") != at or str(resp["note"] or "") != stamped_note:
             return "hitl_response_changed"
         return None
 
@@ -324,7 +338,12 @@ def promote_rule(
         return _fail("policy_changed", detail=str(e), current_revision=e.current)
     except PolicyError as e:
         first = e.errors[0] if e.errors else ""
-        if first in ("not_human_rejected", "no_hitl_reject_response", "hitl_response_changed"):
+        if first in (
+            "finding_not_found",
+            "not_human_rejected",
+            "no_hitl_reject_response",
+            "hitl_response_changed",
+        ):
             return _fail(first, detail="the reject changed while saving; nothing was stored")
         return _fail("invalid_rule", errors=e.errors)
 

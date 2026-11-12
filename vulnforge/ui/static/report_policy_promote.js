@@ -102,7 +102,11 @@
               (h.matched_paths || []).join(", ")
             )}</span></li>`
         )
-        .join("")}</ul>`;
+        .join("")}</ul>${
+      wm && wm.truncated
+        ? `<p class="controls-hint" style="margin:0.35rem 0 0">Showing the first ${e(hits.length)} matches; more exist.</p>`
+        : ""
+    }`;
   }
 
   /** Policy history: rules first stamped from a human reject in this revision. */

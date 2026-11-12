@@ -2994,7 +2994,8 @@
     );
   }
 
-  async function loadPromoteDraft(targetList) {
+  /** Re-draft. With keepEdits, only the base revision / provenance refresh; the operator's fields stay. */
+  async function loadPromoteDraft(targetList, keepEdits) {
     const base = trackRunBase();
     if (!base || promoteFid == null) return;
     setPromoteHint("Drafting…");
@@ -3009,8 +3010,25 @@
         setPromoteHint(window.ReportPolicyPromote.errorLines(data).join("; "), true);
         return;
       }
+      if (keepEdits) {
+        const kept = promoteForm();
+        fillPromoteDraft(data);
+        const put = (id, v) => {
+          const el = promoteEl(id);
+          if (el) el.value = v;
+        };
+        put("policy-promote-id", kept.id);
+        put("policy-promote-paths", kept.paths);
+        put("policy-promote-class", kept.weakness_class);
+        put("policy-promote-reason", kept.reason);
+        const all = promoteEl("policy-promote-all-classes");
+        if (all) all.checked = kept.all_classes;
+        syncPromoteClassRow();
+        return true;
+      }
       fillPromoteDraft(data);
       setPromoteHint("Draft only — edit it, Preview, then Save to policy.");
+      return true;
     } catch (e) {
       setPromoteHint(e.message || String(e), true);
     }
@@ -3030,13 +3048,13 @@
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
         const lines = window.ReportPolicyPromote.errorLines(data);
+        if (r.status === 409) await loadPromoteDraft(body.target_list, true);
         setPromoteHint(
           r.status === 409
-            ? `${lines.join("; ")} — the policy changed; press Preview again after reloading the draft.`
+            ? `${lines.join("; ")} — nothing was saved. Your edits are kept on the new base; Preview, then Save again.`
             : lines.join("; "),
           true
         );
-        if (r.status === 409) await loadPromoteDraft(body.target_list);
         return;
       }
       showPromoteMatches(data.would_match);
