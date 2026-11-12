@@ -34,6 +34,8 @@ vf tool-gaps [--run-dir PATH | --runs-root PATH --all]
 vf dashboard [--host HOST] [--port PORT]
 vf export-validation-job --finding-id N [--run-dir PATH]
 vf validate-poc --finding-id N [--run-dir PATH] [--execute]
+vf develop-fix --finding-id N [--run-dir PATH] [--notes TEXT] [--execute]
+vf verify-fix --finding-id N (--patched-path P | --git-rev R [--repo P] | --use-fix-patch) [--execute]
 vf delete-run --run-dir PATH --yes
 vf hitl inbox [--run-dir PATH]
 vf hitl show --id REPORT_ID [--run-dir PATH]
@@ -144,6 +146,8 @@ init → recon → hunt × N → validate_mech → validate_llm (default on; set
 - **`develop_poc`** — human-queued from Report → Develop POC; writes runnable PoC scripts under `evidence/<pack>/` plus hub `poc_develop.md`. Never sets `confirmed`.
 - **`validate_poc`** — sandbox one-shot of a pack (`vf validate-poc --execute`, Report **Run in harness**, or run-start **Sandbox PoC one-shot**). MicroVM or gVisor only. Writes `poc_run.json`. Never sets `confirmed` and does not clear needs-human.
 - **`iterate_poc`** — same isolation, held for rewrite/re-run cycles (`vf validate-poc --iterate`, Report **Iterate in sandbox**). Default 5 cycles and 15-minute wall TTL, both set in Settings. Writes `poc_session.json`. Caps and sandbox misses do not confirm and do not clear needs-human. Human steer joins that session.
+- **`develop_fix`** — operator-queued patch proposal (`vf develop-fix`). Writes `evidence/<pack>/fix.patch` and `fix_check.json` (dry run). Never applied to the target. Never changes state.
+- **`verify_fix`** — independent re-check against a patched tree, git rev, or the fix patch (`vf verify-fix`). Re-runs the PoC in the sandbox against the patched tree when one exists. Writes `verify_fix.json` with `fixed` / `still_vulnerable` / `inconclusive`. Never changes state. See `docs/system/FIX.md`.
 - **`tool_gaps`** — mine transcripts for missing tool signals; also via `vf tool-gaps`.
 
 ## Tools (`code_static`)

@@ -666,6 +666,28 @@ class FindingValidatePocBody(BaseModel):
     command: str = ""
 
 
+class FindingDevelopFixBody(BaseModel):
+    """Enqueue develop_fix (patch to evidence/<pack>/fix.patch; never applied)."""
+
+    operator: str = "operator"
+    operator_notes: str = ""
+    force: bool = False
+
+
+class FindingVerifyFixBody(BaseModel):
+    """Enqueue verify_fix. Exactly one of patched_path / git_rev / use_fix_patch."""
+
+    patched_path: str = ""
+    git_rev: str = ""
+    repo_path: str = ""
+    subdir: str = ""
+    use_fix_patch: bool = False
+    baseline: bool = True
+    target_url: str = ""
+    operator: str = "operator"
+    force: bool = False
+
+
 class FindingIteratePocBody(BaseModel):
     """Enqueue iterate_poc. Same sandbox session, caps, never confirms."""
 
@@ -2576,6 +2598,61 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 404 if r.get("error") == "finding_not_found" else 400,
                 r.get("error") or "iterate-poc enqueue failed",
             )
+        return r
+
+    @app.get("/api/runs/{target_id}/{run_id}/findings/{finding_id}/fix")
+    def api_finding_fix_get(target_id: str, run_id: str, finding_id: int):
+        """Read fix.patch / fix_check.json / verify_fix.json (no write)."""
+        from vulnforge.control import fix_ops
+
+        run = _get_run(target_id, run_id)
+        r = fix_ops.get_finding_fix(run.path, finding_id)
+        if not r.get("ok"):
+            raise HTTPException(404 if r.get("error") == "finding_not_found" else 400, r.get("error") or "fix load failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/findings/{finding_id}/develop-fix")
+    def api_finding_develop_fix(
+        target_id: str, run_id: str, finding_id: int, body: FindingDevelopFixBody
+    ):
+        """Enqueue develop_fix. Never applies the patch; never changes state."""
+        from vulnforge.control import fix_ops
+
+        run = _get_run(target_id, run_id)
+        r = fix_ops.enqueue_develop_fix(
+            run.path,
+            finding_id,
+            operator=body.operator or "operator",
+            operator_notes=body.operator_notes or "",
+            force=bool(body.force),
+        )
+        if not r.get("ok"):
+            raise HTTPException(404 if r.get("error") == "finding_not_found" else 400, r.get("error") or "develop-fix enqueue failed")
+        return r
+
+    @app.post("/api/runs/{target_id}/{run_id}/findings/{finding_id}/verify-fix")
+    def api_finding_verify_fix(
+        target_id: str, run_id: str, finding_id: int, body: FindingVerifyFixBody
+    ):
+        """Enqueue independent verify_fix. Never changes state."""
+        from vulnforge.control import fix_ops
+
+        run = _get_run(target_id, run_id)
+        r = fix_ops.enqueue_verify_fix(
+            run.path,
+            finding_id,
+            patched_path=body.patched_path or "",
+            git_rev=body.git_rev or "",
+            repo_path=body.repo_path or "",
+            subdir=body.subdir or "",
+            use_fix_patch=bool(body.use_fix_patch),
+            baseline=bool(body.baseline),
+            target_url=body.target_url or "",
+            operator=body.operator or "operator",
+            force=bool(body.force),
+        )
+        if not r.get("ok"):
+            raise HTTPException(404 if r.get("error") == "finding_not_found" else 400, r.get("error") or "verify-fix enqueue failed")
         return r
 
     @app.get("/api/runs/{target_id}/{run_id}/findings/{finding_id}/poc-session")

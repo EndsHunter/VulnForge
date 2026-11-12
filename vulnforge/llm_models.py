@@ -27,14 +27,18 @@ STAGE_MODEL_KEYS: dict[str, str] = {
     "recon": "model_recon",
     "hunt": "model_hunt",
     "develop_poc": "model_develop_poc",
+    # Fix proposals reuse the Develop PoC role (no separate settings key).
+    "develop_fix": "model_develop_poc",
     # Single-client binding uses the first resolved validate slot.
     "validate_llm": "model_validate",
+    # Independent fix re-check: validate role, not the patch author's role.
+    "verify_fix": "model_validate",
     "validate_poc": "model_validate",
     "poc_referee": "model_validate",
 }
 
 # Stages whose client is the validate slot list, not a lone role key.
-_VALIDATE_STAGES = frozenset({"validate_llm", "validate_poc", "poc_referee"})
+_VALIDATE_STAGES = frozenset({"validate_llm", "validate_poc", "poc_referee", "verify_fix"})
 
 CONSENSUS_MODES = frozenset({"all", "majority"})
 
@@ -129,7 +133,9 @@ def resolve_stage_model(cfg: dict | None, stage: str) -> str:
 
 # Kinds that call the validation list. One lease is one agent; the first
 # validate target is the model id that lease counts against.
-_VALIDATE_LEASE_KINDS = frozenset({"validate_llm", "validate_poc", "validate_poc_referee", "poc_referee"})
+_VALIDATE_LEASE_KINDS = frozenset(
+    {"validate_llm", "validate_poc", "validate_poc_referee", "poc_referee", "verify_fix"}
+)
 _KIND_LEASE_STAGE = {
     "recon": "recon",
     "hunt": "hunt",
@@ -140,6 +146,8 @@ _KIND_LEASE_STAGE = {
     "poc_referee": "poc_referee",
     # Rewrite cycles use the Develop PoC role. The session never confirms.
     "iterate_poc": "develop_poc",
+    "develop_fix": "develop_fix",
+    "verify_fix": "verify_fix",
 }
 
 

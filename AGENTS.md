@@ -13,6 +13,7 @@
 5. **validate_llm** (default on) — dual adversarial disprove; both reject → `rejected_llm`, else stay `needs_human`. Never auto-confirms. Set `stages.validate_llm: false` to skip for speed/debug.
 6. **human review** (Mission needs-review indicator + Report) — accept → `confirmed`, reject → `rejected_human`. Durable `vulnforge/hitl-report@1` packet and responses; the harness re-reads them and never invents an approval. Optional notes.
 7. **develop_poc / validate_poc** (operator) — write runnable PoC under `evidence/`; optional controlled harness run → `poc_run.json` (never auto-`confirmed`)
+7b. **develop_fix / verify_fix** (operator) — propose a patch as `evidence/<pack>/fix.patch` (never applied to the target); independently re-check a patched tree, git rev, or the fix patch → `verify_fix.json` with `fixed` / `still_vulnerable` / `inconclusive` (re-runs the PoC in the sandbox against the patched tree when one exists). Never changes finding state. See [`docs/system/FIX.md`](docs/system/FIX.md).
 8. **project projection** — regenerates `project/*` on idle `run-once` / `vf project`
 
 **`needs_human` = mech gates passed (and disprove did not kill, if enabled). `confirmed` = human accepted.** Neither is exploit proof.
