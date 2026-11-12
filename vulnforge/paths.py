@@ -14,6 +14,14 @@ CONFIG_ROOT: Path = PROJECT_ROOT / "config"
 SEEDS_ROOT: Path = PROJECT_ROOT / "seeds"
 
 
+def rel_to_project(path: Path) -> str:
+    """Posix path relative to ``PROJECT_ROOT``, or the absolute path if outside it."""
+    try:
+        return path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
+    except ValueError:
+        return path.resolve().as_posix()
+
+
 def system_prompts_root() -> Path:
     """Directory of stage/system markdown (preamble, PRINCIPLES, disprove*, …)."""
     return SEEDS_ROOT / "system"

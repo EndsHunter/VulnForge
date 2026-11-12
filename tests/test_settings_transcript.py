@@ -1155,3 +1155,29 @@ def test_loop_profile_default(tmp_path: Path, monkeypatch):
     assert kw["max_iterations"] == 10000
     assert kw["task_timeout"] == 900
     assert kw["loop_profile_id"] == "default-campaign"
+
+
+def test_loop_profile_list_outside_project_root(tmp_path: Path, monkeypatch):
+    """Regression #176: profiles dir outside the repo (e.g. --basetemp) must not raise."""
+    from vulnforge import loop_profiles
+    from vulnforge.paths import PROJECT_ROOT, rel_to_project
+
+    import tempfile
+
+    # Force a dir outside the repo regardless of pytest's basetemp.
+    outside_root = Path(tempfile.mkdtemp(prefix="vf-outside-root-"))
+    d = outside_root / "harnesses"
+    d.mkdir()
+    assert not d.resolve().is_relative_to(PROJECT_ROOT.resolve())
+    monkeypatch.setattr(loop_profiles, "HARNESSES_DIR", d)
+    loop_profiles.ensure_default_profile()
+    listed = loop_profiles.list_profiles()
+    entry = next(x for x in listed if x["id"] == "default-campaign")
+    assert entry["path"] == (d / "default-campaign.yaml").resolve().as_posix()
+    # helper: inside root -> relative, outside -> absolute
+    assert rel_to_project(PROJECT_ROOT / "config" / "x.yaml") == "config/x.yaml"
+    outside = Path("/tmp/vf-outside-root/x.yaml")
+    assert rel_to_project(outside) == outside.resolve().as_posix()
+    import shutil
+
+    shutil.rmtree(outside_root, ignore_errors=True)

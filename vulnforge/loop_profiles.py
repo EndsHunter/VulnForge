@@ -13,6 +13,7 @@ from typing import Any, Optional
 import yaml
 
 from vulnforge.cli import PROJECT_ROOT
+from vulnforge.paths import rel_to_project
 
 SCHEMA = "harness.loop/v1"
 HARNESSES_DIR = PROJECT_ROOT / "config" / "harnesses"
@@ -78,7 +79,7 @@ def list_profiles() -> list[dict[str, Any]]:
                 "id": data.get("id") or p.stem,
                 "title": data.get("title") or p.stem,
                 "tags": data.get("tags") or [],
-                "path": str(p.relative_to(PROJECT_ROOT)).replace("\\", "/"),
+                "path": rel_to_project(p),
                 "loop": data.get("loop") or {},
                 "run": data.get("run") or {},
             }
