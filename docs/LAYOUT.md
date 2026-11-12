@@ -29,6 +29,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Operator chat tools (control plane) | `vulnforge/operator_chat/tools_*.py` — **not** agent tools |
 | Control-plane ops | `vulnforge/control/` |
 | Campaign control grammar (start/stop/pause/resume/status/findings/gate) | `vulnforge/control/campaign.py` — [`harness/CAMPAIGN.md`](harness/CAMPAIGN.md) |
+| Operator security policy (exclusions, trust boundaries, severity rubric) | `vulnforge/security_policy.py` + `security_policy_revisions` in `harness.db`; gate `check_policy_exclusion`; doc: [`harness/validate/POLICY.md`](harness/validate/POLICY.md) |
 | Durable HITL inbox (report↔responses) | `vulnforge/hitl.py` + `hitl_reports` / `hitl_responses` in `harness.db`; doc: [`harness/validate/HITL.md`](harness/validate/HITL.md) |
 | Dashboard routes / static | `vulnforge/ui/` |
 | Hunt profile store / reseed | `vulnforge/hunt_profiles/` |

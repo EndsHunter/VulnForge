@@ -362,6 +362,11 @@ def _run_disprove(
     prompts_root = system_prompts_root()
     body = dict(finding.body or {})
     verifiers = resolve_disprove_verifiers(cfg)
+    from vulnforge.security_policy import load_current as _load_policy
+    from vulnforge.security_policy import parse_policy_citations
+
+    security_policy = _load_policy(db, context="validate_llm.load_security_policy")
+    policy_doc = (security_policy or {}).get("policy")
 
     from vulnforge.llm_models import (
         make_client_for_model,
@@ -456,6 +461,7 @@ def _run_disprove(
                         slices,
                         perspective=perspective or None,
                         verifier_id=result_id,
+                        security_policy=security_policy,
                     )
                 except FileNotFoundError as e:
                     verifier_results.append(
@@ -561,17 +567,21 @@ def _run_disprove(
                 reasoning = (result.content or "").strip()
                 if len(reasoning) > 8000:
                     reasoning = reasoning[:8000] + "\n…[truncated]"
-                verifier_results.append(
-                    {
-                        "id": result_id,
-                        "prompt": perspective,
-                        "verdict": v,
-                        "parse_reason": parsed.get("reason") or "ok",
-                        "model_id": recorded_model,
-                        "reasoning": reasoning,
-                        "at": utc_now_iso(),
-                    }
-                )
+                slot_result = {
+                    "id": result_id,
+                    "prompt": perspective,
+                    "verdict": v,
+                    "parse_reason": parsed.get("reason") or "ok",
+                    "model_id": recorded_model,
+                    "reasoning": reasoning,
+                    "at": utc_now_iso(),
+                }
+                # Policy citations are annotation only: they never change the
+                # verdict or the all-reject aggregation.
+                cited = parse_policy_citations(result.content or "", policy_doc)
+                if cited:
+                    slot_result["policy_rules_cited"] = cited
+                verifier_results.append(slot_result)
 
         multi = multi_model_disprove_meta(
             verifier_results, mode=consensus_mode
@@ -717,6 +727,13 @@ def _apply_dual_verdict(
             "proof — human is the confirm gate."
         ),
     }
+    cited_rules: list[str] = []
+    for vr in verifier_results:
+        for rid in vr.get("policy_rules_cited") or []:
+            if rid not in cited_rules:
+                cited_rules.append(rid)
+    if cited_rules:
+        llm_meta["policy_rules_cited"] = cited_rules
     if multi_model:
         llm_meta["multi_model"] = multi_model
         if multi_model.get("multi_model_label"):

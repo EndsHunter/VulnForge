@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from dataclasses import replace
 from typing import Any, Callable
 
 from vulnforge.tools.evidence_write import evidence_exists
@@ -114,6 +115,12 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         if not ok:
             reasons.append(reason)
 
+    # Operator security policy (demote-only). Runs after CHECKS so a severity
+    # cap can never loosen check_non_vacuous (which judges the hunter's claim).
+    policy_body = _apply_policy_annotations(db, dict(finding.body or {}), reasons)
+    if policy_body != dict(finding.body or {}):
+        finding = replace(finding, body=policy_body)
+
     if reasons:
         body = dict(finding.body)
         body["validation_reasons"] = reasons
@@ -174,6 +181,53 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         "finding_id": finding.id,
         "finding_state": "needs_human",
     }
+
+
+def _current_policy(db) -> tuple[dict | None, int | None]:
+    getter = getattr(db, "get_security_policy", None)
+    if getter is None:
+        return None, None
+    cur = getter()
+    if not cur:
+        return None, None
+    return cur.get("policy") or None, cur.get("revision")
+
+
+def _apply_policy_annotations(db, body: dict, reasons: list[str]) -> dict:
+    """Stamp policy_match (when the exclusion gate fired) and the rubric cap.
+
+    Never promotes: the cap only lowers severity_claim, and policy_match only
+    accompanies a rejection reason that check_policy_exclusion already added.
+    """
+    from vulnforge.security_policy import apply_severity_rubric, match_exclusion
+
+    policy, revision = _current_policy(db)
+    if not policy:
+        return body
+    out = dict(body)
+    if any(str(r).startswith(("policy_excluded:", "policy_out_of_scope:")) for r in reasons):
+        m = match_exclusion(policy, out, revision=revision)
+        if m:
+            out["policy_match"] = m
+    out, _rec = apply_severity_rubric(policy, out, revision=revision)
+    return out
+
+
+def check_policy_exclusion(finding, run_dir: Path, cfg: dict, db) -> tuple[bool, str]:
+    """Reject when an operator exclusion / out-of-scope rule covers every cited path.
+
+    Reason cites the rule (``policy_excluded:<id>`` / ``policy_out_of_scope:<id>``);
+    run() stores the full match on the body so the Report shows it.
+    """
+    from vulnforge.security_policy import exclusion_reason_code, match_exclusion
+
+    policy, revision = _current_policy(db)
+    if not policy:
+        return True, ""
+    m = match_exclusion(policy, finding.body or {}, revision=revision)
+    if m is None:
+        return True, ""
+    return False, exclusion_reason_code(m)
 
 
 def _publish_hitl(db, run_dir: Path, finding_id: int) -> None:
@@ -671,4 +725,5 @@ CHECKS: list[Callable] = [
     check_target_unmodified,
     check_non_vacuous,
     check_severity_claim,
+    check_policy_exclusion,
 ]

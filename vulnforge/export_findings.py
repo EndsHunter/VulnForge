@@ -50,6 +50,8 @@ ROW_COLUMNS = [
     "human_review_action",
     "human_review_notes",
     "validation_reasons",
+    "policy_rule",  # operator security policy rule that excluded / capped it
+    "severity_claim_original",  # hunter claim before a policy rubric cap
     "poc_excerpt",  # filled when include_poc=True
 ]
 
@@ -710,6 +712,18 @@ def _human_review_latest(body: dict) -> dict[str, Any]:
     return {}
 
 
+def _policy_rule_flat(body: dict) -> str:
+    """``excluded:ex-1`` / ``capped:sev-2`` style summary of policy effects."""
+    parts: list[str] = []
+    m = body.get("policy_match")
+    if isinstance(m, dict) and m.get("rule_id"):
+        parts.append(f"{m.get('kind') or 'excluded'}:{m['rule_id']}")
+    rec = body.get("severity_rubric")
+    if isinstance(rec, dict) and rec.get("action") == "capped" and rec.get("rule_id"):
+        parts.append(f"capped:{rec['rule_id']}")
+    return "; ".join(parts)
+
+
 def _validation_reasons_flat(body: dict) -> str:
     reasons = body.get("validation_reasons")
     if not isinstance(reasons, list) or not reasons:
@@ -953,6 +967,8 @@ def findings_to_rows(db: Any) -> list[dict[str, Any]]:
                 "human_review_action": hr.get("action") or "",
                 "human_review_notes": (hr.get("notes") or "") if hr else "",
                 "validation_reasons": _validation_reasons_flat(body),
+                "policy_rule": _policy_rule_flat(body),
+                "severity_claim_original": body.get("severity_claim_original") or "",
                 # Keep full body for richer formats
                 "_body": body,
                 "_finding": f,

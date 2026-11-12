@@ -68,6 +68,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_validate_poc(args, cfg)
         if cmd == "hitl":
             return cmd_hitl(args, cfg)
+        if cmd == "policy":
+            return cmd_policy(args, cfg)
         print(f"unknown command: {cmd}", file=sys.stderr)
         return EXIT_CONFIG
     except SystemExit as e:
@@ -353,6 +355,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     emit_p.add_argument("--run-dir", type=Path, default=None)
     emit_p.add_argument("--file", type=Path, required=True, help="Report JSON file")
+
+    pol = sub.add_parser(
+        "policy",
+        help="Operator security policy (exclusions, trust boundaries, severity rubric). "
+        "Narrows / demotes only; never confirms.",
+    )
+    pol_sub = pol.add_subparsers(dest="policy_cmd", required=True)
+    pol_show = pol_sub.add_parser("show", help="Print the current policy (or --revision N)")
+    pol_show.add_argument("--run-dir", type=Path, default=None)
+    pol_show.add_argument("--revision", type=int, default=None)
+    pol_set = pol_sub.add_parser("set", help="Validate and store a policy JSON file as a new revision")
+    pol_set.add_argument("--run-dir", type=Path, default=None)
+    pol_set.add_argument("--file", type=Path, required=True, help="Policy JSON file")
+    pol_set.add_argument("--note", default="", help="Why this change")
+    pol_hist = pol_sub.add_parser("history", help="List policy revisions (newest first)")
+    pol_hist.add_argument("--run-dir", type=Path, default=None)
+    pol_restore = pol_sub.add_parser("restore", help="Restore a revision as the new current policy")
+    pol_restore.add_argument("--run-dir", type=Path, default=None)
+    pol_restore.add_argument("--revision", type=int, required=True)
+    pol_md = pol_sub.add_parser(
+        "draft-security-md",
+        help="Print a draft policy from the target's SECURITY.md (saved only with --save)",
+    )
+    pol_md.add_argument("--run-dir", type=Path, default=None)
+    pol_md.add_argument("--save", action="store_true", help="Store the draft as a new revision")
 
     return p
 
@@ -1782,6 +1809,83 @@ def cmd_hitl(args, cfg: dict) -> int:
     if payload.get("ok") is False:
         print(json.dumps(payload, indent=2), file=sys.stderr)
         return EXIT_CONFIG
+    print(json.dumps(payload, indent=2))
+    return EXIT_PROGRESS
+
+
+def cmd_policy(args, cfg: dict) -> int:
+    """Read or update the run's operator security policy. Never touches findings."""
+    try:
+        run_dir = resolve_run_dir(args, cfg)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_CONFIG
+    db_path = run_dir / "harness.db"
+    if not db_path.is_file():
+        print(f"missing harness.db in {run_dir}", file=sys.stderr)
+        return EXIT_CONFIG
+    from vulnforge.db import Database
+    from vulnforge.security_policy import PolicyError, draft_from_security_md
+
+    action = str(getattr(args, "policy_cmd", "") or "")
+    db = Database.open(db_path)
+    try:
+        if action == "show":
+            if args.revision is not None:
+                payload = db.get_security_policy_revision(int(args.revision))
+                if payload is None:
+                    print(f"revision not found: {args.revision}", file=sys.stderr)
+                    return EXIT_CONFIG
+            else:
+                payload = db.get_security_policy() or {"revision": None, "policy": None}
+        elif action == "set":
+            path = Path(args.file)
+            if not path.is_file():
+                print(f"file not found: {path}", file=sys.stderr)
+                return EXIT_CONFIG
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as e:
+                print(f"invalid JSON: {e}", file=sys.stderr)
+                return EXIT_CONFIG
+            try:
+                rev = db.set_security_policy(doc, source="cli", note=str(args.note or ""))
+            except PolicyError as e:
+                print(json.dumps({"ok": False, "errors": e.errors}, indent=2), file=sys.stderr)
+                return EXIT_CONFIG
+            payload = {"ok": True, "revision": rev}
+        elif action == "history":
+            payload = {"revisions": db.list_security_policy_revisions(limit=100)}
+        elif action == "restore":
+            try:
+                rev = db.restore_security_policy_revision(int(args.revision))
+            except PolicyError as e:
+                print(json.dumps({"ok": False, "errors": e.errors}, indent=2), file=sys.stderr)
+                return EXIT_CONFIG
+            if rev is None:
+                print(f"revision not found: {args.revision}", file=sys.stderr)
+                return EXIT_CONFIG
+            payload = {"ok": True, "revision": rev, "restored_from": int(args.revision)}
+        elif action == "draft-security-md":
+            row = db.get_run()
+            draft = draft_from_security_md(row["target_path"]) if row else None
+            if not draft:
+                print("no SECURITY.md found in the target", file=sys.stderr)
+                return EXIT_CONFIG
+            payload = {"saved": False, **draft}
+            if args.save:
+                rev = db.set_security_policy(
+                    draft["policy"],
+                    source="security_md",
+                    note=f"seeded from {draft['source_path']}",
+                )
+                payload["saved"] = True
+                payload["revision"] = rev
+        else:
+            print(f"unknown policy command: {action}", file=sys.stderr)
+            return EXIT_CONFIG
+    finally:
+        db.close()
     print(json.dumps(payload, indent=2))
     return EXIT_PROGRESS
 

@@ -5883,6 +5883,12 @@ button.cov-click .cov-moa-chip {
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+.badge.policy {
+  color: var(--info);
+  border-color: rgba(122, 162, 247, 0.45);
+  background: rgba(122, 162, 247, 0.14);
+  font-weight: 600;
+}
 .report-summary-grid-wide {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }

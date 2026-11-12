@@ -279,6 +279,7 @@ def llm_merge_architectures(
     *,
     operator_brief: str = "",
     prompts_root: Path | None = None,
+    security_policy: dict | None = None,
 ) -> tuple[dict[str, Any] | None, Any]:
     """Ask the model to merge prior + incoming architecture maps.
 
@@ -338,6 +339,10 @@ def llm_merge_architectures(
             + brief[:2000]
             + "\n"
         )
+    if security_policy:
+        from vulnforge.packet import _policy_block
+
+        user += _policy_block(security_policy, stage="recon", cfg=cfg)
     user += "\nRespond with the merged architecture JSON object only.\n"
     messages = [
         {"role": "system", "content": prompt_body.strip()},
@@ -393,6 +398,12 @@ def llm_merge_architectures(
     return parsed, result
 
 
+def _load_security_policy(db) -> dict[str, Any] | None:
+    from vulnforge.security_policy import load_current
+
+    return load_current(db, context="recon.load_security_policy")
+
+
 def store_merged_architecture(
     db,
     *,
@@ -416,6 +427,7 @@ def store_merged_architecture(
     the model is tasked with the merge; mechanical merge is the fallback.
     """
     cfg = cfg if isinstance(cfg, dict) else {}
+    security_policy = _load_security_policy(db)
     existing = None if force_replace else db.get_architecture()
     # Always preserve prior when present (batch index 0 re-runs, solo re-runs, etc.)
     should_merge = bool(existing) and not force_replace
@@ -443,6 +455,7 @@ def store_merged_architecture(
                 existing,
                 part,
                 operator_brief=operator_brief,
+                security_policy=security_policy,
             )
             if run_dir is not None and llm_result is not None:
                 try:
@@ -544,6 +557,11 @@ def store_merged_architecture(
             inv_arch["seed_sinks_meta"] = meta
     if operator_brief:
         arch["operator_notes_applied"] = operator_brief[:2000]
+    # Which operator policy revision guided this map (no mechanical rewrite of it).
+    if security_policy and security_policy.get("revision") is not None:
+        arch["security_policy_revision"] = int(security_policy["revision"])
+    else:
+        arch.pop("security_policy_revision", None)
     if recon_generation is not None:
         try:
             arch["recon_generation"] = int(recon_generation)
@@ -886,6 +904,9 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         except Exception:
             codemap = {}
 
+    # Operator security policy: ground truth for recon packets (guidance only).
+    security_policy = _load_security_policy(db)
+
     session: dict = {
         "architecture": None,
         "notes": [],
@@ -1126,6 +1147,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     tools_allowlist=tools_allow,
                     agent_id=agent_id,
                     codemap=codemap,
+                    security_policy=security_policy,
                 )
                 max_rounds = agent.get("max_tool_rounds")
                 if max_rounds is None:
@@ -1371,6 +1393,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 tools_allowlist=tools_allow,
                 agent_id=agent_id,
                 codemap=codemap,
+                security_policy=security_policy,
             )
             max_rounds = agent.get("max_tool_rounds")
             if max_rounds is None:

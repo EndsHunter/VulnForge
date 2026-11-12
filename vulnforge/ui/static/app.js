@@ -144,6 +144,10 @@ function humanizeValidationReason(raw) {
     summary_too_short: "Finding summary is empty or too short.",
     bad_severity:
       "severity_claim must be CRITICAL, HIGH, MEDIUM, LOW, or INFORMATIONAL (not free text).",
+    policy_excluded:
+      "Excluded by an operator security policy rule (class matches and every cited path is covered).",
+    policy_out_of_scope:
+      "Out of scope per the operator security policy (every cited path is covered by the rule).",
     no_run: "Run row missing in harness.db.",
     schema: "Candidate body failed schema checks.",
   };
@@ -2205,6 +2209,9 @@ function renderArchPageHeaderHtml(pageTitle, opts) {
     );
   }
   actions.push(
+    `<button type="button" class="btn btn-sm" id="arch-policy-toggle" title="Operator security policy: trust boundaries, exclusions, severity rubric">Policy</button>`
+  );
+  actions.push(
     `<button type="button" class="btn btn-sm" id="arch-recon-toggle">Recon</button>`
   );
   const indicator = renderNeedsReviewIndicatorHtml(opts && opts.needsReview);
@@ -4134,6 +4141,7 @@ function bindArchPage(el, vm, arch, summary) {
     if (p) p.style.display = "none";
   });
   $("#arch-edit-save")?.addEventListener("click", () => saveArchEdit());
+  window.VFSecurityPolicy?.bind?.();
   bindCodemapHandlers();
 }
 
@@ -4151,6 +4159,8 @@ function renderArchitecture(arch, summary, snap) {
     campaignHtml
   );
   const eventsHtml = renderArchEventsFooterHtml(vm.events);
+  const policyHtml = window.VFSecurityPolicy?.panelHtml?.() || "";
+  const policyState = window.VFSecurityPolicy?.capture?.() || null;
   const refineHtml = renderArchRefineHtml(has);
   const rawHtml = renderArchRawJsonHtml(arch, s);
 
@@ -4168,12 +4178,14 @@ function renderArchitecture(arch, summary, snap) {
           </div>
         </div>
       </div>
+      ${policyHtml}
       ${refineHtml}
       ${eventsHtml}
       ${renderCodemapCardHtml(snap)}
       ${rawHtml}
     </div>`;
     bindArchPage(el, vm, arch, s);
+    window.VFSecurityPolicy?.restore?.(policyState);
     return;
   }
 
@@ -4276,6 +4288,8 @@ function renderArchitecture(arch, summary, snap) {
         <div id="arch-history-detail" class="arch-history-detail" style="display:none"></div>
       </div>
 
+      ${policyHtml}
+
       ${refineHtml}
 
       <div class="arch-body">
@@ -4310,6 +4324,7 @@ function renderArchitecture(arch, summary, snap) {
       ${rawHtml}
     </div>`;
   bindArchPage(el, vm, arch, s);
+  window.VFSecurityPolicy?.restore?.(policyState);
 }
 
 function renderCodemapCardHtml(snap) {

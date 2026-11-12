@@ -707,6 +707,13 @@ class ArchitectureRestoreBody(BaseModel):
     note: str = ""
 
 
+class SecurityPolicyBody(BaseModel):
+    """Operator security policy document (vulnforge/security-policy@1) + note."""
+
+    policy: dict[str, Any]
+    note: str = ""
+
+
 class ToolGapsBody(BaseModel):
     """POST /api/runs/{target}/{run}/tool-gaps. Module scope so OpenAPI can resolve it."""
 
@@ -1957,6 +1964,128 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             }
         finally:
             db.close()
+
+    # --- Operator security policy (narrow / demote only; never confirms) ---
+
+    @app.get("/api/runs/{target_id}/{run_id}/security-policy")
+    def api_security_policy_get(target_id: str, run_id: str):
+        from vulnforge.db import Database
+        from vulnforge.security_policy import POLICY_SCHEMA
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            cur = db.get_security_policy()
+            if not cur:
+                return {"schema": POLICY_SCHEMA, "revision": None, "policy": None}
+            return {"schema": POLICY_SCHEMA, **cur}
+        finally:
+            db.close()
+
+    @app.put("/api/runs/{target_id}/{run_id}/security-policy")
+    def api_security_policy_put(target_id: str, run_id: str, body: SecurityPolicyBody):
+        """Validate + store a new revision. Invalid → 400 with ``errors``; nothing stored."""
+        from vulnforge.db import Database
+        from vulnforge.security_policy import PolicyError
+        from vulnforge.util import append_event
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            try:
+                rev = db.set_security_policy(
+                    body.policy, source="manual", note=str(body.note or "")[:2000]
+                )
+            except PolicyError as e:
+                raise HTTPException(400, {"errors": e.errors}) from e
+            append_event(
+                run.path,
+                {"event": "security_policy_updated", "source": "manual", "revision": rev},
+            )
+            return {"ok": True, **(db.get_security_policy() or {})}
+        finally:
+            db.close()
+
+    @app.get("/api/runs/{target_id}/{run_id}/security-policy/history")
+    def api_security_policy_history(
+        target_id: str,
+        run_id: str,
+        limit: int = Query(50, ge=1, le=100),
+    ):
+        from vulnforge.db import Database
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            revs = db.list_security_policy_revisions(limit=limit)
+            return {"revisions": revs, "count": len(revs)}
+        finally:
+            db.close()
+
+    @app.get("/api/runs/{target_id}/{run_id}/security-policy/history/{rev_id}")
+    def api_security_policy_revision(target_id: str, run_id: str, rev_id: int):
+        from vulnforge.db import Database
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            rev = db.get_security_policy_revision(rev_id)
+            if not rev:
+                raise HTTPException(404, "revision not found")
+            return rev
+        finally:
+            db.close()
+
+    @app.post("/api/runs/{target_id}/{run_id}/security-policy/restore/{rev_id}")
+    def api_security_policy_restore(
+        target_id: str,
+        run_id: str,
+        rev_id: int,
+        body: ArchitectureRestoreBody = ArchitectureRestoreBody(),
+    ):
+        from vulnforge.db import Database
+        from vulnforge.security_policy import PolicyError
+        from vulnforge.util import append_event
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            try:
+                new_rev = db.restore_security_policy_revision(rev_id, note=body.note or "")
+            except PolicyError as e:
+                raise HTTPException(400, {"errors": e.errors}) from e
+            if new_rev is None:
+                raise HTTPException(404, "revision not found")
+            append_event(
+                run.path,
+                {
+                    "event": "security_policy_updated",
+                    "source": "restore",
+                    "revision": new_rev,
+                    "restored_from": rev_id,
+                },
+            )
+            return {"ok": True, **(db.get_security_policy() or {})}
+        finally:
+            db.close()
+
+    @app.get("/api/runs/{target_id}/{run_id}/security-policy/draft/security-md")
+    def api_security_policy_draft_md(target_id: str, run_id: str):
+        """Draft (not saved) from the target's SECURITY.md — prose notes only."""
+        from vulnforge.db import Database
+        from vulnforge.security_policy import draft_from_security_md
+
+        run = _get_run(target_id, run_id)
+        db = Database.open(run.path / "harness.db")
+        try:
+            row = db.get_run()
+            target = row["target_path"] if row else ""
+        finally:
+            db.close()
+        draft = draft_from_security_md(target) if target else None
+        if not draft:
+            return {"found": False, "saved": False}
+        return {"found": True, "saved": False, **draft}
 
     @app.put("/api/runs/{target_id}/{run_id}/architecture")
     def api_architecture_put(target_id: str, run_id: str, body: ArchitectureEditBody):

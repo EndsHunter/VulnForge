@@ -113,6 +113,9 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     except Exception:
         codemap_struct = None
     architecture_txt = _architecture_slice(arch, payload, codemap=codemap_struct)
+    from vulnforge.security_policy import load_current as _load_policy
+
+    security_policy = _load_policy(db, context="hunt.load_security_policy")
 
     # P2.6: human-readable known findings for packet
     known_findings = _known_findings_readable(db)
@@ -208,6 +211,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         seed_sinks=seed_sinks or [],
         known_findings=known_findings,
         codemap=codemap_struct,
+        security_policy=security_policy,
     )
     try:
         refuse_if_over_budget(packet)
@@ -787,6 +791,9 @@ def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     except Exception:
         codemap_struct = None
     architecture_txt = _architecture_slice(arch, payload, codemap=codemap_struct)
+    from vulnforge.security_policy import load_current as _load_policy
+
+    security_policy = _load_policy(db, context="hunt.load_security_policy")
     known_findings = _known_findings_readable(db)
     known_keys = [f.stable_key for f in db.list_findings()]
     codemap_notes = [
@@ -923,6 +930,7 @@ def _run_hunt_moa(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     codemap=codemap_struct,
                     perspective=prompt or None,
                     perspective_id=pid,
+                    security_policy=security_policy,
                 )
             except PermissionError as e:
                 return {"status": "failed_task", "error": str(e), "perspective_id": pid}
