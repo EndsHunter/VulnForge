@@ -22,9 +22,10 @@ from __future__ import annotations
 import re
 from pathlib import PurePosixPath
 from typing import Any, Iterable
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from vulnforge.findings.severity import normalize_severity_claim
+from vulnforge.hunt_profiles.store import CLASS_ALIASES
 
 SARIF_VERSION = "2.1.0"
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
@@ -86,7 +87,15 @@ def selected_states(
 
 
 def rule_id_for_class(weakness_class: Any) -> str:
-    slug = _SLUG_RE.sub("-", str(weakness_class or "").strip().lower()).strip("-.")
+    """Rule id for a weakness class: slug plus the static hunt-skill aliases (sqli → injection).
+
+    Uses only the code-level ``CLASS_ALIASES`` table, not the operator profile
+    collection, so a rule id does not change when Settings change.
+    """
+    raw = str(weakness_class or "").strip().lower().replace("_", "-").replace(" ", "-")
+    raw = CLASS_ALIASES.get(raw, raw)
+    slug = _SLUG_RE.sub("-", raw).strip("-.")
+    slug = re.sub(r"-{2,}", "-", slug)
     return slug or "unclassified"
 
 
@@ -172,12 +181,21 @@ def _locations(body: dict, target_root: PurePosixPath | None) -> tuple[dict | No
     if not usable:
         return None, []
     sink_uri = artifact_uri(body.get("sink_path"), target_root)
+    sink_symbol = str(body.get("sink_symbol") or "").strip()
     primary_idx = 0
     if sink_uri:
-        for i, (_c, phys) in enumerate(usable):
-            if phys["artifactLocation"]["uri"] == sink_uri:
-                primary_idx = i
-                break
+        same_file = [
+            i for i, (_c, phys) in enumerate(usable)
+            if phys["artifactLocation"]["uri"] == sink_uri
+        ]
+        if same_file:
+            primary_idx = same_file[0]
+            # Several citations in the sink file: the one naming the sink symbol wins.
+            if sink_symbol:
+                for i in same_file:
+                    if str(usable[i][0].get("symbol") or "").strip() == sink_symbol:
+                        primary_idx = i
+                        break
     c0, phys0 = usable[primary_idx]
     primary: dict[str, Any] = {"physicalLocation": phys0}
     symbol = str(c0.get("symbol") or body.get("sink_symbol") or "").strip()
@@ -192,17 +210,41 @@ def _locations(body: dict, target_root: PurePosixPath | None) -> tuple[dict | No
         seen.add(key)
         loc: dict[str, Any] = {"id": len(related) + 1, "physicalLocation": phys}
         sym = str(c.get("symbol") or "").strip()
-        loc["message"] = {"text": sym or phys["artifactLocation"]["uri"]}
+        loc["message"] = {"text": sym or _location_label(phys)}
         related.append(loc)
     return primary, related
 
 
-def _message(state: str, title: str, summary: str) -> str:
-    title = str(title or "").strip().rstrip(".") or "Untitled finding"
+def _location_label(phys: dict) -> str:
+    return f"{unquote(phys['artifactLocation']['uri'])}:{phys['region']['startLine']}"
+
+
+def _escape_links(text: str) -> str:
+    """Escape brackets only where plain text would read as a SARIF embedded link."""
+    if re.search(r"\]\(", text):
+        return re.sub(r"([\\\[\]])", r"\\\1", text)
+    return text
+
+
+def _message(state: str, title: str, summary: str, related: list[dict]) -> str:
+    title = _escape_links(str(title or "").strip().rstrip(".")) or "Untitled finding"
     note = _STATE_NOTES.get(state) or "Not a confirmed vulnerability."
     head = f"{title}. {note}" if state == "confirmed" else f"{state}: {title}. {note}"
-    summary = str(summary or "").strip()
-    return f"{head}\n\n{summary}" if summary else head
+    parts = [head]
+    summary = _escape_links(str(summary or "").strip())
+    if summary:
+        parts.append(summary)
+    if related:
+        # Code scanning only shows a related location the message links to.
+        links = ", ".join(
+            "[{}]({})".format(
+                re.sub(r"([\\\[\]])", r"\\\1", _location_label(loc["physicalLocation"])),
+                loc["id"],
+            )
+            for loc in related
+        )
+        parts.append(f"Related locations: {links}.")
+    return "\n\n".join(parts)
 
 
 def _rule(rule_id: str, weakness_class: str, disclaimer: str) -> dict[str, Any]:
@@ -227,7 +269,7 @@ def _rule(rule_id: str, weakness_class: str, disclaimer: str) -> dict[str, Any]:
             )
         },
         "defaultConfiguration": {"level": "warning"},
-        "properties": {"tags": ["security", "vulnforge", rule_id]},
+        "properties": {"tags": list(dict.fromkeys(["security", "vulnforge", rule_id]))},
     }
 
 
@@ -290,7 +332,9 @@ def build_sarif(
         result: dict[str, Any] = {
             "ruleId": rid,
             "level": _LEVELS.get(sev or "", "warning"),
-            "message": {"text": _message(state, r.get("title") or "", r.get("summary") or "")},
+            "message": {
+                "text": _message(state, r.get("title") or "", r.get("summary") or "", related)
+            },
             "locations": [primary],
         }
         if related:
@@ -308,7 +352,7 @@ def build_sarif(
             "vulnforge/weakness_class": wc,
             "vulnforge/severity_claim": sev or "",
             "vulnforge/evidence_id": str(r.get("evidence_id") or ""),
-            "tags": ["security", state],
+            "tags": list(dict.fromkeys(["security", state])),
         }
         if stable:
             props["vulnforge/stable_key"] = stable

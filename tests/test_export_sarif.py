@@ -185,7 +185,8 @@ def test_one_rule_per_weakness_class(run):
     rules = doc["runs"][0]["tool"]["driver"]["rules"]
     ids = [r["id"] for r in rules]
     assert ids == sorted(ids)
-    assert ids == ["access-control", "injection", "xss"]
+    # Static hunt-skill aliases apply: "XSS" → client-side.
+    assert ids == ["access-control", "client-side", "injection"]
     for r in rules:
         assert "security" in r["properties"]["tags"]
         assert r["help"]["text"]
@@ -227,10 +228,14 @@ def test_result_shape_fingerprints_and_properties(run):
     # Absolute path under the target root becomes target-relative.
     assert related == ["lib/util.py", "db/query.py"]
     assert sqli["message"]["text"].startswith("SQL injection in search_users. Human accepted")
+    # Related locations are linked from the message so code scanning shows them.
+    assert sqli["message"]["text"].endswith(
+        "Related locations: [lib/util.py:3](1), [db/query.py:20](2)."
+    )
 
     xss = by_id[ids["xss"]]
     assert xss["level"] == "warning"
-    assert xss["ruleId"] == "xss"
+    assert xss["ruleId"] == "client-side"
     assert xss["properties"]["vulnforge/confirmed"] is False
     assert xss["message"]["text"].startswith(
         "needs_human: Reflected XSS. Mechanical gates passed; not a confirmed vulnerability."
@@ -329,6 +334,8 @@ def test_from_kwargs_threads_sarif_flags():
 def test_helpers():
     assert rule_id_for_class("Access Control / IDOR") == "access-control-idor"
     assert rule_id_for_class("") == "unclassified"
+    assert rule_id_for_class("SQLi") == "injection"
+    assert rule_id_for_class("business_logic") == "business-logic"
     root = PurePosixPath("/srv/target")
     assert artifact_uri("/srv/target/a/b.py", root) == "a/b.py"
     assert artifact_uri("/srv/other/b.py", root) is None
@@ -449,3 +456,48 @@ def test_sarif_document_is_deterministic_apart_from_timestamp(run):
     for d in (a, b):
         d["runs"][0]["invocations"][0].pop("endTimeUtc", None)
     assert a == b
+
+
+def test_primary_prefers_sink_symbol_in_same_file_and_tags_are_unique(tmp_path, validator):
+    db = Database.create(tmp_path / "harness.db")
+    db.insert_run("run-001", str(tmp_path / "t"), "code_static", "pin", {})
+    fid = db.insert_finding(
+        _body(
+            "Command injection via os.system [see](1)",
+            "security",
+            [
+                {"path": "app.py", "start_line": 10, "symbol": "parse_query"},
+                {"path": "app.py", "start_line": 40, "symbol": "search_users"},
+            ],
+            sink="app.py",
+            symbol="search_users",
+        ),
+        state="confirmed",
+    )
+    try:
+        doc = sarif_document(tmp_path, db)
+    finally:
+        db.close()
+    _assert_valid(validator, doc)
+    res = _results_by_id(doc)[fid]
+    assert res["locations"][0]["physicalLocation"]["region"] == {"startLine": 40}
+    assert res["locations"][0]["logicalLocations"] == [{"name": "search_users"}]
+    assert [r["message"]["text"] for r in res["relatedLocations"]] == ["parse_query"]
+    # Title text that would read as an embedded link is escaped.
+    assert res["message"]["text"].startswith("Command injection via os.system \\[see\\](1).")
+    assert res["message"]["text"].endswith("Related locations: [app.py:10](1).")
+    rule = doc["runs"][0]["tool"]["driver"]["rules"][0]
+    assert rule["id"] == "security"
+    assert rule["properties"]["tags"] == ["security", "vulnforge"]
+
+
+def test_campaign_class_filter_uses_aliases(run):
+    ref, _run_dir, ids = run
+    res = campaign_ctl.apply(
+        ref, "findings", {"format": "sarif", "include_needs_human": True, "class": "sqli"}
+    )
+    assert set(_results_by_id(res["sarif"])) == {ids["sqli"], ids["cmd"]}
+    res = campaign_ctl.apply(
+        ref, "findings", {"format": "sarif", "include_needs_human": True, "class": "client-side"}
+    )
+    assert set(_results_by_id(res["sarif"])) == {ids["xss"]}
