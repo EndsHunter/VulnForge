@@ -263,6 +263,32 @@ def _diff_precheck(opts: CIOptions, cfg: dict, spec: str) -> dict[str, Any]:
     target = getattr(opts.init_args, "target", None)
     if target is None:
         return {"error": "--diff needs --target"}
+    from vulnforge.diff_scope import parse_diff_spec, resolve_commit
+
+    try:
+        base_ref, head_ref = parse_diff_spec(spec)
+        base_sha = resolve_commit(Path(target).resolve(), base_ref)
+        head_sha = resolve_commit(Path(target).resolve(), head_ref)
+    except Exception:  # noqa: BLE001 — collect_changes below reports the real error
+        base_sha = head_sha = None
+    if base_sha is not None and base_sha == head_sha:
+        # e.g. a PR whose head is already in the base: merge-base == head.
+        return {
+            "empty": True,
+            "brief": {
+                "spec": spec,
+                "compare": "two_tree",
+                "base": {"ref": base_ref, "sha": base_sha},
+                "head": {"ref": head_ref, "sha": head_sha},
+                "changed": 0,
+                "expanded": 0,
+                "scope_files": 0,
+                "excluded": 0,
+                "excluded_by_reason": {},
+                "same_commit": True,
+                "empty": True,
+            },
+        }
     try:
         changes = collect_changes(
             Path(target).resolve(),
@@ -291,6 +317,76 @@ def _run_diff_scope(run_dir: Path) -> Optional[dict[str, Any]]:
     if brief is not None:
         brief["drift"] = len(((manifest.get("worktree") or {}).get("drift")) or [])
     return brief
+
+
+def _cost_error(est: Any) -> Optional[str]:
+    if est.unmeasured:
+        return f"cost_unmeasured: cost cap cannot be enforced ({est.detail})"
+    if est.unpriced_models:
+        return f"cost_unpriced: cost cap cannot be enforced ({est.unpriced_models})"
+    return None
+
+
+def _run_ralph(
+    opts: "CIOptions",
+    record: dict[str, Any],
+    errors: list[str],
+    warnings: list[str],
+    run_dir: Path,
+    stop_file: Path,
+    max_wall: Optional[float],
+    guard: Optional[CostGuard],
+    ralph_module: Any = None,
+) -> tuple[str, bool]:
+    events_offset = _events_size(run_dir)
+    append_event(
+        run_dir,
+        {
+            "source": "vf_ci",
+            "event": "ci_start",
+            "mode": record["mode"],
+            "budget": record["budget"],
+            "threshold": record["threshold"],
+        },
+    )
+    try:
+        ralph = ralph_module or load_ralph_module()
+        rcfg = ralph.RalphConfig(
+            run_dir=run_dir,
+            max_iterations=int(opts.max_iterations or UNLIMITED_ITERATIONS),
+            max_infra_retries=int(opts.max_infra_retries),
+            sleep_seconds=0.0,
+            infra_backoff_base=5.0,
+            vf_command=ralph.default_vf_command(),
+            stop_file=stop_file,
+            config_path=Path(opts.config_path).resolve() if opts.config_path else None,
+            dry_run=False,
+            verbose=opts.verbose,
+            task_timeout=opts.task_timeout,
+            max_wall_seconds=max_wall,
+            max_tasks=None,
+            budget_check=guard,
+        )
+        try:
+            ralph_code = int(ralph.run_loop(rcfg))
+        except KeyboardInterrupt:
+            ralph_code = 130
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"infra: Ralph failed to run: {e}")
+        ralph_code = -1
+    last_event = last_ralph_stop_event(run_dir, events_offset)
+    stop_reason, stop_error = classify_ralph_stop(ralph_code, last_event)
+    record["ralph"] = {"exit_code": ralph_code, "stop_reason": stop_reason}
+    if stop_error and ralph_code != -1:
+        errors.append(stop_error)
+    completed = stop_reason == "idle"
+    record["completed"] = completed
+    if stop_reason in EARLY_STOP_REASONS or stop_reason == "budget":
+        warnings.append(
+            f"stopped early ({stop_reason}): remaining work is a coverage gap, "
+            "not a pass on unaudited code"
+        )
+    return stop_reason, completed
 
 
 def run_ci(
@@ -406,11 +502,13 @@ def run_ci(
         )
 
     stop_file = run_dir / "STOP"
-    if stop_file.exists():
+    # A STOP file left in place would make Ralph exit at once and look like an
+    # early stop. Fail, but still evaluate so findings and SARIF are reported.
+    skip_loop = stop_file.exists()
+    if skip_loop:
         errors.append(
             f"integrity: STOP file already present ({stop_file}); remove it to run"
         )
-        return finish(run_dir)
 
     from vulnforge.db import Database
 
@@ -429,56 +527,25 @@ def run_ci(
         guard = CostGuard(run_dir, opts.max_cost_usd, prices)
 
     # 2. Ralph ---------------------------------------------------------------
-    events_offset = _events_size(run_dir)
-    append_event(
-        run_dir,
-        {
-            "source": "vf_ci",
-            "event": "ci_start",
-            "mode": record["mode"],
-            "budget": record["budget"],
-            "threshold": record["threshold"],
-        },
-    )
-    try:
-        ralph = ralph_module or load_ralph_module()
-        rcfg = ralph.RalphConfig(
-            run_dir=run_dir,
-            max_iterations=int(opts.max_iterations or UNLIMITED_ITERATIONS),
-            max_infra_retries=int(opts.max_infra_retries),
-            sleep_seconds=0.0,
-            infra_backoff_base=5.0,
-            vf_command=ralph.default_vf_command(),
-            stop_file=stop_file,
-            config_path=Path(opts.config_path).resolve() if opts.config_path else None,
-            dry_run=False,
-            verbose=opts.verbose,
-            task_timeout=opts.task_timeout,
-            max_wall_seconds=max_wall,
-            max_tasks=None,
-            budget_check=guard,
-        )
-        try:
-            ralph_code = int(ralph.run_loop(rcfg))
-        except KeyboardInterrupt:
-            ralph_code = 130
-    except Exception as e:  # noqa: BLE001
-        errors.append(f"infra: Ralph failed to run: {e}")
-        ralph_code = -1
-    last_event = last_ralph_stop_event(run_dir, events_offset)
-    stop_reason, stop_error = classify_ralph_stop(ralph_code, last_event)
-    record["ralph"] = {"exit_code": ralph_code, "stop_reason": stop_reason}
-    if stop_error and ralph_code != -1:
-        errors.append(stop_error)
-    completed = stop_reason == "idle"
-    record["completed"] = completed
-    if stop_reason in EARLY_STOP_REASONS or stop_reason == "budget":
-        warnings.append(
-            f"stopped early ({stop_reason}): remaining work is a coverage gap, "
-            "not a pass on unaudited code"
+    if skip_loop:
+        record["ralph"] = {"exit_code": None, "stop_reason": "not_run"}
+        record["completed"] = False
+        stop_reason = "not_run"
+        completed = False
+    else:
+        stop_reason, completed = _run_ralph(
+            opts, record, errors, warnings, run_dir, stop_file, max_wall, guard,
+            ralph_module=ralph_module,
         )
     if guard is not None:
-        record["cost"] = {"max_usd": guard.max_usd, **guard.estimate().to_dict()}
+        est = guard.estimate()
+        record["cost"] = {"max_usd": guard.max_usd, **est.to_dict()}
+        # Ralph checks the cap only before a lease; a wall/STOP/iteration stop
+        # can end the loop before it reads the last task's usage. An
+        # unenforceable cap is an error whatever the stop reason.
+        cost_err = _cost_error(est)
+        if cost_err and not any(e.startswith(cost_err.split(":")[0] + ":") for e in errors):
+            errors.append(cost_err)
 
     # 3. render (authoritative; Ralph's own project step swallows errors) ---
     try:

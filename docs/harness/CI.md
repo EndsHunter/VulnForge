@@ -40,9 +40,10 @@ also show as a `::warning::` annotation, so a green job does not hide unaudited 
 - bad flags, or `--max-cost-usd` with no prices
 - `--diff` refused: bad spec, unknown revision, target not a git work tree, or the checkout is not at head (see [DIFF_SCOPE.md](DIFF_SCOPE.md))
 - `vf init` failed, or `--run-dir` has no `harness.db`
-- a `STOP` file is already in the run dir before the loop starts
+- a `STOP` file is already in the run dir before the loop starts (Ralph is skipped,
+  stop reason `not_run`; findings, thresholds and SARIF are still reported)
 - Ralph gave up on infra (5 consecutive failures, task timeouts included), halted on config, or was interrupted
-- the cost cap can't be enforced: spend on a model with no price (`cost_unpriced`), or calls recorded without token counts / an unreadable `llm_usage_summary.json` (`cost_unmeasured`)
+- the cost cap can't be enforced: spend on a model with no price (`cost_unpriced`), or calls recorded without token counts for any model / an unreadable `llm_usage_summary.json` (`cost_unmeasured`). Checked before each lease and again after the loop, so a wall-clock, STOP or iteration stop cannot hide it
 - render failed, or `project/REPORT.md` or `project/findings.json` is missing
 - the SARIF file could not be written
 - a finding became `confirmed` during the loop without a human review record (`human_review_latest.to_state == "confirmed"`, written only by Report review / `vf hitl respond`)
@@ -102,8 +103,8 @@ so for a PR pass the **merge-base** as BASE, or commits merged into the base bra
 after the PR branched are in scope too. The checkout must be at HEAD, with both
 commits fetched (`fetch-depth: 0`).
 
-- A diff with **no hunt-able code changes** (docs only, all excluded) is not an
-  error: `vf ci` exits 0 with stop reason `no_changes`, a warning that nothing was
+- A diff with **no hunt-able code changes** (docs only, all excluded, or BASE and
+  HEAD the same commit, as when a PR head is already in its base) is not an error: `vf ci` exits 0 with stop reason `no_changes`, a warning that nothing was
   audited, no run, and an empty SARIF file. `vf init --diff` alone refuses it.
 - `ci_result.json` `diff_scope` holds the counts (`changed`, `expanded`,
   `scope_files`, `excluded_by_reason`, `untouched_modules`, `drift`). Code outside

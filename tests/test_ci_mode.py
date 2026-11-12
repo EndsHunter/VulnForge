@@ -782,3 +782,74 @@ def test_example_workflow_is_a_template_with_both_jobs():
         assert uploads["actions/upload-artifact"]["if"] == "always()"
     pr_checkout = wf["jobs"]["pull_request"]["steps"][0]["with"]
     assert pr_checkout["fetch-depth"] == 0 and "head.sha" in pr_checkout["ref"]
+
+
+# review fixes ----------------------------------------------------------------
+
+
+def test_tokenless_calls_on_one_model_are_unmeasured():
+    summary = {
+        "prompt_tokens": 1000, "completion_tokens": 0, "llm_calls": 3,
+        "by_model": {
+            "hunt": {"prompt_tokens": 1000, "completion_tokens": 0, "llm_calls": 1},
+            "validate": {"prompt_tokens": 0, "completion_tokens": 0, "llm_calls": 2},
+        },
+    }
+    est = estimate_cost(summary, PriceTable(default=Price(1, 1)))
+    assert est.unmeasured and "validate" in est.detail
+
+
+def test_e2e_wall_stop_still_fails_unenforceable_cost_cap(offline_ci, toy_sqli: Path, monkeypatch):
+    """The wall clock trips before Ralph re-reads usage: the cap check still runs."""
+    import time as _time
+
+    offline_ci.install("clean", tokens=1_000)
+    ralph = load_ralph_module()
+    real_mono, inner = _time.monotonic, ralph.invoke_run_once
+    state = {"ran": False}
+
+    def invoke(cfg):
+        try:
+            return inner(cfg)
+        finally:
+            state["ran"] = True
+
+    # Clock jumps past the cap only after the first task (recon) has spent.
+    monkeypatch.setattr(ralph, "invoke_run_once", invoke)
+    monkeypatch.setattr(ralph.time, "monotonic",
+                        lambda: real_mono() + (10_000.0 if state["ran"] else 0.0))
+    cfg = offline_ci.make_cfg("clean")
+    cfg["ci"] = {"pricing": {"some-other-model": {"input_per_mtok": 1, "output_per_mtok": 1}}}
+    opts = CIOptions(init_args=SimpleNamespace(**_init_ns(toy_sqli, offline_ci.tmp)),
+                     max_cost_usd=100.0, max_time="1s", output_dir=offline_ci.tmp / "out",
+                     verbose=False)
+    res = run_ci(opts, cfg)
+    assert res.record["ralph"]["stop_reason"] == "budget_wall", res.record
+    assert res.exit_code == ci_codes.CI_ERROR
+    assert any(e.startswith("cost_unpriced:") for e in res.record["errors"])
+
+
+def test_e2e_stop_file_still_reports_findings_and_sarif(offline_ci, toy_sqli: Path):
+    offline_ci.install("vuln")
+    out = offline_ci.tmp / "out"
+    assert _ci(offline_ci, "--target", str(toy_sqli), "--output-dir", str(out), "-q") == 0
+    run_dir = Path(_result(offline_ci)["run_dir"])
+    (out / "vulnforge.sarif").unlink()
+    (run_dir / "STOP").write_text("", encoding="utf-8")
+    code = _ci(offline_ci, "--run-dir", str(run_dir), "--fail-on-state", "needs_human",
+               "--output-dir", str(out), "-q")
+    rec = _result(offline_ci)
+    assert code == ci_codes.CI_ERROR
+    assert rec["ralph"]["stop_reason"] == "not_run"
+    assert rec["matched_findings"] and rec["sarif"]["results"] == 1
+    assert (out / "vulnforge.sarif").is_file()
+
+
+def test_e2e_diff_same_commit_is_no_changes(offline_ci, toy_git: dict):
+    offline_ci.install("clean")
+    code = _ci(offline_ci, "--target", str(toy_git["repo"]), "--diff",
+               f"{toy_git['head']}..HEAD", "--output-dir", str(offline_ci.tmp / "out"), "-q")
+    rec = _result(offline_ci)
+    assert code == ci_codes.CI_PASS, rec
+    assert rec["ralph"]["stop_reason"] == "no_changes"
+    assert rec["diff_scope"]["same_commit"] is True

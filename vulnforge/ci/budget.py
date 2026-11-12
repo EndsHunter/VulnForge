@@ -211,10 +211,15 @@ def estimate_cost(
     unpriced: list[str] = []
     unpriced_tokens = 0
     attributed = (0, 0, 0)
+    tokenless: list[str] = []
     for model_id, row in sorted(by_model.items()):
         inp, out, calls = _delta(_tokens(row), _tokens(base_by_model.get(model_id)))
         attributed = (attributed[0] + inp, attributed[1] + out, attributed[2] + calls)
         if inp == 0 and out == 0:
+            if calls > 0:
+                # This model's calls reported no usage; other models' tokens
+                # must not make the cap look enforceable.
+                tokenless.append(str(model_id))
             continue
         price = prices.for_model(str(model_id))
         if price is None:
@@ -231,17 +236,17 @@ def estimate_cost(
             unpriced_tokens += rest_inp + rest_out
         else:
             usd += prices.default.cost(rest_inp, rest_out)
-    unmeasured = total_calls > 0 and total_inp == 0 and total_out == 0
+    detail = ""
+    if total_calls > 0 and total_inp == 0 and total_out == 0:
+        detail = f"{total_calls} LLM call(s) recorded without token counts"
+    elif tokenless:
+        detail = f"LLM calls without token counts for model(s) {tokenless}"
     return CostEstimate(
         usd=usd,
         unpriced_models=unpriced,
         unpriced_tokens=unpriced_tokens,
-        unmeasured=unmeasured,
-        detail=(
-            f"{total_calls} LLM call(s) recorded without token counts"
-            if unmeasured
-            else ""
-        ),
+        unmeasured=bool(detail),
+        detail=detail,
     )
 
 
