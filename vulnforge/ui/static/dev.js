@@ -150,6 +150,175 @@
     return "info";
   }
 
+  // ---- Import review (issue #191) ----
+  function reviewVerdictOf(p) {
+    const st = p?.review_state;
+    if (st && st.verdict) return String(st.verdict);
+    return p?.review?.verdict ? String(p.review.verdict) : "";
+  }
+
+  function reviewBadgeHtml(p) {
+    const v = reviewVerdictOf(p);
+    if (!v) return "";
+    const st = p?.review_state || {};
+    let title = `Import review: ${v}`;
+    if (st.stale) title += " (content changed since review)";
+    if (st.cleared && v !== "PASS") title += " · acknowledged";
+    else if (st.needs === "confirm") title += " · activation needs confirmation";
+    else if (st.needs === "override") title += " · activation needs a logged override";
+    const ack = st.cleared && v !== "PASS" ? " ✓" : "";
+    return ` <span class="badge review-${esc(v.toLowerCase())}" title="${esc(title)}">${esc(v)}${ack}</span>`;
+  }
+
+  function reviewSummaryText(d) {
+    const lines = (d?.findings || [])
+      .slice(0, 8)
+      .map((f) => `- [${f.severity}] ${f.rule} (${f.field} line ${f.line}): ${f.message}`);
+    (d?.llm_reasons || []).slice(0, 4).forEach((r) => lines.push(`- LLM: ${r}`));
+    return lines.join("\n") || "(no details)";
+  }
+
+  /** Ask the operator to confirm (REVIEW) or override (BLOCK / INCOMPLETE). */
+  function askReviewAck(id, d) {
+    const summary = reviewSummaryText(d);
+    if (d?.needs === "confirm") {
+      const ok = confirm(
+        `Import review for "${id}" is REVIEW.\n\n${summary}\n\nActivate this hunt skill anyway?`
+      );
+      return ok ? { confirm_review: true } : null;
+    }
+    const reason = prompt(
+      `Import review for "${id}" is ${d?.verdict || "BLOCK"}. Activation needs an override, ` +
+        `and the override is logged.\n\n${summary}\n\nOverride reason (required):`,
+      ""
+    );
+    if (reason == null) return null;
+    if (!reason.trim()) {
+      toast("An override reason is required", true);
+      return null;
+    }
+    return { override_block: true, override_reason: reason.trim() };
+  }
+
+  /**
+   * PUT a profile; on 409 (review gate) ask for confirm/override and resend once.
+   * Returns the response, or null when the operator cancelled.
+   */
+  async function putProfileGated(id, payload) {
+    let body = { ...payload };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch(`/api/hunt-profiles/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      let data = null;
+      try {
+        data = await r.json();
+      } catch (_) {}
+      if (r.ok) return data;
+      const d = data?.detail;
+      if (r.status === 409 && d && typeof d === "object" && attempt === 0) {
+        const ack = askReviewAck(id, d);
+        if (!ack) return null;
+        body = { ...body, ...ack };
+        continue;
+      }
+      const msg = typeof d === "string" ? d : d?.message || r.statusText;
+      throw new Error(msg);
+    }
+    return null;
+  }
+
+  function renderReviewPanel(profile, { create } = {}) {
+    const panel = $("#dev-review-panel");
+    if (!panel) return;
+    const rec = profile?.review;
+    if (create || !rec) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    const st = profile.review_state || {};
+    const v = String(st.verdict || rec.verdict || "");
+    const badge = $("#dev-review-badge");
+    if (badge) {
+      badge.textContent = v || "—";
+      badge.className = `badge review-${v.toLowerCase()}`;
+    }
+    const needs = $("#dev-review-needs");
+    if (needs) {
+      let t = "";
+      if (st.stale) t = "Content changed since the review. Re-run it. ";
+      if (st.cleared) t += v === "PASS" ? "May be activated." : "Acknowledged: may be activated.";
+      else if (st.needs === "confirm") t += "Activation needs your confirmation.";
+      else t += "Activation needs a logged override with a reason.";
+      needs.textContent = t;
+    }
+    const list = $("#dev-review-findings");
+    const findings = rec.mechanical?.findings || [];
+    if (list) {
+      list.innerHTML = findings.length
+        ? findings
+            .map(
+              (f) =>
+                `<li><span class="badge review-${esc(String(f.severity).toLowerCase())}">${esc(f.severity)}</span> ` +
+                `<span class="mono">${esc(f.rule)}</span> · ${esc(f.field)} line ${esc(f.line)}: ${esc(f.message)}` +
+                (f.excerpt ? `<br /><code>${esc(f.excerpt)}</code>` : "") +
+                `</li>`
+            )
+            .join("")
+        : `<li>Mechanical checks: no findings (${esc(rec.mechanical?.verdict || "PASS")}).</li>`;
+    }
+    const llmOut = $("#dev-review-llm-out");
+    if (llmOut) {
+      const llm = rec.llm;
+      if (llm) {
+        const reasons = (llm.reasons || []).map((r) => `• ${r}`).join(" ");
+        llmOut.textContent =
+          `LLM review: ${llm.verdict}${llm.stale ? " (stale)" : ""}` +
+          (llm.model_id ? ` · ${llm.model_id}` : "") +
+          (reasons ? ` — ${reasons}` : "");
+      } else {
+        llmOut.textContent = "LLM review: not run.";
+      }
+      llmOut.hidden = false;
+    }
+    const ackEl = $("#dev-review-ack");
+    if (ackEl) {
+      const ack = rec.ack;
+      if (ack) {
+        ackEl.textContent =
+          `${ack.kind === "override" ? "Override" : "Confirmed"} for ${ack.verdict} at ${ack.at}` +
+          (ack.reason ? ` — reason: ${ack.reason}` : "");
+        ackEl.hidden = false;
+      } else {
+        ackEl.hidden = true;
+      }
+    }
+  }
+
+  async function runProfileReview(llm) {
+    const id = huntEditorProfile?.id || selectedId;
+    if (!id) return;
+    const btn = $(llm ? "#dev-review-llm" : "#dev-review-rerun");
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api(`/api/hunt-profiles/${encodeURIComponent(id)}/review`, {
+        method: "POST",
+        body: JSON.stringify({ llm: !!llm }),
+      });
+      const p = r.profile || {};
+      toast(`Review ${id}: ${reviewVerdictOf(p) || "?"}`);
+      await loadProfiles(id, { skipSelect: true });
+      showEditor(p, { create: false, editing: false });
+    } catch (e) {
+      toast(e.message || String(e), true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   function renderList() {
     const body = $("#dev-profiles-body");
     const meta = $("#dev-meta");
@@ -194,7 +363,7 @@
           <td><input type="checkbox" data-active-toggle value="${esc(p.id)}" ${p.active ? "checked" : ""} title="Active for bulk enqueue" /></td>
           <td class="mono">${esc(p.id)}</td>
           <td>${esc(p.title || p.id)}</td>
-          <td><span class="badge ${seedBadgeClass(st)}">${esc(srcLabel)}</span></td>
+          <td><span class="badge ${seedBadgeClass(st)}">${esc(srcLabel)}</span>${reviewBadgeHtml(p)}</td>
           ${originCell}
         </tr>`;
       })
@@ -213,10 +382,11 @@
         ev.stopPropagation();
         const id = inp.value;
         try {
-          await api(`/api/hunt-profiles/${encodeURIComponent(id)}`, {
-            method: "PUT",
-            body: JSON.stringify({ active: !!inp.checked }),
-          });
+          const res = await putProfileGated(id, { active: !!inp.checked });
+          if (res == null) {
+            inp.checked = !inp.checked;
+            return;
+          }
           toast(inp.checked ? `Active: ${id}` : `Inactive: ${id}`);
           await loadProfiles(selectedId, { skipSelect: true });
           // refresh list checkbox state from server; keep editor as-is
@@ -396,6 +566,7 @@
       }
     }
     updateSeedActions(profile, { create });
+    renderReviewPanel(profile, { create });
     applyHuntEditorMode();
   }
 
@@ -504,10 +675,11 @@
         });
         toast(`Created ${id}`);
       } else {
-        await api(`/api/hunt-profiles/${encodeURIComponent(id)}`, {
-          method: "PUT",
-          body: JSON.stringify(payload),
-        });
+        const res = await putProfileGated(id, payload);
+        if (res == null) {
+          toast(`Not saved: ${id} (review not acknowledged)`, true);
+          return;
+        }
         toast(`Saved ${id}`);
       }
       isNew = false;
@@ -576,6 +748,11 @@
     const bits = [];
     if (secs.hunt_profiles) {
       bits.push(`${secs.hunt_profiles.count ?? "?"} hunts`);
+      const sum = secs.hunt_profiles.review_summary || {};
+      const parts = ["PASS", "REVIEW", "BLOCK", "INCOMPLETE", "unchanged"]
+        .filter((k) => sum[k])
+        .map((k) => `${sum[k]} ${k}`);
+      if (parts.length) bits.push(`review: ${parts.join(", ")} (imported skills start inactive)`);
     }
     if (secs.recon_agents) {
       bits.push(`${secs.recon_agents.count ?? "?"} recon`);
@@ -614,10 +791,11 @@
     }
     const mode =
       $$('input[name="dev-import-mode"]:checked')[0]?.value || "merge";
+    const llmReview = !!$("#dev-import-llm-review")?.checked;
     try {
       const r = await api("/api/dev-setup/import", {
         method: "POST",
-        body: JSON.stringify({ data, mode }),
+        body: JSON.stringify({ data, mode, llm_review: llmReview }),
       });
       toast(`Imported setup (${mode}): ${summarizeSetupImport(r)}`);
       closeImport();
@@ -820,6 +998,8 @@
     });
   });
   $("#dev-import-cancel")?.addEventListener("click", closeImport);
+  $("#dev-review-rerun")?.addEventListener("click", () => runProfileReview(false));
+  $("#dev-review-llm")?.addEventListener("click", () => runProfileReview(true));
   $("#dev-import-submit")?.addEventListener("click", submitImport);
   $("#dev-generate-cancel")?.addEventListener("click", closeGenerate);
   $("#dev-generate-submit")?.addEventListener("click", submitGenerate);

@@ -20,7 +20,7 @@ from vulnforge.errors import note_swallowed
 from vulnforge.hunt_profiles import (
     HUNT_SKILL_MODES,
     active_class_ids,
-    all_class_ids,
+    cleared_class_ids,
     resolve_run_class_ids,
     skill_policy_from_run_cfg,
 )
@@ -1415,7 +1415,8 @@ def apply_coverage_mode(
 
     db = _open_db(run_dir)
     try:
-        available = set(all_class_ids())
+        # Uncleared import reviews are not selectable (issue #191).
+        available = set(cleared_class_ids())
         cfg_now = get_run_config(db)
         skill_mode, skill_ids = skill_policy_from_run_cfg(cfg_now)
         # Run-scoped allowlist (all_active ≈ active_class_ids; other modes filter).

@@ -147,7 +147,7 @@ def list_hunt_profiles_impl(_args: dict) -> dict[str, Any]:
     cat = catalog_for_ui()
     profiles = []
     for p in cat.get("profiles") or []:
-        if not isinstance(p, dict):
+        if not isinstance(p, dict) or p.get("cleared") is False:
             continue
         profiles.append(
             {

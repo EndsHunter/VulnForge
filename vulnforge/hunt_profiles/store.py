@@ -9,6 +9,16 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.hunt_profiles.review import (
+    INCOMPLETE,
+    append_review_log,
+    build_record,
+    content_hash,
+    gate_state,
+    llm_review as _llm_review,
+    mechanical_review,
+    normalize_record,
+)
 from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT, hunt_class_seeds_root
 from vulnforge.util import utc_now_iso
 
@@ -336,7 +346,7 @@ def _profile_public_fields(p: dict[str, Any]) -> dict[str, Any]:
     """Stable public profile dict for collection.json / API (no internal keys)."""
     pid = str(p.get("id") or "")
     meta = _normalize_profile_meta(p, profile_id=pid)
-    return {
+    out = {
         "id": pid,
         "title": str(p.get("title") or pid).strip()[:120] or pid,
         "description": meta["description"],
@@ -356,6 +366,12 @@ def _profile_public_fields(p: dict[str, Any]) -> dict[str, Any]:
         "origin_target_id": _as_meta_str(p.get("origin_target_id"), max_len=256),
         "origin_run_id": _as_meta_str(p.get("origin_run_id"), max_len=128),
     }
+    # Import review record (issue #191). Only present on reviewed rows so seed /
+    # custom rows (and the committed collection.json) stay unchanged.
+    review = normalize_record(p.get("review"))
+    if review is not None:
+        out["review"] = review
+    return out
 
 # Aliases for normalize_class (legacy recon stems).
 CLASS_ALIASES: dict[str, str] = {
@@ -394,6 +410,43 @@ _root_override: Optional[Path] = None
 
 class HuntProfileError(ValueError):
     """Invalid hunt profile or collection operation."""
+
+
+class HuntProfileReviewError(HuntProfileError):
+    """Activation refused: the profile's import review is not cleared.
+
+    ``code`` is ``review_required`` (REVIEW: pass confirm_review=True) or
+    ``override_required`` (BLOCK / INCOMPLETE: pass override_block=True and a
+    non-empty override_reason; the override is logged).
+    """
+
+    def __init__(self, profile_id: str, state: dict[str, Any], record: dict[str, Any]):
+        self.profile_id = profile_id
+        self.verdict = str(state.get("verdict") or "")
+        self.needs = str(state.get("needs") or "override")
+        self.code = "review_required" if self.needs == "confirm" else "override_required"
+        self.record = record
+        if self.needs == "confirm":
+            hint = "confirm_review=true"
+        else:
+            hint = "override_block=true with a non-empty override_reason"
+        super().__init__(
+            f"{self.code}: hunt profile {profile_id} import review is {self.verdict}; "
+            f"activation needs {hint}"
+        )
+
+    def detail(self) -> dict[str, Any]:
+        rec = self.record or {}
+        llm = rec.get("llm") if isinstance(rec.get("llm"), dict) else None
+        return {
+            "code": self.code,
+            "message": str(self),
+            "profile_id": self.profile_id,
+            "verdict": self.verdict,
+            "needs": self.needs,
+            "findings": list(((rec.get("mechanical") or {}).get("findings")) or [])[:20],
+            "llm_reasons": list((llm or {}).get("reasons") or [])[:12],
+        }
 
 
 def set_collection_root(root: Path | str | None) -> None:
@@ -771,6 +824,22 @@ def restore_seed_body(profile_id: str) -> dict[str, Any]:
             version=seed_meta.get("version"),
             create=True,
         )
+    row = next(p for p in coll["profiles"] if p["id"] == pid)
+    if normalize_record(row.get("review")) is not None:
+        # Imported row over a seed id: the package body is trusted, but the
+        # imported title / description / tools are not — restore those too and
+        # drop the review record.
+        seed_meta = dict(SEED_PROFILE_META.get(pid, _default_meta()))
+        return save_profile(
+            pid,
+            body_md=seed_body,
+            title=_title_from_body(seed_body, pid),
+            description=str(seed_meta.get("description") or _description_from_body(seed_body)),
+            source="seed",
+            clear_tools=True,
+            drop_review=True,
+            create=False,
+        )
     return save_profile(
         pid,
         body_md=seed_body,
@@ -816,6 +885,57 @@ def _enrich_seed_fields(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _row_live_hash(row: dict[str, Any], root: Optional[Path] = None) -> str:
+    """Content hash of a stored row (body on disk + prompt-visible fields)."""
+    pid = str(row.get("id") or "")
+    try:
+        body = _body_path(pid, root).read_text(encoding="utf-8")
+    except (OSError, HuntProfileError):
+        body = ""
+    return content_hash(
+        body,
+        title=str(row.get("title") or ""),
+        description=str(row.get("description") or ""),
+        tools=_coerce_tools(row.get("tools")),
+    )
+
+
+def review_state(row: dict[str, Any], root: Optional[Path] = None) -> Optional[dict[str, Any]]:
+    """Gate state for a row with an import review record; None when unreviewed."""
+    rec = normalize_record(row.get("review"))
+    if rec is None:
+        return None
+    return gate_state(rec, _row_live_hash(row, root))
+
+
+def _row_cleared(row: dict[str, Any], root: Optional[Path] = None) -> bool:
+    st = review_state(row, root)
+    return st is None or bool(st.get("cleared"))
+
+
+def is_profile_cleared(profile_id: str) -> bool:
+    """True unless the profile has an import review that is not cleared.
+
+    Uncleared profiles never reach a prompt: they are excluded from active sets,
+    fallbacks, run skill resolution, recon's registry and hunt body loading.
+    Unknown ids return True (existence is the caller's check).
+    """
+    row = _lookup_profile_row(profile_id)
+    if row is None:
+        return True
+    return _row_cleared(row)
+
+
+def cleared_class_ids() -> list[str]:
+    """Registered ids whose import review (if any) is cleared."""
+    return [p["id"] for p in ensure_collection()["profiles"] if _row_cleared(p)]
+
+
+def _enrich_review_fields(row: dict[str, Any]) -> dict[str, Any]:
+    row["review_state"] = review_state(row)
+    return row
+
+
 def list_profiles(*, include_body: bool = False) -> list[dict[str, Any]]:
     coll = ensure_collection()
     out: list[dict[str, Any]] = []
@@ -826,7 +946,7 @@ def list_profiles(*, include_body: bool = False) -> list[dict[str, Any]]:
                 row["body_md"] = get_body(p["id"])
             except HuntProfileError:
                 row["body_md"] = ""
-        out.append(_enrich_seed_fields(row))
+        out.append(_enrich_review_fields(_enrich_seed_fields(row)))
     return out
 
 
@@ -838,7 +958,7 @@ def get_profile(profile_id: str, *, include_body: bool = True) -> dict[str, Any]
             row = dict(p)
             if include_body:
                 row["body_md"] = get_body(pid)
-            return _enrich_seed_fields(row)
+            return _enrich_review_fields(_enrich_seed_fields(row))
     raise HuntProfileError(f"unknown hunt profile: {pid}")
 
 
@@ -856,11 +976,13 @@ def all_class_ids() -> list[str]:
 
 
 def active_class_ids() -> list[str]:
-    ids = [p["id"] for p in ensure_collection()["profiles"] if p.get("active")]
+    cleared = [p for p in ensure_collection()["profiles"] if _row_cleared(p)]
+    ids = [p["id"] for p in cleared if p.get("active")]
     if ids:
         return ids
-    # Empty active set: fall back to all registered so planning never deadlocks
-    return all_class_ids()
+    # Empty active set: fall back to all registered so planning never deadlocks.
+    # Profiles with an uncleared import review are never part of the fallback.
+    return [p["id"] for p in cleared]
 
 
 # Run-scoped hunt skill policy (PR-B). Stored under runs.config_json run.* and
@@ -914,7 +1036,8 @@ def resolve_run_class_ids(
     """
     mode_n = _normalize_skill_mode(mode)
     coll = ensure_collection()
-    profiles = list(coll.get("profiles") or [])
+    # Uncleared import reviews are never resolvable for a run (issue #191).
+    profiles = [p for p in (coll.get("profiles") or []) if _row_cleared(p)]
 
     if mode_n == "all_active":
         return list(active_class_ids())
@@ -1022,12 +1145,17 @@ def catalog_for_ui() -> dict[str, Any]:
         "other": [],
     }
     profiles: list[dict[str, Any]] = []
+    cleared_ids: list[str] = []
     for p in coll["profiles"]:
         pid = str(p.get("id") or "").strip()
         if not pid:
             continue
         all_ids.append(pid)
-        is_active = bool(p.get("active"))
+        st = review_state(p)
+        cleared = st is None or bool(st.get("cleared"))
+        if cleared:
+            cleared_ids.append(pid)
+        is_active = bool(p.get("active")) and cleared
         if is_active:
             active.append(pid)
         src = str(p.get("source") or "custom").strip().lower() or "custom"
@@ -1042,10 +1170,12 @@ def catalog_for_ui() -> dict[str, Any]:
                 "source": src,
                 "active": is_active,
                 "title": str(p.get("title") or pid),
+                "review_verdict": (st or {}).get("verdict"),
+                "cleared": cleared,
             }
         )
     if not active:
-        active = list(all_ids)
+        active = list(cleared_ids)
     return {
         "all": all_ids,
         "active": active,
@@ -1075,7 +1205,20 @@ def save_profile(
     origin_target_id: Optional[str] = None,
     origin_run_id: Optional[str] = None,
     create: bool = False,
+    confirm_review: bool = False,
+    override_block: bool = False,
+    override_reason: Optional[str] = None,
+    drop_review: bool = False,
 ) -> dict[str, Any]:
+    """Create or update a profile.
+
+    Profiles carrying an import review record (issue #191) are gated:
+    ``active=True`` on a REVIEW verdict needs ``confirm_review``; BLOCK or
+    INCOMPLETE needs ``override_block`` plus ``override_reason`` (logged).
+    Changing body, title, description or tools re-runs the mechanical review
+    and drops any earlier acknowledgement. ``drop_review`` is internal (package
+    seed restore) and removes the record.
+    """
     pid = _validate_id(profile_id)
     coll = ensure_collection()
     profiles = list(coll["profiles"])
@@ -1202,10 +1345,196 @@ def save_profile(
     # Mark edits of seed profiles as custom unless source forced
     if body_md is not None and entry.get("source") == "seed" and source is None:
         entry["source"] = "custom"
+    if drop_review:
+        entry.pop("review", None)
+    events = _apply_review_gate(
+        pid,
+        entry,
+        new_body=bodies.get(pid),
+        want_active=active is True,
+        confirm_review=confirm_review,
+        override_block=override_block,
+        override_reason=override_reason,
+    )
     profiles[idx] = _profile_public_fields(entry)
     coll["profiles"] = profiles
     _write_collection(coll, bodies=bodies if bodies else None)
+    for ev in events:
+        append_review_log(collection_root(), {"profile_id": pid, **ev})
     return get_profile(pid)
+
+
+def _apply_review_gate(
+    pid: str,
+    entry: dict[str, Any],
+    *,
+    new_body: Optional[str],
+    want_active: bool,
+    confirm_review: bool,
+    override_block: bool,
+    override_reason: Optional[str],
+) -> list[dict[str, Any]]:
+    """Re-review changed content and enforce the activation gate (mutates entry).
+
+    Returns review-log events to append after the write. Raises
+    HuntProfileReviewError (nothing written) when activation is refused.
+    """
+    rec = normalize_record(entry.get("review"))
+    if rec is None:
+        entry.pop("review", None)
+        return []
+    events: list[dict[str, Any]] = []
+    if new_body is None:
+        try:
+            new_body = _body_path(pid).read_text(encoding="utf-8")
+        except OSError:
+            new_body = ""
+    public = _profile_public_fields(entry)
+    title, desc, tools = public["title"], public["description"], public["tools"]
+    h = content_hash(new_body, title=title, description=desc, tools=tools)
+    if h != rec.get("content_sha256"):
+        mech = mechanical_review(new_body, title=title, description=desc, tools=tools)
+        llm = None
+        if isinstance(rec.get("llm"), dict):
+            # A content change invalidates the model verdict; stay INCOMPLETE
+            # until the LLM review runs again (a mech-only PASS must not clear it).
+            llm = {
+                "verdict": INCOMPLETE,
+                "reasons": ["profile content changed after the LLM review; run it again"],
+                "model_id": rec["llm"].get("model_id"),
+                "at": utc_now_iso(),
+                "stale": True,
+            }
+        rec = build_record(
+            body=new_body,
+            title=title,
+            description=desc,
+            tools=tools,
+            mechanical=mech,
+            llm=llm,
+            origin=str(rec.get("origin") or "import"),
+        )
+        events.append({"event": "rereview", "verdict": rec["verdict"], "content_sha256": h})
+    state = gate_state(rec, h)
+    if not state["cleared"]:
+        if want_active:
+            reason = str(override_reason or "").strip()
+            if override_block and reason:
+                kind = "override"
+            elif state["needs"] == "confirm" and confirm_review:
+                kind = "confirm"
+            else:
+                raise HuntProfileReviewError(pid, state, rec)
+            rec["ack"] = {
+                "kind": kind,
+                "verdict": state["verdict"],
+                "at": utc_now_iso(),
+                "reason": reason[:1000],
+                "content_sha256": h,
+            }
+            events.append(
+                {
+                    "event": kind,
+                    "verdict": state["verdict"],
+                    "reason": reason[:1000],
+                    "content_sha256": h,
+                }
+            )
+        elif entry.get("active"):
+            entry["active"] = False
+            events.append(
+                {"event": "auto_deactivate", "verdict": state["verdict"], "content_sha256": h}
+            )
+    entry["review"] = rec
+    return events
+
+
+def rerun_review(
+    profile_id: str,
+    *,
+    llm: bool = False,
+    cfg: Optional[dict] = None,
+    client: Any = None,
+) -> dict[str, Any]:
+    """Re-run the import review for a reviewed profile (mechanical, optional LLM).
+
+    Keeps an earlier acknowledgement only when verdict and content are unchanged.
+    A profile that no longer clears is deactivated.
+    """
+    pid = _validate_id(profile_id)
+    coll = ensure_collection()
+    profiles = list(coll["profiles"])
+    idx = next((i for i, p in enumerate(profiles) if p["id"] == pid), None)
+    if idx is None:
+        raise HuntProfileError(f"unknown hunt profile: {pid}")
+    entry = dict(profiles[idx])
+    old = normalize_record(entry.get("review"))
+    if old is None:
+        raise HuntProfileError(f"hunt profile {pid} has no import review to re-run")
+    body = get_body(pid)
+    title, desc = str(entry.get("title") or ""), str(entry.get("description") or "")
+    tools = _coerce_tools(entry.get("tools"))
+    mech = mechanical_review(body, title=title, description=desc, tools=tools)
+    llm_part = None
+    if llm:
+        llm_part = _llm_review(
+            _review_cfg(cfg),
+            profile_id=pid,
+            body=body,
+            title=title,
+            description=desc,
+            tools=tools,
+            mechanical=mech,
+            client=client,
+        )
+    elif isinstance(old.get("llm"), dict) and old.get("content_sha256") == content_hash(
+        body, title=title, description=desc, tools=tools
+    ):
+        llm_part = old["llm"]  # still valid for unchanged content
+    rec = build_record(
+        body=body,
+        title=title,
+        description=desc,
+        tools=tools,
+        mechanical=mech,
+        llm=llm_part,
+        origin=str(old.get("origin") or "import"),
+    )
+    ack = old.get("ack")
+    if (
+        isinstance(ack, dict)
+        and ack.get("verdict") == rec["verdict"]
+        and ack.get("content_sha256") == rec["content_sha256"]
+    ):
+        rec["ack"] = ack
+    entry["review"] = rec
+    events: list[dict[str, Any]] = [
+        {
+            "event": "llm_review" if llm else "rereview",
+            "verdict": rec["verdict"],
+            "content_sha256": rec["content_sha256"],
+        }
+    ]
+    st = gate_state(rec, rec["content_sha256"])
+    if entry.get("active") and not st["cleared"]:
+        entry["active"] = False
+        events.append(
+            {"event": "auto_deactivate", "verdict": st["verdict"], "content_sha256": rec["content_sha256"]}
+        )
+    profiles[idx] = _profile_public_fields(entry)
+    coll["profiles"] = profiles
+    _write_collection(coll)
+    for ev in events:
+        append_review_log(collection_root(), {"profile_id": pid, **ev})
+    return get_profile(pid)
+
+
+def _review_cfg(cfg: Optional[dict]) -> dict:
+    if isinstance(cfg, dict):
+        return cfg
+    from vulnforge.cli import load_config
+
+    return load_config()
 
 
 def delete_profile(profile_id: str) -> dict[str, Any]:
@@ -1252,7 +1581,18 @@ def import_collection(
     data: dict[str, Any] | list,
     *,
     mode: str = "merge",
+    llm_review: bool = False,
+    cfg: Optional[dict] = None,
+    client: Any = None,
 ) -> dict[str, Any]:
+    """Import a collection export (merge or replace) with an import review.
+
+    Every imported profile is reviewed (mechanical; plus LLM when
+    ``llm_review``), starts **inactive** with ``source=import``, and any
+    ``review`` key in the file is discarded. A row is kept untouched (local
+    active flag and review kept) only when body, title, description and tools
+    all match the current local row.
+    """
     mode_n = str(mode or "merge").lower().strip()
     if mode_n not in ("merge", "replace"):
         raise HuntProfileError("mode must be 'merge' or 'replace'")
@@ -1273,27 +1613,124 @@ def import_collection(
     if not isinstance(raw_profiles, list) or not raw_profiles:
         raise HuntProfileError("import profiles must be a non-empty list")
 
-    incoming: list[dict[str, Any]] = []
-    bodies: dict[str, str] = {}
+    # Validate everything before any LLM call or write.
+    staged: list[tuple[str, str, dict[str, Any]]] = []
+    staged_ids: set[str] = set()
     for p in raw_profiles:
         if not isinstance(p, dict):
             raise HuntProfileError("each profile must be an object")
         pid = _validate_id(str(p.get("id") or ""))
+        if pid in staged_ids:
+            raise HuntProfileError(f"duplicate profile id in import: {pid}")
+        staged_ids.add(pid)
         body = p.get("body_md")
         if body is None or not str(body).strip():
             raise HuntProfileError(f"profile {pid}: body_md required")
         body = _check_body(str(body))
-        bodies[pid] = body
         entry = dict(p)
+        entry.pop("review", None)  # never trust a review shipped in the file
         entry["id"] = pid
         entry["title"] = str(p.get("title") or _title_from_body(body, pid)).strip()[:120]
         if not str(entry.get("description") or "").strip():
             entry["description"] = _description_from_body(body)
-        entry["active"] = bool(p.get("active")) if "active" in p else False
+        entry["active"] = False
         entry["body_file"] = f"bodies/{pid}.md"
-        entry["source"] = str(p.get("source") or "import")[:32]
+        entry["source"] = "import"
         # Explicit empty meta on import should stick (keys present)
-        incoming.append(_profile_public_fields(entry))
+        staged.append((pid, body, _profile_public_fields(entry)))
+
+    local = ensure_collection()
+    local_by_id = {p["id"]: p for p in local["profiles"]}
+    incoming: list[dict[str, Any]] = []
+    bodies: dict[str, str] = {}
+    reviews: dict[str, str] = {}
+    events: list[dict[str, Any]] = []
+    own_client = False
+    llm_client = client
+    llm_cfg: dict = {}
+    try:
+        for pid, body, public in staged:
+            h = content_hash(
+                body,
+                title=public["title"],
+                description=public["description"],
+                tools=public["tools"],
+            )
+            loc = local_by_id.get(pid)
+            if loc is not None and _row_live_hash(loc) == h:
+                # Same prompt-visible content as the local row: keep it as-is.
+                incoming.append(dict(loc))
+                bodies[pid] = body
+                reviews[pid] = "unchanged"
+                continue
+            mech = mechanical_review(
+                body, title=public["title"], description=public["description"], tools=public["tools"]
+            )
+            llm_part = None
+            if llm_review:
+                if llm_client is None:
+                    try:
+                        llm_cfg = _review_cfg(cfg)
+                        from vulnforge.llm import make_client
+
+                        llm_client = make_client(llm_cfg)
+                        own_client = True
+                    except Exception as exc:
+                        llm_client = None
+                        llm_part = {
+                            "verdict": INCOMPLETE,
+                            "reasons": [f"LLM client unavailable: {exc}"[:400]],
+                            "model_id": None,
+                            "at": utc_now_iso(),
+                        }
+                elif not llm_cfg:
+                    llm_cfg = cfg if isinstance(cfg, dict) else {}
+                if llm_client is not None:
+                    llm_part = _llm_review(
+                        llm_cfg,
+                        profile_id=pid,
+                        body=body,
+                        title=public["title"],
+                        description=public["description"],
+                        tools=public["tools"],
+                        mechanical=mech,
+                        client=llm_client,
+                    )
+            rec = build_record(
+                body=body,
+                title=public["title"],
+                description=public["description"],
+                tools=public["tools"],
+                mechanical=mech,
+                llm=llm_part,
+                origin="import",
+            )
+            public["review"] = rec
+            incoming.append(public)
+            bodies[pid] = body
+            reviews[pid] = rec["verdict"]
+            events.append(
+                {
+                    "profile_id": pid,
+                    "event": "import_review",
+                    "verdict": rec["verdict"],
+                    "mechanical": mech["verdict"],
+                    "llm": (llm_part or {}).get("verdict"),
+                    "content_sha256": rec["content_sha256"],
+                }
+            )
+    finally:
+        if own_client and llm_client is not None and hasattr(llm_client, "close"):
+            try:
+                llm_client.close()
+            except Exception as exc:
+                from vulnforge.errors import note_swallowed
+
+                note_swallowed(exc, context="hunt_profiles_import.client_close")
+
+    summary: dict[str, int] = {}
+    for v in reviews.values():
+        summary[v] = summary.get(v, 0) + 1
 
     if mode_n == "replace":
         coll = _empty_collection()
@@ -1311,15 +1748,19 @@ def import_collection(
                         f.unlink()
                     except OSError:
                         pass
+        for ev in events:
+            append_review_log(root, ev)
         return {
             "ok": True,
             "mode": "replace",
             "count": len(written["profiles"]),
             "profiles": [p["id"] for p in written["profiles"]],
+            "reviews": reviews,
+            "review_summary": summary,
         }
 
     # merge
-    coll = ensure_collection()
+    coll = local
     by_id = {p["id"]: dict(p) for p in coll["profiles"]}
     for p in incoming:
         by_id[p["id"]] = p
@@ -1333,11 +1774,15 @@ def import_collection(
             order.append(p["id"])
     coll["profiles"] = [by_id[i] for i in order]
     written = _write_collection(coll, bodies=bodies)
+    for ev in events:
+        append_review_log(collection_root(), ev)
     return {
         "ok": True,
         "mode": "merge",
         "count": len(written["profiles"]),
         "profiles": [p["id"] for p in written["profiles"]],
+        "reviews": reviews,
+        "review_summary": summary,
     }
 
 

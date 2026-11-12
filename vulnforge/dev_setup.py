@@ -72,9 +72,14 @@ def import_dev_setup(
     *,
     mode: str = "merge",
     include: Optional[list[str]] = None,
+    llm_review: bool = False,
+    cfg: Optional[dict] = None,
 ) -> dict[str, Any]:
     """
     Import a Dev setup bundle (or a legacy single-collection export).
+
+    Hunt profiles go through the import review (issue #191): they start
+    inactive; ``llm_review`` adds the optional model review.
 
     mode: merge | replace — applied to collections that support it.
     include: optional section allowlist (hunt_profiles, recon_agents,
@@ -97,7 +102,7 @@ def import_dev_setup(
 
         try:
             results["sections"]["hunt_profiles"] = import_collection(
-                data, mode=mode_n
+                data, mode=mode_n, llm_review=llm_review, cfg=cfg
             )
         except HuntProfileError as e:
             raise DevSetupError(str(e)) from e
@@ -165,7 +170,7 @@ def import_dev_setup(
 
         try:
             results["sections"]["hunt_profiles"] = import_collection(
-                sections["hunt_profiles"], mode=mode_n
+                sections["hunt_profiles"], mode=mode_n, llm_review=llm_review, cfg=cfg
             )
         except HuntProfileError as e:
             raise DevSetupError(f"hunt_profiles: {e}") from e
