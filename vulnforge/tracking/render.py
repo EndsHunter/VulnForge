@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from vulnforge.tracking.base import TrackPayload, marker_line
+from vulnforge.tracking.base import MARKER_PREFIX, TrackPayload, marker_line
 
 NOT_PROOF_LINE = (
     "**Not exploit proof.** VulnForge is static analysis. `confirmed` means a human "
@@ -32,11 +32,19 @@ BODY_MAX_CHARS = 60000
 TITLE_MAX_CHARS = 200
 
 _MENTION_RE = re.compile(r"@(?=[A-Za-z0-9_-])")
+_MARKER_RE = re.compile(re.escape(MARKER_PREFIX.rstrip(":")) + r"(?=\s*:)", re.IGNORECASE)
+_ZWSP = "\u200b"
 
 
 def neutralize(text: Any) -> str:
-    """Stop model-written text from @-mentioning users or teams."""
-    return _MENTION_RE.sub("@​", str(text or ""))
+    """Stop finding text from @-mentioning accounts or forging the dedupe marker."""
+    s = _MENTION_RE.sub("@" + _ZWSP, str(text or ""))
+    return _MARKER_RE.sub(lambda m: m.group(0)[:9] + _ZWSP + m.group(0)[9:], s)
+
+
+def _code(text: Any, limit: int) -> str:
+    """Inline code span that a backtick in the value cannot close."""
+    return "`" + _one_line(neutralize(text), limit).replace("`", "'") + "`"
 
 
 def _one_line(text: Any, limit: int) -> str:
@@ -110,16 +118,18 @@ def render_issue(
     title_raw = body.get("title") or f"Finding #{fid}"
     sev = str(body.get("severity_claim") or "unknown").upper()
     wc = str(body.get("weakness_class") or "unclassified")
-    title = _one_line(neutralize(f"[VulnForge] {sev} {wc}: {title_raw}"), TITLE_MAX_CHARS)
+    title = _one_line(
+        neutralize(f"[VulnForge] {sev} {wc}: {title_raw}").replace("`", "'"), TITLE_MAX_CHARS
+    )
 
     lines: list[str] = [
-        STATE_LINES.get(state, f"**State: `{state}`**"),
+        STATE_LINES.get(state, f"**State: {_code(state, 40)}**"),
         "",
         NOT_PROOF_LINE,
         "",
-        f"- Severity claim: `{_one_line(sev, 40)}`",
-        f"- Weakness class: `{_one_line(wc, 80)}`",
-        f"- VulnForge finding: #{fid}" + (f" in run `{_one_line(run_id, 80)}`" if run_id else ""),
+        f"- Severity claim: {_code(sev, 40)}",
+        f"- Weakness class: {_code(wc, 80)}",
+        f"- VulnForge finding: #{fid}" + (f" in run {_code(run_id, 80)}" if run_id else ""),
         "",
         "## Summary",
         "",
@@ -135,19 +145,19 @@ def render_issue(
     lines += ["", "## Locations", ""]
     if cites:
         for c in cites[:20]:
-            loc = _one_line(c.get("path"), 300)
+            loc = str(c.get("path") or "")
             if c.get("start_line") is not None:
                 loc += f":{c.get('start_line')}"
                 if c.get("end_line") not in (None, c.get("start_line")):
                     loc += f"-{c.get('end_line')}"
-            sym = f" · `{_one_line(c.get('symbol'), 120)}`" if c.get("symbol") else ""
-            lines.append(f"- `{loc}`{sym}")
+            sym = f" · {_code(c.get('symbol'), 120)}" if c.get("symbol") else ""
+            lines.append(f"- {_code(loc, 320)}{sym}")
     else:
         lines.append("- none recorded")
     eid = getattr(finding, "evidence_id", None) or body.get("evidence_id")
     rel, excerpt = evidence_excerpt(run_dir, eid)
     if eid:
-        lines += ["", "## Evidence", "", f"- Pack: `{_one_line(eid, 120)}`"]
+        lines += ["", "## Evidence", "", f"- Pack: {_code(eid, 120)}"]
         if rel and excerpt is not None:
             lines += ["", f"Excerpt from `{rel}`:", "", _fence(neutralize(excerpt))]
     lines += [

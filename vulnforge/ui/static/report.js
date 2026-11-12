@@ -2571,6 +2571,7 @@
   // ---------------------------------------------------------------------------
   let trackIds = [];
   let trackToken = null;
+  let trackGen = 0; // bumped on every invalidate; stale preview responses are dropped
   let trackBound = false;
   let trackMaxPerPublish = 25;
 
@@ -2597,6 +2598,7 @@
   }
 
   function invalidateTrackPreview(msg) {
+    trackGen += 1;
     trackToken = null;
     const pub = document.getElementById("report-track-publish");
     if (pub) pub.disabled = true;
@@ -2674,7 +2676,10 @@
         const what = it.existing_url
           ? `replace title + body of <span class="mono">${esc(it.existing_url)}</span>`
           : "create (or replace the issue already carrying this stable_key)";
-        return `<li>#${esc(it.finding_id)} <span class="mono">${esc(it.state)}</span> — ${what}
+        const labels = (it.issue_labels || []).map((l) => esc(l)).join(", ");
+        return `<li>#${esc(it.finding_id)} <span class="mono">${esc(it.state)}</span> — ${what}${
+          labels ? ` · labels on create: <span class="mono">${labels}</span>` : ""
+        }
           <details><summary>${esc(it.issue_title || "")}</summary><pre class="mono report-track-body">${esc(
             it.issue_body || ""
           )}</pre></details></li>`;
@@ -2688,14 +2693,17 @@
     const api = typeof window.api === "function" ? window.api : null;
     if (!base || !api) return toast("No run loaded", true);
     invalidateTrackPreview("Previewing…");
+    const gen = trackGen;
+    const ids = trackIds.slice();
     const repo = (document.getElementById("report-track-repo")?.value || "").trim();
     const include_needs_human = !!document.getElementById("report-track-needs-human")?.checked;
     try {
       const r = await api(`${base}/findings/track/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ finding_ids: trackIds, repo: repo || null, include_needs_human }),
+        body: JSON.stringify({ finding_ids: ids, repo: repo || null, include_needs_human }),
       });
+      if (gen !== trackGen) return; // inputs or ids changed while previewing
       const prev = document.getElementById("report-track-preview");
       if (prev) prev.innerHTML = trackPreviewHtml(r);
       if (r.token) {
@@ -2710,7 +2718,7 @@
         setTrackHint("Nothing eligible to publish.", true);
       }
     } catch (e) {
-      setTrackHint(e.message || String(e), true);
+      if (gen === trackGen) setTrackHint(e.message || String(e), true);
     }
   }
 

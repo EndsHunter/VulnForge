@@ -178,6 +178,11 @@ def resolve_transport(mode: str = "auto") -> Transport:
     )
 
 
+def create_labels(extra: list[str]) -> list[str]:
+    """Labels set on create: always ``vulnforge`` (dedupe scan) plus config extras."""
+    return [TRACK_LABEL] + [l for l in extra if l and l != TRACK_LABEL]
+
+
 def _issue(data: Any) -> ExternalIssue:
     if not isinstance(data, dict) or data.get("number") is None:
         raise TrackingError("GitHub returned an unexpected issue payload")
@@ -209,24 +214,38 @@ class GitHubIssuesSink:
         return _issue(self._t("GET", self._issue_path(external_id), None))
 
     def find_by_marker(self, stable_key: str) -> Optional[ExternalIssue]:
+        """Exact-marker lookup over every ``vulnforge``-labelled issue.
+
+        Fails closed (raises) rather than returning ``None`` when the scan is
+        incomplete or ambiguous, so the caller never creates a duplicate.
+        """
         q = urllib.parse.urlencode(
             {"labels": TRACK_LABEL, "state": "all", "per_page": 100}
         )
+        hits: list[ExternalIssue] = []
         for page in range(1, SCAN_MAX_PAGES + 1):
             rows = self._t("GET", f"repos/{self.destination}/issues?{q}&page={page}", None)
-            if not isinstance(rows, list) or not rows:
-                return None
+            if not isinstance(rows, list):
+                raise TrackingError("GitHub issue list returned an unexpected payload")
             for row in rows:
                 if not isinstance(row, dict) or row.get("pull_request"):
                     continue
                 if body_has_marker(str(row.get("body") or ""), stable_key):
-                    return _issue(row)
+                    hits.append(_issue(row))
             if len(rows) < 100:
-                return None
-        return None
+                break
+        else:
+            raise TrackingError(
+                f"more than {SCAN_MAX_PAGES * 100} '{TRACK_LABEL}' issues; cannot rule out "
+                "an existing issue, refusing to create"
+            )
+        if len(hits) > 1:
+            nums = ", ".join("#" + h.external_id for h in hits[:5])
+            raise TrackingError(f"several issues carry this finding's marker ({nums}); fix by hand")
+        return hits[0] if hits else None
 
     def create(self, payload: TrackPayload) -> TrackResult:
-        labels = [TRACK_LABEL] + [l for l in payload.labels if l and l != TRACK_LABEL]
+        labels = create_labels(payload.labels)
         data = self._t(
             "POST",
             f"repos/{self.destination}/issues",

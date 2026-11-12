@@ -506,6 +506,7 @@ class Database:
               sink TEXT NOT NULL,
               destination TEXT NOT NULL,
               status TEXT NOT NULL,
+              claim_token TEXT,
               external_id TEXT,
               url TEXT,
               finding_id INTEGER,
@@ -548,31 +549,36 @@ class Database:
         *,
         finding_id: int,
         operator: str = "",
-        stale_after_s: int = 300,
-    ) -> tuple[bool, Optional[dict[str, Any]]]:
+        stale_after_s: int = 900,
+    ) -> tuple[Optional[str], Optional[dict[str, Any]]]:
         """Claim the right to create an external issue for this key.
 
-        Returns ``(claimed, existing_row)``. A ``linked`` row is never claimed
-        (caller updates it instead). A fresh ``pending`` row belongs to another
-        in-flight publish. A stale ``pending`` row (crash between create and
-        record) is taken over so the caller can look the issue up remotely.
+        Returns ``(claim_token, existing_row)``; the token is ``None`` when not
+        claimed. A ``linked`` row is never claimed (caller updates it instead).
+        A fresh ``pending`` row belongs to another in-flight publish. A stale
+        ``pending`` row (crash between create and record) is taken over so the
+        caller can look the issue up remotely. Only the token holder may
+        refresh or release the claim.
         """
+        import secrets
+
+        tok = secrets.token_hex(16)
         now = utc_now_iso()
         cur = self.conn.execute(
             """
             INSERT OR IGNORE INTO finding_tracking(
-              stable_key, sink, destination, status, finding_id, operator,
-              created_at, updated_at
-            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)
+              stable_key, sink, destination, status, claim_token, finding_id,
+              operator, created_at, updated_at
+            ) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)
             """,
-            (stable_key, sink, destination, finding_id, operator, now, now),
+            (stable_key, sink, destination, tok, finding_id, operator, now, now),
         )
         self.conn.commit()
         if int(cur.rowcount or 0) > 0:
-            return True, None
+            return tok, None
         row = self.get_tracking(stable_key, sink, destination)
         if not row or row.get("status") != "pending":
-            return False, row
+            return None, row
         try:
             age = time.time() - datetime.strptime(
                 str(row["updated_at"]), "%Y-%m-%dT%H:%M:%SZ"
@@ -580,26 +586,44 @@ class Database:
         except (TypeError, ValueError):
             age = float(stale_after_s) + 1
         if age <= stale_after_s:
-            return False, row
+            return None, row
         cur = self.conn.execute(
             """
-            UPDATE finding_tracking SET updated_at=?, operator=?
+            UPDATE finding_tracking SET claim_token=?, updated_at=?, operator=?
             WHERE stable_key=? AND sink=? AND destination=? AND status='pending'
-              AND updated_at=?
+              AND claim_token IS ?
             """,
-            (now, operator, stable_key, sink, destination, row["updated_at"]),
+            (tok, now, operator, stable_key, sink, destination, row.get("claim_token")),
         )
         self.conn.commit()
-        return int(cur.rowcount or 0) > 0, row
+        return (tok if int(cur.rowcount or 0) > 0 else None), row
 
-    def release_tracking_claim(self, stable_key: str, sink: str, destination: str) -> None:
-        """Drop a pending claim after a create that failed (nothing was published)."""
+    def refresh_tracking_claim(
+        self, stable_key: str, sink: str, destination: str, claim_token: str
+    ) -> bool:
+        """Re-assert a pending claim right before an external write. False = lost."""
+        cur = self.conn.execute(
+            """
+            UPDATE finding_tracking SET updated_at=?
+            WHERE stable_key=? AND sink=? AND destination=? AND status='pending'
+              AND claim_token=?
+            """,
+            (utc_now_iso(), stable_key, sink, destination, claim_token),
+        )
+        self.conn.commit()
+        return int(cur.rowcount or 0) > 0
+
+    def release_tracking_claim(
+        self, stable_key: str, sink: str, destination: str, claim_token: str
+    ) -> None:
+        """Drop our own pending claim after a failed create. Never someone else's."""
         self.conn.execute(
             """
             DELETE FROM finding_tracking
             WHERE stable_key=? AND sink=? AND destination=? AND status='pending'
+              AND claim_token=?
             """,
-            (stable_key, sink, destination),
+            (stable_key, sink, destination, claim_token),
         )
         self.conn.commit()
 
@@ -624,6 +648,7 @@ class Database:
             ) VALUES (?, ?, ?, 'linked', ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(stable_key, sink, destination) DO UPDATE SET
               status='linked',
+              claim_token=NULL,
               external_id=excluded.external_id,
               url=excluded.url,
               finding_id=excluded.finding_id,

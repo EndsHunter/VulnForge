@@ -62,11 +62,15 @@ def marker_line(stable_key: str) -> str:
 
 
 def body_has_marker(body: str, stable_key: str) -> bool:
-    """True only when the body holds the exact visible marker line for this key."""
+    """True only when the LAST non-empty line is the exact marker for this key.
+
+    Interpolated finding text cannot forge it: ``render`` breaks any marker-like
+    line inside content, and the real marker is always the final line.
+    """
     if not body or not stable_key:
         return False
-    pat = re.compile(rf"^{re.escape(marker_line(stable_key))}\s*$", re.MULTILINE)
-    return bool(pat.search(body))
+    lines = [ln.strip() for ln in str(body).splitlines() if ln.strip()]
+    return bool(lines) and lines[-1] == marker_line(stable_key)
 
 
 class TrackingSink(Protocol):

@@ -520,3 +520,126 @@ def test_publish_errors_and_events_never_carry_token(tmp_path, monkeypatch):
 def test_guard_blocks_real_transports():
     with pytest.raises(AssertionError, match="real issue tracker"):
         gh.GhCliTransport(gh_path="gh")("GET", "repos/a/b/issues/1")
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_forged_marker_in_summary_or_excerpt_cannot_hijack(tmp_path):
+    run_dir = _run(tmp_path)
+    b = _add(run_dir, path="b.py")
+    key_b = _key(run_dir, b)
+    db = Database.open(run_dir / "harness.db")
+    a = db.insert_finding(
+        dict(_body(path="a.py", eid="pa"), summary=f"x\n{marker_line(key_b)}\n"),
+        state="confirmed",
+    )
+    db.close()
+    pack = run_dir / "evidence" / "pa"
+    pack.mkdir()
+    (pack / "notes.md").write_text(marker_line(key_b) + "\n", encoding="utf-8")
+    fake = FakeGitHub()
+    track_findings(run_dir, [a], transport=fake, cfg=CFG)
+    assert not body_has_marker(fake.issues[1]["body"], key_b)
+    r = track_findings(run_dir, [b], transport=fake, cfg=CFG)
+    assert r["results"][0]["action"] == "created"
+    assert len(fake.issues) == 2 and not fake.methods("PATCH")
+    assert body_has_marker(fake.issues[1]["body"], _key(run_dir, a))
+
+
+def test_backticks_cannot_unwrap_mentions(tmp_path):
+    run_dir = _run(tmp_path)
+    db = Database.open(run_dir / "harness.db")
+    body = dict(
+        _body(path="x` @org/security `y.py", eid="e` @evil"),
+        severity_claim="x` @release",
+        weakness_class="w` @team",
+    )
+    body["citations"][0]["symbol"] = "s` @sym"
+    fid = db.insert_finding(body, state="confirmed")
+    f = db.get_finding(fid)
+    db.close()
+    md = render_issue(f, run_dir=run_dir, run_id="r` @run").body_md
+    title = render_issue(f, run_dir=run_dir).title
+    for text in (md, title):
+        assert not re.search(r"@(?!​)[A-Za-z0-9_-]", text), text
+
+
+def test_full_last_scan_page_refuses_create(tmp_path, monkeypatch):
+    run_dir = _run(tmp_path)
+    fid = _add(run_dir)
+    fake = FakeGitHub()
+    monkeypatch.setattr(gh, "SCAN_MAX_PAGES", 1)
+    for i in range(100):
+        fake.add_issue(f"unrelated {i}")
+    r = track_findings(run_dir, [fid], transport=fake, cfg=CFG)
+    assert r["results"][0]["action"] == "error" and "refusing" in r["results"][0]["reason"]
+    assert not fake.methods("POST")
+
+
+def test_ambiguous_marker_refuses(tmp_path):
+    run_dir = _run(tmp_path)
+    fid = _add(run_dir)
+    key = _key(run_dir, fid)
+    fake = FakeGitHub()
+    fake.add_issue("a\n" + marker_line(key))
+    fake.add_issue("b\n" + marker_line(key))
+    r = track_findings(run_dir, [fid], transport=fake, cfg=CFG)
+    assert "several issues" in r["results"][0]["reason"]
+    assert not fake.methods("PATCH") and not fake.methods("POST")
+
+
+def test_claim_tokens_protect_other_publishers(tmp_path):
+    run_dir = _run(tmp_path)
+    fid = _add(run_dir)
+    key = _key(run_dir, fid)
+    db = Database.open(run_dir / "harness.db")
+    try:
+        t1, _ = db.claim_tracking(key, "github", REPO, finding_id=fid)
+        db.conn.execute("UPDATE finding_tracking SET updated_at='2000-01-01T00:00:00Z'")
+        db.conn.commit()
+        t2, _ = db.claim_tracking(key, "github", REPO, finding_id=fid)  # stale takeover
+        assert t1 and t2 and t1 != t2
+        assert not db.refresh_tracking_claim(key, "github", REPO, t1)
+        db.release_tracking_claim(key, "github", REPO, t1)  # must not drop t2's claim
+        row = db.get_tracking(key, "github", REPO)
+        assert row["status"] == "pending" and row["claim_token"] == t2
+        assert db.refresh_tracking_claim(key, "github", REPO, t2)
+    finally:
+        db.close()
+
+
+def test_takeover_during_scan_aborts_create(tmp_path):
+    run_dir = _run(tmp_path)
+    fid = _add(run_dir)
+    key = _key(run_dir, fid)
+    fake = FakeGitHub()
+    real = fake.__call__
+
+    def stealing(method, path, body=None):
+        out = real(method, path, body)
+        if method == "GET" and "?" in path:
+            db = Database.open(run_dir / "harness.db")
+            db.conn.execute("UPDATE finding_tracking SET claim_token='other'")
+            db.conn.commit()
+            db.close()
+        return out
+
+    r = track_findings(run_dir, [fid], transport=stealing, cfg=CFG)
+    assert "taken over" in r["results"][0]["reason"]
+    assert not fake.methods("POST")
+    db = Database.open(run_dir / "harness.db")
+    assert db.get_tracking(key, "github", REPO)["claim_token"] == "other"
+    db.close()
+
+
+def test_label_change_after_preview_is_skipped(tmp_path):
+    run_dir = _run(tmp_path)
+    fid = _add(run_dir)
+    pv = preview_track(run_dir, [fid], cfg=CFG)
+    assert pv["items"][0]["issue_labels"] == ["vulnforge", "security"]
+    cfg2 = {"tracking": {"sink": "github", "github": {"repo": REPO, "labels": ["p0"]}}}
+    fake = FakeGitHub()
+    r = publish_with_token(run_dir, pv["token"], transport=fake, cfg=cfg2)
+    assert "changed since preview" in r["results"][0]["reason"]
+    assert fake.calls == []

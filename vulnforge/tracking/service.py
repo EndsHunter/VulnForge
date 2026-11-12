@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from vulnforge.db import Database
 from vulnforge.tracking.base import TrackingError, build_sink
-from vulnforge.tracking.github import redact
+from vulnforge.tracking.github import create_labels, redact
 from vulnforge.tracking.render import render_issue
 from vulnforge.util import append_event
 
@@ -83,8 +83,9 @@ def _norm_ids(finding_ids: Any) -> list[int]:
     return out
 
 
-def _hash(title: str, body: str) -> str:
-    return hashlib.sha256((title + "\0" + body).encode("utf-8")).hexdigest()
+def _hash(title: str, body: str, labels: list[str]) -> str:
+    blob = "\0".join([title, body, ",".join(labels)])
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def _plan(
@@ -128,7 +129,8 @@ def _plan(
             existing_url=(row or {}).get("url") if linked else None,
             issue_title=payload.title,
             issue_body=payload.body_md,
-            body_hash=_hash(payload.title, payload.body_md),
+            issue_labels=create_labels(payload.labels),
+            body_hash=_hash(payload.title, payload.body_md, create_labels(payload.labels)),
             _payload=payload,
             _finding=f,
         )
@@ -358,10 +360,10 @@ def _publish_one(db: Database, sk: Any, finding: Any, payload: Any, *, operator:
     if row and row.get("status") == "linked" and row.get("external_id"):
         res = sk.update(str(row["external_id"]), payload)
     else:
-        claimed, other = db.claim_tracking(
+        claim, other = db.claim_tracking(
             key, sink_name, dest, finding_id=finding.id, operator=operator
         )
-        if not claimed:
+        if not claim:
             if other and other.get("status") == "linked" and other.get("external_id"):
                 res = sk.update(str(other["external_id"]), payload)
             else:
@@ -369,14 +371,17 @@ def _publish_one(db: Database, sk: Any, finding: Any, payload: Any, *, operator:
         else:
             try:
                 existing = sk.find_by_marker(key)
+                # The scan can be slow; make sure nobody took the claim over.
+                if not db.refresh_tracking_claim(key, sink_name, dest, claim):
+                    raise TrackingError("publish claim was taken over; retry later")
                 res = (
                     sk.update(existing.external_id, payload)
                     if existing
                     else sk.create(payload)
                 )
             except Exception:
-                # Nothing recorded remotely that we know of; let a retry re-scan.
-                db.release_tracking_claim(key, sink_name, dest)
+                # Nothing recorded that we know of; a retry re-scans by marker.
+                db.release_tracking_claim(key, sink_name, dest, claim)
                 raise
     rec = db.record_tracking(
         key, sink_name, dest,
