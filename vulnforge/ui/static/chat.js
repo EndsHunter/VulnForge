@@ -11,12 +11,215 @@
       .replace(/"/g, "&quot;");
   }
 
-  function simpleMarkdown(text) {
-    let t = escapeHtml(text || "");
-    t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
-    t = t.replace(/\n/g, "<br/>");
-    return t;
+  /* ---------- Pure display helpers (unit-tested via VulnForgeChat.helpers) ---------- */
+
+  // Inline markdown: `code`, **bold**, *em*. Escapes first; never emits raw HTML
+  // from the input. Code spans are split out so emphasis never applies inside them.
+  function inlineMd(s) {
+    return String(s ?? "")
+      .split(/(`[^`\n]+`)/)
+      .map((part, idx) => {
+        if (idx % 2 === 1) return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
+        let t = escapeHtml(part);
+        t = t.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+        t = t.replace(/(^|[^*\w])\*([^*\s][^*\n]*?)\*(?![*\w])/g, "$1<em>$2</em>");
+        return t;
+      })
+      .join("");
+  }
+
+  const LIST_RE = /^\s*([-*+]|\d{1,4}[.)])\s+/;
+
+  // Block markdown: paragraphs, #-headings, -/1. lists and ``` fences.
+  // Output is built only from escaped text plus a fixed tag set.
+  function renderMarkdown(text) {
+    const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
+    const out = [];
+    let para = [];
+    const flush = () => {
+      if (para.length) out.push(`<p>${para.map(inlineMd).join("<br/>")}</p>`);
+      para = [];
+    };
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const fence = line.match(/^\s*```\s*([\w+.#-]*)\s*$/);
+      if (fence) {
+        flush();
+        const buf = [];
+        i++;
+        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) buf.push(lines[i++]);
+        i++;
+        const lang = fence[1] ? ` data-lang="${escapeHtml(fence[1])}"` : "";
+        out.push(`<pre class="oc-code"${lang}><code>${escapeHtml(buf.join("\n"))}</code></pre>`);
+        continue;
+      }
+      const head = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);
+      if (head) {
+        flush();
+        out.push(`<p class="oc-h">${inlineMd(head[1])}</p>`);
+        i++;
+        continue;
+      }
+      if (LIST_RE.test(line)) {
+        flush();
+        const ordered = /^\s*\d/.test(line);
+        const itemRe = ordered ? /^\s*(\d{1,4})[.)]\s+(.*)$/ : /^\s*[-*+]\s+(.*)$/;
+        const first = line.match(itemRe);
+        const start = ordered && first && Number(first[1]) > 1 ? ` start="${Number(first[1])}"` : "";
+        const items = [];
+        while (i < lines.length) {
+          const m = lines[i].match(itemRe);
+          if (m) {
+            items.push(ordered ? m[2] : m[1]);
+            i++;
+          } else if (items.length && /^\s{2,}\S/.test(lines[i]) && !LIST_RE.test(lines[i])) {
+            items[items.length - 1] += " " + lines[i].trim();
+            i++;
+          } else break;
+        }
+        const tag = ordered ? "ol" : "ul";
+        out.push(`<${tag}${start}>${items.map((t) => `<li>${inlineMd(t)}</li>`).join("")}</${tag}>`);
+        continue;
+      }
+      if (!line.trim()) {
+        flush();
+        i++;
+        continue;
+      }
+      para.push(line);
+      i++;
+    }
+    flush();
+    return out.join("");
+  }
+
+  function parseArgs(raw) {
+    if (raw && typeof raw === "object") return raw;
+    if (typeof raw !== "string" || !raw.trim()) return {};
+    try {
+      const v = JSON.parse(raw);
+      return v && typeof v === "object" ? v : { value: v };
+    } catch (_) {
+      return { raw };
+    }
+  }
+
+  // [{ name, args }] from an assistant message's tool_calls (OpenAI or flat shape).
+  function toolCallsOf(m) {
+    if (!m || !Array.isArray(m.tool_calls)) return [];
+    return m.tool_calls.map((tc) => {
+      const fn = (tc && tc.function) || {};
+      return {
+        name: String(fn.name || (tc && tc.name) || "tool"),
+        args: parseArgs(fn.arguments !== undefined ? fn.arguments : tc && tc.arguments),
+      };
+    });
+  }
+
+  function clip(s, n) {
+    const t = String(s ?? "");
+    return t.length > n ? t.slice(0, n - 1) + "…" : t;
+  }
+
+  function scalarText(v) {
+    if (v === null || v === undefined) return "null";
+    if (typeof v === "object") return Array.isArray(v) ? `[${v.length}]` : "{…}";
+    return String(v);
+  }
+
+  // One-line `k=v k=v` preview of tool arguments.
+  function argsPreview(args, max) {
+    const keys = args && typeof args === "object" ? Object.keys(args) : [];
+    if (!keys.length) return "";
+    return clip(keys.map((k) => `${k}=${scalarText(args[k])}`).join(" "), max || 72);
+  }
+
+  function prettyJson(v, max) {
+    let t;
+    if (typeof v === "string") {
+      try {
+        t = JSON.stringify(JSON.parse(v), null, 2);
+      } catch (_) {
+        t = v;
+      }
+    } else {
+      try {
+        t = JSON.stringify(v, null, 2);
+      } catch (_) {
+        t = String(v);
+      }
+    }
+    const lim = max || 6000;
+    t = String(t ?? "");
+    return t.length > lim ? t.slice(0, lim) + "\n… truncated" : t;
+  }
+
+  // { status: ok|error|pending, text } for a tool result payload.
+  function summarizeToolResult(content) {
+    let c = content;
+    if (typeof c === "string") {
+      try {
+        c = JSON.parse(c);
+      } catch (_) {
+        return { status: "ok", text: clip(c.replace(/\s+/g, " ").trim(), 64) };
+      }
+    }
+    if (!c || typeof c !== "object") return { status: "ok", text: c == null ? "" : String(c) };
+    if (c.pending_confirm) return { status: "pending", text: "confirm requested" };
+    if (c.ok === false) return { status: "error", text: clip(c.error || c.detail || "failed", 64) };
+    if (typeof c.count === "number") return { status: "ok", text: `${c.count} result${c.count === 1 ? "" : "s"}` };
+    for (const k of Object.keys(c)) {
+      if (Array.isArray(c[k])) return { status: "ok", text: `${c[k].length} ${k}` };
+    }
+    if (typeof c.message === "string") return { status: "ok", text: clip(c.message, 64) };
+    if (typeof c.summary === "string") return { status: "ok", text: clip(c.summary, 64) };
+    return { status: "ok", text: "ok" };
+  }
+
+  const ACTION_TITLES = {
+    init_run: "Init a new audit run",
+    start_run: "Start Ralph",
+    pause_run: "Pause Ralph",
+    resume_run: "Resume Ralph",
+    hard_stop_run: "Hard-stop Ralph",
+    enqueue_hunt: "Enqueue a hunt",
+    requeue_hunt: "Re-queue a hunt",
+    requeue_hunts_bulk: "Re-queue hunt cells",
+    rerun_recon: "Re-run recon",
+    review_finding: "Record a review decision",
+    enqueue_develop_poc: "Queue PoC development",
+    enqueue_validate_poc: "Queue a sandbox PoC run",
+    enqueue_iterate_poc: "Queue a sandbox PoC iteration",
+  };
+  const DANGER_TOOLS = { hard_stop_run: true };
+
+  // Display model for a pending mutation (server pending_confirm payload).
+  function describePending(p) {
+    const pending = p || {};
+    const name = String(pending.tool_name || "action");
+    const args = pending.arguments && typeof pending.arguments === "object" ? pending.arguments : {};
+    let run = "";
+    if (args.target_id && args.run_id) run = `${args.target_id}/${args.run_id}`;
+    else if (pending.run_key) run = String(pending.run_key);
+    else if (name === "init_run" && args.target) run = `new run · ${args.target}`;
+    const fallback = name.replace(/_/g, " ");
+    const expires = Number(pending.expires_in_s);
+    return {
+      tool: name,
+      title: ACTION_TITLES[name] || fallback.charAt(0).toUpperCase() + fallback.slice(1),
+      run: run || (pending.scope === "home" ? "Fleet (no single run)" : "This run"),
+      summary: String(pending.summary || ""),
+      args,
+      argCount: Object.keys(args).length,
+      danger: !!DANGER_TOOLS[name],
+      expiresIn: Number.isFinite(expires) ? Math.max(0, Math.floor(expires)) : null,
+    };
+  }
+
+  function formatCountdown(sec) {
+    const s = Math.max(0, Math.floor(Number(sec) || 0));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   }
 
   function runKeyFromBody() {
@@ -71,11 +274,13 @@
   }
 
   function syncBadge() {
-    const badge = state.fab && state.fab.querySelector(".ai-badge");
-    if (!badge) return;
-    const pending = state.panes.some((p) => p.pending);
-    badge.hidden = !pending;
+    const pending = state.panes.some((p) => p.pending && !p.pending._expired);
     state.pending = (activePane() && activePane().pending) || null;
+    // Run pages open the sheet from the header ⌘K button (no FAB): flag it there too.
+    const cmd = typeof document !== "undefined" && document.getElementById("btn-command");
+    if (cmd && cmd.classList) cmd.classList.toggle("oc-has-pending", pending);
+    const badge = state.fab && state.fab.querySelector(".ai-badge");
+    if (badge) badge.hidden = !pending;
   }
 
   function resetSession() {
@@ -209,21 +414,40 @@
     return !!(state.sheet && state.sheet.classList.contains("is-max"));
   }
 
+  const CHAT_CSS = "/static/pages/chat.css";
+
+  // The chat mounts on pages owned by other modules (run, home, dev, …). Its CSS
+  // is page-owned, so load it here instead of adding a <link> to every template.
+  function ensureStyles() {
+    if (typeof document === "undefined" || !document.head || !document.createElement) return;
+    if (document.querySelector('link[data-vf-chat-css], link[href="' + CHAT_CSS + '"]')) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = CHAT_CSS;
+    link.setAttribute("data-vf-chat-css", "1");
+    document.head.appendChild(link);
+  }
+
   function shellHtml() {
-    const ctx =
+    const runKey = document.body.getAttribute("data-run-key") || "";
+    const scopePill =
       state.scope === "run"
-        ? `Run ${escapeHtml(document.body.getAttribute("data-run-key") || "")}`
-        : "Home — all runs";
+        ? `<span class="vf-pill oc-scope">Run</span><span class="oc-context vf-mono" title="${escapeHtml(runKey)}">${escapeHtml(runKey)}</span>`
+        : `<span class="vf-pill oc-scope">Fleet</span><span class="oc-context">All runs</span>`;
     return `
       <div class="oc-shell">
         <div class="oc-layout">
-          <aside class="oc-sidebar" aria-label="Previous chats">
-            <button type="button" class="btn btn-ghost" id="oc-new">New chat</button>
+          <aside class="oc-sidebar" id="oc-sidebar" aria-label="Previous chats">
+            <button type="button" class="vf-btn oc-new" id="oc-new">New chat</button>
+            <h2 class="vf-section-label oc-sessions-label">History</h2>
             <ul class="oc-sessions" id="oc-sessions"></ul>
           </aside>
           <div class="oc-stage">
             <div class="oc-toolbar">
-              <span class="oc-context mono">${ctx}</span>
+              <button type="button" class="vf-icon-btn oc-history-toggle" aria-controls="oc-sidebar" aria-expanded="false">History</button>
+              ${scopePill}
+              <span class="vf-spacer"></span>
+              <button type="button" class="vf-icon-btn oc-new-inline" aria-label="New chat">+ New</button>
             </div>
             <div class="oc-tabs" id="oc-tabs" role="tablist" aria-label="Open chats"></div>
             <div class="oc-panes" id="oc-panes"></div>
@@ -234,17 +458,27 @@
   }
 
   function paneHtml(pane) {
+    const placeholder =
+      state.scope === "run" ? "Ask about this run, or queue a hunt…" : "Ask across runs, hunts, findings…";
     return `
       <section class="oc-pane pane-${pane.id}" data-pane-id="${pane.id}">
         <div class="oc-messages" role="log" aria-live="polite"></div>
-        <div class="oc-chips"></div>
         <div class="oc-confirm" hidden></div>
+        <div class="oc-chips" aria-label="Suggestions"></div>
         <div class="oc-composer">
-          <textarea class="oc-input" rows="2" placeholder="Ask about runs, hunts, findings…" aria-label="Chat message"></textarea>
-          <button type="button" class="btn btn-primary oc-send">Send</button>
+          <textarea class="oc-input" rows="1" placeholder="${escapeHtml(placeholder)}" aria-label="Chat message"></textarea>
+          <button type="button" class="vf-btn vf-btn--primary oc-send">Send</button>
         </div>
-        <p class="controls-hint oc-hint">Mutating tools (start, enqueue, stop) require Confirm. needs_human ≠ exploit proof.</p>
+        <p class="oc-hint"><span class="vf-kbd">Enter</span> send · <span class="vf-kbd">Shift</span>+<span class="vf-kbd">Enter</span> newline · Actions that change state wait for your Confirm. needs_human ≠ exploit proof.</p>
       </section>`;
+  }
+
+  function setHistoryOpen(open) {
+    const shell = state.root && state.root.querySelector(".oc-shell");
+    if (!shell) return;
+    shell.classList.toggle("is-history-open", !!open);
+    const btn = shell.querySelector(".oc-history-toggle");
+    if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
   function claimPaneIds(active) {
@@ -322,10 +556,23 @@
     state.panes = [];
     state.activeId = null;
     state.mounted = true;
+    ensureStyles();
     root.innerHTML = shellHtml();
     const pane = createPane({ sessionId: state.sessionId });
     const neu = root.querySelector("#oc-new");
-    if (neu) neu.addEventListener("click", () => newChat());
+    if (neu)
+      neu.addEventListener("click", () => {
+        setHistoryOpen(false);
+        newChat();
+      });
+    root.querySelector(".oc-new-inline")?.addEventListener("click", () => newChat());
+    const hist = root.querySelector(".oc-history-toggle");
+    if (hist) {
+      hist.addEventListener("click", () => {
+        const shell = root.querySelector(".oc-shell");
+        setHistoryOpen(!(shell && shell.classList.contains("is-history-open")));
+      });
+    }
     activate(pane);
     restorePane(pane);
     refreshSessions();
@@ -451,15 +698,16 @@
     root.querySelector(".oc-send")?.addEventListener("click", () => send(pane));
     const input = root.querySelector(".oc-input");
     input?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         send(pane);
       }
     });
+    input?.addEventListener("input", () => autoGrow(input));
     const chips = root.querySelector(".oc-chips");
     if (chips) {
       chips.innerHTML = state.chips
-        .map((c) => `<button type="button" class="chip oc-chip">${escapeHtml(c)}</button>`)
+        .map((c) => `<button type="button" class="vf-chip oc-chip">${escapeHtml(c)}</button>`)
         .join("");
       chips.querySelectorAll(".oc-chip").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -533,7 +781,14 @@
     });
   }
 
+  function autoGrow(input) {
+    if (!input || !input.style || typeof input.scrollHeight !== "number") return;
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 180) + "px";
+  }
+
   function openFromSidebar(btn) {
+    setHistoryOpen(false);
     const paneId = btn.getAttribute("data-pane-id");
     if (paneId) {
       const pane = state.panes.find((p) => p.id === paneId);
@@ -555,16 +810,34 @@
     restorePane(pane);
   }
 
+  function emptyHtml() {
+    const run = state.scope === "run";
+    return `<div class="oc-empty">
+        <p class="oc-empty-title">${run ? "Ask about this run" : "Ask across all runs"}</p>
+        <p>${
+          run
+            ? "Status, coverage, findings and tasks for this campaign. I can queue or re-queue hunts; Ralph runs them."
+            : "Query findings across runs, list or start hunts on a named run, init audits, start or pause Ralph."
+        }</p>
+        <p class="oc-empty-note">Anything that changes state waits for your Confirm. Try a suggestion below.</p>
+      </div>`;
+  }
+
+  function markHasMessages(pane) {
+    const box = messagesEl(pane);
+    if (pane && pane.el) pane.el.classList.toggle("has-messages", !!(box && !box.querySelector(".oc-empty")));
+  }
+
   function renderMessages(pane, msgs) {
     const box = messagesEl(pane);
     if (!box) return;
     if (!msgs.length) {
-      box.innerHTML = `<div class="oc-empty">Ask anything about ${
-        state.scope === "run" ? "this campaign" : "your fleet"
-      }. Use chips below to start.</div>`;
+      box.innerHTML = emptyHtml();
+      markHasMessages(pane);
       return;
     }
     box.innerHTML = msgs.map(renderOne).join("");
+    markHasMessages(pane);
     box.scrollTop = box.scrollHeight;
   }
 
@@ -573,6 +846,7 @@
     if (!box) return;
     if (box.querySelector(".oc-empty")) box.innerHTML = "";
     box.insertAdjacentHTML("beforeend", msgs.map(renderOne).join(""));
+    markHasMessages(pane);
     box.scrollTop = box.scrollHeight;
   }
 
@@ -582,74 +856,175 @@
     for (const el of box.querySelectorAll(".oc-thinking")) el.remove();
   }
 
+  function renderCalls(calls) {
+    const rows = calls
+      .map((c) => {
+        const preview = argsPreview(c.args);
+        const head = `<span class="oc-call-verb">Calling</span><code class="oc-call-name">${escapeHtml(c.name)}</code>${
+          preview ? `<span class="oc-call-args vf-mono">${escapeHtml(preview)}</span>` : ""
+        }`;
+        if (!Object.keys(c.args || {}).length) return `<div class="oc-call">${head}</div>`;
+        return `<details class="oc-call"><summary>${head}</summary><pre class="oc-pre vf-mono">${escapeHtml(
+          prettyJson(c.args, 3000)
+        )}</pre></details>`;
+      })
+      .join("");
+    return `<div class="oc-msg oc-calls"><div class="oc-call-list">${rows}</div></div>`;
+  }
+
+  function renderReceipt(m) {
+    const kind = m.receipt === "confirmed" ? "is-confirmed" : m.receipt === "failed" ? "is-failed" : "is-cancelled";
+    const mark = m.receipt === "confirmed" ? "✓" : m.receipt === "failed" ? "!" : "×";
+    return `<div class="oc-msg oc-receipt ${kind}"><span class="oc-receipt-mark" aria-hidden="true">${mark}</span><span>${escapeHtml(
+      m.content
+    )}</span></div>`;
+  }
+
   function renderOne(m) {
     const role = m.role || "assistant";
     if (m.thinking) {
-      return `<div class="oc-msg oc-assistant oc-thinking"><div class="oc-bubble">…thinking</div></div>`;
+      return `<div class="oc-msg oc-assistant oc-thinking" aria-label="Thinking"><div class="oc-bubble"><span class="oc-dots" aria-hidden="true"><i></i><i></i><i></i></span>thinking</div></div>`;
     }
+    if (m.receipt) return renderReceipt(m);
     if (role === "user") {
-      return `<div class="oc-msg oc-user"><div class="oc-bubble">${simpleMarkdown(m.content)}</div></div>`;
+      return `<div class="oc-msg oc-user"><div class="oc-bubble oc-md">${renderMarkdown(m.content)}</div></div>`;
     }
     if (role === "tool") {
       const name = escapeHtml(m.name || "tool");
-      const ok = m.content && m.content.ok !== false;
-      const body =
-        typeof m.content === "object"
-          ? escapeHtml(JSON.stringify(m.content, null, 0).slice(0, 1200))
-          : escapeHtml(String(m.content || "").slice(0, 1200));
+      const sum = summarizeToolResult(m.content);
+      const label = { ok: "ok", error: "error", pending: "needs confirm" }[sum.status];
       return `<div class="oc-msg oc-tool">
-        <details class="oc-tool-card ${ok ? "ok" : "bad"}">
-          <summary>tool: ${name} ${ok ? "✓" : "·"}</summary>
-          <pre class="oc-tool-pre">${body}</pre>
+        <details class="oc-tool-card is-${sum.status}">
+          <summary><span class="oc-tool-dot" aria-hidden="true"></span><span class="oc-tool-name vf-mono">${name}</span><span class="oc-tool-state">${label}</span>${
+            sum.text && sum.text !== "ok" ? `<span class="oc-tool-sum">${escapeHtml(sum.text)}</span>` : ""
+          }</summary>
+          <pre class="oc-pre vf-mono">${escapeHtml(prettyJson(m.content))}</pre>
         </details>
       </div>`;
     }
-    if (role === "assistant" && Array.isArray(m.tool_calls) && !(m.content || "").trim()) {
-      const names = m.tool_calls
-        .map((tc) => (tc && tc.function && tc.function.name) || (tc && tc.name) || "tool")
-        .join(", ");
-      return `<div class="oc-msg oc-assistant oc-live"><div class="oc-bubble">Calling ${escapeHtml(names)}…</div></div>`;
+    const calls = role === "assistant" ? toolCallsOf(m) : [];
+    const text = typeof m.content === "string" ? m.content : m.content == null ? "" : prettyJson(m.content);
+    const bubble = text.trim()
+      ? `<div class="oc-msg oc-assistant${m.error ? " is-error" : ""}"><div class="oc-bubble oc-md">${renderMarkdown(text)}</div></div>`
+      : "";
+    return bubble + (calls.length ? renderCalls(calls) : "");
+  }
+
+  function stopConfirmTimer(pane) {
+    if (pane && pane.confirmTimer) {
+      clearTimeout(pane.confirmTimer);
+      pane.confirmTimer = null;
     }
-    if (!(m.content || "").trim() && m.tool_calls) {
-      return "";
-    }
-    return `<div class="oc-msg oc-assistant"><div class="oc-bubble">${simpleMarkdown(m.content)}</div></div>`;
+  }
+
+  function confirmCardHtml(d, view) {
+    const expired = view.expired;
+    const running = view.running;
+    const kicker = expired ? "Confirm expired" : running ? "Running…" : "Needs your confirmation";
+    const timer =
+      d.expiresIn == null || running
+        ? ""
+        : `<span class="oc-confirm-timer vf-mono">${expired ? "expired" : "expires in " + formatCountdown(view.left)}</span>`;
+    const note = expired
+      ? "This request expired and can no longer run. Ask again to get a fresh Confirm."
+      : "Nothing runs until you press Confirm.";
+    const args = d.argCount
+      ? `<details class="oc-confirm-args"><summary>Arguments (${d.argCount})</summary><pre class="oc-pre vf-mono">${escapeHtml(
+          prettyJson(d.args, 3000)
+        )}</pre></details>`
+      : "";
+    const yesCls = d.danger ? "vf-btn--danger" : "vf-btn--primary";
+    return `
+      <div class="oc-confirm-card${expired ? " is-expired" : running ? " is-running" : " is-pending"}${d.danger ? " is-danger" : ""}" role="group" aria-label="Pending action: ${escapeHtml(d.title)}">
+        <div class="oc-confirm-head"><span class="oc-confirm-kicker">${kicker}</span>${timer}</div>
+        <p class="oc-confirm-title">${escapeHtml(d.title)}</p>
+        <dl class="oc-confirm-meta">
+          <dt>Run</dt><dd class="vf-mono">${escapeHtml(d.run)}</dd>
+          <dt>Tool</dt><dd class="vf-mono">${escapeHtml(d.tool)}</dd>
+        </dl>
+        ${d.summary ? `<p class="oc-confirm-summary">${escapeHtml(d.summary)}</p>` : ""}
+        ${args}
+        <p class="oc-confirm-note">${note}</p>
+        <div class="oc-confirm-actions">
+          <button type="button" class="vf-btn ${yesCls} oc-confirm-yes"${expired || running ? " disabled" : ""}>Confirm</button>
+          <button type="button" class="vf-btn vf-btn--ghost oc-confirm-no"${running ? " disabled" : ""}>${expired ? "Dismiss" : "Cancel"}</button>
+        </div>
+      </div>`;
+  }
+
+  function paintConfirm(pane) {
+    const el = pane && pane.el && pane.el.querySelector(".oc-confirm");
+    const p = pane && pane.pending;
+    if (!el || !p) return;
+    const d = describePending(p);
+    const left = p._deadline ? Math.max(0, Math.ceil((p._deadline - Date.now()) / 1000)) : null;
+    if (left === 0) p._expired = true;
+    el.hidden = false;
+    el.innerHTML = confirmCardHtml(d, { expired: !!p._expired, running: !!p._running, left });
+    el.querySelector(".oc-confirm-yes")?.addEventListener("click", () => doConfirm(pane));
+    el.querySelector(".oc-confirm-no")?.addEventListener("click", () => cancelConfirm(pane));
+    pane.el.classList.toggle("has-pending", true);
+  }
+
+  function tickConfirm(pane) {
+    stopConfirmTimer(pane);
+    const p = pane && pane.pending;
+    if (!p || !p._deadline || p._expired || p._running) return;
+    pane.confirmTimer = setTimeout(() => {
+      if (pane.pending !== p || p._running) return;
+      const left = Math.max(0, Math.ceil((p._deadline - Date.now()) / 1000));
+      if (left > 0) {
+        // Only the timer text changes: re-rendering the card would swap the
+        // Confirm button out from under a click in progress.
+        const timer = pane.el.querySelector(".oc-confirm-timer");
+        if (timer) timer.textContent = "expires in " + formatCountdown(left);
+      } else {
+        paintConfirm(pane);
+        syncBadge();
+      }
+      tickConfirm(pane);
+    }, 1000);
+    // Node (tests) only: a countdown must not keep the process alive.
+    if (pane.confirmTimer && typeof pane.confirmTimer.unref === "function") pane.confirmTimer.unref();
   }
 
   function showConfirm(pane, pending) {
-    const el = pane && pane.el && pane.el.querySelector(".oc-confirm");
-    if (!el || !pending) return;
-    pane.pending = pending;
-    el.hidden = false;
-    el.innerHTML = `
-      <div class="oc-confirm-card">
-        <strong>Confirm action</strong>
-        <p>${escapeHtml(pending.summary || pending.tool_name)}</p>
-        <div class="oc-confirm-actions">
-          <button type="button" class="btn btn-good" id="oc-confirm-yes">Confirm</button>
-          <button type="button" class="btn btn-ghost" id="oc-confirm-no">Cancel</button>
-        </div>
-      </div>`;
-    el.querySelector("#oc-confirm-yes")?.addEventListener("click", () => doConfirm(pane));
-    el.querySelector("#oc-confirm-no")?.addEventListener("click", () => {
-      hideConfirm(pane);
-      appendMessages(pane, [
-        {
-          role: "assistant",
-          content: "Cancelled. No action was taken.",
-        },
-      ]);
-    });
+    if (!pane || !pane.el || !pending) return;
+    stopConfirmTimer(pane);
+    const p = Object.assign({}, pending);
+    const secs = Number(pending.expires_in_s);
+    if (Number.isFinite(secs)) p._deadline = Date.now() + Math.max(0, secs) * 1000;
+    pane.pending = p;
+    paintConfirm(pane);
+    tickConfirm(pane);
     syncBadge();
   }
 
+  function cancelConfirm(pane) {
+    const p = pane && pane.pending;
+    if (!p || p._running) return;
+    const d = describePending(p);
+    const expired = !!p._expired;
+    hideConfirm(pane);
+    appendMessages(pane, [
+      {
+        receipt: "cancelled",
+        content: expired
+          ? `Expired · ${d.title} · ${d.run}. No action was taken.`
+          : `Cancelled. No action was taken. (${d.title} · ${d.run})`,
+      },
+    ]);
+  }
+
   function hideConfirm(pane) {
+    stopConfirmTimer(pane);
     if (pane) pane.pending = null;
     const el = pane && pane.el && pane.el.querySelector(".oc-confirm");
     if (el) {
       el.hidden = true;
       el.innerHTML = "";
     }
+    if (pane && pane.el) pane.el.classList.toggle("has-pending", false);
     syncBadge();
   }
 
@@ -663,6 +1038,10 @@
       "beforeend",
       `<div class="${cls}" role="${role}">${escapeHtml(text)}</div>`
     );
+    const added = host.querySelectorAll(".oc-toast");
+    const fresh = added[added.length - 1];
+    const t = setTimeout(() => fresh && fresh.remove && fresh.remove(), failed ? 8000 : 4000);
+    if (t && typeof t.unref === "function") t.unref();
     const nodes = Array.prototype.slice.call(host.querySelectorAll(".oc-toast"));
     while (nodes.length > 3) {
       const old = nodes.shift();
@@ -818,12 +1197,18 @@
 
   async function doConfirm(pane) {
     if (!pane || !pane.pending || pane.busy) return;
+    const p = pane.pending;
+    if (p._expired || p._running) return;
+    const d = describePending(p);
     pane.busy = true;
+    p._running = true;
+    stopConfirmTimer(pane);
+    paintConfirm(pane);
     setSendEnabled(pane, false);
     renderChromeLists();
-    const token = pane.pending.token;
+    const token = p.token;
     const sessionId = pane.sessionId;
-    hideConfirm(pane);
+    const where = `${d.title} · ${d.run}`;
     try {
       const res = await fetch(apiBase(state.scope) + "/confirm", {
         method: "POST",
@@ -831,16 +1216,25 @@
         body: JSON.stringify({ token, session_id: sessionId }),
       });
       const data = await res.json().catch(() => ({}));
+      // The token is one-shot server-side, so the card goes away either way.
+      hideConfirm(pane);
       if (!res.ok) {
         appendMessages(pane, [
+          { receipt: "failed", content: `Confirm failed · ${where}` },
           { role: "assistant", content: data.detail || data.error || "Confirm failed" },
         ]);
         return;
       }
-      appendMessages(pane, data.messages || []);
+      appendMessages(pane, [
+        { receipt: data.ok === false ? "failed" : "confirmed", content: `${data.ok === false ? "Ran with errors" : "Confirmed"} · ${where}` },
+      ].concat(data.messages || []));
       applyHints(data.ui_hints);
     } catch (e) {
-      appendMessages(pane, [{ role: "assistant", content: `Confirm failed: ${e}` }]);
+      hideConfirm(pane);
+      appendMessages(pane, [
+        { receipt: "failed", content: `Confirm failed · ${where}` },
+        { role: "assistant", content: `Confirm failed: ${e}` },
+      ]);
     } finally {
       pane.busy = false;
       setSendEnabled(pane, true);
@@ -877,6 +1271,7 @@
     ) {
       return;
     }
+    ensureStyles();
     bindChrome();
   }
 
@@ -898,5 +1293,16 @@
     isMaximized,
     isSheetOpen: () => state.sheetOpen,
     syncChrome,
+    helpers: {
+      escapeHtml,
+      inlineMd,
+      renderMarkdown,
+      toolCallsOf,
+      argsPreview,
+      prettyJson,
+      summarizeToolResult,
+      describePending,
+      formatCountdown,
+    },
   };
 })();
