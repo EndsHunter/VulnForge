@@ -37,9 +37,10 @@ keys (top-level or inside a rule) are errors, ids must be unique across the poli
 Globs are case-sensitive and match the full relative path: `*` stays within one
 segment, `**` crosses segments (may be empty), `?` is one character, and `[` is a
 literal (no character classes, so `app/[id]` works). A trailing `/` or a glob with
-no wildcard means the whole directory (`vendor` ≡ `vendor/**`). Citation paths are
-resolved lexically first (`lib/../vendor/a.py` → `vendor/a.py`), the same way the
-citation gate resolves them.
+no wildcard means the whole directory (`vendor` ≡ `vendor/**`). In `validate_mech`
+citation paths are resolved under the target root the same way the citation gate
+resolves them (`..` and symlinks: `lib/../vendor/a.py` → `vendor/a.py`), so the
+policy judges the file the gate accepted.
 
 `policy_match`, `severity_rubric` and `severity_claim_original` are harness-owned:
 `validate_mech` drops any copy a candidate carried (listed in

@@ -105,9 +105,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
 
     body0, dropped_keys = strip_harness_owned(body0)
     if dropped_keys:
-        body0["harness_keys_dropped"] = sorted(
-            set(body0.get("harness_keys_dropped") or []) | set(dropped_keys)
-        )
+        body0["harness_keys_dropped"] = sorted(dropped_keys)
     body0, sev_action = apply_severity_claim(body0)
     if sev_action is not None or body0 != dict(finding.body or {}):
         db.conn.execute(
@@ -203,6 +201,15 @@ def _current_policy(db) -> tuple[dict | None, int | None]:
     return cur.get("policy") or None, cur.get("revision")
 
 
+def _policy_root(db) -> Path | None:
+    """Target directory citations resolve under (same as check_citations_resolve)."""
+    run = db.get_run()
+    if not run:
+        return None
+    target = Path(run["target_path"])
+    return target if target.is_dir() else target.parent
+
+
 def _apply_policy_annotations(db, body: dict, reasons: list[str]) -> dict:
     """Stamp policy_match (when the exclusion gate fired) and the rubric cap.
 
@@ -214,12 +221,13 @@ def _apply_policy_annotations(db, body: dict, reasons: list[str]) -> dict:
     policy, revision = _current_policy(db)
     if not policy:
         return body
+    root = _policy_root(db)
     out = dict(body)
     if any(str(r).startswith(("policy_excluded:", "policy_out_of_scope:")) for r in reasons):
-        m = match_exclusion(policy, out, revision=revision)
+        m = match_exclusion(policy, out, revision=revision, root=root)
         if m:
             out["policy_match"] = m
-    out, _rec = apply_severity_rubric(policy, out, revision=revision)
+    out, _rec = apply_severity_rubric(policy, out, revision=revision, root=root)
     return out
 
 
@@ -234,7 +242,9 @@ def check_policy_exclusion(finding, run_dir: Path, cfg: dict, db) -> tuple[bool,
     policy, revision = _current_policy(db)
     if not policy:
         return True, ""
-    m = match_exclusion(policy, finding.body or {}, revision=revision)
+    m = match_exclusion(
+        policy, finding.body or {}, revision=revision, root=_policy_root(db)
+    )
     if m is None:
         return True, ""
     return False, exclusion_reason_code(m)

@@ -647,3 +647,42 @@ def test_candidate_supplied_policy_keys_are_stripped(tmp_path: Path, toy_sqli: P
         "severity_claim_original",
     }
     db.close()
+
+
+def test_policy_matches_citation_as_gate_resolves_it(tmp_path: Path, toy_sqli: Path):
+    """``../<target>/vendor/x`` and symlinks are judged by the file the gate accepted."""
+    import os
+
+    (toy_sqli / "vendor").mkdir()
+    (toy_sqli / "vendor" / "lib.py").write_text(
+        "def search_users(q):\n    return q\n", encoding="utf-8"
+    )
+    os.symlink(toy_sqli / "vendor" / "lib.py", toy_sqli / "alias.py")
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy(
+        {"exclusions": [{"id": "ex-v", "paths": ["vendor/**"], "reason": "vendored"}]}
+    )
+    for i, cite in enumerate((f"../{toy_sqli.name}/vendor/lib.py", "alias.py")):
+        body = _passing_body(run_dir, toy_sqli)
+        body["title"] = f"SQL injection in search_users {i}"
+        body["citations"] = [{"path": cite, "start_line": 1, "symbol": "search_users"}]
+        fid = db.insert_finding(body, stable_key=f"pol-resolve-{i}")
+        r = validate_run(T(fid), db, run_dir, {"stages": {}})
+        assert r["verdict"] == "rejected_mech", (cite, r)
+        assert r["reasons"] == ["policy_excluded:ex-v"], (cite, r)
+        assert db.get_finding(fid).body["policy_match"]["matched_paths"] == ["vendor/lib.py"]
+    db.close()
+
+
+def test_garbage_harness_keys_dropped_does_not_crash(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _passing_body(run_dir, toy_sqli)
+    body["severity_claim_original"] = "CRITICAL"
+    body["harness_keys_dropped"] = [{"x": 1}]
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    b = db.get_finding(fid).body
+    assert "severity_claim_original" not in b
+    assert b["harness_keys_dropped"] == ["severity_claim_original"]
+    db.close()

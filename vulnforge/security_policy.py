@@ -407,7 +407,10 @@ def rule_ids(policy: dict | None) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def cited_paths(body: dict | None) -> list[str]:
+def cited_paths(body: dict | None, root: Path | None = None) -> list[str]:
+    """Normalized citation paths. With ``root`` (target dir), each path is resolved
+    the way ``check_citations_resolve`` resolves it (``..`` and symlinks), so the
+    policy judges the file the gate actually accepted."""
     out: list[str] = []
     if not isinstance(body, dict):
         return out
@@ -417,21 +420,32 @@ def cited_paths(body: dict | None) -> list[str]:
     for c in cites:
         if not isinstance(c, dict):
             continue
-        p = _resolve_relpath(str(c.get("path") or ""))
+        p = _resolve_relpath(str(c.get("path") or ""), root)
         if p and p not in out:
             out.append(p)
     return out
 
 
-def _resolve_relpath(raw: str) -> str:
-    """Lexically resolve ``.``/``..`` so ``lib/../vendor/a.py`` matches as
-    ``vendor/a.py`` (the citation gate resolves the same way). A path that still
-    escapes the root is returned with its leading ``..`` so no rule matches it."""
+def _resolve_relpath(raw: str, root: Path | None = None) -> str:
+    """Resolve ``.``/``..`` (lexically, or on disk under ``root`` incl. symlinks).
+
+    ``lib/../vendor/a.py`` → ``vendor/a.py``. A path that escapes the root keeps
+    its lexical form (leading ``..``) so no rule matches it; the citation gate
+    rejects it anyway.
+    """
     p = normalize_relpath(raw)
     if not p:
         return ""
     norm = posixpath.normpath(p)
-    return "" if norm == "." else norm
+    lexical = "" if norm == "." else norm
+    if root is None:
+        return lexical
+    try:
+        root_r = Path(root).resolve()
+        rel = (root_r / p).resolve().relative_to(root_r).as_posix()
+    except (OSError, ValueError, RuntimeError):
+        return lexical
+    return "" if rel == "." else rel
 
 
 def _class_matches(rule: dict, body: dict) -> bool:
@@ -452,6 +466,7 @@ def match_exclusion(
     body: dict | None,
     *,
     revision: int | None = None,
+    root: Path | None = None,
 ) -> dict[str, Any] | None:
     """Return the first exclusion / out-of-scope rule that covers **every** cited path.
 
@@ -460,7 +475,7 @@ def match_exclusion(
     """
     if not isinstance(policy, dict) or not isinstance(body, dict):
         return None
-    paths = cited_paths(body)
+    paths = cited_paths(body, root)
     if not paths:
         return None
     for kind, list_key in (("excluded", "exclusions"), ("out_of_scope", "out_of_scope")):
@@ -493,6 +508,7 @@ def apply_severity_rubric(
     body: dict,
     *,
     revision: int | None = None,
+    root: Path | None = None,
 ) -> tuple[dict, dict | None]:
     """Cap ``severity_claim`` by the tightest matching rubric rule (demote-only).
 
@@ -509,7 +525,7 @@ def apply_severity_rubric(
         return body, None
     if body.get("severity_claim_original"):
         return body, None
-    paths = cited_paths(body)
+    paths = cited_paths(body, root)
     best: dict | None = None
     for rule in policy.get("severity_rubric") or []:
         if not isinstance(rule, dict):
