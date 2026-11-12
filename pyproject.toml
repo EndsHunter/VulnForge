@@ -27,6 +27,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+  # SARIF 2.1.0 schema validation in tests (schema vendored under tests/fixtures/sarif)
+  "jsonschema>=4.0",
 ]
 # Kept for older install hints: pip install 'vulnforge[export]'
 export = ["openpyxl>=3.1", "python-docx>=1.1", "pypdf>=4.0"]

@@ -61,6 +61,8 @@ Read. Returns the operator-chat `get_status` payload (`card`, `runner`, `codemap
 
 Read. Query or JSON: `state`, `class`, `q`, `limit` (default 40, chat cap 80). Rows match chat `list_findings` (id, state, title, class, evidence, severity). Does not change finding state.
 
+`format=sarif` returns `{count, states, skipped_no_location, sarif}` instead, where `sarif` is the SARIF 2.1.0 log from the Report / `vf export` exporter. It defaults to `confirmed` only. `include_needs_human` and `include_rejected` widen it, `state` replaces the filter, and `class` narrows to one rule. `q` and `limit` do not apply, so the log is the full filtered set. Unknown `format` → 400. See [`SARIF.md`](SARIF.md).
+
 ### `gate`
 
 Read of the human gate. `needs_human` is the count of findings that passed mechanical gates. `inbox` is the awaiting-review HITL list (`vulnforge/hitl-report@1`), including explicit gate packets. `open` is true when that inbox is non-empty or `needs_human` > 0. `confirms` is always false.

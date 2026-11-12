@@ -528,6 +528,21 @@
             <input type="checkbox" id="export-fmt-docx" data-fmt="docx" />
             <span>Word (.docx)</span>
           </label>
+          <label class="export-check">
+            <input type="checkbox" id="export-fmt-sarif" data-fmt="sarif" />
+            <span>SARIF 2.1.0 (.sarif)</span>
+          </label>
+          <div class="export-sarif-opts" id="export-sarif-opts" style="margin-left:1.5rem">
+            <p class="controls-hint" style="margin:0.25rem 0">SARIF exports confirmed findings by default.</p>
+            <label class="export-check">
+              <input type="checkbox" id="export-sarif-needs-human" />
+              <span>SARIF: include needs_human</span>
+            </label>
+            <label class="export-check">
+              <input type="checkbox" id="export-sarif-rejected" />
+              <span>SARIF: include rejected / superseded</span>
+            </label>
+          </div>
           <div class="export-select-row">
             <button type="button" class="btn btn-sm btn-ghost" id="export-fmt-all">Select all formats</button>
             <button type="button" class="btn btn-sm btn-ghost" id="export-fmt-none">Clear formats</button>

@@ -62,6 +62,7 @@ Stage LLM packets load markdown from `seeds/system/` (with optional `config/prom
 | Stage handlers | `vulnforge/stages/<kind>.py` |
 | Enqueue / requeue ops | `vulnforge/control/ops.py` |
 | Campaign verbs (start/stop/pause/resume/status/findings/gate) | `vulnforge/control/campaign.py` — [CAMPAIGN.md](CAMPAIGN.md) |
+| Findings export (json/md/csv/html/xlsx/docx/sarif) | `vulnforge/export_findings.py`, SARIF in `vulnforge/sarif_export.py` — [SARIF.md](SARIF.md) |
 | Packet builders | `vulnforge/packet.py` |
 | Package layout map | [docs/LAYOUT.md](../LAYOUT.md) |
 | Topology / flow | [docs/AGENTS_MAP.md](../AGENTS_MAP.md) |

@@ -1,5 +1,5 @@
 """
-Server-side audit report export (JSON, Markdown, CSV, HTML, XLSX, DOCX).
+Server-side audit report export (JSON, Markdown, CSV, HTML, XLSX, DOCX, SARIF).
 
 Optional sections: findings, architecture, hunt coverage, campaign summary,
 mechanical codemap, PoC/evidence packs. Multi-format export can zip bundles.
@@ -74,9 +74,19 @@ class ExportOptions:
     include_summary: bool = False
     include_poc: bool = False
     include_codemap: bool = False
+    # SARIF state filter (other formats ignore these). Default = confirmed only.
+    sarif_include_needs_human: bool = False
+    sarif_include_rejected: bool = False
+    # Explicit state allow-list; wins over the two flags above.
+    sarif_states: tuple[str, ...] | None = None
 
     def as_dict(self) -> dict[str, bool]:
-        return {f.name: bool(getattr(self, f.name)) for f in fields(self)}
+        """Report sections only (printed by JSON/HTML/DOCX); SARIF filters excluded."""
+        return {
+            f.name: bool(getattr(self, f.name))
+            for f in fields(self)
+            if f.name.startswith("include_")
+        }
 
     @classmethod
     def from_kwargs(
@@ -88,6 +98,9 @@ class ExportOptions:
         include_hunts: bool = False,
         include_summary: bool = False,
         include_codemap: bool = False,
+        sarif_include_needs_human: bool = False,
+        sarif_include_rejected: bool = False,
+        sarif_states: Iterable[str] | None = None,
         options: ExportOptions | None = None,
     ) -> ExportOptions:
         if options is not None:
@@ -99,6 +112,9 @@ class ExportOptions:
             include_summary=bool(include_summary),
             include_poc=bool(include_poc),
             include_codemap=bool(include_codemap),
+            sarif_include_needs_human=bool(sarif_include_needs_human),
+            sarif_include_rejected=bool(sarif_include_rejected),
+            sarif_states=tuple(sarif_states) if sarif_states is not None else None,
         )
 
 
@@ -2054,6 +2070,56 @@ def export_docx(
     doc.save(buf)
     return buf.getvalue()
 
+def sarif_document(
+    run_dir: Path | str | None,
+    db: Any,
+    *,
+    options: ExportOptions | None = None,
+    weakness_class: str | None = None,
+    **section_flags: Any,
+) -> dict[str, Any]:
+    """SARIF 2.1.0 log as a dict (see ``vulnforge.sarif_export``). Findings only."""
+    from vulnforge.sarif_export import build_sarif, selected_states, tool_version
+
+    opts = ExportOptions.from_kwargs(options=options, **section_flags)
+    meta = _run_meta(Path(run_dir) if run_dir else None, db)
+    return build_sarif(
+        findings_to_rows(db),
+        states=selected_states(
+            include_needs_human=opts.sarif_include_needs_human,
+            include_rejected=opts.sarif_include_rejected,
+            states=opts.sarif_states,
+        ),
+        target_path=meta.get("target_path") or "",
+        run_id=meta.get("run_id") or "",
+        profile=meta.get("profile") or "",
+        exported_at=utc_now_iso(),
+        tool_version=tool_version(),
+        disclaimer=DISCLAIMER,
+        weakness_class=weakness_class,
+    )
+
+
+def export_sarif(
+    run_dir: Path | str | None,
+    db: Any,
+    *,
+    include_poc: bool = False,
+    options: ExportOptions | None = None,
+    **section_flags: Any,
+) -> str:
+    """SARIF 2.1.0 JSON text. Findings only; narrative sections and PoC ignored.
+
+    Default states: confirmed. ``sarif_include_needs_human`` / ``sarif_include_rejected``
+    widen it; ``sarif_states`` sets an explicit allow-list.
+    """
+    opts = ExportOptions.from_kwargs(
+        include_poc=include_poc, options=options, **section_flags
+    )
+    doc = sarif_document(run_dir, db, options=opts)
+    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+
+
 # Map format query params to (exporter, extension, media_type, is_binary)
 EXPORT_FORMATS: dict[str, tuple[str, str, str, bool]] = {
     "json": ("export_json", "json", "application/json; charset=utf-8", False),
@@ -2068,6 +2134,7 @@ EXPORT_FORMATS: dict[str, tuple[str, str, str, bool]] = {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         True,
     ),
+    "sarif": ("export_sarif", "sarif", "application/sarif+json", False),
 }
 
 
