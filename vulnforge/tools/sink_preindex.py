@@ -19,7 +19,7 @@ _SINK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "sql",
         re.compile(
-            r"""(?:execute|executemany|raw|cursor\.execute|Statement\.execute|createQuery|createNativeQuery|jdbcTemplate|\.query\s*\(|prepare\s*\(|DBI->|pg_query|mysqli_|mysql_query|sqlite3_exec)\s*\(|SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM""",
+            r"""(?:execute|executemany|raw|cursor\.execute|Statement\.execute|createQuery|createNativeQuery|jdbcTemplate\.\w+|\.query|prepare|DBI->\w+|pg_query|mysqli_\w+|mysql_query|sqlite3_exec)\s*\(|SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM""",
             re.I,
         ),
     ),
@@ -34,7 +34,7 @@ _SINK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "exec",
         re.compile(
-            r"""(?:subprocess\.(?:run|call|Popen|check_output)|os\.system|os\.popen|exec\s*\(|eval\s*\(|Runtime\.exec|ProcessBuilder|child_process|shell_exec|passthru|system\s*\(|popen\s*\(|posix_spawn|CreateProcess|ShellExecute)\s*\(""",
+            r"""\b(?:subprocess\.(?:run|call|Popen|check_output)|os\.system|os\.popen|exec|eval|Runtime\.exec|ProcessBuilder|child_process\.\w+|shell_exec|passthru|system|popen|posix_spawnp?|CreateProcess\w*|ShellExecute\w*)\s*\(""",
             re.I,
         ),
     ),
