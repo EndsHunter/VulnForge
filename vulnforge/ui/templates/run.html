@@ -8,31 +8,43 @@
   <link rel="icon" type="image/png" href="/static/logo.png" />
   <link rel="apple-touch-icon" href="/static/logo.png" />
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/shell.css" />
+  <link rel="stylesheet" href="/static/pages/review.css" />
+  <link rel="stylesheet" href="/static/pages/campaign.css" />
+  <link rel="stylesheet" href="/static/pages/atlas.css" />
 </head>
 <body data-page="run" data-run-key="{{ target_id }}/{{ run_id }}">
   <div class="run-shell">
-  <aside class="icon-rail" data-run-rail aria-label="Run navigation"></aside>
   <div class="run-workspace">
-  <header class="app-header mission-bar run-strip">
-    <a href="/" class="home-mark" title="Home"><img class="logo" src="/static/logo-128.png" width="32" height="32" alt="VulnForge"></a>
+  <header class="app-header mission-bar run-strip vf-topbar">
+    <a href="/" class="home-mark" title="Home"><img class="logo" src="/static/logo.svg" width="28" height="28" alt="VulnForge"></a>
     <div class="strip-id">
       <label class="visually-hidden" for="run-switch">Run</label>
       <select id="run-switch" aria-label="Switch run">
         <option value="/runs/{{ target_id }}/{{ run_id }}" selected>{{ target_id }} / {{ run_id }}</option>
       </select>
     </div>
+    <nav class="vf-tabs" data-run-tabs role="tablist" aria-label="Workspace"></nav>
+    <div class="vf-spacer"></div>
+    <div id="run-pipeline-strip" class="vf-pipeline-strip" aria-label="Pipeline summary"></div>
     <div class="header-actions">
       <span class="live-cluster" title="Live updates">
         <span class="live-dot" id="live-dot"></span>
-        <span id="live-label">...</span>
+        <span id="live-label" class="visually-hidden">...</span>
       </span>
       <span id="runner-status" class="runner-status"></span>
       <button class="btn btn-good" id="btn-start" type="button" title="Start Ralph outer loop">Start</button>
       <button class="btn btn-warn" id="btn-pause" type="button" title="Pause after current task" hidden>Pause</button>
       <button class="btn btn-primary" id="btn-resume" type="button" title="Resume Ralph" hidden>Resume</button>
+      <button class="vf-icon-btn" id="btn-command" type="button" aria-label="Ask AI or run a command" title="Ask AI (⌘K)">⌘K</button>
       <details class="danger-menu">
-        <summary class="btn btn-ghost" title="More actions">···</summary>
+        <summary class="btn btn-ghost" title="More actions" aria-label="More actions">···</summary>
         <div class="danger-menu-body">
+          <a class="vf-menu-link" href="/">Home</a>
+          <a class="vf-menu-link" href="/settings">Settings</a>
+          <a class="vf-menu-link" href="/dev">Dev</a>
+          <a class="vf-menu-link" href="/tool-gaps">Tool gaps</a>
+          <hr>
           <button class="btn" id="btn-refresh" type="button" title="Refresh snapshot">Refresh</button>
           <button class="btn btn-bad" id="btn-stop" type="button" title="Kill Ralph process immediately">Hard stop</button>
           <button class="btn btn-bad" id="btn-delete-run" type="button" title="Permanently delete this run">Delete run</button>
@@ -43,44 +55,62 @@
 
   <main class="main">
 
-    <!-- Mission -->
-    <div class="mode-panel active" data-mode-panel="mission">
-      <div id="arch-panel" class="arch-panel" aria-label="Mission architecture"></div>
-    </div>
-
     <!-- Explorer -->
+    <!-- BEGIN page:atlas (owner: atlas agent) -->
     <div class="mode-panel" data-mode-panel="explorer">
-      <div id="explorer-panel"></div>
+      <!-- Atlas (Code Atlas): map + tree + inspector, built by static/pages/atlas.js.
+           #explorer-panel (Monaco viewer, explorer.js) is moved into the Atlas Code view. -->
+      <div id="page-atlas" class="vf-page" data-page-root="atlas"></div>
+      <div id="explorer-panel" class="atlas-explorer-host"></div>
     </div>
+    <!-- END page:atlas -->
 
     <!-- Hunts: plan queue + residual-risk matrix (mode id was "coverage") -->
+    <!-- BEGIN page:campaign (owner: campaign agent) -->
     <div class="mode-panel" data-mode-panel="hunts">
-      <div class="coverage-shell">
-        <div class="coverage-header">
-          <div>
-            <h2 class="coverage-title">Hunts</h2>
-            <p class="controls-hint coverage-honesty">
-              Plan hunts against architecture areas, then track residual risk —
-              <strong>shallow / none / aborted / empty / planned</strong> are not safe.
-              Green means a finding was filed, not that the area is exhaustively proven.
-            </p>
-            <p id="coverage-honesty-dynamic" class="controls-hint coverage-honesty-dynamic" aria-live="polite"></p>
+      <div id="page-campaign" class="vf-page cmp-page" data-page-root="campaign">
+        <section class="cmp-pipeline" aria-labelledby="cmp-pipeline-title">
+          <div class="cmp-section-head">
+            <h1 id="cmp-pipeline-title" class="cmp-h1">Pipeline</h1>
+            <span class="cmp-hint">Each stage shows what came in, what is waiting, and what was dropped. Nothing is confirmed without a person.</span>
           </div>
+          <ol id="campaign-pipeline" class="cmp-stages" aria-live="polite"></ol>
+        </section>
+
+        <div class="cmp-body">
+          <section class="cmp-matrix vf-card" aria-labelledby="cmp-matrix-title">
+            <div class="cmp-matrix-head">
+              <h2 id="cmp-matrix-title" class="cmp-h2">Hunt coverage · area × skill</h2>
+              <div id="coverage-actions" class="cmp-matrix-actions"></div>
+              <button type="button" class="vf-btn" id="cmp-plan-open" title="Open the hunt planner (areas × skills)">Plan hunts</button>
+            </div>
+            <p id="coverage-honesty-dynamic" class="cmp-honesty" aria-live="polite"></p>
+            <div id="coverage-panel" class="cmp-matrix-panel"></div>
+            <ul id="coverage-legend" class="cmp-legend" aria-label="Legend"></ul>
+          </section>
+
+          <aside class="cmp-side" aria-label="Campaign details">
+            <section id="coverage-detail" class="cmp-inspector vf-card" aria-label="Selected cell"></section>
+            <section class="vf-card cmp-now" aria-labelledby="cmp-now-title">
+              <h2 id="cmp-now-title" class="vf-section-label">Now running</h2>
+              <div id="campaign-now"></div>
+            </section>
+            <section class="vf-card cmp-activity" aria-labelledby="cmp-activity-title">
+              <h2 id="cmp-activity-title" class="vf-section-label">Activity</h2>
+              <ul id="campaign-activity" class="cmp-activity-list"></ul>
+            </section>
+          </aside>
         </div>
-        <div id="coverage-mode-bar" class="coverage-mode-bar"></div>
-        <div id="coverage-summary" class="coverage-summary" role="group" aria-label="Filter hunt cells"></div>
-        <div id="coverage-legend" class="coverage-legend"></div>
-        <div id="coverage-actions" class="coverage-actions"></div>
-        <!-- Ticket 4: live hunt feed + needs_human above residual matrix -->
-        <div id="hunts-strip" class="hunts-strip" aria-label="Hunts strip" hidden></div>
-        <div class="coverage-body">
-          <div class="card coverage-matrix-card">
-            <div id="coverage-panel"></div>
+
+        <div id="campaign-planner" class="cmp-drawer" role="dialog" aria-modal="true" aria-label="Plan hunts" hidden>
+          <div class="cmp-drawer-backdrop" data-planner-close></div>
+          <div class="cmp-drawer-panel">
+            <div id="coverage-mode-bar" class="coverage-mode-bar"></div>
           </div>
-          <div id="coverage-detail" class="coverage-detail card" hidden></div>
         </div>
       </div>
     </div>
+    <!-- END page:campaign -->
 
     <!-- Evidence packs (on-disk packs linked from Report findings) -->
     <div class="mode-panel" data-mode-panel="evidence">
@@ -99,91 +129,54 @@
     </div>
 
     <!-- Report (main mode): structured findings table + export -->
+    <!-- BEGIN page:review (owner: review agent) -->
+    <!-- Review (Triage Desk): queue | finding | verdict rail. Rendered by report.js + pages/review.js -->
     <div class="mode-panel" data-mode-panel="report">
+      <div id="page-review" class="vf-page" data-page-root="review">
       <div class="tab-panel active" id="panel-report">
-        <div class="report-shell" id="report-shell" data-review-page="findings">
-          <div class="report-toolbar">
-            <div class="report-search-bar">
-              <input
-                type="search"
-                id="report-search"
-                class="report-search"
-                placeholder="Search findings…"
-                autocomplete="off"
-                aria-label="Search findings"
-              />
-              <span id="report-search-count" class="controls-hint report-search-count" hidden></span>
-            </div>
-            <div class="report-export-bar">
-              <button
-                type="button"
-                class="btn btn-primary"
-                id="report-export-open"
-                title="Choose sections and formats, then download the audit report"
-              >
-                Export report
-              </button>
-            </div>
-          </div>
-          <div id="report-summary" role="group" aria-label="Filter findings by state"></div>
-          <div class="card report-table-card report-review-card">
-            <div class="report-book" id="report-book" data-review-page="findings">
-              <nav class="report-book-tabs" id="report-book-tabs" aria-label="Earlier report pages" hidden>
-                <button type="button" class="report-book-tab" data-book-page="findings">Findings</button>
-                <button type="button" class="report-book-tab" data-book-page="detail">Details</button>
-              </nav>
-              <div class="report-review-panes" id="report-review-panes" aria-label="Finding review">
-              <section class="report-pane report-list-pane" aria-label="Findings list">
-                <div class="report-pane-head">Findings</div>
-                <div class="table-wrap report-list-wrap">
-                  <table class="data report-table">
-                    <thead>
-                      <tr>
-                        <th class="th-sortable" data-sort="id" aria-sort="none" scope="col">
-                          <button type="button" class="th-sort-btn">ID</button>
-                        </th>
-                        <th class="th-sortable" data-sort="title" aria-sort="none" scope="col">
-                          <button type="button" class="th-sort-btn">Title</button>
-                        </th>
-                        <th class="th-sortable report-col-class" data-sort="class" aria-sort="none" scope="col">
-                          <button type="button" class="th-sort-btn">Class</button>
-                        </th>
-                        <th class="th-sortable" data-sort="severity" aria-sort="none" scope="col">
-                          <button type="button" class="th-sort-btn">Sev</button>
-                        </th>
-                        <th class="th-sortable sorted-asc" data-sort="state" aria-sort="ascending" scope="col">
-                          <button type="button" class="th-sort-btn" aria-pressed="true">State</button>
-                        </th>
-                        <th class="th-sortable report-col-location" data-sort="location" aria-sort="none" scope="col">
-                          <button type="button" class="th-sort-btn">Location</button>
-                        </th>
-                        <th class="report-col-action"></th>
-                      </tr>
-                    </thead>
-                    <tbody id="report-tbody">
-                      <tr><td colspan="7" class="empty">Loading...</td></tr>
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-              <section class="report-pane report-detail-pane" aria-label="Finding detail">
-                <div class="report-pane-head">Detail</div>
-                <div id="report-detail" class="report-detail">
-                  <div class="report-pane-empty">Select a finding to review.</div>
-                </div>
-              </section>
-              <section class="report-pane report-context-pane" aria-label="Evidence and context">
-                <div class="report-pane-head">Evidence / context</div>
-                <div id="report-context" class="report-context">
-                  <div class="report-pane-empty">Citation snippets and evidence pack preview appear here.</div>
-                </div>
-              </section>
+        <div class="rv-shell" id="report-shell">
+          <aside class="rv-queue" aria-label="Review queue">
+            <div class="rv-queue-head">
+              <div class="rv-queue-title">
+                <h2>Review queue</h2>
+                <button type="button" class="vf-btn vf-btn--ghost rv-export-btn" id="report-export-open" title="Choose sections and formats, then download the audit report">Export</button>
+              </div>
+              <label class="visually-hidden" for="report-search">Search findings</label>
+              <input type="search" id="report-search" class="rv-search" placeholder="Filter by title, class, path…" autocomplete="off" />
+              <div id="report-summary" class="rv-chips" role="group" aria-label="Filter findings by state"></div>
+              <div class="rv-queue-meta">
+                <label class="rv-sort">Sort
+                  <select id="report-sort" aria-label="Sort findings">
+                    <option value="severity">Severity</option>
+                    <option value="state">State</option>
+                    <option value="id">Newest</option>
+                    <option value="location">Location</option>
+                    <option value="title">Title</option>
+                    <option value="class">Class</option>
+                  </select>
+                </label>
+                <span id="report-search-count" class="vf-faint" hidden></span>
               </div>
             </div>
-          </div>
+            <ul id="report-queue" class="rv-queue-list" aria-label="Findings"></ul>
+            <div class="rv-keys" aria-label="Keyboard shortcuts">
+              <span><kbd class="vf-kbd">J</kbd> <kbd class="vf-kbd">K</kbd> move</span>
+              <span><kbd class="vf-kbd">A</kbd> accept</span>
+              <span><kbd class="vf-kbd">R</kbd> reject</span>
+              <span><kbd class="vf-kbd">E</kbd> evidence</span>
+            </div>
+          </aside>
+          <section id="report-detail" class="rv-finding" aria-label="Finding" aria-live="polite">
+            <div class="vf-empty">Select a finding to review.</div>
+          </section>
+          <aside id="report-context" class="rv-verdict" aria-label="Verdict">
+            <div class="vf-empty">Gates, disprove results and the verdict appear here.</div>
+          </aside>
         </div>
       </div>
+      </div>
     </div>
+    <!-- END page:review -->
 
     <div class="mode-panel" data-mode-panel="ai">
       <div class="tab-panel active" id="panel-ai"></div>
@@ -624,6 +617,9 @@
   <script src="/static/report.js"></script>
   <script src="/static/coverage.js"></script>
   <script src="/static/chat.js"></script>
+  <script src="/static/pages/review.js"></script>
+  <script src="/static/pages/campaign.js"></script>
+  <script src="/static/pages/atlas.js"></script>
   <script src="/static/modes.js"></script>
 </body>
 </html>

@@ -8,25 +8,37 @@
   <link rel="icon" type="image/png" href="/static/logo.png" />
   <link rel="apple-touch-icon" href="/static/logo.png" />
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/shell.css" />
+  <link rel="stylesheet" href="/static/pages/home.css" />
 </head>
 <body data-page="home">
-  <main class="home-fleet">
-    <header class="home-head">
-      <a href="/" class="home-mark" title="Home"><img class="logo" src="/static/logo-128.png" width="32" height="32" alt="VulnForge"></a>
-      <input type="search" id="home-search" placeholder="Search target, run id, path" aria-label="Search runs" />
-      <button class="btn btn-primary" id="btn-new-run" type="button">New</button>
+  <main class="home-fleet vf-home">
+    <header class="home-head vf-home-head">
+      <a href="/" class="home-mark" title="Home"><img class="logo" src="/static/logo.svg" width="28" height="28" alt="VulnForge"></a>
+      <h1 class="vf-home-title">Runs</h1>
+      <label class="vf-home-search">
+        <span class="visually-hidden">Search runs</span>
+        <input type="search" id="home-search" placeholder="Search target, run id, path" aria-label="Search runs" />
+      </label>
+      <button class="btn btn-primary" id="btn-new-run" type="button">New audit</button>
+      <details class="danger-menu vf-home-menu">
+        <summary class="btn btn-ghost" title="Operator tools" aria-label="Operator tools">···</summary>
+        <nav class="danger-menu-body" aria-label="Operator tools">
+          <a href="/settings" id="btn-settings" class="vf-menu-link">Settings</a>
+          <a href="/dev" id="btn-open-dev" class="vf-menu-link">Dev</a>
+          <a href="/benchmarks" id="btn-open-benchmarks" class="vf-menu-link">Benchmarks</a>
+          <a href="/tool-gaps" id="btn-open-tool-gaps" class="vf-menu-link">Tool gaps</a>
+        </nav>
+      </details>
     </header>
-    <div id="home-stats" class="home-stats" hidden></div>
-    <div class="home-label">Runs</div>
-    <div class="run-list" id="run-list">
+    <section id="home-attention" class="vf-card vf-home-attention" aria-label="Needs your attention" hidden></section>
+    <div class="vf-home-list-head">
+      <h2 class="vf-section-label">All runs</h2>
+      <div id="home-stats" class="home-stats" hidden></div>
+    </div>
+    <div class="run-list vf-run-list" id="run-list">
       <div class="empty">Loading...</div>
     </div>
-    <nav class="home-dock" aria-label="Operator tools">
-      <a href="/settings" id="btn-settings" class="home-dock-btn" title="Settings">Settings</a>
-      <a href="/dev" id="btn-open-dev" class="home-dock-btn" title="Dev">Dev</a>
-      <a href="/benchmarks" id="btn-open-benchmarks" class="home-dock-btn" title="Benchmarks">Benchmarks</a>
-      <a href="/tool-gaps" id="btn-open-tool-gaps" class="home-dock-btn" title="Tool gaps">Tool gaps</a>
-    </nav>
   </main>
 
   <button type="button" id="ai-fab" class="ai-fab" aria-label="Ask" aria-expanded="false">
@@ -551,6 +563,7 @@
   </div>
 
   <script src="/static/mission_overview_helpers.js"></script>
+  <script src="/static/pages/home.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/chat.js"></script>
 </body>

@@ -230,16 +230,17 @@ describe("countFindingState", () => {
 });
 
 describe("listNeedsHumanFindings", () => {
-  it("filters list and counts map", () => {
+  it("filters list and counts map; candidate is never needs_human", () => {
     const fromList = listNeedsHumanFindings([
       { id: 1, state: "needs_human", title: "A" },
       { id: 2, state: "confirmed", title: "B" },
       { id: 3, state: "candidate", title: "C" },
     ]);
-    assert.equal(fromList.count, 2);
-    assert.equal(fromList.items.length, 2);
+    assert.equal(fromList.count, 1);
+    assert.equal(fromList.items.length, 1);
+    assert.equal(fromList.items[0].id, 1);
     const fromMap = listNeedsHumanFindings({ needs_human: 4, candidate: 1, confirmed: 2 });
-    assert.equal(fromMap.count, 5);
+    assert.equal(fromMap.count, 4);
     assert.equal(fromMap.items.length, 0);
   });
 });
@@ -838,5 +839,201 @@ describe("aggregateRunUsage / buildMissionUsage", () => {
     const vm = buildMissionCockpit({});
     assert.equal(vm.usage.total, 0);
     assert.equal(vm.usage.models.length, 0);
+  });
+});
+
+describe("buildHeaderStrip", () => {
+  const { buildHeaderStrip } = require(require("path").join(
+    __dirname, "..", "..", "vulnforge", "ui", "static", "mission_overview_helpers.js"
+  ));
+
+  it("counts only needs_human as Review (candidate is not waiting on a person)", () => {
+    const strip = buildHeaderStrip({
+      tasks: [],
+      findings: [{ state: "candidate" }, { state: "candidate" }, { state: "needs_human" }],
+    });
+    const review = strip.find((s) => s.id === "review");
+    assert.equal(review.count, 1);
+    assert.equal(review.value, "1");
+  });
+
+  it("reports hunts done/total and confirmed from a state-count map", () => {
+    const strip = buildHeaderStrip({
+      tasks: [
+        { kind: "hunt", state: "done" },
+        { kind: "hunt", state: "done" },
+        { kind: "hunt", state: "queued" },
+      ],
+      findings: { confirmed: 2, needs_human: 0 },
+    });
+    assert.equal(strip.find((s) => s.id === "hunts").value, "2/3");
+    assert.equal(strip.find((s) => s.id === "confirmed").count, 2);
+    assert.deepEqual(strip.map((s) => s.id), ["recon", "hunts", "review", "confirmed"]);
+  });
+
+  it("tolerates an empty snapshot", () => {
+    const strip = buildHeaderStrip(null);
+    assert.equal(strip.find((s) => s.id === "recon").value, "—");
+    assert.equal(strip.find((s) => s.id === "hunts").value, "0");
+  });
+});
+
+describe("Campaign helpers", () => {
+  const {
+    buildCampaignPipeline,
+    buildCampaignWork,
+    cellDisplayState,
+    summarizeResidualMatrix,
+  } = require(require("path").join(
+    __dirname, "..", "..", "vulnforge", "ui", "static", "mission_overview_helpers.js"
+  ));
+
+  const snap = {
+    validate_llm_on: true,
+    coverage: { areas: ["a", "b"], classes: ["x", "y"], cells: [] },
+    tasks: [
+      { id: 1, kind: "recon", state: "succeeded" },
+      { id: 2, kind: "hunt", state: "succeeded" },
+      { id: 3, kind: "hunt", state: "leased" },
+      { id: 4, kind: "hunt", state: "queued" },
+      { id: 5, kind: "hunt", state: "failed_task" },
+      { id: 6, kind: "develop_poc", state: "succeeded" },
+      { id: 7, kind: "validate_poc", state: "succeeded" },
+    ],
+    findings: [
+      { state: "candidate" },
+      { state: "rejected_mech" },
+      { state: "rejected_llm" },
+      { state: "needs_human" },
+      { state: "needs_human" },
+      { state: "confirmed" },
+      { state: "rejected_human" },
+    ],
+  };
+
+  it("builds six stages in pipeline order", () => {
+    const p = buildCampaignPipeline(snap);
+    assert.deepEqual(p.map((s) => s.id), ["recon", "hunt", "mech", "disprove", "human", "poc"]);
+  });
+
+  it("derives gate and exit counts from finding states", () => {
+    const p = Object.fromEntries(buildCampaignPipeline(snap).map((s) => [s.id, s]));
+    // 7 findings, 1 candidate → 6 reached gates; 1 rejected_mech → 5 passed
+    assert.equal(p.mech.big, "5");
+    assert.equal(p.mech.bigLabel, "passed of 6");
+    assert.equal(p.mech.exit, "−1");
+    // 5 passed, 1 rejected_llm → 4 survived
+    assert.equal(p.disprove.big, "4");
+    assert.equal(p.disprove.exit, "−1");
+    assert.equal(p.human.big, "2");
+    assert.equal(p.human.status, "waiting");
+    assert.equal(p.human.exit, "−1");
+    assert.equal(p.human.sub, "1 confirmed");
+    assert.equal(p.hunt.big, "2/4");
+    assert.equal(p.hunt.exit, "1 failed");
+    assert.equal(p.recon.big, "2");
+    assert.equal(p.poc.big, "1");
+    assert.equal(p.poc.sub, "1 ran in sandbox");
+  });
+
+  it("never counts a candidate as waiting for a person", () => {
+    const p = buildCampaignPipeline({ tasks: [], findings: [{ state: "candidate" }, { state: "candidate" }] });
+    const human = p.find((s) => s.id === "human");
+    assert.equal(human.big, "0");
+    assert.notEqual(human.status, "waiting");
+  });
+
+  it("marks disprove off when validate_llm is disabled", () => {
+    const p = buildCampaignPipeline({ validate_llm_on: false, tasks: [], findings: [] });
+    assert.equal(p.find((s) => s.id === "disprove").status, "off");
+  });
+
+  it("orders up-next like the lease queue and lists running work", () => {
+    const w = buildCampaignWork([
+      { id: 9, kind: "hunt", state: "queued", priority: 100, payload: { area: "a", class: "x" } },
+      { id: 4, kind: "hunt", state: "queued", priority: 100, payload: { area: "b", class: "y" } },
+      { id: 12, kind: "validate_llm", state: "queued", priority: 10 },
+      { id: 2, kind: "hunt", state: "paused", priority: 1 },
+      { id: 3, kind: "hunt", state: "leased", payload: { area: "c", class: "z" } },
+    ]);
+    assert.deepEqual(w.next.map((t) => t.id), [12, 4, 9, 2]);
+    assert.equal(w.queuedTotal, 4);
+    assert.equal(w.running.length, 1);
+    assert.equal(w.running[0].label, "c × z");
+  });
+
+  it("maps coverage depths to display states", () => {
+    assert.equal(cellDisplayState("needs_human"), "finding");
+    assert.equal(cellDisplayState("candidate"), "finding");
+    assert.equal(cellDisplayState("none"), "none");
+    assert.equal(cellDisplayState(""), "empty");
+    assert.equal(cellDisplayState(undefined), "empty");
+    assert.equal(cellDisplayState("planned", true), "running");
+  });
+
+  it("summarizes the matrix: none stays open, findings are deep but not proof", () => {
+    const m = summarizeResidualMatrix(
+      {
+        areas: ["a", "b"],
+        classes: ["x", "y"],
+        cells: [
+          { area: "a", class: "x", last_depth: "confirmed" },
+          { area: "a", class: "y", last_depth: "none" },
+          { area: "b", class: "x", last_depth: "shallow" },
+        ],
+      },
+      new Set(["b\0y"])
+    );
+    assert.equal(m.total, 4);
+    assert.equal(m.deep, 2);
+    assert.equal(m.open, 2); // none + shallow; running is in flight, finding is filed
+    assert.deepEqual(m.rows.map((r) => r.open), [1, 1]);
+    assert.equal(m.legend.finding, 1);
+    assert.equal(m.legend.running, 1);
+    assert.equal(m.legend.empty, 0);
+  });
+});
+
+describe("describeEvent", () => {
+  const { describeEvent } = require(require("path").join(
+    __dirname, "..", "..", "vulnforge", "ui", "static", "mission_overview_helpers.js"
+  ));
+  it("describes known events with a tone", () => {
+    const d = describeEvent({ event: "finding_needs_human", finding_id: 3 });
+    assert.equal(d.text, "F3 passed gates, now needs review");
+    assert.equal(d.tone, "review");
+    assert.equal(describeEvent({ event: "task_failed", task_id: 12, reason: "timeout" }).text, "Task #12 failed (timeout)");
+  });
+  it("falls back to a spaced event name", () => {
+    assert.equal(describeEvent({ event: "recon_merge_done" }).text, "recon merge done");
+    assert.equal(describeEvent(null).text, "event");
+  });
+});
+
+describe("CELL_STATES vocabulary", () => {
+  it("covers every display state once, with plain labels and tips", () => {
+    const ids = helpers.CELL_STATES.map((s) => s.id);
+    assert.deepEqual(ids, ["finding", "none", "shallow", "aborted", "planned", "running", "empty"]);
+    for (const s of helpers.CELL_STATES) {
+      assert.ok(s.label && s.tip, s.id);
+    }
+    assert.equal(helpers.cellStateMeta("empty").label, "Not hunted");
+    assert.equal(helpers.cellStateMeta("bogus").id, "empty");
+  });
+
+  it("keeps nothing-found open and never labels it safe", () => {
+    const none = helpers.cellStateMeta("none");
+    assert.equal(none.open, true);
+    assert.match(none.tip, /not proof of safety/);
+    assert.equal(helpers.cellStateMeta("finding").open, false);
+    assert.match(helpers.cellStateMeta("finding").tip, /does not mean/);
+  });
+
+  it("agrees with the matrix rollup on which states are open", () => {
+    const openIds = helpers.CELL_STATES.filter((s) => s.open).map((s) => s.id).sort();
+    const cov = { areas: ["a"], classes: openIds.concat(["f"]), cells: [] };
+    cov.cells = openIds.map((d) => ({ area: "a", class: d, last_depth: d === "empty" ? "" : d }));
+    cov.cells.push({ area: "a", class: "f", last_depth: "confirmed" });
+    assert.equal(helpers.summarizeResidualMatrix(cov, new Set()).rows[0].open, openIds.length);
   });
 });

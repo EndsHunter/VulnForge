@@ -206,7 +206,8 @@
   }
 
   /**
-   * needs_human + candidate findings for the strip.
+   * needs_human findings only. A `candidate` has not passed mechanical gates,
+   * so it is never "waiting for a person" (docs/ui/REDESIGN.md).
    * findings may be a list (full snap) or a state→count map (SSE card).
    */
   function listNeedsHumanFindings(findings, opts) {
@@ -214,7 +215,7 @@
     if (Array.isArray(findings)) {
       const items = findings.filter((f) => {
         const st = String((f && f.state) || "").toLowerCase();
-        return st === "needs_human" || st === "candidate";
+        return st === "needs_human";
       });
       const sliced = items.slice(0, limit).map((f) => ({
         id: f.id,
@@ -226,7 +227,7 @@
       return { count: items.length, items: sliced };
     }
     const counts = findings && typeof findings === "object" ? findings : {};
-    const count = (counts.needs_human || 0) + (counts.candidate || 0);
+    const count = counts.needs_human || 0;
     return { count, items: [] };
   }
 
@@ -893,7 +894,352 @@
     };
   }
 
+  function pct(part, whole) {
+    const w = Number(whole) || 0;
+    if (w <= 0) return 0;
+    return Math.max(0, Math.min(100, Math.round(((Number(part) || 0) / w) * 100)));
+  }
+
+  function tasksOfKind(snap, kinds) {
+    const rows = taskRows(snap) || [];
+    const want = new Set(kinds);
+    return rows.filter((t) => want.has(String((t && t.kind) || "").toLowerCase()));
+  }
+
+  /**
+   * Campaign pipeline row (docs/ui/REDESIGN.md → Campaign).
+   * Six stages with a big number, done/waiting bar percentages, a sub-line and
+   * the count that exited at that stage. Finding-based stages read state counts,
+   * so a `candidate` never shows as waiting on a person.
+   */
+  function buildCampaignPipeline(snap) {
+    const s = snap || {};
+    const stages = buildPipelineStages(s);
+    const recon = stages[0];
+    const hunt = stages[1];
+    const mech = stages[2];
+    const llm = stages[3];
+    const c = findingStateCounts(s);
+    let ingested = 0;
+    for (const n of Object.values(c)) ingested += n;
+    const candidate = c.candidate || 0;
+    const rejMech = c.rejected_mech || 0;
+    const rejLlm = c.rejected_llm || 0;
+    const rejHuman = c.rejected_human || 0;
+    const needs = c.needs_human || 0;
+    const confirmed = c.confirmed || 0;
+    const gatedIn = Math.max(0, ingested - candidate);
+    const passedMech = Math.max(0, gatedIn - rejMech);
+    const survived = Math.max(0, passedMech - rejLlm);
+    const decided = confirmed + rejHuman;
+
+    const areaCount = (() => {
+      const cov = s.coverage || {};
+      if (Array.isArray(cov.areas) && cov.areas.length) return cov.areas.length;
+      const comps = (s.architecture_summary && s.architecture_summary.components) ||
+        (s.architecture && s.architecture.components);
+      return Array.isArray(comps) ? comps.length : 0;
+    })();
+
+    const dev = tasksOfKind(s, ["develop_poc", "iterate_poc"]);
+    const val = tasksOfKind(s, ["validate_poc"]);
+    const isDone = (t) => PIPELINE_DONE_STATES.has(String(t.state || "").toLowerCase()) ||
+      String(t.state || "").toLowerCase() === "succeeded";
+    const devDone = dev.filter(isDone).length;
+    const valDone = val.filter(isDone).length;
+    const valFailed = val.filter((t) => /^failed|deadletter/.test(String(t.state || ""))).length;
+
+    const llmOn = s.validate_llm_on !== false;
+    const stageStatus = (st) => {
+      const x = String((st && st.status) || "idle");
+      if (x === "pending") return "idle";
+      return x;
+    };
+
+    return [
+      {
+        id: "recon",
+        label: "Recon",
+        status: recon.status === "pending" && areaCount ? "done" : stageStatus(recon),
+        big: String(areaCount),
+        bigLabel: areaCount === 1 ? "area mapped" : "areas mapped",
+        donePct: recon.total ? pct(recon.done, recon.total) : areaCount ? 100 : 0,
+        waitPct: recon.total ? pct(recon.queued + recon.active, recon.total) : 0,
+        sub: recon.total ? `${recon.total} recon task${recon.total === 1 ? "" : "s"}` : "no recon tasks",
+        exit: recon.failed ? `${recon.failed} failed` : "",
+        nav: { mode: "explorer" },
+      },
+      {
+        id: "hunt",
+        label: "Hunt",
+        status: stageStatus(hunt),
+        big: hunt.total ? `${hunt.done}/${hunt.total}` : "0",
+        bigLabel: "hunts done",
+        donePct: pct(hunt.done, hunt.total),
+        waitPct: pct(hunt.queued + hunt.active, hunt.total),
+        sub: `${hunt.active} running · ${hunt.queued} queued`,
+        exit: hunt.failed ? `${hunt.failed} failed` : "",
+        nav: { mode: "audit" },
+      },
+      {
+        id: "mech",
+        label: "Mech gates",
+        status: stageStatus(mech),
+        big: String(passedMech),
+        bigLabel: `passed of ${gatedIn}`,
+        donePct: pct(passedMech, gatedIn),
+        waitPct: pct(candidate, gatedIn + candidate),
+        sub: candidate ? `${candidate} candidate${candidate === 1 ? "" : "s"} waiting` : "rejected_mech",
+        exit: rejMech ? `−${rejMech}` : "",
+        exitLabel: "rejected_mech",
+        nav: { mode: "report", filter: "rejected" },
+      },
+      {
+        id: "disprove",
+        label: "Disprove",
+        status: llmOn ? stageStatus(llm) : "off",
+        big: String(survived),
+        bigLabel: `survived of ${passedMech}`,
+        donePct: pct(survived, passedMech),
+        waitPct: pct((llm.queued || 0) + (llm.active || 0), Math.max(passedMech, 1)),
+        sub: llmOn ? "both judges rejected" : "validate_llm off",
+        exit: rejLlm ? `−${rejLlm}` : "",
+        exitLabel: "rejected_llm",
+        nav: { mode: "report", filter: "rejected" },
+      },
+      {
+        id: "human",
+        label: "Human review",
+        status: needs ? "waiting" : decided ? "done" : "idle",
+        big: String(needs),
+        bigLabel: "need you",
+        donePct: pct(decided, decided + needs),
+        waitPct: pct(needs, decided + needs),
+        sub: `${confirmed} confirmed`,
+        exit: rejHuman ? `−${rejHuman}` : "",
+        exitLabel: "rejected_human",
+        nav: { mode: "report", filter: "needs_human" },
+      },
+      {
+        id: "poc",
+        label: "PoC",
+        status: "optional",
+        big: String(devDone),
+        bigLabel: "drafted",
+        donePct: pct(devDone, dev.length),
+        waitPct: pct(dev.length - devDone, dev.length),
+        sub: `${valDone} ran in sandbox`,
+        exit: valFailed ? `${valFailed} failed` : "",
+        nav: { mode: "report", filter: "all" },
+      },
+    ];
+  }
+
+  /**
+   * Leased hunts (now running) and queued/paused work (up next) for the
+   * Campaign right column. Up next follows lease order: priority ASC, id ASC.
+   */
+  function buildCampaignWork(tasks, opts) {
+    const limit = (opts && opts.limit) || 5;
+    const rows = Array.isArray(tasks) ? tasks : [];
+    const st = (t) => String((t && t.state) || "").toLowerCase();
+    const label = (t) => (isHuntKind(t.kind) ? huntTaskLabel(t) : String(t.kind || "task"));
+    const running = rows
+      .filter((t) => FEED_ACTIVE.has(st(t)))
+      .sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0))
+      .map((t) => ({ id: t.id, kind: t.kind, label: label(t), hunt: isHuntKind(t.kind), has_transcript: !!t.has_transcript }));
+    const queued = rows.filter((t) => FEED_QUEUED.has(st(t)));
+    const next = queued
+      .slice()
+      .sort((a, b) => {
+        const pa = st(a) === "paused" ? 1 : 0;
+        const pb = st(b) === "paused" ? 1 : 0;
+        if (pa !== pb) return pa - pb;
+        const pr = (Number(a.priority) || 0) - (Number(b.priority) || 0);
+        if (pr) return pr;
+        return (Number(a.id) || 0) - (Number(b.id) || 0);
+      })
+      .slice(0, limit)
+      .map((t) => ({ id: t.id, kind: t.kind, label: label(t), state: st(t), hunt: isHuntKind(t.kind) }));
+    return { running, next, queuedTotal: queued.length };
+  }
+
+  /**
+   * One vocabulary for coverage cell states, shared by Campaign, Atlas and any
+   * legend. Order = legend order. `open` = still residual (an honest none is
+   * open: a miss is not proof of safety). Colours come from shell.css .vf-cell--*.
+   */
+  const CELL_STATES = [
+    { id: "finding", label: "Finding filed", short: "Finding", glyph: "\u25cf", open: false,
+      tip: "A hunt filed a finding (candidate, in review or confirmed). It does not mean the rest of this area is safe." },
+    { id: "none", label: "Nothing found", short: "Nothing found", glyph: "", open: true,
+      tip: "A full hunt ran and filed nothing. That is a miss, not proof of safety, so it still counts as open." },
+    { id: "shallow", label: "Too shallow", short: "Shallow", glyph: "~", open: true,
+      tip: "The hunt ended without reading enough code to count. Hunt it again." },
+    { id: "aborted", label: "Aborted", short: "Aborted", glyph: "!", open: true,
+      tip: "The hunt stopped early (timeout, round limit or scope thrash). Hunt it again." },
+    { id: "planned", label: "Queued", short: "Queued", glyph: "\u2026", open: true,
+      tip: "A hunt is queued for this cell but has not started." },
+    { id: "running", label: "Hunting now", short: "Running", glyph: "\u25b8", open: false,
+      tip: "A hunt for this cell is running right now." },
+    { id: "empty", label: "Not hunted", short: "Not hunted", glyph: "", open: true,
+      tip: "No hunt has run for this area and skill yet." },
+  ];
+  const CELL_STATE_BY_ID = Object.fromEntries(CELL_STATES.map((st) => [st.id, st]));
+
+  /** Vocabulary entry for a display state id (falls back to "empty"). */
+  function cellStateMeta(id) {
+    return CELL_STATE_BY_ID[id] || CELL_STATE_BY_ID.empty;
+  }
+
+  /**
+   * Residual-matrix display state for a coverage depth.
+   * finding | none | shallow | aborted | planned | running | empty.
+   */
+  function cellDisplayState(depth, isRunning) {
+    if (isRunning) return "running";
+    const d = String(depth || "").toLowerCase().trim();
+    if (d === "candidate" || d === "needs_human" || d === "confirmed") return "finding";
+    if (d === "none" || d === "shallow" || d === "aborted" || d === "planned") return d;
+    return "empty";
+  }
+
+  /**
+   * Matrix rollup: per-area open counts, legend counts and the honesty numbers.
+   * A deep result is a filed finding or an honest none; every other cell is
+   * open. "none" still counts as open (residual), per AGENTS.md.
+   */
+  function summarizeResidualMatrix(cov, runningKeys) {
+    const areas = (cov && cov.areas) || [];
+    const classes = (cov && cov.classes) || [];
+    const map = Object.create(null);
+    for (const c of (cov && cov.cells) || []) {
+      map[String(c.area || "") + "\0" + String(c.class || "")] = c;
+    }
+    const running = runningKeys instanceof Set ? runningKeys : new Set(runningKeys || []);
+    const legend = { finding: 0, none: 0, shallow: 0, aborted: 0, planned: 0, running: 0, empty: 0 };
+    const rows = [];
+    let deep = 0;
+    let open = 0;
+    for (const a of areas) {
+      let rowOpen = 0;
+      const cells = classes.map((cl) => {
+        const key = String(a) + "\0" + String(cl);
+        const cell = map[key];
+        const state = cellDisplayState(cell && cell.last_depth, running.has(key));
+        legend[state] += 1;
+        if (state === "finding" || state === "none") deep += 1;
+        if (state !== "finding" && state !== "running") {
+          rowOpen += 1;
+          open += 1;
+        }
+        return { area: a, class: cl, state, visits: (cell && cell.visit_count) || 0 };
+      });
+      rows.push({ area: a, open: rowOpen, cells });
+    }
+    return { rows, legend, deep, open, total: areas.length * classes.length };
+  }
+
+  /**
+   * One-line, human description of a run event for the Campaign activity feed.
+   * Unknown events fall back to their name with underscores spaced out.
+   */
+  function describeEvent(ev) {
+    const e = ev || {};
+    const name = String(e.event || e.type || "event");
+    const tid = e.task_id != null ? `#${e.task_id}` : "";
+    const fid = e.finding_id != null ? `F${e.finding_id}` : "";
+    const area = e.area && (e.class || e.attack_class)
+      ? `${e.area} × ${e.class || e.attack_class}`
+      : "";
+    const bits = (...xs) => xs.filter(Boolean).join(" ");
+    let text;
+    let tone = "";
+    switch (name) {
+      case "init": text = "Run initialized"; break;
+      case "hunt_done": text = bits("Hunt", tid, area, "finished", e.msg ? `— ${e.msg}` : ""); break;
+      case "finding_needs_human": text = bits(fid, "passed gates, now needs review"); tone = "review"; break;
+      case "finding_confirmed":
+      case "hitl_response": text = bits(fid || "Finding", "reviewed by a person"); tone = "confirmed"; break;
+      case "validate_llm_rejected": text = bits(fid, "rejected by both disprove judges"); tone = "muted"; break;
+      case "task_failed":
+      case "failed_task": {
+        const why = e.reason || e.error;
+        text = bits(e.kind || "Task", tid, "failed", why ? `(${String(why).slice(0, 80)})` : "");
+        tone = "bad";
+        break;
+      }
+      case "task_done": text = bits(e.kind || "Task", tid, "done"); break;
+      case "validate_llm_done":
+        text = bits("Disprove", fid, e.label ? `— ${e.label}` : e.verdict ? `— ${e.verdict}` : "done");
+        break;
+      case "shallow_requeue": text = bits("Shallow hunt re-queued", tid, area); tone = "review"; break;
+      case "architecture_updated": text = "Architecture map updated"; break;
+      case "runner_start": text = "Ralph started"; break;
+      case "runner_pause": text = "Ralph paused"; tone = "review"; break;
+      case "runner_resume": text = "Ralph resumed"; break;
+      case "runner_stop_hard": text = "Ralph hard-stopped"; tone = "bad"; break;
+      case "selection_hunt": text = bits("Hunt queued from a code selection", tid); break;
+      case "task_leased": text = bits("Task", tid, area, "started"); break;
+      case "candidate":
+      case "apply_candidate": text = bits("Candidate", fid, "filed"); break;
+      default:
+        text = bits(name.replace(/_/g, " "), tid, fid, area);
+    }
+    return { text, tone, ts: e.ts || "" };
+  }
+
+  /**
+   * Header pipeline strip — the single place run totals appear on the run page
+   * (docs/ui/REDESIGN.md). Review counts needs_human only: a `candidate` has not
+   * passed mechanical gates and is never "waiting for a person".
+   */
+  function buildHeaderStrip(snap) {
+    const s = snap || {};
+    const stages = buildPipelineStages(s);
+    const recon = stages[0];
+    const hunt = stages[1];
+    const counts = findingStateCounts(s);
+    const reconValue =
+      recon.status === "done" ? "done"
+        : recon.status === "running" ? "running"
+          : recon.status === "queued" || recon.status === "partial" ? "queued"
+            : recon.status === "failed" ? "failed"
+              : "—";
+    return [
+      { id: "recon", label: "Recon", value: reconValue, nav: { mode: "explorer" } },
+      {
+        id: "hunts",
+        label: "Hunts",
+        value: hunt.total ? `${hunt.done}/${hunt.total}` : "0",
+        nav: { mode: "hunts" },
+      },
+      {
+        id: "review",
+        label: "Review",
+        value: String(counts.needs_human || 0),
+        count: counts.needs_human || 0,
+        nav: { mode: "report", filter: "needs_human" },
+      },
+      {
+        id: "confirmed",
+        label: "Confirmed",
+        value: String(counts.confirmed || 0),
+        count: counts.confirmed || 0,
+        nav: { mode: "report", filter: "confirmed" },
+      },
+    ];
+  }
+
   return {
+    CELL_STATES,
+    cellStateMeta,
+    buildHeaderStrip,
+    buildCampaignPipeline,
+    buildCampaignWork,
+    describeEvent,
+    cellDisplayState,
+    summarizeResidualMatrix,
     pipelineStageOfKind,
     summarizePipelineStage,
     buildPipelineStages,

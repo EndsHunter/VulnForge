@@ -307,62 +307,72 @@
     };
   }
 
+  /** Matrix display states, in legend order. Shared vocabulary lives in
+   *  MissionOverviewHelpers.CELL_STATES so Campaign and Atlas word cells the same. */
+  const CELL_STATES = (window.MissionOverviewHelpers && window.MissionOverviewHelpers.CELL_STATES) || [
+    { id: "finding", label: "Finding filed", glyph: "\u25cf", tip: "A hunt filed a finding. It does not mean the rest of this area is safe." },
+    { id: "none", label: "Nothing found", glyph: "", tip: "A full hunt ran and filed nothing. Still counts as open." },
+    { id: "shallow", label: "Too shallow", glyph: "~", tip: "The hunt ended without reading enough code to count." },
+    { id: "aborted", label: "Aborted", glyph: "!", tip: "The hunt stopped early." },
+    { id: "planned", label: "Queued", glyph: "\u2026", tip: "Queued, not started." },
+    { id: "running", label: "Hunting now", glyph: "\u25b8", tip: "A hunt for this cell is running right now." },
+    { id: "empty", label: "Not hunted", glyph: "", tip: "No hunt has run for this area and skill yet." },
+  ];
+  const CELL_STATE_BY_ID = Object.fromEntries(CELL_STATES.map((s) => [s.id, s]));
+
+  function helpers() {
+    return window.MissionOverviewHelpers || null;
+  }
+
+  /** `${area}\0${class}` keys for hunts that are leased/running now. */
+  function runningCellKeys(snap) {
+    const out = new Set();
+    for (const t of (snap && snap.tasks) || []) {
+      const k = String(t.kind || "").toLowerCase();
+      if (k !== "hunt" && !k.startsWith("hunt:") && !k.startsWith("hunt/")) continue;
+      const st = String(t.state || "").toLowerCase();
+      if (st !== "leased" && st !== "running") continue;
+      const p = t.payload || {};
+      const a = String(p.area || "").trim();
+      const c = String(p.class || p.attack_class || p.weakness_class || "").trim();
+      if (a && c) out.add(`${a}\0${c}`);
+    }
+    return out;
+  }
+
+  function cellStateOf(depth, key, running) {
+    const H = helpers();
+    if (H && H.cellDisplayState) return H.cellDisplayState(depth, running && running.has(key));
+    if (running && running.has(key)) return "running";
+    const d = normDepth(depth);
+    if (isHasFinding(d)) return "finding";
+    if (["none", "shallow", "aborted", "planned"].includes(d)) return d;
+    return "empty";
+  }
+
+  function matrixSummary(cov, snap) {
+    const H = helpers();
+    const running = runningCellKeys(snap);
+    if (H && H.summarizeResidualMatrix) return H.summarizeResidualMatrix(cov, running);
+    return { rows: [], legend: {}, deep: 0, open: 0, total: 0 };
+  }
+
   function renderLegend() {
     const el = $("#coverage-legend");
     if (!el) return;
-    const items = [
-      { cls: "cov-empty", label: "Empty", tip: "No hunt recorded for this area × skill" },
-      { cls: "cov-planned", label: "Planned", tip: "Enqueued or recon-queued — not run yet" },
-      { cls: "cov-shallow", label: "Shallow", tip: "Hunt ended without real read/grep depth" },
-      { cls: "cov-none", label: "None", tip: "Honest miss (submit_none) — still not proof of safety" },
-      { cls: "cov-aborted", label: "Aborted", tip: "Hunt aborted — re-queue recommended" },
-      { cls: "cov-candidate", label: "Has finding", tip: "Candidate / needs_human / confirmed filed" },
-    ];
-    el.innerHTML = items
-      .map(
-        (it) =>
-          `<span class="cov-legend-item" title="${esc(it.tip)}"><span class="cov-legend-swatch ${it.cls}"></span>${esc(it.label)}</span>`
-      )
-      .join("");
+    const counts = covCache ? matrixSummary(covCache, window.__VF_last_snap).legend : {};
+    el.innerHTML = CELL_STATES.map(
+      (s) =>
+        `<li title="${esc(s.tip)}"><span class="cmp-swatch vf-cell vf-cell--${s.id}" aria-hidden="true"></span>${esc(s.label)} <b class="vf-mono">${esc(String(counts[s.id] || 0))}</b></li>`
+    ).join("");
   }
 
+  /** Legacy filter cards (removed from the Campaign layout; kept for old DOM). */
   function renderSummary(cov) {
     const el = $("#coverage-summary");
     if (!el) return;
     const c = summaryCounts(cov);
-    // Only three primary filters — depth breakdown is a hint line, not more tabs
-    const allowed = new Set(["all", "residual", "has_finding"]);
-    if (!allowed.has((covFilter || "all").toLowerCase())) covFilter = "all";
-    const ftr = (covFilter || "all").toLowerCase();
-    const active = (key) => (ftr === key ? " active" : "");
-    el.innerHTML = `
-      <div class="coverage-summary-grid">
-        <button type="button" class="stat info stat-link${active("all")}" data-cov-filter="all" title="Show all cells" aria-pressed="${ftr === "all"}">
-          <div class="label">All</div><div class="value">${c.total}</div>
-        </button>
-        <button type="button" class="stat warn stat-link${active("residual")}" data-cov-filter="residual" title="Empty, planned, shallow, none, aborted — work queue" aria-pressed="${ftr === "residual"}">
-          <div class="label">Residual</div><div class="value">${c.residual}</div>
-        </button>
-        <button type="button" class="stat good stat-link${active("has_finding")}" data-cov-filter="has_finding" title="Cells where a finding was filed" aria-pressed="${ftr === "has_finding"}">
-          <div class="label">Has finding</div><div class="value">${c.has_finding}</div>
-        </button>
-      </div>
-      <p class="controls-hint coverage-breakdown" title="Breakdown of residual cells (not separate filters)">
-        Residual mix:
-        empty ${c.empty}
-        · planned ${c.planned}
-        · shallow ${c.shallow}
-        · none ${c.none}
-        · aborted ${c.aborted}
-      </p>`;
-    el.querySelectorAll("[data-cov-filter]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        covFilter = btn.getAttribute("data-cov-filter") || "all";
-        paintMatrix();
-        renderSummary(covCache);
-        renderActions();
-      });
-    });
+    el.innerHTML = `<p class="controls-hint">All ${c.total} · residual ${c.residual} · has finding ${c.has_finding}</p>`;
   }
 
   function renderActions() {
@@ -370,18 +380,19 @@
     if (!el) return;
     const residual = residualCells(covCache, ["", "planned", "shallow", "aborted"]);
     const withNone = residualCells(covCache, ["", "planned", "shallow", "aborted", "none"]);
+    const residualOnly = (covFilter || "all") === "residual";
     el.innerHTML = `
-      <div class="coverage-actions-row">
-        <button type="button" class="btn btn-primary" id="cov-bulk-residual" ${residual.length ? "" : "disabled"}
-          title="Re-queue empty, planned, shallow, and aborted cells">
-          Re-queue residual (${residual.length})
-        </button>
-        <button type="button" class="btn" id="cov-bulk-residual-none" ${withNone.length ? "" : "disabled"}
-          title="Also re-queue honest none cells">
-          Include none (${withNone.length})
-        </button>
-        <span class="controls-hint">Bulk uses existing path hints when available. Ralph must be running to drain the queue.</span>
-      </div>`;
+      <button type="button" class="vf-chip" id="cov-residual-only" aria-pressed="${residualOnly}"
+        title="Dim cells that are not open (finding filed or hunting now)">Open only</button>
+      <button type="button" class="vf-btn vf-btn--primary" id="cov-bulk-residual" ${residual.length ? "" : "disabled"}
+        title="Hunt again every cell that is not hunted, queued, too shallow or aborted. Uses stored path hints. Ralph must be running to work the queue.">
+        Re-queue ${residual.length} open
+      </button>
+      <button type="button" class="vf-btn vf-btn--ghost" id="cov-bulk-residual-none" ${withNone.length > residual.length ? "" : "disabled"}
+        title="Also hunt again the cells where a full hunt found nothing (${withNone.length} total)">+ Nothing found (${withNone.length - residual.length})</button>`;
+    $("#cov-residual-only")?.addEventListener("click", () => {
+      setFilter(residualOnly ? "all" : "residual");
+    });
     $("#cov-bulk-residual")?.addEventListener("click", () => bulkRequeue(false));
     $("#cov-bulk-residual-none")?.addEventListener("click", () => bulkRequeue(true));
   }
@@ -392,12 +403,12 @@
       : ["", "planned", "shallow", "aborted"];
     const cells = residualCells(covCache, depths);
     if (!cells.length) {
-      toast("No residual cells to re-queue");
+      toast("No open cells to re-queue");
       return;
     }
     const label = includeNone
-      ? `Re-queue ${cells.length} residual cell(s) including honest none?`
-      : `Re-queue ${cells.length} residual cell(s) (empty / planned / shallow / aborted)?`;
+      ? `Re-queue ${cells.length} open cell(s), including "Nothing found"?`
+      : `Re-queue ${cells.length} open cell(s) (not hunted, queued, too shallow, aborted)?`;
     if (!window.confirm(label)) return;
     let ok = 0;
     let fail = 0;
@@ -913,6 +924,19 @@
           : `<div class="controls-hint cov-skill-note">No custom/generated skills yet — create or generate under Dev → Hunt skills, or use Generate below.</div>`) +
       skillBlock("Optional seed skills", groups.optionalSeed);
 
+    // Campaign layout: the planner lives in a drawer opened from "Plan hunts".
+    const drawer = $("#campaign-planner");
+    if (drawer) {
+      drawer.hidden = !planFormOpen;
+      document.body.classList.toggle("cmp-drawer-open", planFormOpen);
+      const openBtn = $("#cmp-plan-open");
+      if (openBtn) openBtn.title = `${status.title}: ${status.detail}`;
+      if (!planFormOpen) {
+        el.innerHTML = "";
+        return;
+      }
+    }
+
     // Collapsed by default: compact strip + open button so the residual matrix wins space.
     if (!planFormOpen) {
       el.innerHTML = `
@@ -1333,75 +1357,63 @@
     cov = enrichCoverageAxes(cov, snap);
 
     if (!cov || (!(cov.cells || []).length && !(cov.areas || []).length)) {
-      return `<div class="empty" style="padding:1rem">No architecture areas yet — run recon to map the app, then plan hunts above.</div>`;
+      return `<div class="vf-empty cmp-matrix-empty">No architecture areas yet. Run recon (Atlas) to map the target, then plan hunts.</div>`;
     }
     const areas = cov.areas || [];
     const classes = cov.classes || [];
-    const map = cellMap(cov);
     if (areas.length && !classes.length) {
-      return `<div class="empty" style="padding:1rem">
-        <strong>${areas.length}</strong> architecture area${areas.length === 1 ? "" : "s"} mapped
-        (<span class="mono">${esc(areas.slice(0, 8).join(", "))}${areas.length > 8 ? "…" : ""}</span>).
-        No hunt skills in the matrix yet — pick skills in Plan hunts above and queue, or wait for recon to enqueue hunts.
+      return `<div class="vf-empty cmp-matrix-empty">
+        <strong>${areas.length}</strong> area${areas.length === 1 ? "" : "s"} mapped
+        (<span class="vf-mono">${esc(areas.slice(0, 8).join(", "))}${areas.length > 8 ? "…" : ""}</span>).
+        No hunt skills yet: use <strong>Plan hunts</strong>, or wait for recon to enqueue hunts.
       </div>`;
     }
     if (!areas.length || !classes.length) {
-      return `<div class="empty" style="padding:1rem">Hunt matrix axes empty — wait for recon or plan hunts above.</div>`;
+      return `<div class="vf-empty cmp-matrix-empty">Matrix axes are empty. Wait for recon or plan hunts.</div>`;
     }
-
-    const classLink = (c) =>
-      `<a class="cov-class-link mono" href="/dev#hunt/${encodeURIComponent(c)}" target="_blank" rel="noopener">${esc(c)}</a>`;
-
-    const classCaption = `<div class="coverage-class-caption controls-hint">
-      <strong>${areas.length}</strong> areas × <strong>${classes.length}</strong> skills:
-      ${classes.map((c) => `<span class="cov-class-pill">${classLink(c)}</span>`).join(" ")}
-    </div>`;
-
+    const map = cellMap(cov);
+    const running = runningCellKeys(snap);
     const head =
-      `<tr><th class="row-head">Area \\ skill</th>` +
-      classes.map((c) => `<th title="${esc(c)}">${classLink(c)}</th>`).join("") +
+      `<tr><th scope="col" class="cmp-area-h">Area</th>` +
+      classes
+        .map(
+          (c) =>
+            `<th scope="col" class="cmp-skill-h" title="${esc(c)}"><a href="/dev#hunt/${encodeURIComponent(c)}" target="_blank" rel="noopener">${esc(c)}</a></th>`
+        )
+        .join("") +
       `</tr>`;
 
     const rows = areas
       .map((a) => {
+        let open = 0;
         const cells = classes
           .map((cl) => {
-            const cell = map[`${a}\0${cl}`] || {
-              area: a,
-              class: cl,
-              last_depth: "",
-              visit_count: 0,
-            };
-            const d = effectiveDepth(cell);
-            const match = cellMatchesFilter(cell, filter);
-            const dim = filter !== "all" && !match ? " cov-dim" : "";
-            const sel =
-              selected &&
-              selected.area === a &&
-              selected.class === cl
-                ? " cov-selected"
-                : "";
-            const cls = covDepthClass(d);
-            const lab = depthLabel(d, cell.visit_count);
-            const tip = esc(
-              (cell.depth_blurb || lab.full) + (match ? "" : " · hidden by filter")
-            );
+            const key = `${a}\0${cl}`;
+            const cell = map[key] || { area: a, class: cl, last_depth: "", visit_count: 0 };
+            const state = cellStateOf(cell.last_depth, key, running);
+            if (state !== "finding" && state !== "running") open++;
+            const meta = CELL_STATE_BY_ID[state] || CELL_STATE_BY_ID.empty;
+            const residualView = filter === "residual";
+            const dim =
+              (residualView && (state === "finding" || state === "running")) ||
+              (!residualView && filter !== "all" && !cellMatchesFilter(cell, filter));
+            const sel = selected && selected.area === a && selected.class === cl;
+            const visits = Number(cell.visit_count) || 0;
+            const moa = moaNoteForCell(a, cl, snap);
+            const tip = `${a} × ${cl}: ${meta.label}${visits ? ` · ${visits} visit${visits === 1 ? "" : "s"}` : ""}${moa ? ` · ${moa}` : ""}`;
+            const cls = `vf-cell vf-cell--${state} cmp-cell${dim ? " is-dim" : ""}${sel ? " is-selected" : ""}`;
             if (!interactive) {
-              return `<td class="${dim}"><span class="cov-cell ${cls}" title="${tip}"><span class="cov-main">${esc(lab.main)}</span><span class="cov-sub">${esc(lab.sub)}</span></span></td>`;
+              return `<td><span class="${cls}" title="${esc(tip)}">${esc(meta.glyph)}</span></td>`;
             }
-            const moaChip = moaChipForCell(a, cl, opts.snap); return `<td class="${dim}"><button type="button" class="cov-cell ${cls} cov-click${sel}" data-area="${esc(a)}" data-class="${esc(cl)}" title="${tip}"><span class="cov-main">${esc(lab.main)}</span><span class="cov-sub">${esc(lab.sub)}</span>${moaChip}</button></td>`;
+            return `<td><button type="button" class="${cls} cov-click" data-area="${esc(a)}" data-class="${esc(cl)}" aria-label="${esc(tip)}" title="${esc(tip)}" aria-pressed="${sel ? "true" : "false"}">${esc(meta.glyph)}</button></td>`;
           })
           .join("");
-        return `<tr><td class="row-head mono" title="${esc(a)}">${esc(a)}</td>${cells}</tr>`;
+        const hot = open >= Math.max(3, Math.ceil(classes.length * 0.6));
+        return `<tr><th scope="row" class="cmp-area" title="${esc(a)}"><span class="vf-mono">${esc(a)}</span> <span class="cmp-open${hot ? " is-hot" : ""}">${open} open</span></th>${cells}</tr>`;
       })
       .join("");
 
-    return `${classCaption}
-      <div class="coverage-wrap"><table class="coverage-grid">${head}${rows}</table></div>
-      <p class="controls-hint" style="margin-top:0.5rem">
-        Click a residual cell for why it is residual (abort reason or transcript snippet) and to re-queue. Dimmed cells are outside the active filter.
-        Scroll horizontally when many hunt skills are in play.
-      </p>`;
+    return `<div class="cmp-matrix-scroll"><table class="cmp-grid">${head}${rows}</table></div>`;
   }
 
   function paintMatrix() {
@@ -1421,6 +1433,13 @@
     });
   }
 
+  /** Plain-text MoA requeue note for a cell tooltip ("" when none). */
+  function moaNoteForCell(area, cls, snap) {
+    const html = moaChipForCell(area, cls, snap);
+    if (!html) return "";
+    const m = /title="([^"]*)"/.exec(html);
+    return m ? m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&") : "";
+  }
 
   function moaChipForCell(area, cls, snap) {
     const H = window.ReportHuntMoa;
@@ -1523,10 +1542,10 @@
 
   function sinkDepthLabel(d) {
     const x = normDepth(d);
-    if (!x) return "unvisited";
-    if (x === "planned") return "planned";
-    if (x === "shallow") return "shallow";
-    if (x === "none") return "none";
+    if (!x) return "not hunted";
+    if (x === "planned") return "queued";
+    if (x === "shallow") return "too shallow";
+    if (x === "none") return "nothing found";
     if (x === "aborted") return "aborted";
     if (x === "candidate" || x === "needs_human" || x === "confirmed") return x;
     return x;
@@ -1567,28 +1586,33 @@
   function renderHonestyStrip(snap) {
     const el = $("#coverage-honesty-dynamic");
     if (!el) return;
+    const sum = covCache ? matrixSummary(covCache, snap) : { deep: 0, total: 0 };
     const sc = snap?.sink_coverage_summary || {};
     const total = Number(sc.total || 0);
     const residual = Number(sc.residual || 0);
     const incomplete = !!snap?.sinks_incomplete;
     const meta = snap?.seed_sinks_meta || {};
-    const bits = [];
+    const bits = [
+      `<b>${sum.deep}</b> of ${sum.total} cells have had a full hunt. A filed finding does not make an area safe, and "Nothing found" still counts as open.`,
+    ];
     if (total > 0) {
-      bits.push(
-        `Sink coverage: <strong>${total}</strong> tracked · <strong>${residual}</strong> residual`
-      );
-    } else {
-      bits.push("Sink coverage: none yet (appears after recon plans hunts with seed sinks)");
+      bits.push(`<span class="cmp-sinks" title="Mechanical sink preindex — not exploit proof">Sinks: ${total} tracked · ${residual} residual</span>`);
     }
     if (incomplete) {
       const why = [];
       if (meta.files_capped) why.push("file scan capped");
       if (meta.sinks_capped) why.push("sink count capped");
-      bits.push(
-        `<span class="warn-text">Sink index incomplete${why.length ? " (" + why.join(", ") + ")" : ""}</span>`
-      );
+      bits.push(`<span class="warn-text">Sink index incomplete${why.length ? " (" + why.join(", ") + ")" : ""}</span>`);
     }
-    el.innerHTML = bits.join(" · ");
+    el.innerHTML = bits.join(" ");
+  }
+
+  function renderInspectorEmpty() {
+    const detail = $("#coverage-detail");
+    if (!detail) return;
+    detail.hidden = false;
+    detail.innerHTML = `<h2 class="vf-section-label">Selected cell</h2>
+      <p class="vf-empty">Select a matrix cell to see why it is open, its last hunt, and to re-queue it with notes.</p>`;
   }
 
   async function openCell(area, cls) {
@@ -1597,7 +1621,7 @@
     covSelected = { area, class: cls };
     paintMatrix();
     detail.hidden = false;
-    detail.innerHTML = `<div class="empty">Loading <span class="mono">${esc(area)}</span> × <span class="mono">${esc(cls)}</span>…</div>`;
+    detail.innerHTML = `<p class="vf-empty">Loading <span class="vf-mono">${esc(area)}</span> × <span class="vf-mono">${esc(cls)}</span>…</p>`;
     try {
       const data = await api(
         `${runApiBase()}/coverage/cell?area=${encodeURIComponent(area)}&class=${encodeURIComponent(cls)}`
@@ -1673,26 +1697,28 @@
           ? `<span class="controls-hint">${sinks.length} tracked · ${residualSinks.length} residual</span>`
           : "";
 
+      const stateId = cellStateOf(d, `${area}\0${cls}`, runningCellKeys(window.__VF_last_snap));
+      const stateMeta = CELL_STATE_BY_ID[stateId] || CELL_STATE_BY_ID.empty;
+      const lastTask = (data.tasks || []).slice().reverse()[0] || null;
+      const lastHunt = lastTask
+        ? `#${lastTask.id} · ${esc(String(lastTask.state || ""))} · ${esc(taskResultSummary(lastTask))}`
+        : "none yet";
+      const transcriptTask = (data.tasks || []).slice().reverse().find((x) => x.has_transcript);
       detail.innerHTML = `
-        <div class="coverage-detail-head">
-          <div>
-            <div class="cov-detail-title">
-              <strong class="mono">${esc(area)}</strong>
-              <span class="cov-times">×</span>
-              <strong class="mono">${esc(cls)}</strong>
-              <a class="cov-class-link controls-hint" href="/dev#hunt/${encodeURIComponent(cls)}" target="_blank" rel="noopener" style="margin-left:0.5rem;font-weight:500">Open in Dev</a>
-            </div>
-            <div class="cov-detail-meta">
-              <span class="cov-cell ${covDepthClass(d)}" style="display:inline-flex;width:auto;padding:0.15rem 0.5rem">${esc(lab.main)}</span>
-              <span class="controls-hint">${esc(lab.full)}</span>
-            </div>
-          </div>
-          <div class="toolbar">
-            <button type="button" class="btn btn-primary" id="cov-requeue">Re-queue hunt</button>
-            <button type="button" class="btn" id="cov-detail-close">Close</button>
-          </div>
+        <div class="cmp-insp-head">
+          <span class="vf-mono">${esc(area)}</span>
+          <span class="vf-faint" aria-hidden="true">×</span>
+          <strong>${esc(cls)}</strong>
+          <span class="cmp-insp-spacer"></span>
+          <span class="vf-cell vf-cell--${stateId} cmp-insp-pill">${esc(stateMeta.label)}</span>
+          <button type="button" class="vf-btn vf-btn--ghost cmp-insp-close" id="cov-detail-close" aria-label="Clear selection">×</button>
         </div>
-        <p class="depth-blurb">${esc(data.depth_blurb || "")}</p>
+        <p class="cmp-insp-desc">${esc(data.depth_blurb || stateMeta.tip)}</p>
+        <dl class="cmp-insp-dl">
+          <dt>Last hunt</dt><dd class="vf-mono">${lastHunt}</dd>
+          <dt>Depth</dt><dd>${esc(lab.full)}</dd>
+          ${(data.path_hints || []).length ? `<dt>Paths</dt><dd class="cov-path-chips">${paths}</dd>` : ""}
+        </dl>
         ${
           window.ReportHuntMoa && typeof window.ReportHuntMoa.cellRequeueNoteHtml === "function"
             && !isResidual(d)
@@ -1700,35 +1726,43 @@
             : ""
         }
         ${renderWhyResidual(data)}
-        <div class="field" style="margin:0.65rem 0">
-          <label for="cov-op-notes"><span class="label-text">Notes for re-queue (optional)</span></label>
-          <textarea id="cov-op-notes" class="op-notes" rows="3" placeholder="e.g. Focus on auth middleware; prior hunt missed rate limits."></textarea>
+        ${findings ? `<h3 class="cmp-insp-h">Findings here</h3><ul class="cov-finding-list">${findings}</ul>` : ""}
+        <label class="cmp-insp-notes">Notes for the next hunt
+          <textarea id="cov-op-notes" rows="2" placeholder="e.g. Follow build_filter into filters.py"></textarea>
+        </label>
+        <div class="cmp-insp-actions">
+          <button type="button" class="vf-btn vf-btn--primary" id="cov-requeue">Re-queue this cell</button>
+          ${
+            transcriptTask
+              ? `<button type="button" class="vf-btn cov-why-task" data-tid="${esc(String(transcriptTask.id))}">Transcript</button>`
+              : ""
+          }
         </div>
-        <h3>Why this depth</h3>
-        <ul class="reason-list">${reasons || "<li class='controls-hint'>No detail</li>"}</ul>
-        <h3>Path hints</h3>
-        <div class="cov-path-chips">${paths || "<span class='controls-hint'>None stored</span>"}</div>
-        <h3>Sinks for this cell ${sinkHead}</h3>
-        <p class="controls-hint" style="margin-top:0">Mechanical preindex locations for this class — not exploit proof. Re-queue focus tightens path_hints + seed_sinks.</p>
-        <ul class="task-mini cov-sink-list">${sinkRows}</ul>
-        ${
-          residualSinks.length
-            ? `<div class="toolbar" style="margin:0.35rem 0 0.75rem">
-                <button type="button" class="btn btn-sm" id="cov-requeue-residual-sinks">
-                  Re-queue residual sinks (${Math.min(residualSinks.length, 12)})
-                </button>
-              </div>`
-            : ""
-        }
-        <h3>Related hunts</h3>
-        <ul class="task-mini cov-task-list">${tasks || "<li class='controls-hint'>No hunt tasks for this cell</li>"}</ul>
-        <h3>Findings</h3>
-        <ul class="cov-finding-list">${findings || "<li class='controls-hint'>None linked to this class</li>"}</ul>`;
+        <details class="cmp-insp-more">
+          <summary>More: reasons, sinks, related hunts</summary>
+          <h3 class="cmp-insp-h">Why this depth</h3>
+          <ul class="reason-list">${reasons || "<li class='controls-hint'>No detail</li>"}</ul>
+          <h3 class="cmp-insp-h">Sinks for this cell ${sinkHead}</h3>
+          <p class="controls-hint" style="margin-top:0">Mechanical preindex locations for this class — not exploit proof. Re-queue focus tightens path_hints + seed_sinks.</p>
+          <ul class="task-mini cov-sink-list">${sinkRows}</ul>
+          ${
+            residualSinks.length
+              ? `<div class="toolbar" style="margin:0.35rem 0 0.75rem">
+                  <button type="button" class="btn btn-sm" id="cov-requeue-residual-sinks">
+                    Re-queue residual sinks (${Math.min(residualSinks.length, 12)})
+                  </button>
+                </div>`
+              : ""
+          }
+          <h3 class="cmp-insp-h">Related hunts</h3>
+          <ul class="task-mini cov-task-list">${tasks || "<li class='controls-hint'>No hunt tasks for this cell</li>"}</ul>
+          <p><a class="cov-class-link" href="/dev#hunt/${encodeURIComponent(cls)}" target="_blank" rel="noopener">Open skill in Dev</a></p>
+        </details>`;
 
       $("#cov-detail-close")?.addEventListener("click", () => {
-        detail.hidden = true;
         covSelected = null;
         paintMatrix();
+        renderInspectorEmpty();
       });
       $("#cov-requeue")?.addEventListener("click", async () => {
         try {
@@ -1907,7 +1941,7 @@
         });
       });
     } catch (e) {
-      detail.innerHTML = `<div class="empty" style="color:var(--bad)">${esc(e.message || e)}</div>`;
+      detail.innerHTML = `<p class="vf-empty" style="color:var(--bad)">${esc(e.message || e)}</p>`;
     }
   }
 
@@ -1933,16 +1967,13 @@
       window.__VF_max_tasks = Math.max(1, Number(mt));
     }
     covCache = enrichCoverageAxes(snap?.coverage || covCache, snap);
-
     renderHonestyStrip(snap);
     renderLegend();
     renderSummary(covCache);
     renderModeBar(window.__VF_cov_policy);
     renderActions();
-    if (typeof window.paintHuntsModeStrip === "function") {
-      window.paintHuntsModeStrip(snap);
-    }
     paintMatrix();
+    if (!covSelected) renderInspectorEmpty();
     // Keep selection highlight; detail panel is user-driven (avoids wiping notes on refresh)
   }
 
@@ -1950,12 +1981,47 @@
     covFilter = next || "all";
     if (covCache) {
       renderSummary(covCache);
+      renderLegend();
       paintMatrix();
       renderActions();
     }
   }
 
+  function openPlanner() {
+    planFormOpen = true;
+    renderModeBar(window.__VF_cov_policy);
+    const drawer = $("#campaign-planner");
+    drawer?.querySelector("input, button, select, textarea")?.focus?.();
+  }
+
+  function closePlanner() {
+    if (!planFormOpen) return;
+    planFormOpen = false;
+    renderModeBar(window.__VF_cov_policy);
+    $("#cmp-plan-open")?.focus?.();
+  }
+
+  function bindPlannerDrawer() {
+    $("#cmp-plan-open")?.addEventListener("click", openPlanner);
+    $("#campaign-planner")?.addEventListener("click", (ev) => {
+      if (ev.target.closest("[data-planner-close]")) closePlanner();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && planFormOpen && $("#campaign-planner")) {
+        closePlanner();
+        ev.preventDefault();
+      }
+    });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindPlannerDrawer);
+  } else {
+    bindPlannerDrawer();
+  }
+
   window.VulnForgeCoverage = {
+    openPlanner,
+    closePlanner,
     render: renderCoverage,
     renderPreviewHtml,
     setFilter,

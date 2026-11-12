@@ -44,14 +44,19 @@ def test_report_rows_show_current_state_only():
     assert html.index('src="/static/report_state_badges.js"') < html.index(
         'src="/static/report.js"'
     )
-    # Detail / context may still use the trail helper. The State column is current status only.
+    # Detail / context may still use the trail helper. Queue rows show current status only.
     assert "function stateTrailHtml(" in report
-    assert 'class="report-state-cell">${badge(f.state, f)}' in report
+    assert 'class="report-state-cell">${statePill(f)}' in report
     assert 'class="report-state-cell">${stateTrailHtml(f)}' not in report
     assert "Click a count to filter the table" not in report
     assert "report-disclaimer" not in report
     assert "Row badges follow proposed" not in report
-    assert 'data-rfilter="near_dup"' in report
+    # Queue chips render from ReviewHelpers.FILTERS (pages/review.js).
+    assert 'data-rfilter="${chip.id}"' in report
+    review_js = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "pages" / "review.js").read_text(
+        encoding="utf-8"
+    )
+    assert '{ id: "near_dup", label: "Near-dup" }' in review_js
     assert "function nearDupGroupKey(" in report
     assert "nearDupFilterActive()" in report
     assert "near-dup-cluster-start" in report
@@ -73,7 +78,7 @@ def test_report_rows_show_current_state_only():
     assert 'data-action="confirm"' in report
     assert "disabled aria-disabled=\"true\"" in report
     reject_btn = (
-        '<button type="button" class="btn btn-bad report-review-btn" '
+        '<button type="button" class="vf-btn vf-btn--danger vf-btn--lg report-review-btn" '
         'data-action="reject"'
     )
     assert reject_btn in report

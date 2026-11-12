@@ -13,6 +13,7 @@ const {
   isRunMode,
   defaultTabFor,
   isOverlayMode,
+  DEFAULT_MODE,
 } = require(path.join(__dirname, "..", "..", "vulnforge", "ui", "static", "run_nav.js"));
 
 describe("RUN_NAV", () => {
@@ -36,11 +37,11 @@ describe("RUN_NAV", () => {
     );
     assert.deepEqual(
       primaryNav(RUN_NAV).map((item) => item.mode),
-      ["mission", "hunts", "explorer", "report", "audit", "ai"]
+      ["report", "hunts", "explorer", "evidence", "audit", "ai"]
     );
     assert.deepEqual(
       workspaceModes(RUN_NAV).map((item) => item.mode),
-      ["mission", "hunts", "explorer", "report", "evidence", "audit", "ai"]
+      ["report", "hunts", "explorer", "evidence", "audit", "ai"]
     );
     assert.deepEqual(
       footerNav(RUN_NAV).map((item) => item.href),
@@ -66,10 +67,9 @@ describe("RUN_NAV", () => {
     assert.deepEqual(
       workspaceModes().map((item) => [item.mode, item.defaultTab]),
       [
-        ["mission", "arch"],
+        ["report", "report"],
         ["hunts", "hunts"],
         ["explorer", "explorer"],
-        ["report", "report"],
         ["evidence", "evidence"],
         ["audit", "tasks"],
         ["ai", "ai"],
@@ -80,13 +80,18 @@ describe("RUN_NAV", () => {
     assert.equal(workspaceModes().find((item) => item.mode === "ai").rail, "primary");
     assert.equal(primaryNav().some((item) => item.mode === "audit"), true);
     assert.equal(primaryNav().some((item) => item.mode === "ai"), true);
-    assert.equal(primaryNav().some((item) => item.mode === "evidence"), false);
+    assert.equal(primaryNav().some((item) => item.mode === "evidence"), true);
+    assert.equal(primaryNav().some((item) => item.mode === "mission"), false);
+    assert.deepEqual(
+      primaryNav().filter((item) => !item.overlay).map((item) => item.label),
+      ["Review", "Campaign", "Atlas", "Evidence", "Tasks"]
+    );
   });
 });
 
 describe("isRunMode / defaultTabFor / isOverlayMode", () => {
   it("accepts workspace modes only", () => {
-    assert.equal(isRunMode("mission"), true);
+    assert.equal(isRunMode("mission"), false);
     assert.equal(isRunMode("audit"), true);
     assert.equal(isRunMode("ai"), true);
     assert.equal(isRunMode("evidence"), true);
@@ -97,7 +102,7 @@ describe("isRunMode / defaultTabFor / isOverlayMode", () => {
   });
 
   it("returns default tabs or null", () => {
-    assert.equal(defaultTabFor("mission"), "arch");
+    assert.equal(defaultTabFor("mission"), null);
     assert.equal(defaultTabFor("audit"), "tasks");
     assert.equal(defaultTabFor("evidence"), "evidence");
     assert.equal(defaultTabFor("ai"), "ai");
@@ -111,5 +116,12 @@ describe("isRunMode / defaultTabFor / isOverlayMode", () => {
     assert.equal(isOverlayMode("evidence"), false);
     assert.equal(isOverlayMode("audit"), false);
     assert.equal(isOverlayMode("settings"), false);
+  });
+});
+
+describe("DEFAULT_MODE", () => {
+  it("lands on Campaign", () => {
+    assert.equal(DEFAULT_MODE, "hunts");
+    assert.equal(isRunMode(DEFAULT_MODE), true);
   });
 });

@@ -1,4 +1,5 @@
-/* VulnForge mode navigation. Develop POC is a Report modal, not a rail item. */
+/* VulnForge mode navigation: header tabs + page lifecycle (docs/ui/REDESIGN.md).
+ * Develop POC is a Review modal, not a tab. */
 
 (function () {
   const $ = (sel, el = document) => el.querySelector(sel);
@@ -7,26 +8,15 @@
   const table = window.RunNav;
   const RUN_NAV = table?.RUN_NAV || [];
   const primaryNav = table?.primaryNav || ((nav) => (nav || []).filter((i) => i.kind === "mode" && i.rail === "primary"));
-  const headNav = table?.headNav || ((nav) => (nav || []).filter((i) => i.rail === "head"));
-  const footerNav = table?.footerNav || ((nav) => (nav || []).filter((i) => i.rail === "footer"));
   const isRunMode = table?.isRunMode || (() => false);
   const defaultTabFor = table?.defaultTabFor || (() => null);
   const isOverlayMode = table?.isOverlayMode || ((mode) => mode === "ai");
 
-  const I = {
-    home: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2.5 8 L8 3.2 L13.5 8"/><path d="M4.2 7.2V13h7.6V7.2"/></svg>`,
-    mission: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.2"/><circle cx="8" cy="8" r="1.6"/><path d="M8 2.8v1.6M8 11.6v1.6M2.8 8h1.6M11.6 8h1.6"/></svg>`,
-    hunts: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="3.2"/><path d="M8 1.6v2.4M8 12v2.4M1.6 8h2.4M12 8h2.4"/></svg>`,
-    explorer: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2.5 4.5h4l1.2 1.5H13.5v6.5h-11z"/></svg>`,
-    report: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3.5 2.5h9v11h-9z"/><path d="M5.5 6h5M5.5 8.5h5M5.5 11h3"/></svg>`,
-    audit: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M6 4h7M6 8h7M6 12h5"/><rect x="2.4" y="3.2" width="1.8" height="1.8" rx="0.3"/><rect x="2.4" y="7.2" width="1.8" height="1.8" rx="0.3"/><rect x="2.4" y="11.2" width="1.8" height="1.8" rx="0.3"/></svg>`,
-    settings: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 2.5v1.5M8 12v1.5M2.5 8h1.5M12 8h1.5M4.2 4.2l1.1 1.1M10.7 10.7l1.1 1.1M11.8 4.2l-1.1 1.1M5.3 10.7l-1.1 1.1"/></svg>`,
-    dev: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 5 L2.5 8 L5 11M11 5 L13.5 8 L11 11M9.2 3.6 L6.8 12.4"/></svg>`,
-    "tool-gaps": `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1.5"/><path d="M6 8h4M8 6v4"/></svg>`,
-    ai: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 3.4h10v7.2H6.6L3 13.2V3.4z"/></svg>`,
-  };
+  const DEFAULT_MODE = table?.DEFAULT_MODE || "hunts";
+  /** mode id → window.VFPages key */
+  const PAGE_OF_MODE = { report: "review", hunts: "campaign", explorer: "atlas" };
 
-  let exclusive = { mode: "mission", tab: "arch" };
+  let exclusive = { mode: DEFAULT_MODE, tab: defaultTabFor(DEFAULT_MODE) || DEFAULT_MODE };
 
   /**
    * Parse hash segment. `#poc/<id>` is the current PoC workshop deep link
@@ -40,17 +30,13 @@
     if (mode === "coverage") {
       return { mode: "hunts", tab: tab === "coverage" || !tab ? "hunts" : tab };
     }
-    if (mode === "harness") {
-      return { mode: "mission", tab: "arch" };
-    }
-    if (mode === "mission" && (tab === "overview" || tab === "")) {
-      return { mode: "mission", tab: "arch" };
+    if (mode === "harness" || mode === "mission") {
+      // Mission was split: campaign stats → Campaign, architecture → Atlas.
+      // (Legacy: tab === "overview" also lands here.)
+      return { mode: "hunts", tab: "hunts" };
     }
     if (mode === "tasks") {
       return { mode: "audit", tab: tab || "tasks" };
-    }
-    if (mode === "evidence") {
-      return { mode: "report", tab: "report" };
     }
     return { mode, tab };
   }
@@ -73,37 +59,34 @@
     }
   }
 
-  function railInner(item) {
-    const icon = I[item.id] || "";
-    return `${icon}<span class="lab">${item.label}</span>`;
-  }
-
-  function renderRunRail(root, nav) {
+  /** Header tab bar: primary non-overlay modes; AI overlay is the ⌘K button. */
+  function renderRunTabs(root, nav) {
     if (!root) return;
-    const items = nav || RUN_NAV;
-    const head = headNav(items)
-      .map(
-        (item) =>
-          `<a class="run-rail-item run-rail-href" data-nav-id="${item.id}" href="${item.href}" title="${item.label}">${railInner(item)}</a>`
-      )
-      .join("");
-    const primary = primaryNav(items);
-    const footer = footerNav(items);
-    const primaryHtml = primary
+    const items = primaryNav(nav || RUN_NAV).filter((item) => !item.overlay);
+    root.innerHTML = items
       .map((item) => {
-        if (item.overlay) {
-          return `<button type="button" class="run-rail-item" data-nav-id="${item.id}" data-mode="${item.mode}" aria-expanded="false" title="${item.label}">${railInner(item)}</button>`;
-        }
-        return `<button type="button" class="run-rail-item" role="tab" data-nav-id="${item.id}" data-mode="${item.mode}" aria-selected="false" title="${item.label}">${railInner(item)}</button>`;
+        const badge =
+          item.id === "review"
+            ? ` <span class="vf-tab-badge" id="tab-badge-review" hidden></span>`
+            : "";
+        return `<button type="button" class="vf-tab" role="tab" data-nav-id="${item.id}" data-mode="${item.mode}" aria-selected="false">${item.label}${badge}</button>`;
       })
       .join("");
-    const footerHtml = footer
-      .map(
-        (item) =>
-          `<a class="run-rail-item run-rail-href" data-nav-id="${item.id}" href="${item.href}" title="${item.label}">${railInner(item)}</a>`
-      )
-      .join("");
-    root.innerHTML = `${head}<nav class="run-rail-primary" role="tablist" aria-label="Workspace mode">${primaryHtml}</nav><div class="run-rail-footer">${footerHtml}</div>`;
+  }
+
+  /** Review tab badge = needs_human count (set by app.js after each snapshot). */
+  function setReviewBadge(n) {
+    const el = document.getElementById("tab-badge-review");
+    if (!el) return;
+    const count = Number(n) || 0;
+    el.textContent = String(count);
+    el.hidden = count <= 0;
+    el.setAttribute("aria-label", `${count} need review`);
+  }
+
+  function pageFor(mode) {
+    const key = PAGE_OF_MODE[mode];
+    return key ? window.VFPages?.[key] || null : null;
   }
 
   function bindRunRail(root, nav) {
@@ -146,6 +129,7 @@
       return;
     }
 
+    const prevMode = exclusive.mode;
     exclusive = { mode, tab };
 
     $$("[data-nav-id]").forEach((t) => {
@@ -170,6 +154,18 @@
       p.classList.toggle("active", p.getAttribute("data-mode-panel") === mode);
     });
     activateTab(tab);
+    if (prevMode !== mode) {
+      try {
+        pageFor(prevMode)?.onHide?.();
+      } catch (err) {
+        console.error("page onHide failed", err);
+      }
+    }
+    try {
+      pageFor(mode)?.onShow?.(window.__VF_last_snap || null);
+    } catch (err) {
+      console.error("page onShow failed", err);
+    }
     if (mode === "report" && typeof window.renderReport === "function") {
       const snap = window.__VF_last_snap;
       if (snap) window.renderReport(snap);
@@ -218,11 +214,12 @@
 
   function setupModes() {
     if (!document.body || document.body.dataset.page !== "run") return;
-    const rail = $("[data-run-rail]");
-    if (!rail) return;
+    const tabs = $("[data-run-tabs]");
+    if (!tabs) return;
 
-    renderRunRail(rail, RUN_NAV);
-    bindRunRail(rail, RUN_NAV);
+    renderRunTabs(tabs, RUN_NAV);
+    bindRunRail(tabs, RUN_NAV);
+    $("#btn-command")?.addEventListener("click", () => setMode("ai"));
 
     $$(".mode-panel .tab").forEach((tab) => {
       tab.addEventListener("click", () => {
@@ -241,7 +238,9 @@
 
     function goExplorer(path, line) {
       setMode("explorer");
-      if (path && window.VulnForgeExplorer?.reveal) {
+      if (path && window.VFPages?.atlas?.reveal) {
+        window.VFPages.atlas.reveal(path, line);
+      } else if (path && window.VulnForgeExplorer?.reveal) {
         window.VulnForgeExplorer.reveal(path, line);
       } else if (path && typeof window.loadExplorerFile === "function") {
         window.loadExplorerFile(path);
@@ -276,6 +275,10 @@
 
     window.VulnForgeModes = {
       setMode,
+      setReviewBadge,
+      activeMode() {
+        return exclusive.mode;
+      },
       goExplorer,
       goEvidence,
       goCoverage() {
@@ -309,7 +312,7 @@
 
     const fromHash = parseHash();
     if (fromHash && isOverlayMode(fromHash.mode)) {
-      setMode("mission", "arch");
+      setMode(DEFAULT_MODE);
       setMode(fromHash.mode, fromHash.tab);
     } else if (fromHash) {
       setMode(fromHash.mode, fromHash.tab);
@@ -320,16 +323,22 @@
           setTimeout(() => window.VulnForgeReport.openDevelopPoc(n), 0);
         }
       }
-    } else setMode("mission", "arch");
+    } else setMode(DEFAULT_MODE);
 
     document.addEventListener("keydown", (ev) => {
+      if ((ev.metaKey || ev.ctrlKey) && !ev.altKey && (ev.key === "k" || ev.key === "K")) {
+        setMode("ai");
+        ev.preventDefault();
+        return;
+      }
       if (ev.target && /^(INPUT|TEXTAREA|SELECT)$/i.test(ev.target.tagName)) return;
       if (ev.key === "Escape" && window.VulnForgeReport?.isPocOpen?.()) {
         window.VulnForgeReport.closeDevelopPoc();
         ev.preventDefault();
         return;
       }
-      if (ev.key === "e" && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+      // Review owns E (open evidence); elsewhere E jumps to Atlas.
+      if (ev.key === "e" && exclusive.mode !== "report" && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
         setMode("explorer");
         ev.preventDefault();
       }
