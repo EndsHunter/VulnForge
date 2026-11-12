@@ -2,7 +2,8 @@
 CLI entrypoints for vulnforge.
 
 Commands: vf init | run-once | status | project | apply-candidate | delete-run |
-dashboard | tool-gaps | export-validation-job | validate-poc | hitl
+dashboard | tool-gaps | export-validation-job | validate-poc | develop-fix |
+verify-fix | hitl
 """
 
 from __future__ import annotations
@@ -66,6 +67,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_export_validation_job(args, cfg)
         if cmd == "validate-poc":
             return cmd_validate_poc(args, cfg)
+        if cmd == "develop-fix":
+            return cmd_develop_fix(args, cfg)
+        if cmd == "verify-fix":
+            return cmd_verify_fix(args, cfg)
         if cmd == "hitl":
             return cmd_hitl(args, cfg)
         if cmd == "policy":
@@ -291,6 +296,34 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional TARGET_URL env for the PoC process",
     )
+
+    dfx = sub.add_parser(
+        "develop-fix",
+        help="Enqueue or run develop_fix: write evidence/<pack>/fix.patch (never applied, never confirms)",
+    )
+    dfx.add_argument("--finding-id", type=int, required=True)
+    dfx.add_argument("--run-dir", type=Path, default=None)
+    dfx.add_argument("--notes", default="", help="Operator notes for the patch author")
+    dfx.add_argument("--force", action="store_true", help="Allow findings outside confirmed/needs_human")
+    dfx.add_argument("--execute", action="store_true", help="Run immediately in-process (else only enqueue)")
+
+    vfx = sub.add_parser(
+        "verify-fix",
+        help="Enqueue or run independent verify_fix against a patched tree (fixed/still_vulnerable/inconclusive)",
+    )
+    vfx.add_argument("--finding-id", type=int, required=True)
+    vfx.add_argument("--run-dir", type=Path, default=None)
+    src = vfx.add_mutually_exclusive_group(required=True)
+    src.add_argument("--patched-path", default="", help="Existing patched checkout (read-only)")
+    src.add_argument("--git-rev", default="", help="Git revision to export (raw blobs, read-only)")
+    src.add_argument("--use-fix-patch", action="store_true", help="Target + evidence fix.patch in scratch")
+    vfx.add_argument("--repo", default="", help="Repo for --git-rev (default: the run target)")
+    vfx.add_argument("--subdir", default="", help="Subdirectory of --repo that matches the target")
+    vfx.add_argument("--no-baseline", action="store_true", help="Skip the PoC baseline run on the original tree")
+    vfx.add_argument("--target-url", default="", help="Optional TARGET_URL env for the PoC process")
+    vfx.add_argument("--keep-tree", action="store_true", help="Keep the scratch tree after the run")
+    vfx.add_argument("--force", action="store_true", help="Allow findings outside confirmed/needs_human")
+    vfx.add_argument("--execute", action="store_true", help="Run immediately in-process (else only enqueue)")
 
     tg = sub.add_parser(
         "tool-gaps",
@@ -1445,6 +1478,14 @@ def _dispatch_task_kind(task, db: Database, run_dir: Path, cfg: dict) -> dict[st
         from vulnforge.stages import iterate_poc
 
         return iterate_poc.run(task, db, run_dir, cfg)
+    if kind == "develop_fix":
+        from vulnforge.stages import develop_fix
+
+        return develop_fix.run(task, db, run_dir, cfg)
+    if kind == "verify_fix":
+        from vulnforge.stages import verify_fix
+
+        return verify_fix.run(task, db, run_dir, cfg)
     if kind == "render":
         from vulnforge.stages import render
 
@@ -1595,6 +1636,99 @@ def cmd_validate_poc(args, cfg: dict) -> int:
         return EXIT_PROGRESS
     finally:
         db.close()
+
+
+def _run_fix_task_inline(kind: str, payload: dict, run_dir: Path, cfg: dict) -> int:
+    from types import SimpleNamespace
+
+    db = Database.open(run_dir / "harness.db")
+    try:
+        task = SimpleNamespace(id=0, kind=kind, payload=payload)
+        result = _dispatch_task_kind(task, db, run_dir, cfg)
+    finally:
+        db.close()
+    keys = (
+        "status", "finding_id", "evidence_id", "verdict", "confidence", "basis",
+        "would_resolve", "poc_evidence", "applies", "patch_errors", "fix_relpath",
+        "verify_relpath", "error", "finding_state",
+    )
+    print(json.dumps({k: result.get(k) for k in keys if result.get(k) is not None}, indent=2))
+    if result.get("status") == "failed_infra":
+        return EXIT_INFRA
+    if result.get("status") != "succeeded":
+        return EXIT_CONFIG
+    return EXIT_PROGRESS
+
+
+def cmd_develop_fix(args, cfg: dict) -> int:
+    """Enqueue develop_fix, or execute immediately with --execute."""
+    from vulnforge.control import fix_ops
+
+    try:
+        run_dir = resolve_run_dir(args, cfg)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_CONFIG
+    fid = int(args.finding_id)
+    if getattr(args, "execute", False):
+        payload: dict[str, Any] = {"finding_id": fid, "operator": "cli"}
+        if args.notes:
+            payload["operator_notes"] = str(args.notes)[:4000]
+        if args.force:
+            payload["force"] = True
+        return _run_fix_task_inline("develop_fix", payload, run_dir, cfg)
+    r = fix_ops.enqueue_develop_fix(
+        run_dir, fid, operator="cli", operator_notes=args.notes or "", force=bool(args.force)
+    )
+    if not r.get("ok"):
+        print(r.get("error"), file=sys.stderr)
+        return EXIT_CONFIG
+    print(f"enqueued develop_fix task_id={r['task_id']} finding_id={fid}")
+    return EXIT_PROGRESS
+
+
+def cmd_verify_fix(args, cfg: dict) -> int:
+    """Enqueue verify_fix, or execute immediately with --execute."""
+    from vulnforge.control import fix_ops
+
+    try:
+        run_dir = resolve_run_dir(args, cfg)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return EXIT_CONFIG
+    fid = int(args.finding_id)
+    opts = dict(
+        patched_path=args.patched_path or "",
+        git_rev=args.git_rev or "",
+        repo_path=args.repo or "",
+        subdir=args.subdir or "",
+        use_fix_patch=bool(args.use_fix_patch),
+        baseline=not args.no_baseline,
+        target_url=args.target_url or "",
+        operator="cli",
+        force=bool(args.force),
+        keep_tree=bool(args.keep_tree),
+    )
+    if getattr(args, "execute", False):
+        db = Database.open(run_dir / "harness.db")
+        try:
+            finding = db.get_finding(fid)
+        finally:
+            db.close()
+        if finding is None:
+            print(f"finding not found: {fid}", file=sys.stderr)
+            return EXIT_CONFIG
+        payload, err = fix_ops.build_verify_payload(finding, **opts)
+        if err or payload is None:
+            print(err, file=sys.stderr)
+            return EXIT_CONFIG
+        return _run_fix_task_inline("verify_fix", payload, run_dir, cfg)
+    r = fix_ops.enqueue_verify_fix(run_dir, fid, **opts)
+    if not r.get("ok"):
+        print(r.get("error"), file=sys.stderr)
+        return EXIT_CONFIG
+    print(f"enqueued verify_fix task_id={r['task_id']} finding_id={fid}")
+    return EXIT_PROGRESS
 
 
 def cmd_tool_gaps(args, cfg: dict) -> int:
