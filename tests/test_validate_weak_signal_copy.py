@@ -51,5 +51,8 @@ def test_report_and_settings_surface_same_model_hint():
     assert empty
     branch = settings.split("if (!available.length)", 1)[1].split("available.forEach", 1)[0]
     assert "updateValidateWarn()" in branch
-    assert "same-model dual disprove is a weak signal" in settings
-    assert "One validation model is a weaker signal than two" in settings
+    # Copy lives in the page helpers (node-tested in tests/js/settings_helpers.test.js).
+    helpers = (PROJECT_ROOT / "vulnforge/ui/static/pages/settings_helpers.js").read_text(encoding="utf-8")
+    assert "H.validateWarning(" in settings
+    assert "same-model dual disprove is a weak signal" in helpers
+    assert "One validation model is a weaker signal than two" in helpers
