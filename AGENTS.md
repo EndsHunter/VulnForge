@@ -114,6 +114,8 @@ Hunt skills live in the **operator collection** (`config/hunt_profiles/`), not h
 
 Package markdown under `seeds/hunt_classes/` is a **seed library** only (first open / reseed). Runtime authority is the collection. See [`seeds/README.md`](seeds/README.md).
 
+**Import review.** Imported profiles get mechanical checks (`hunt_profiles/review.py`) and, if you opt in, an LLM review. Verdicts are PASS, REVIEW, BLOCK or INCOMPLETE, and the LLM can only make a verdict stricter. Imported profiles start inactive. Activating a REVIEW profile needs confirmation. BLOCK and INCOMPLETE need an override with a reason, logged to `config/hunt_profiles/review_log.jsonl`. A profile that has not cleared review never reaches a prompt. Editing its content re-runs the review. See [`docs/system/PROFILE_REVIEW.md`](docs/system/PROFILE_REVIEW.md).
+
 ### New mech gate
 
 Add check in `stages/validate_mech.py` `CHECKS` list; unit test in `tests/test_validate_mech_gates.py`.

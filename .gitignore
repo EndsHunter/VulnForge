@@ -22,6 +22,7 @@ temp/
 *.sqlite
 config/ui_settings.json
 config/prompts/
+config/hunt_profiles/review_log.jsonl
 
 # Archives / unpack leftovers
 VulnForge-main/

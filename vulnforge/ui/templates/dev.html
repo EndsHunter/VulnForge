@@ -109,6 +109,18 @@
               <button type="button" class="btn" id="dev-seed-diff" title="Compare body to package seed">Diff seed</button>
               <button type="button" class="btn" id="dev-seed-restore" title="Restore markdown body from package seed">Restore seed body</button>
             </div>
+            <section class="dev-review-panel" id="dev-review-panel" aria-labelledby="dev-review-title" hidden>
+              <div class="toolbar" style="margin:0 0 0.5rem;flex-wrap:wrap;gap:0.5rem;align-items:center">
+                <strong id="dev-review-title">Import review</strong>
+                <span class="badge" id="dev-review-badge">—</span>
+                <span class="controls-hint" id="dev-review-needs"></span>
+                <button type="button" class="btn" id="dev-review-rerun" title="Re-run the mechanical checks">Re-run review</button>
+                <button type="button" class="btn" id="dev-review-llm" title="Ask the configured model for a verdict (can only make it stricter)">Run LLM review</button>
+              </div>
+              <ul class="dev-review-findings" id="dev-review-findings"></ul>
+              <p class="controls-hint" id="dev-review-llm-out" hidden></p>
+              <p class="controls-hint" id="dev-review-ack" hidden></p>
+            </section>
             <div class="field">
               <label class="field-label-text" for="dev-id">Skill id (class)</label>
               <input id="dev-id" class="mono" autocomplete="off" spellcheck="false" pattern="[a-z][a-z0-9-]{0,63}" required />
@@ -630,6 +642,17 @@
             </span>
           </label>
         </div>
+      </div>
+      <div class="field">
+        <label class="init-check">
+          <input type="checkbox" id="dev-import-llm-review" />
+          <span>Also run LLM review of imported hunt skills (uses the configured model)</span>
+        </label>
+        <p class="controls-hint">
+          Imported hunt skills always get mechanical checks and start inactive.
+          <strong>REVIEW</strong> needs confirmation to activate. <strong>BLOCK</strong> and
+          <strong>INCOMPLETE</strong> need a logged override.
+        </p>
       </div>
       <div class="field">
         <label class="field-label-text" for="dev-import-file">Or choose a file</label>

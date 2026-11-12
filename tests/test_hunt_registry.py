@@ -164,7 +164,10 @@ def test_import_replace(hunt_root: Path):
         mode="replace",
     )
     assert set(all_class_ids()) == {"alpha", "beta"}
-    assert active_class_ids() == ["alpha"]
+    # Imported profiles start inactive (issue #191); both bodies pass the
+    # mechanical review, so the empty-active fallback lists both.
+    assert all(not p["active"] for p in list_profiles())
+    assert active_class_ids() == ["alpha", "beta"]
 
 
 def test_normalize_class_aliases_and_unknown(hunt_root: Path):

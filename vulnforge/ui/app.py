@@ -372,6 +372,17 @@ class HuntProfileBody(BaseModel):
     version: Optional[int] = None
     tools: Optional[list[str] | str] = None
     clear_tools: Optional[bool] = None
+    # Import review gate (issue #191): REVIEW needs confirm_review; BLOCK and
+    # INCOMPLETE need override_block plus override_reason (logged).
+    confirm_review: Optional[bool] = None
+    override_block: Optional[bool] = None
+    override_reason: Optional[str] = None
+
+
+class HuntReviewBody(BaseModel):
+    """Re-run the import review of a profile (optionally with the LLM)."""
+
+    llm: bool = False
 
 
 class ToolsDefaultsBody(BaseModel):
@@ -457,6 +468,7 @@ class HuntGenerateBody(BaseModel):
 class HuntImportBody(BaseModel):
     data: Any
     mode: str = "merge"
+    llm_review: bool = False
 
 
 class DevSetupImportBody(BaseModel):
@@ -465,6 +477,7 @@ class DevSetupImportBody(BaseModel):
     data: Any
     mode: str = "merge"
     include: Optional[list[str]] = None
+    llm_review: bool = False
 
 
 class ReconAgentBody(BaseModel):
@@ -2989,6 +3002,10 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 body.data if isinstance(body.data, dict) else {},
                 mode=body.mode or "merge",
                 include=body.include,
+                llm_review=bool(body.llm_review),
+                cfg=(getattr(app.state, "config", None) or load_config())
+                if body.llm_review
+                else None,
             )
         except DevSetupError as e:
             raise HTTPException(400, str(e)) from e
@@ -3032,7 +3049,14 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         from vulnforge.hunt_profiles import HuntProfileError, import_collection
 
         try:
-            result = import_collection(body.data, mode=body.mode or "merge")
+            result = import_collection(
+                body.data,
+                mode=body.mode or "merge",
+                llm_review=bool(body.llm_review),
+                cfg=(getattr(app.state, "config", None) or load_config())
+                if body.llm_review
+                else None,
+            )
             return result
         except HuntProfileError as e:
             raise HTTPException(400, str(e)) from e
@@ -3168,7 +3192,11 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
     @app.put("/api/hunt-profiles/{profile_id}")
     def api_hunt_profile_update(profile_id: str, body: HuntProfileBody):
-        from vulnforge.hunt_profiles import HuntProfileError, save_profile
+        from vulnforge.hunt_profiles import (
+            HuntProfileError,
+            HuntProfileReviewError,
+            save_profile,
+        )
 
         try:
             profile = save_profile(
@@ -3187,7 +3215,27 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 tools=body.tools,
                 clear_tools=bool(body.clear_tools),
                 create=False,
+                confirm_review=bool(body.confirm_review),
+                override_block=bool(body.override_block),
+                override_reason=body.override_reason,
             )
+            return {"ok": True, "profile": profile}
+        except HuntProfileReviewError as e:
+            # 409: activation needs confirm / override (UI prompts and resends).
+            raise HTTPException(409, e.detail()) from e
+        except HuntProfileError as e:
+            msg = str(e)
+            code = 404 if "unknown" in msg else 400
+            raise HTTPException(code, msg) from e
+
+    @app.post("/api/hunt-profiles/{profile_id}/review")
+    def api_hunt_profile_review(profile_id: str, body: HuntReviewBody):
+        """Re-run the import review (mechanical; optional LLM). Never activates."""
+        from vulnforge.hunt_profiles import HuntProfileError, rerun_review
+
+        cfg = (getattr(app.state, "config", None) or load_config()) if body.llm else None
+        try:
+            profile = rerun_review(profile_id, llm=bool(body.llm), cfg=cfg)
             return {"ok": True, "profile": profile}
         except HuntProfileError as e:
             msg = str(e)

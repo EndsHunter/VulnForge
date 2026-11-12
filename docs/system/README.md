@@ -35,6 +35,7 @@ Loader: `vulnforge.packet.load_prompt_slice` prefers override for top-level base
 | `referee_poc.md` | [VALIDATE.md](VALIDATE.md) | `pack_poc_referee` | optional after validate_poc |
 | `generate_skill.md` | [GENERATE_SKILL.md](GENERATE_SKILL.md) | hunt skill author | generate_skill / Dev |
 | `tool_gaps.md` | [TOOL_GAPS.md](TOOL_GAPS.md) | tool_gaps hybrid LLM | tool gap analysis |
+| `profile_review.md` | [PROFILE_REVIEW.md](PROFILE_REVIEW.md) | `hunt_profiles/review.py` | hunt profile import review (Dev) |
 | `toolgen_spec.md` | [TOOLGEN.md](TOOLGEN.md) | toolgen pipeline | Dev Tools |
 | `toolgen_impl.md` | [TOOLGEN.md](TOOLGEN.md) | toolgen pipeline | Dev Tools |
 | `toolgen_fix.md` | [TOOLGEN.md](TOOLGEN.md) | toolgen pipeline | Dev Tools |

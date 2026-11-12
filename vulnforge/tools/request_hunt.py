@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from vulnforge.hunt_profiles import (
     HuntProfileError,
-    all_class_ids,
+    cleared_class_ids,
     get_profile,
     list_profiles,
     normalize_class,
@@ -37,6 +37,10 @@ def list_hunt_profiles(ctx: dict) -> dict[str, Any]:
         return {"ok": False, "error": f"hunt_profiles: {e}"}
     profiles = []
     for p in rows:
+        st = p.get("review_state")
+        if isinstance(st, dict) and not st.get("cleared"):
+            # Import review not cleared: never show its title/description.
+            continue
         profiles.append(
             {
                 "id": p.get("id"),
@@ -185,7 +189,8 @@ def request_hunt(
 
     # Require an explicit registered profile id (do not silently map to wildcard).
     try:
-        available = set(all_class_ids())
+        # Profiles with an uncleared import review cannot be requested.
+        available = set(cleared_class_ids())
     except HuntProfileError as e:
         return {"ok": False, "error": f"hunt_profiles: {e}", "code": "profiles_error"}
 

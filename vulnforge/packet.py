@@ -59,18 +59,22 @@ def load_prompt_slice(prompts_root: Path, relative: str) -> str:
 
 def _load_hunt_class_body(cls: str) -> str:
     """Load hunt class markdown from the operator collection (not package prompts)."""
-    from vulnforge.hunt_profiles import HuntProfileError, get_body, normalize_class
+    from vulnforge.hunt_profiles import (
+        HuntProfileError,
+        get_body,
+        is_profile_cleared,
+        normalize_class,
+    )
 
     want = normalize_class(cls)
-    try:
-        return get_body(want)
-    except HuntProfileError:
-        pass
-    if want != "wildcard":
+    # A profile whose import review is not cleared never reaches a prompt.
+    for cand in dict.fromkeys((want, "wildcard")):
         try:
-            return get_body("wildcard")
+            if not is_profile_cleared(cand):
+                continue
+            return get_body(cand)
         except HuntProfileError:
-            pass
+            continue
     return (
         f"# Hunt class: {want}\n\n"
         "(No body registered for this class. Use tools and submit carefully.)\n"
@@ -89,10 +93,19 @@ def format_hunt_class_registry_section(
     those class ids (operator run policy — not the full Dev catalog).
     """
     from vulnforge.hunt_profiles import (
+        cleared_class_ids,
         filter_profiles_for_run,
         list_profiles,
         resolve_run_class_ids,
     )
+
+    def _cleared_only(rows: list[dict]) -> list[dict]:
+        # Uncleared import reviews: keep title/description out of the prompt.
+        try:
+            ok = set(cleared_class_ids())
+        except Exception:
+            return []
+        return [p for p in rows if p.get("id") in ok]
 
     restricted = False
     if allowed_ids is not None:
@@ -128,6 +141,7 @@ def format_hunt_class_registry_section(
                 "\n## Registered hunt classes\n"
                 "(collection unavailable — use only well-known short class ids)\n"
             )
+    profiles = _cleared_only(profiles)
 
     if not profiles and restricted:
         return (
@@ -826,6 +840,9 @@ def pack_hunt(
 
         prof = get_profile(str(cls), include_body=False)
         raw_tools = prof.get("tools") if isinstance(prof, dict) else None
+        st = prof.get("review_state") if isinstance(prof, dict) else None
+        if isinstance(st, dict) and not st.get("cleared"):
+            raw_tools = None  # uncleared import review: ignore its tools list
         if isinstance(raw_tools, list) and raw_tools:
             tools_allowlist = [str(x).strip() for x in raw_tools if str(x).strip()]
     except Exception:
