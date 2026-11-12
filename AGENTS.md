@@ -64,7 +64,7 @@ Seven verbs — `start`, `stop`, `pause`, `resume`, `status`, `findings`, `gate`
 
 ### Headless CI
 
-`vf ci --target PATH` runs init → Ralph → render unattended and exits with an **outcome** code (0 pass, 1 threshold met, 2 infra/integrity), separate from the Ralph protocol codes. `--max-cost-usd` / `--max-time` are advisory (stop leasing; in-flight tasks may overrun). `--fail-on-state needs_human` fails the job for **review**, not proof; CI never sets `confirmed`. Contract and example GitHub workflow: [`docs/harness/CI.md`](docs/harness/CI.md).
+`vf ci --target PATH` runs init → Ralph → render unattended and exits with an **outcome** code (0 pass, 1 threshold met, 2 infra/integrity), separate from the Ralph protocol codes. `--max-cost-usd` / `--max-time` are advisory (stop leasing; in-flight tasks may overrun). `--fail-on-state needs_human` fails the job for **review**, not proof; CI never sets `confirmed`. PR mode: `--diff merge-base..head`. SARIF (confirmed + needs_human) goes to `--output-dir`. Contract and example GitHub workflow: [`docs/harness/CI.md`](docs/harness/CI.md).
 
 ### Steer a live campaign
 

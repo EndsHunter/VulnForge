@@ -672,3 +672,113 @@ def test_e2e_diff_head_not_checked_out_is_error(offline_ci, toy_git: dict):
 
 def test_ci_diff_with_run_dir_is_rejected(offline_ci, tmp_path: Path):
     assert _ci(offline_ci, "--run-dir", str(tmp_path), "--diff", "a..b") == ci_codes.CI_ERROR
+
+
+# SARIF output (#187) ----------------------------------------------------------
+
+
+def _assert_valid_sarif(path: Path) -> dict:
+    jsonschema = pytest.importorskip("jsonschema")
+    schema_path = Path(__file__).parent / "fixtures" / "sarif" / "sarif-schema-2.1.0.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    errs = sorted(jsonschema.Draft4Validator(schema).iter_errors(doc), key=str)
+    assert not errs, [e.message for e in errs[:5]]
+    return doc
+
+
+def test_e2e_sarif_includes_needs_human_as_review_item(offline_ci, toy_sqli: Path):
+    offline_ci.install("vuln")
+    out = offline_ci.tmp / "out"
+    code = _ci(offline_ci, "--target", str(toy_sqli), "--fail-on-state", "needs_human",
+               "--output-dir", str(out), "-q")
+    rec = _result(offline_ci)
+    assert code == ci_codes.CI_THRESHOLD, rec
+    path = out / "vulnforge.sarif"
+    doc = _assert_valid_sarif(path)
+    results = doc["runs"][0]["results"]
+    assert len(results) == 1 and rec["sarif"]["results"] == 1
+    assert rec["sarif"]["states"] == ["confirmed", "needs_human"]
+    res = results[0]
+    assert res["properties"]["vulnforge/state"] == "needs_human"
+    assert res["properties"]["vulnforge/confirmed"] is False
+    assert res["message"]["text"].startswith("needs_human:")
+    assert res["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == "app.py"
+
+
+def test_e2e_sarif_confirmed_only_and_explicit_path(offline_ci, toy_sqli: Path):
+    offline_ci.install("vuln")
+    sarif = offline_ci.tmp / "elsewhere" / "ci.sarif"
+    code = _ci(offline_ci, "--target", str(toy_sqli), "--sarif", str(sarif),
+               "--sarif-confirmed-only", "--output-dir", str(offline_ci.tmp / "out"), "-q")
+    assert code == ci_codes.CI_PASS
+    assert not (offline_ci.tmp / "out" / "vulnforge.sarif").exists()
+    assert _assert_valid_sarif(sarif)["runs"][0]["results"] == []
+    assert _result(offline_ci)["sarif"]["states"] == ["confirmed"]
+
+
+def test_e2e_sarif_failure_is_integrity_error(offline_ci, toy_sqli: Path, monkeypatch):
+    import vulnforge.export_findings as ef
+
+    def boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(ef, "sarif_document", boom)
+    offline_ci.install("clean")
+    code = _ci(offline_ci, "--target", str(toy_sqli), "--output-dir", str(offline_ci.tmp / "out"), "-q")
+    rec = _result(offline_ci)
+    assert code == ci_codes.CI_ERROR
+    assert any("SARIF export failed: disk full" in e for e in rec["errors"])
+
+
+def test_e2e_empty_diff_writes_empty_sarif(offline_ci, toy_git: dict):
+    offline_ci.install("clean")
+    out = offline_ci.tmp / "out"
+    code = _ci(offline_ci, "--target", str(toy_git["repo"]), "--diff",
+               f"{toy_git['code']}..HEAD", "--output-dir", str(out), "-q")
+    assert code == ci_codes.CI_PASS
+    assert _assert_valid_sarif(out / "vulnforge.sarif")["runs"][0]["results"] == []
+
+
+# example workflow (template; not run on this repo's CI) -----------------------
+
+
+def _workflow() -> dict:
+    path = PROJECT_ROOT / "examples" / "github" / "vulnforge-ci.yml"
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _vf_ci_argv(run: str) -> list[str]:
+    import shlex
+
+    script = run.replace("\\\n", " ")
+    line = next(ln for ln in script.splitlines() if ln.strip().startswith("vf "))
+    for var in ("RUNNER_TEMP", "PRICE_IN", "PRICE_OUT", "MERGE_BASE", "HEAD_SHA"):
+        line = line.replace(f"${var}", "1")
+    return shlex.split(line)[1:]
+
+
+def test_example_workflow_is_a_template_with_both_jobs():
+    from vulnforge.cli import build_parser
+
+    wf = _workflow()
+    assert not (PROJECT_ROOT / ".github" / "workflows" / "vulnforge-ci.yml").exists()
+    triggers = wf.get("on") or wf.get(True)
+    assert {"schedule", "workflow_dispatch", "pull_request"} <= set(triggers)
+    parser = build_parser()
+    for job, want_diff in (("weekly", False), ("pull_request", True)):
+        steps = wf["jobs"][job]["steps"]
+        ci = [s for s in steps if "vf --config" in str(s.get("run", ""))]
+        assert len(ci) == 1 and "continue-on-error" not in ci[0]
+        args = parser.parse_args(_vf_ci_argv(ci[0]["run"]))
+        assert args.command == "ci" and args.output_dir is not None
+        assert bool(args.diff) is want_diff
+        assert args.fail_on_state == ["needs_human"]
+        assert args.max_cost_usd and args.max_time
+        uploads = {s["uses"].split("@")[0]: s for s in steps if "uses" in s}
+        sarif = uploads["github/codeql-action/upload-sarif"]
+        assert sarif["if"].startswith("always()")
+        assert sarif["with"]["sarif_file"] == "vulnforge-out/vulnforge.sarif"
+        assert uploads["actions/upload-artifact"]["if"] == "always()"
+    pr_checkout = wf["jobs"]["pull_request"]["steps"][0]["with"]
+    assert pr_checkout["fetch-depth"] == 0 and "head.sha" in pr_checkout["ref"]

@@ -49,8 +49,9 @@ vf policy set --file policy.json [--note TEXT] [--run-dir PATH]
 vf policy history [--run-dir PATH]
 vf policy restore --revision N [--run-dir PATH]
 vf policy draft-security-md [--save] [--run-dir PATH]
-vf ci (--target PATH [init flags] | --run-dir PATH) [--max-cost-usd N --price-input-per-mtok X --price-output-per-mtok Y]
+vf ci (--target PATH [init flags, incl. --diff BASE..HEAD] | --run-dir PATH) [--max-cost-usd N --price-input-per-mtok X --price-output-per-mtok Y]
       [--max-time 2h] [--fail-on-state needs_human|confirmed] [--fail-on-severity LEVEL] [--output-dir DIR]
+      [--sarif PATH] [--sarif-confirmed-only]
 ```
 
 `vf hitl` is the durable report↔responses inbox (`vulnforge/hitl-report@1`). `inbox` lists `awaiting-review` items. `responses` prints stored answers keyed by block id (`value`, `note`, `at`). Missing keys are unanswered. `respond` records an explicit human answer; a finding approval delegates to human review and is the only HITL path that can set `confirmed`. `emit` stores an explicit gate packet and does not change findings. See `docs/harness/validate/HITL.md`.

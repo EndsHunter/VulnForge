@@ -42,6 +42,10 @@ from vulnforge.util import append_event, utc_now_iso
 SCHEMA = "vulnforge/ci-result@1"
 RESULT_NAME = "ci_result.json"
 REPORT_FILES = ("REPORT.md", "findings.json")
+SARIF_NAME = "vulnforge.sarif"
+# CI uploads review items too: code scanning shows needs_human alerts with a
+# "not a confirmed vulnerability" title (vulnforge/sarif_export.py).
+SARIF_CI_STATES: tuple[str, ...] = ("confirmed", "needs_human")
 DEFAULT_TASK_TIMEOUT = 900.0
 # Ralph needs an integer cap; CI default is effectively unlimited so a large
 # repo does not stop at Ralph's interactive default (200) and exit green.
@@ -69,7 +73,21 @@ class CIOptions:
     max_iterations: Optional[int] = None
     max_infra_retries: int = 5
     output_dir: Optional[Path] = None
+    sarif_path: Optional[Path] = None  # default: {output_dir}/vulnforge.sarif
+    sarif_confirmed_only: bool = False
     verbose: bool = True
+
+    @property
+    def sarif_target(self) -> Optional[Path]:
+        if self.sarif_path is not None:
+            return Path(self.sarif_path)
+        if self.output_dir is not None:
+            return Path(self.output_dir) / SARIF_NAME
+        return None
+
+    @property
+    def sarif_states(self) -> tuple[str, ...]:
+        return ("confirmed",) if self.sarif_confirmed_only else SARIF_CI_STATES
 
 
 @dataclass
@@ -192,6 +210,52 @@ def _init_run(opts: CIOptions, cfg: dict, init_fn: Callable[[Any, dict], int]) -
     return Path(created).resolve()
 
 
+def _sarif_summary(doc: dict[str, Any], path: Path, states: tuple[str, ...]) -> dict[str, Any]:
+    run = (doc.get("runs") or [{}])[0]
+    notes = ((run.get("invocations") or [{}])[0]).get("toolExecutionNotifications") or []
+    return {
+        "path": str(path),
+        "states": list(states),
+        "results": len(run.get("results") or []),
+        "skipped_no_location": len(notes),
+    }
+
+
+def _write_sarif_doc(doc: dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def write_run_sarif(run_dir: Path, path: Path, states: tuple[str, ...]) -> dict[str, Any]:
+    """SARIF 2.1.0 for the run via the #187 exporter. Raises on failure."""
+    from vulnforge.db import Database
+    from vulnforge.export_findings import ExportOptions, sarif_document
+
+    db = Database.open(run_dir / "harness.db")
+    try:
+        doc = sarif_document(run_dir, db, options=ExportOptions(sarif_states=states))
+    finally:
+        db.close()
+    _write_sarif_doc(doc, path)
+    return _sarif_summary(doc, path, states)
+
+
+def write_empty_sarif(path: Path, states: tuple[str, ...]) -> dict[str, Any]:
+    """Valid SARIF with no results (a diff with nothing in scope)."""
+    from vulnforge.export_findings import DISCLAIMER
+    from vulnforge.sarif_export import build_sarif, tool_version
+
+    doc = build_sarif(
+        [],
+        states=states,
+        exported_at=utc_now_iso(),
+        tool_version=tool_version(),
+        disclaimer=DISCLAIMER,
+    )
+    _write_sarif_doc(doc, path)
+    return _sarif_summary(doc, path, states)
+
+
 def _diff_precheck(opts: CIOptions, cfg: dict, spec: str) -> dict[str, Any]:
     """Validate a ``--diff`` spec before init (same checks ``vf init`` runs)."""
     from vulnforge.diff_scope import DiffScopeError, collect_changes, scope_brief
@@ -312,6 +376,11 @@ def run_ci(
                 f"({pre['brief']['excluded']} changed path(s) excluded); nothing was "
                 "audited and no run was created"
             )
+            if opts.sarif_target is not None:
+                try:
+                    record["sarif"] = write_empty_sarif(opts.sarif_target, opts.sarif_states)
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"integrity: SARIF export failed: {e}")
             return finish(None)
     if opts.run_dir is not None:
         run_dir = Path(opts.run_dir).resolve()
@@ -450,6 +519,12 @@ def run_ci(
     record["coverage_gaps"] = coverage_gaps(task_counts)
     # Listed on exit 2 as well, so an infra failure does not hide review items.
     record["matched_findings"] = matched_findings(findings, threshold)
+    # 5. SARIF (written on exit 2 too, so partial results still reach code scanning)
+    if opts.sarif_target is not None:
+        try:
+            record["sarif"] = write_run_sarif(run_dir, opts.sarif_target, opts.sarif_states)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"integrity: SARIF export failed: {e}")
     append_event(
         run_dir,
         {
@@ -503,6 +578,12 @@ def summary_markdown(record: dict) -> str:
         )
     if record.get("findings") is not None:
         lines.append(f"- Findings by state: `{record.get('findings')}`")
+    sarif = record.get("sarif")
+    if sarif:
+        lines.append(
+            f"- SARIF: {sarif.get('results')} result(s) ({', '.join(sarif.get('states') or [])}), "
+            f"{sarif.get('skipped_no_location')} without a location"
+        )
     gaps = record.get("coverage_gaps") or {}
     if gaps:
         lines.append(f"- Coverage gaps (do not fail the job): `{gaps}`")

@@ -204,6 +204,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Copy ci_result.json and the rendered report (project/) here for upload",
     )
+    ci_p.add_argument(
+        "--sarif",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write SARIF 2.1.0 here (default with --output-dir: DIR/vulnforge.sarif). "
+            "Includes confirmed and needs_human; needs_human alerts are titled "
+            "'not a confirmed vulnerability'. An export failure exits 2."
+        ),
+    )
+    ci_p.add_argument(
+        "--sarif-confirmed-only",
+        action="store_true",
+        help="Leave needs_human (review items) out of the SARIF file",
+    )
     ci_p.add_argument("-q", "--quiet", action="store_true", help="Less Ralph logging")
 
     once = sub.add_parser("run-once", help="Lease and execute one task")
@@ -1192,6 +1208,8 @@ def cmd_ci(args, cfg: dict) -> int:
         task_timeout=args.task_timeout,
         max_iterations=args.max_iterations,
         output_dir=args.output_dir,
+        sarif_path=args.sarif,
+        sarif_confirmed_only=bool(args.sarif_confirmed_only),
         verbose=not args.quiet,
     )
     return run_ci(opts, cfg).exit_code
