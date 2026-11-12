@@ -10,11 +10,13 @@ Authority remains harness.db + transcripts; project/* is regenerate-friendly.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from vulnforge.errors import note_swallowed, read_swallowed_summary
 from vulnforge.profiles.code_static import CodeStaticProfile
 from vulnforge.util import utc_now_iso, write_json
 
@@ -1243,8 +1245,8 @@ def analyze_run_llm(
                     model_id=model_id or result.model_id,
                     result=result,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="tool_gaps.record_llm_result", run_dir=run_dir)
             if not result.ok:
                 llm_error = result.error or result.classification.value
             else:
@@ -1254,8 +1256,8 @@ def analyze_run_llm(
         if own_client and hasattr(client, "close"):
             try:
                 client.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="tool_gaps.client_close", level=logging.DEBUG)
 
     llm_gaps = _parse_llm_gaps_json(content) if content else []
     stats = dict(mech.get("stats") or {})
@@ -1361,7 +1363,8 @@ def aggregate_tool_gaps(
     """
     Roll up tool_gaps.json across all runs for the Home page.
 
-    Returns capability-centric summary + per-run stats.
+    Returns capability-centric summary + per-run stats. Each per-run row also
+    carries ``swallowed_errors`` (see :func:`vulnforge.errors.read_swallowed_summary`).
     """
     runs_root = Path(runs_root)
     run_dirs = discover_run_dirs(runs_root)
@@ -1370,6 +1373,7 @@ def aggregate_tool_gaps(
     total_gaps = 0
 
     for rd in run_dirs:
+        swallowed = read_swallowed_summary(rd, top=3)
         cached = rd / "project" / "tool_gaps.json"
         analysis: Optional[dict[str, Any]] = None
         if cached.is_file():
@@ -1387,6 +1391,7 @@ def aggregate_tool_gaps(
                         "run_dir": str(rd),
                         "target_id": rd.parent.name,
                         "run_id": rd.name,
+                        "swallowed_errors": swallowed,
                         "error": str(e)[:200],
                         "gap_count": 0,
                     }
@@ -1398,6 +1403,7 @@ def aggregate_tool_gaps(
                     "run_dir": str(rd),
                     "target_id": rd.parent.name,
                     "run_id": rd.name,
+                    "swallowed_errors": swallowed,
                     "gap_count": 0,
                     "cached": False,
                 }
@@ -1411,6 +1417,7 @@ def aggregate_tool_gaps(
                 "run_dir": str(rd),
                 "target_id": rd.parent.name,
                 "run_id": rd.name,
+                "swallowed_errors": swallowed,
                 "gap_count": len(gaps),
                 "mode": analysis.get("mode") or "mechanical",
                 "generated_at": analysis.get("generated_at"),
@@ -1474,4 +1481,7 @@ def aggregate_tool_gaps(
         "capability_count": len(capabilities),
         "capabilities": capabilities,
         "per_run": per_run,
+        "total_swallowed_errors": sum(
+            int((r.get("swallowed_errors") or {}).get("count") or 0) for r in per_run
+        ),
     }

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from vulnforge.db import Database, pid_from_lease_owner, process_pid_alive
+from vulnforge.errors import note_swallowed
 from vulnforge.hunt_profiles import (
     HUNT_SKILL_MODES,
     active_class_ids,
@@ -1040,8 +1041,8 @@ def requeue_hunt(
                     visit_delta=0,
                     last_depth="planned",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="ops.upsert_coverage_fact")
         try:
             append_event(
                 run_dir,
@@ -1240,8 +1241,8 @@ def requeue_recon(
                 run_sec["hunt_skill_mode"] = mode_s
                 run_sec["hunt_skill_ids"] = ids_list
                 patch_run_config(db, {"run": run_sec})
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="ops.patch_run_config_hunt_skills")
 
         # Front of queue so recon jumps ahead of bulk hunts (35–50).
         front = recon_front_priority(db)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from vulnforge.errors import note_swallowed
 from vulnforge.hunt_profiles.generate import (
     GenerateSkillError,
     generate_hunt_skill,
@@ -63,8 +64,8 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             # classify if it looks like an LLMResult-bearing failure
             if hasattr(e, "classification"):
                 status = classify_llm_failure(e)  # type: ignore[arg-type]
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="generate_skill.classify_failure")
         return {"status": status, "error": str(e)[:500]}
 
     usage = skill.pop("usage", None) or {}
@@ -173,8 +174,8 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     visit_delta=0,
                     last_depth="planned",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="generate_skill.upsert_coverage_fact")
 
     return {
         "status": "succeeded",

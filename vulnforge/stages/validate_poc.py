@@ -8,9 +8,11 @@ Optional LLM referee when stages.validate_poc_referee is true (annotate only).
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
+from vulnforge.errors import note_swallowed
 from vulnforge.llm import InfraError, classify_llm_failure, messages_from_packet
 from vulnforge.packet import pack_poc_referee
 from vulnforge.poc_handoff import POC_DEVELOP_RELPATH, POC_RUN_RELPATH
@@ -218,8 +220,8 @@ def _run_referee(
         for c in open_clients:
             try:
                 c.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="validate_poc.client_close", level=logging.DEBUG)
 
 
 def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:

@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from vulnforge.errors import note_swallowed
 from vulnforge.languages import CODE_BASENAMES, CODE_EXTS, is_code_extension
 from vulnforge.util import normalize_relpath
 
@@ -370,15 +371,15 @@ def _resolved_sink_families(cls: str) -> set[str] | None:
         if fam_list:
             return set(fam_list)
         # If profile exists and explicitly empty, allow; if no profile meta, fall through
-        from vulnforge.hunt_profiles import get_profile
+        from vulnforge.hunt_profiles import HuntProfileError, get_profile
 
         try:
             get_profile(want, include_body=False)
             return None  # registered profile with no sink filter
-        except Exception:
+        except HuntProfileError:
             pass
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="sink_preindex.class_sink_families")
     fam = CLASS_SINK_FAMILIES.get(want)
     return fam
 
@@ -399,6 +400,6 @@ def merged_class_sink_families() -> dict[str, set[str]]:
         for k, v in class_sink_families_map().items():
             if v:
                 out[k] = set(v)
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="sink_preindex.class_sink_families_map")
     return out

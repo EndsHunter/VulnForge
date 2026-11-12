@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Optional
 
+from vulnforge.errors import note_swallowed
 from vulnforge.llm import LLMClient, LLMResult, ResponseClass
 from vulnforge.operator_chat.confirm import PendingMutation, create_pending
 from vulnforge.operator_chat.summarize import tool_result_content
@@ -91,8 +92,8 @@ def run_operator_loop(
             return
         try:
             on_event({"event": "message", "message": msg})
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="operator_chat.on_event")
 
     pending: Optional[PendingMutation] = None
     ui_hints: dict[str, Any] = {"navigate": None, "refresh_run": False}

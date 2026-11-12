@@ -10,6 +10,7 @@ import json
 import logging
 from typing import Any, Callable, Optional
 
+from vulnforge.errors import note_swallowed
 from vulnforge.llm import FakeLLMClient
 from vulnforge.operator_chat.confirm import PendingMutation, create_pending
 from vulnforge.operator_chat.summarize import tool_result_content
@@ -156,13 +157,13 @@ def run_operator_loop_strands(
         def on_msg(_event: Any) -> None:
             try:
                 strip_reasoning_from_strands_messages(list(agent.messages))
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="operator_strands.strip_reasoning")
             flush_new_messages()
 
         agent.hooks.add_callback(MessageAddedEvent, on_msg)
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="operator_strands.add_message_hook")
 
     try:
         result = agent(user_message, limits={"turns": limit})
@@ -174,8 +175,8 @@ def run_operator_loop_strands(
         if on_event is not None:
             try:
                 on_event({"event": "message", "message": err_msg})
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="operator_strands.on_event")
         return {
             "ok": False,
             "messages": new_ui,
@@ -215,8 +216,8 @@ def run_operator_loop_strands(
         if on_event is not None:
             try:
                 on_event({"event": "message", "message": confirm_msg})
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="operator_strands.on_event")
         return {
             "ok": True,
             "messages": new_ui,
@@ -240,8 +241,8 @@ def run_operator_loop_strands(
         if on_event is not None:
             try:
                 on_event({"event": "message", "message": stop_msg})
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="operator_strands.on_event")
 
     return {
         "ok": True,

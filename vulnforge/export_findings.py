@@ -19,6 +19,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Iterable
 
+from vulnforge.errors import note_swallowed
 from vulnforge.util import utc_now_iso
 
 DISCLAIMER = (
@@ -276,8 +277,8 @@ def collect_report_context(
                     counts["rejected"] += 1
                 else:
                     counts["other"] += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="export_findings.finding_counts")
 
     arch = _safe_arch(db) if options.include_architecture else None
     coverage = _safe_coverage(db) if options.include_hunts else None

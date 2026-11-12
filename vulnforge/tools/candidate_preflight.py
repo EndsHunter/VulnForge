@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from vulnforge.errors import note_swallowed
 from vulnforge.util import normalize_relpath
 
 
@@ -179,8 +180,8 @@ def _near_dup_hints(body: dict, db: Any) -> list[dict[str, Any]]:
         run = db.get_run()
         if run:
             profile = str(run.get("profile") or profile)
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="candidate_preflight.run_profile")
 
     sk = compute_stable_key(profile, body)
     mk = merge_key(body)

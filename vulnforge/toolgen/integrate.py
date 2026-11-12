@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.errors import note_swallowed
 from vulnforge.paths import PROJECT_ROOT
 from vulnforge.toolgen.store import (
     ToolDraftError,
@@ -343,16 +344,16 @@ def apply_integration(
             for s in plan["new_specs"]:
                 if str(s.get("name")) == plan["tool_name"]:
                     reg.upsert_extra_spec(s)
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="toolgen_integrate.reload_extra_registry")
     else:
         # Agent SPEC modules: refresh discovery cache
         try:
             from vulnforge.tools.registry import clear_registry_cache
 
             clear_registry_cache()
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="toolgen_integrate.clear_registry_cache")
 
     test_stub = (plan.get("test_stub") or "").strip()
     if test_stub:
@@ -384,8 +385,8 @@ def apply_integration(
                     tools.append(name)
                     save_profile(pid, tools=tools, create=False)
                 profiles_updated.append(pid)
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="toolgen_integrate.attach_profiles")
 
     mark_integrated(draft_id, written)
     return {

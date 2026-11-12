@@ -5551,6 +5551,17 @@ function renderHomeToolGapsSummary(data) {
   meta.textContent = toolGapsSummaryLine(data);
 }
 
+/** Per-run swallowed-error count cell (issue #173). Top contexts go in the tooltip. */
+function swallowedCell(sw) {
+  const n = Number((sw && sw.count) || 0);
+  if (!n) return "0";
+  const top = ((sw && sw.by_context) || [])
+    .map((c) => `${c.context} x${c.count}`)
+    .join(", ");
+  const tip = top + (sw.last_ts ? ` | last ${sw.last_ts}` : "") + (sw.truncated ? " | log truncated" : "");
+  return `<span class="warn" title="${esc(tip)}">${esc(String(n))}${sw.truncated ? "+" : ""}</span>`;
+}
+
 function renderToolGapsPage(data) {
   const meta = $("#home-tool-gaps-meta");
   const body = $("#home-tool-gaps-body");
@@ -5559,7 +5570,8 @@ function renderToolGapsPage(data) {
     meta.textContent =
       `Generated ${data.generated_at || "-"} | runs=${data.runs_scanned ?? 0} | ` +
       `capabilities=${data.capability_count ?? (data.capabilities || []).length} | ` +
-      `gap_rows=${data.total_gap_rows ?? 0}` +
+      `gap_rows=${data.total_gap_rows ?? 0} | ` +
+      `swallowed_errors=${data.total_swallowed_errors ?? 0}` +
       (data.mode ? ` | mode=${data.mode}` : "");
   }
   if (body) {
@@ -5621,11 +5633,11 @@ function renderToolGapsPage(data) {
       perRun.innerHTML = `<div class="empty">No runs scanned.</div>`;
     } else {
       perRun.innerHTML = `<div class="table-wrap"><table class="data">
-        <thead><tr><th>Target</th><th>Run</th><th>Gaps</th><th>Mode</th><th></th></tr></thead>
+        <thead><tr><th>Target</th><th>Run</th><th>Gaps</th><th title="Exceptions caught and logged instead of crashing the loop (swallowed_errors.jsonl)">Swallowed errors</th><th>Mode</th><th></th></tr></thead>
         <tbody>${rows
           .map((r) => {
             if (r.error) {
-              return `<tr><td colspan="5" class="empty">${esc(r.target_id || "")}/${esc(r.run_id || "")}: ${esc(r.error)}</td></tr>`;
+              return `<tr><td colspan="6" class="empty">${esc(r.target_id || "")}/${esc(r.run_id || "")}: ${esc(r.error)}</td></tr>`;
             }
             const href =
               r.target_id && r.run_id
@@ -5635,6 +5647,7 @@ function renderToolGapsPage(data) {
               <td class="mono">${esc(r.target_id || "")}</td>
               <td class="mono">${esc(r.run_id || "")}</td>
               <td>${esc(String(r.gap_count ?? 0))}</td>
+              <td>${swallowedCell(r.swallowed_errors)}</td>
               <td>${esc(r.mode || (r.cached ? "cached" : "-"))}</td>
               <td>${href !== "#" ? `<a class="btn" href="${href}">Open run</a>` : ""}</td>
             </tr>`;

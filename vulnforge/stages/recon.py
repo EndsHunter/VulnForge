@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.errors import note_swallowed
 from vulnforge.hunt_profiles import (
     all_class_ids,
     catalog_for_ui,
@@ -1027,8 +1029,8 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 db.update_task_payload(task.id, payload)
                 if hasattr(task, "payload"):
                     task.payload = payload
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="recon.persist_task_payload")
             for pl, prio in expanded[1:]:
                 fanout_task_ids.append(db.enqueue_task("recon", pl, priority=prio))
             agents = active_agents(agent_ids=[str(first.get("id"))]) or [first]
@@ -1042,8 +1044,8 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             db.update_task_payload(task.id, payload)
             if hasattr(task, "payload"):
                 task.payload = payload
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="recon.persist_task_payload")
 
     # Batch follow-ups always refine the map already written by earlier siblings.
     merge_with_existing = bool(payload.get("merge_with_existing"))
@@ -1634,7 +1636,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             arch = db.get_architecture() or arch
             try:
                 codemap = db.get_codemap() or codemap
-            except Exception:
+            except sqlite3.Error:
                 pass
             tasks, hunt_plan_source = plan_hunt_tasks(
                 arch, inventory, cfg, codemap=codemap or None
@@ -1761,8 +1763,8 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     merged_cm = merge_annotations_into_codemap(base_cm, note_rows)
                     db.set_codemap(merged_cm, source="merge")
                     codemap = merged_cm
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="recon.merge_codemap_annotations")
         _ = last_result  # last LLM result retained for debugging
         result_out: dict[str, Any] = {
             "status": "succeeded",

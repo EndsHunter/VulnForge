@@ -19,6 +19,7 @@ from typing import Any, Optional
 import yaml
 
 from vulnforge.db import Database, RunLock
+from vulnforge.errors import note_swallowed
 from vulnforge.paths import PROJECT_ROOT
 from vulnforge.settings.load import load_config
 from vulnforge.util import (
@@ -1329,8 +1330,8 @@ def handle_failed_infra(
                                 (json.dumps(body), utc_now_iso(), fid),
                             )
                             db.conn.commit()
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="cli.deadletter_clear_pending_llm", run_dir=run_dir)
         append_event(
             run_dir,
             {

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from vulnforge.db import Database
+from vulnforge.errors import note_swallowed
 from vulnforge.operator_chat.summarize import (
     MAX_LIST,
     cap_list,
@@ -718,8 +719,8 @@ def get_status_impl(run: RunRef, _args: dict) -> dict[str, Any]:
             }
         finally:
             db.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="operator_chat.codemap_brief")
     return {
         "ok": True,
         "card": {

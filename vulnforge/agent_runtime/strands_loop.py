@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any, Callable, Optional
 
+from vulnforge.errors import note_swallowed
 from vulnforge.llm import (
     LLMResult,
     ResponseClass,
@@ -186,8 +187,8 @@ def _attach_context_watch_hook(
 
     try:
         agent.hooks.add_callback(BeforeModelCallEvent, before_model)
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="strands_loop.add_context_watch_hook")
 
 
 def apply_steer_before_model(
@@ -269,8 +270,8 @@ def _attach_live_steer_hook(
 
     try:
         agent.hooks.add_callback(BeforeModelCallEvent, before_model)
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="strands_loop.add_steer_hook")
 
 
 def _attach_reasoning_strip_hook(agent: Any) -> None:
@@ -283,13 +284,13 @@ def _attach_reasoning_strip_hook(agent: Any) -> None:
     def on_message(event: Any) -> None:
         try:
             strip_reasoning_from_strands_messages(list(agent.messages))
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed(exc, context="strands_loop.strip_reasoning")
 
     try:
         agent.hooks.add_callback(MessageAddedEvent, on_message)
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="strands_loop.add_message_hook")
 
 
 def strands_anthropic_cache_config(cfg: Any) -> Any:

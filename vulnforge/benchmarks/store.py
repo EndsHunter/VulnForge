@@ -18,6 +18,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
+
 from vulnforge.eval.recall import GROUND_TRUTH_ROOT, load_ground_truth
 from vulnforge.eval.vulngym import SLICE_PATH, difficulty_for_oracle
 from vulnforge.paths import PROJECT_ROOT
@@ -168,13 +170,11 @@ def _normalize_overlay(raw: object) -> dict[str, Any] | str:
         except json.JSONDecodeError:
             pass
         try:
-            import yaml
-
             parsed = yaml.safe_load(text)
             if isinstance(parsed, dict):
                 return parsed
-        except Exception:
-            pass
+        except yaml.YAMLError:
+            pass  # not YAML either: keep the raw text overlay
         return text
     return {}
 

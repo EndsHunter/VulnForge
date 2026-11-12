@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.errors import note_swallowed
+
 
 class OverBudgetError(Exception):
     pass
@@ -44,7 +46,7 @@ def load_prompt_slice(prompts_root: Path, relative: str) -> str:
             ov = prompt_overrides_root() / rel
             if ov.is_file():
                 return ov.read_text(encoding="utf-8")
-        except Exception:
+        except (OSError, UnicodeDecodeError):
             pass
     root = prompts_root.resolve()
     path = (root / rel).resolve()
@@ -300,8 +302,8 @@ def _always_keep_for_stage(stage: str) -> frozenset[str]:
         crit = critical_tools_for(stage)
         if crit:
             return crit
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="packet.critical_tools_for")
     if stage == "hunt":
         return frozenset(
             {

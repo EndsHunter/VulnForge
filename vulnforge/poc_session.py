@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from vulnforge.errors import note_swallowed
 from vulnforge.file_lock import open_exclusive
 from vulnforge.languages import POC_CODE_EXTS
 from vulnforge.poc_handoff import (
@@ -720,8 +721,8 @@ def run_iterate_session(
             sync_workspace(pack_dir, work)
             try:
                 guest.sync(guest_id, work)
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="poc_session.guest_sync")
 
             remaining = int(float(session["deadline_epoch"]) - float(clock()))
             if remaining < 1:
@@ -781,8 +782,8 @@ def run_iterate_session(
         if guest is not None and guest_id:
             try:
                 guest.stop(guest_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed(exc, context="poc_session.guest_stop")
         if session.get("state") != "ended":
             _finish(
                 session,

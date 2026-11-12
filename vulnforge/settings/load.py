@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 import yaml
 
+from vulnforge.errors import note_swallowed
 from vulnforge.paths import CONFIG_ROOT, PROJECT_ROOT
 
 
@@ -30,8 +31,8 @@ def load_config(path: Optional[Path] = None) -> dict[str, Any]:
         from vulnforge.settings import apply_ui_settings_to_cfg, load_ui_settings
 
         cfg = apply_ui_settings_to_cfg(cfg, load_ui_settings())
-    except Exception:
-        pass
+    except Exception as exc:
+        note_swallowed(exc, context="settings.apply_ui_settings")
     if os.environ.get("VF_BASE_URL"):
         cfg.setdefault("llm", {})["base_url"] = os.environ["VF_BASE_URL"]
     if os.environ.get("VF_MODEL"):
