@@ -324,6 +324,77 @@ def _hunt_tasks_report_lines(db) -> list[str]:
     return lines
 
 
+def _severity_line(b: dict) -> str:
+    """severity_claim plus the pre-cap value when the policy rubric lowered it."""
+    line = f"- **severity_claim:** {b.get('severity_claim', 'n/a')}"
+    rec = b.get("severity_rubric")
+    if b.get("severity_claim_original") and isinstance(rec, dict):
+        line += (
+            f" (hunter claimed {b['severity_claim_original']}; capped by policy rule "
+            f"`{rec.get('rule_id')}`)"
+        )
+    return line
+
+
+def _policy_lines(b: dict) -> list[str]:
+    """Keep an earlier policy match visible after a human reopened / accepted it."""
+    m = b.get("policy_match")
+    if not isinstance(m, dict):
+        return []
+    return [
+        f"- **security policy:** {m.get('kind')} by rule `{m.get('rule_id')}` "
+        f"(policy rev {m.get('policy_revision')}): {m.get('reason')}"
+    ]
+
+
+def _policy_excluded_report_lines(rejected: list) -> list[str]:
+    """Findings the operator security policy excluded — never hidden."""
+    rows = [
+        f
+        for f in rejected
+        if f.state == "rejected_mech" and isinstance((f.body or {}).get("policy_match"), dict)
+    ]
+    lines = ["## Excluded by security policy", ""]
+    if not rows:
+        lines.extend(["_None._", ""])
+        return lines
+    lines.append(
+        "Mechanically rejected because an operator exclusion / out-of-scope rule covers "
+        "every cited path. Review can reopen any of these."
+    )
+    lines.append("")
+    lines.append("| id | title | class | rule | kind | reason | cited paths |")
+    lines.append("|---:|---|---|---|---|---|---|")
+    for f in rows:
+        b = f.body or {}
+        m = b["policy_match"]
+
+        def cell(v: object) -> str:
+            return str(v if v is not None else "").replace("|", "\\|").replace("\n", " ")
+
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(f.id),
+                    cell(b.get("title", f.stable_key)),
+                    cell(b.get("weakness_class")),
+                    f"`{cell(m.get('rule_id'))}`",
+                    cell(m.get("kind")),
+                    cell(m.get("reason")),
+                    cell(
+                        ", ".join(str(x) for x in m.get("matched_paths"))
+                        if isinstance(m.get("matched_paths"), list)
+                        else ""
+                    ),
+                ]
+            )
+            + " |"
+        )
+    lines.append("")
+    return lines
+
+
 def write_report_md(path: Path, db) -> None:
     confirmed = db.list_findings(states=["confirmed"])
     needs_human = db.list_findings(states=["needs_human"])
@@ -380,7 +451,8 @@ def write_report_md(path: Path, db) -> None:
                 "",
                 f"- **id:** {f.id}",
                 f"- **class:** {b.get('weakness_class')}",
-                f"- **severity_claim:** {b.get('severity_claim', 'n/a')}",
+                _severity_line(b),
+                *_policy_lines(b),
                 f"- **attacker:** {tm.get('attacker')}",
                 f"- **impact:** {tm.get('impact')}",
                 "",
@@ -414,7 +486,8 @@ def write_report_md(path: Path, db) -> None:
                 f"- **id:** {f.id}",
                 f"- **stable_key:** `{f.stable_key}`",
                 f"- **class:** {b.get('weakness_class')}",
-                f"- **severity_claim:** {b.get('severity_claim', 'n/a')}",
+                _severity_line(b),
+                *_policy_lines(b),
                 f"- **attacker:** {tm.get('attacker')}",
                 f"- **boundary:** {tm.get('boundary')}",
                 f"- **impact:** {tm.get('impact')}",
@@ -481,6 +554,8 @@ def write_report_md(path: Path, db) -> None:
         lines.append("_No coverage matrix yet (enqueue and run hunts)._")
         lines.append("")
     lines.extend(_hunt_tasks_report_lines(db))
+
+    lines.extend(_policy_excluded_report_lines(rejected))
 
     lines.extend(["## Rejected (summary)", ""])
     if not rejected:

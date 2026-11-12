@@ -193,3 +193,4 @@ VulnForge is **source-code analysis only** (`code_static`). PE / binary reverse-
 - Do not treat same-model `validate_llm` as strong proof (default on; demote-only).
 - Automation never sets `confirmed`; only human review does.
 - HITL responses are durable and re-readable. A missing answer is unanswered. See [`docs/harness/validate/HITL.md`](docs/harness/validate/HITL.md).
+- The operator **security policy** (Mission → Policy, `vf policy`) only narrows scope and demotes: exclusions → `rejected_mech` with the rule cited and shown in the Report, rubric caps `severity_claim`. It never promotes or confirms. See [`docs/harness/validate/POLICY.md`](docs/harness/validate/POLICY.md).

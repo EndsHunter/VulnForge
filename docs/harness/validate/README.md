@@ -30,6 +30,7 @@ Pure-code checks in `stages/validate_mech.py` `CHECKS`:
 - Target unmodified vs manifest fingerprint
 - Non-vacuous body (title/summary length; threat_model tokens; impact hedges; HIGH/CRITICAL needs concrete impact hints)
 - Severity claim allowed (or soft-dropped earlier)
+- Operator security policy exclusion / out-of-scope (every cited path covered → `policy_excluded:<id>`); rubric caps `severity_claim` after the gates. See [POLICY.md](POLICY.md)
 
 Pass → `needs_human` and an awaiting-review HITL packet. **Never** `confirmed`.
 

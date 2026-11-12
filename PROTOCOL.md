@@ -40,9 +40,16 @@ vf hitl show --id REPORT_ID [--run-dir PATH]
 vf hitl responses [--run-dir PATH]
 vf hitl respond --id REPORT_ID --block BLOCK_ID --value VALUE [--note TEXT] [--run-dir PATH]
 vf hitl emit --file packet.json [--run-dir PATH]
+vf policy show [--revision N] [--run-dir PATH]
+vf policy set --file policy.json [--note TEXT] [--run-dir PATH]
+vf policy history [--run-dir PATH]
+vf policy restore --revision N [--run-dir PATH]
+vf policy draft-security-md [--save] [--run-dir PATH]
 ```
 
 `vf hitl` is the durable report↔responses inbox (`vulnforge/hitl-report@1`). `inbox` lists `awaiting-review` items. `responses` prints stored answers keyed by block id (`value`, `note`, `at`). Missing keys are unanswered. `respond` records an explicit human answer; a finding approval delegates to human review and is the only HITL path that can set `confirmed`. `emit` stores an explicit gate packet and does not change findings. See `docs/harness/validate/HITL.md`.
+
+`vf policy` manages the run's operator security policy (`vulnforge/security-policy@1`, revisions in `harness.db`). `set` validates and stores a new revision (invalid → nothing stored). `draft-security-md` prints a draft from the target's `SECURITY.md` and stores it only with `--save`. The policy only narrows scope / demotes: exclusion and out-of-scope rules make `validate_mech` reject with the rule cited, the rubric caps `severity_claim`; nothing confirms. See `docs/harness/validate/POLICY.md`.
 
 Outer loop: `python scripts/ralph.py` — thin client of `run-once` (not a `vf` subcommand).
 

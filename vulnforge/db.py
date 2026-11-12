@@ -26,6 +26,9 @@ SCHEMA_VERSION = 1
 # Cap architecture revision history to avoid harness.db bloat.
 ARCHITECTURE_REVISION_CAP = 50
 
+# Cap security policy revision history (the newest row is never pruned).
+SECURITY_POLICY_REVISION_CAP = 100
+
 # Lease owner format from run-once: ``vf-{pid}-{hex8}``
 _LEASE_OWNER_PREFIX = "vf-"
 
@@ -183,6 +186,7 @@ class Database:
             self._ensure_architecture_revisions()
             self._ensure_codemap_column()
             self._ensure_sink_coverage_table()
+        self._ensure_security_policy_table()
         self._ensure_lease_model_column()
         self._ensure_lease_host_column()
         self._ensure_hitl_tables()
@@ -379,6 +383,21 @@ class Database:
               agent_ids_json TEXT,
               recon_generation INTEGER,
               snapshot_json TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.commit()
+
+    def _ensure_security_policy_table(self) -> None:
+        """Append-only operator security policy revisions (additive; no version bump)."""
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS security_policy_revisions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_at TEXT NOT NULL,
+              source TEXT,
+              note TEXT,
+              policy_json TEXT NOT NULL
             )
             """
         )
@@ -771,6 +790,127 @@ class Database:
             recon_generation=rev.get("recon_generation"),
         )
         return snap
+
+    # ------------------------------------------------------------------
+    # Operator security policy (vulnforge/security-policy@1)
+    # Current policy = newest revision. Writes store the normalized document;
+    # callers validate first (vulnforge.security_policy.require_policy).
+    # ------------------------------------------------------------------
+
+    def set_security_policy(
+        self,
+        policy: dict,
+        *,
+        source: str = "manual",
+        note: str = "",
+    ) -> int:
+        """Validate, normalize and append ``policy`` as the new current revision."""
+        from vulnforge.security_policy import require_policy
+
+        normalized = require_policy(policy)
+        self._ensure_security_policy_table()
+        cur = self.conn.execute(
+            """
+            INSERT INTO security_policy_revisions(created_at, source, note, policy_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                utc_now_iso(),
+                str(source or "manual")[:64],
+                str(note or "")[:2000],
+                json.dumps(normalized),
+            ),
+        )
+        rev_id = int(cur.lastrowid)
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM security_policy_revisions"
+        ).fetchone()
+        n = int(row["n"] if row else 0)
+        if n > SECURITY_POLICY_REVISION_CAP:
+            self.conn.execute(
+                """
+                DELETE FROM security_policy_revisions
+                WHERE id IN (
+                  SELECT id FROM security_policy_revisions
+                  WHERE id <> ?
+                  ORDER BY id ASC
+                  LIMIT ?
+                )
+                """,
+                (rev_id, n - SECURITY_POLICY_REVISION_CAP),
+            )
+        self.conn.commit()
+        return rev_id
+
+    def _security_policy_row(self, row) -> dict[str, Any]:
+        try:
+            pol = json.loads(row["policy_json"])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pol = {}
+        return {
+            "revision": int(row["id"]),
+            "created_at": row["created_at"],
+            "source": row["source"],
+            "note": row["note"] or "",
+            "policy": pol if isinstance(pol, dict) else {},
+        }
+
+    def get_security_policy(self) -> Optional[dict[str, Any]]:
+        """Current policy as ``{revision, created_at, source, note, policy}`` or None."""
+        self._ensure_security_policy_table()
+        row = self.conn.execute(
+            """
+            SELECT id, created_at, source, note, policy_json
+            FROM security_policy_revisions ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+        return self._security_policy_row(row) if row else None
+
+    def list_security_policy_revisions(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Newest-first revision metadata (no policy body)."""
+        self._ensure_security_policy_table()
+        lim = max(1, min(int(limit or 50), SECURITY_POLICY_REVISION_CAP))
+        rows = self.conn.execute(
+            """
+            SELECT id, created_at, source, note, length(policy_json) AS policy_bytes
+            FROM security_policy_revisions ORDER BY id DESC LIMIT ?
+            """,
+            (lim,),
+        ).fetchall()
+        return [
+            {
+                "revision": int(r["id"]),
+                "created_at": r["created_at"],
+                "source": r["source"],
+                "note": r["note"] or "",
+                "policy_bytes": int(r["policy_bytes"] or 0),
+            }
+            for r in rows
+        ]
+
+    def get_security_policy_revision(self, rev_id: int) -> Optional[dict[str, Any]]:
+        self._ensure_security_policy_table()
+        row = self.conn.execute(
+            """
+            SELECT id, created_at, source, note, policy_json
+            FROM security_policy_revisions WHERE id=?
+            """,
+            (int(rev_id),),
+        ).fetchone()
+        return self._security_policy_row(row) if row else None
+
+    def restore_security_policy_revision(
+        self, rev_id: int, *, note: str = ""
+    ) -> Optional[int]:
+        """Append a copy of revision ``rev_id`` as the new current policy."""
+        rev = self.get_security_policy_revision(rev_id)
+        if not rev:
+            return None
+        return self.set_security_policy(
+            rev["policy"],
+            source="restore",
+            note=note or f"restored from revision {int(rev_id)}",
+        )
 
     def enqueue_task(
         self,

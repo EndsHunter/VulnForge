@@ -436,3 +436,253 @@ def test_meta_fingerprint_detects_real_mutation(tmp_path: Path, toy_sqli: Path):
     assert r["verdict"] == "rejected_mech"
     assert any("target_mutated:app.py" in x for x in r.get("reasons") or []), r
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# Operator security policy exclusion gate + severity rubric (#183)
+# ---------------------------------------------------------------------------
+
+
+def _passing_body(run_dir: Path, toy_sqli: Path) -> dict:
+    body = _good_body()
+    (run_dir / "evidence" / "e1").mkdir(exist_ok=True)
+    (run_dir / "evidence" / "e1" / "note.txt").write_text(
+        "repro notes for SQL injection PoC steps\n"
+    )
+    _fix_citation_line(body, toy_sqli)
+    return body
+
+
+def test_policy_exclusion_rejects_with_rule_cited(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    rev = db.set_security_policy(
+        {
+            "exclusions": [
+                {
+                    "id": "ex-app",
+                    "paths": ["app.py"],
+                    "weakness_class": "injection",
+                    "reason": "toy app accepted risk",
+                }
+            ]
+        }
+    )
+    fid = db.insert_finding(_passing_body(run_dir, toy_sqli))
+    r = validate_run(T(fid), db, run_dir, {"stages": {"validate_llm": True}})
+    assert r["verdict"] == "rejected_mech", r
+    assert r["reasons"] == ["policy_excluded:ex-app"]
+    f = db.get_finding(fid)
+    assert f.state == "rejected_mech"
+    m = f.body["policy_match"]
+    assert m["rule_id"] == "ex-app"
+    assert m["kind"] == "excluded"
+    assert m["reason"] == "toy app accepted risk"
+    assert m["matched_paths"] == ["app.py"]
+    assert m["policy_revision"] == rev
+    # Demote-only: no validate_llm enqueued, never confirmed.
+    assert not [t for t in db.list_tasks() if t.kind == "validate_llm"]
+    db.close()
+
+
+def test_policy_out_of_scope_rejects(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy(
+        {"out_of_scope": [{"id": "oos-1", "paths": ["*.py"], "reason": "demo only"}]}
+    )
+    fid = db.insert_finding(_passing_body(run_dir, toy_sqli))
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "rejected_mech"
+    assert r["reasons"] == ["policy_out_of_scope:oos-1"]
+    assert db.get_finding(fid).body["policy_match"]["kind"] == "out_of_scope"
+    db.close()
+
+
+def test_policy_exclusion_class_mismatch_passes(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy(
+        {
+            "exclusions": [
+                {"id": "ex-1", "paths": ["app.py"], "weakness_class": "xss", "reason": "r"}
+            ]
+        }
+    )
+    fid = db.insert_finding(_passing_body(run_dir, toy_sqli))
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    assert "policy_match" not in db.get_finding(fid).body
+    db.close()
+
+
+def test_policy_exclusion_needs_every_cited_path(tmp_path: Path, toy_sqli: Path):
+    """One citation outside the rule keeps the finding in scope."""
+    (toy_sqli / "lib").mkdir()
+    (toy_sqli / "lib" / "helper.py").write_text(
+        "def helper():\n    return search_users('x')\n", encoding="utf-8"
+    )
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy(
+        {"exclusions": [{"id": "ex-lib", "paths": ["lib/**"], "reason": "vendored"}]}
+    )
+    body = _passing_body(run_dir, toy_sqli)
+    body["citations"].append({"path": "lib/helper.py", "start_line": 2, "symbol": "helper"})
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    db.close()
+
+
+def test_policy_exclusion_reported_alongside_other_reasons(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy(
+        {"exclusions": [{"id": "ex-1", "paths": ["app.py"], "reason": "accepted"}]}
+    )
+    body = _good_body()
+    _fix_citation_line(body, toy_sqli)
+    del body["evidence_id"]  # also fails evidence gate
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "rejected_mech"
+    assert "missing_evidence_id" in r["reasons"]
+    assert "policy_excluded:ex-1" in r["reasons"]
+    assert db.get_finding(fid).body["policy_match"]["rule_id"] == "ex-1"
+    db.close()
+
+
+def test_no_policy_leaves_gates_unchanged(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    fid = db.insert_finding(_passing_body(run_dir, toy_sqli))
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human"
+    b = db.get_finding(fid).body
+    assert "policy_match" not in b and "severity_rubric" not in b
+    db.close()
+
+
+def test_policy_does_not_regate_mech_passed_finding(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy(
+        {"exclusions": [{"id": "ex-1", "paths": ["app.py"], "reason": "accepted"}]}
+    )
+    body = _passing_body(run_dir, toy_sqli)
+    body["validation_mech"] = {"status": "passed", "pending_llm": False}
+    fid = db.insert_finding(body, state="needs_human", stable_key="nh-pol")
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r.get("reason") == "already_needs_human"
+    f = db.get_finding(fid)
+    assert f.state == "needs_human" and "policy_match" not in f.body
+    db.close()
+
+
+def test_policy_rubric_caps_severity_and_records_rule(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy(
+        {
+            "severity_rubric": [
+                {"id": "sev-loose", "max_severity": "HIGH", "paths": ["**"]},
+                {"id": "sev-app", "max_severity": "LOW", "paths": ["app.py"],
+                 "criteria": "toy app"},
+            ]
+        }
+    )
+    body = _passing_body(run_dir, toy_sqli)
+    body["severity_claim"] = "CRITICAL"
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    b = db.get_finding(fid).body
+    assert b["severity_claim"] == "LOW"
+    assert b["severity_claim_original"] == "CRITICAL"
+    assert b["severity_rubric"]["rule_id"] == "sev-app"
+    assert b["severity_rubric"]["action"] == "capped"
+    db.close()
+
+
+def test_policy_rubric_never_raises_severity(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy({"severity_rubric": [{"id": "sev-1", "max_severity": "CRITICAL"}]})
+    body = _passing_body(run_dir, toy_sqli)
+    body["severity_claim"] = "LOW"
+    fid = db.insert_finding(body)
+    validate_run(T(fid), db, run_dir, {"stages": {}})
+    b = db.get_finding(fid).body
+    assert b["severity_claim"] == "LOW"
+    assert "severity_claim_original" not in b
+    assert b["severity_rubric"]["action"] == "within"
+    db.close()
+
+
+def test_policy_cap_does_not_loosen_non_vacuous_gate(tmp_path: Path, toy_sqli: Path):
+    """CRITICAL with a soft impact is rejected even if the rubric caps it to LOW."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy({"severity_rubric": [{"id": "sev-1", "max_severity": "LOW"}]})
+    body = _passing_body(run_dir, toy_sqli)
+    body["severity_claim"] = "CRITICAL"
+    body["threat_model"]["impact"] = "something unpleasant happens to the system overall"
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "rejected_mech", r
+    assert "vacuous_impact_for_severity" in r["reasons"]
+    db.close()
+
+
+def test_candidate_supplied_policy_keys_are_stripped(tmp_path: Path, toy_sqli: Path):
+    """A hunt cannot disable the cap or fake an exclusion via harness-owned keys."""
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy({"severity_rubric": [{"id": "sev-1", "max_severity": "LOW"}]})
+    body = _passing_body(run_dir, toy_sqli)
+    body["severity_claim"] = "CRITICAL"
+    body["severity_claim_original"] = "CRITICAL"
+    body["severity_rubric"] = {"rule_id": "fake", "action": "capped"}
+    body["policy_match"] = {"kind": "excluded", "rule_id": "fake", "matched_paths": ["x"]}
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    b = db.get_finding(fid).body
+    assert b["severity_claim"] == "LOW"
+    assert b["severity_rubric"]["rule_id"] == "sev-1"
+    assert "policy_match" not in b
+    assert set(b["harness_keys_dropped"]) == {
+        "policy_match",
+        "severity_rubric",
+        "severity_claim_original",
+    }
+    db.close()
+
+
+def test_policy_matches_citation_as_gate_resolves_it(tmp_path: Path, toy_sqli: Path):
+    """``../<target>/vendor/x`` and symlinks are judged by the file the gate accepted."""
+    import os
+
+    (toy_sqli / "vendor").mkdir()
+    (toy_sqli / "vendor" / "lib.py").write_text(
+        "def search_users(q):\n    return q\n", encoding="utf-8"
+    )
+    os.symlink(toy_sqli / "vendor" / "lib.py", toy_sqli / "alias.py")
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    db.set_security_policy(
+        {"exclusions": [{"id": "ex-v", "paths": ["vendor/**"], "reason": "vendored"}]}
+    )
+    for i, cite in enumerate((f"../{toy_sqli.name}/vendor/lib.py", "alias.py")):
+        body = _passing_body(run_dir, toy_sqli)
+        body["title"] = f"SQL injection in search_users {i}"
+        body["citations"] = [{"path": cite, "start_line": 1, "symbol": "search_users"}]
+        fid = db.insert_finding(body, stable_key=f"pol-resolve-{i}")
+        r = validate_run(T(fid), db, run_dir, {"stages": {}})
+        assert r["verdict"] == "rejected_mech", (cite, r)
+        assert r["reasons"] == ["policy_excluded:ex-v"], (cite, r)
+        assert db.get_finding(fid).body["policy_match"]["matched_paths"] == ["vendor/lib.py"]
+    db.close()
+
+
+def test_garbage_harness_keys_dropped_does_not_crash(tmp_path: Path, toy_sqli: Path):
+    run_dir, db = _setup_run(tmp_path, toy_sqli)
+    body = _passing_body(run_dir, toy_sqli)
+    body["severity_claim_original"] = "CRITICAL"
+    body["harness_keys_dropped"] = [{"x": 1}]
+    fid = db.insert_finding(body)
+    r = validate_run(T(fid), db, run_dir, {"stages": {}})
+    assert r["verdict"] == "needs_human", r
+    b = db.get_finding(fid).body
+    assert "severity_claim_original" not in b
+    assert b["harness_keys_dropped"] == ["severity_claim_original"]
+    db.close()

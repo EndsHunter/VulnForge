@@ -330,6 +330,36 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def _policy_block(
+    security_policy: dict | None,
+    *,
+    stage: str,
+    cfg: dict,
+    path_hints: list | None = None,
+) -> str:
+    """Operator security policy block (``""`` when none). Accepts the DB record
+    (``{revision, policy}``) or a bare policy document."""
+    if not isinstance(security_policy, dict) or not security_policy:
+        return ""
+    policy = security_policy.get("policy") if "policy" in security_policy else security_policy
+    revision = security_policy.get("revision") if "policy" in security_policy else None
+    from vulnforge.security_policy import format_policy_for_packet
+
+    pkt = cfg.get("packet") or {}
+    default_cap = 1800 if stage == "hunt" else 4000
+    try:
+        cap = int(pkt.get(f"max_policy_chars_{stage}", pkt.get("max_policy_chars", default_cap)))
+    except (TypeError, ValueError):
+        cap = default_cap
+    return format_policy_for_packet(
+        policy if isinstance(policy, dict) else None,
+        stage=stage,
+        revision=revision,
+        path_hints=path_hints,
+        max_chars=cap,
+    )
+
+
 def pack_recon(
     cfg: dict,
     prompts_root: Path,
@@ -338,6 +368,7 @@ def pack_recon(
     operator_brief: str = "",
     focus_paths: list | None = None,
     codemap: dict | None = None,
+    security_policy: dict | None = None,
 ) -> Packet:
     """Legacy single-packet recon using seeds/system/recon.md (default-map equivalent)."""
     try:
@@ -357,6 +388,7 @@ def pack_recon(
         tools_allowlist=None,
         agent_id="legacy-recon",
         codemap=codemap,
+        security_policy=security_policy,
     )
 
 
@@ -371,6 +403,7 @@ def pack_recon_agent(
     tools_allowlist: list[str] | None = None,
     agent_id: str = "",
     codemap: dict | None = None,
+    security_policy: dict | None = None,
 ) -> Packet:
     """Recon packet for one configurable recon agent body."""
     # Recon-focused system: shared preamble only — no hunt PRINCIPLES / submit tools.
@@ -452,6 +485,7 @@ def pack_recon_agent(
         + json.dumps(inv, indent=2)
         + "\n```\n"
         + cm_block
+        + _policy_block(security_policy, stage="recon", cfg=cfg)
         + "Use tools to inspect paths. Finish with submit_architecture.\n"
         + "If context is nearly full, call continue_recon (child recon, fresh window) "
         + "instead of more huge reads.\n"
@@ -608,6 +642,7 @@ def pack_hunt(
     codemap: dict | None = None,
     perspective: str | None = None,
     perspective_id: str | None = None,
+    security_policy: dict | None = None,
 ) -> Packet:
     system = load_prompt_slice(prompts_root, "PRINCIPLES.md")
     cls = task_payload.get("class") or "wildcard"
@@ -737,6 +772,12 @@ def pack_hunt(
             + json.dumps(sel, indent=2)[:2500]
             + "\n```\n"
         )
+    policy_block = _policy_block(
+        security_policy,
+        stage="hunt",
+        cfg=cfg,
+        path_hints=list(task_payload.get("path_hints") or []),
+    )
     user = (
         f"## Hunt task\narea={task_payload.get('area')!r} class={cls!r}\n"
         f"path_hints={task_payload.get('path_hints')}\n"
@@ -745,6 +786,7 @@ def pack_hunt(
         f"{perspective_txt}"
         f"{op_block}{sel_block}"
         f"## Architecture (area slice)\n{arch}\n"
+        f"{policy_block}"
         f"{cm_struct_block}"
         f"{sinks_block}"
         f"{known_block}\n"
@@ -827,6 +869,7 @@ def pack_disprove(
     *,
     perspective: str | None = None,
     verifier_id: str | None = None,
+    security_policy: dict | None = None,
 ) -> Packet:
     """Build adversarial disprove packet.
 
@@ -879,6 +922,7 @@ def pack_disprove(
     user = (
         disprove
         + perspective_txt
+        + _policy_block(security_policy, stage="disprove", cfg=cfg)
         + "\n\n## Finding JSON\n```json\n"
         + json.dumps(finding_body, indent=2)[:12000]
         + "\n```\n\n## Cited slices\n"

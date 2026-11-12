@@ -837,6 +837,41 @@
     return names[0] || null;
   }
 
+  /** Operator security policy effects on this finding (exclusion, severity cap, disprove cites). */
+  function policyDetailHtml(b) {
+    const items = [];
+    const m = b && b.policy_match;
+    if (m && typeof m === "object") {
+      const kind = m.kind === "out_of_scope" ? "Out of scope" : "Excluded";
+      const paths = (m.matched_paths || []).map((p) => `<code>${esc(p)}</code>`).join(", ");
+      items.push(
+        `<li><strong>${esc(kind)}</strong> by rule <code>${esc(m.rule_id || "?")}</code>` +
+          (m.policy_revision != null ? ` (policy rev ${esc(m.policy_revision)})` : "") +
+          `: ${esc(m.reason || "")}${paths ? `<br><span class="muted">Cited paths: ${paths}</span>` : ""}</li>`
+      );
+    }
+    const sr = b && b.severity_rubric;
+    if (sr && typeof sr === "object" && sr.action === "capped") {
+      items.push(
+        `<li><strong>Severity capped</strong> ${esc(sr.from || b.severity_claim_original || "?")} → ${esc(
+          sr.to || b.severity_claim || "?"
+        )} by rubric rule <code>${esc(sr.rule_id || "?")}</code>${sr.criteria ? ` — ${esc(sr.criteria)}` : ""}</li>`
+      );
+    } else if (sr && typeof sr === "object" && sr.rule_id) {
+      items.push(
+        `<li>Severity within rubric rule <code>${esc(sr.rule_id)}</code> (max ${esc(sr.max_severity || "?")})</li>`
+      );
+    }
+    const cited = (b && b.validation_llm && b.validation_llm.policy_rules_cited) || [];
+    if (Array.isArray(cited) && cited.length) {
+      items.push(
+        `<li>Disprove cited policy rule(s): ${cited.map((r) => `<code>${esc(r)}</code>`).join(", ")}</li>`
+      );
+    }
+    if (!items.length) return "";
+    return `<h4>Security policy</h4><ul class="report-reasons report-policy">${items.join("")}</ul>`;
+  }
+
   function detailHtml(f) {
     const b = bodyOf(f);
     const tm = b.threat_model || {};
@@ -857,6 +892,9 @@
               .map((r) => `<li>${esc(typeof r === "string" ? r : JSON.stringify(r))}</li>`)
               .join("")}</ul>`
           : "";
+    // Policy fields are harness-written by validate_mech; ignore them before it ran.
+    const policyTrusted = String(f.state || "") !== "candidate";
+    const policyBox = policyTrusted ? policyDetailHtml(b) : "";
     const eid = f.evidence_id || b.evidence_id;
     const evRel = preferredEvidenceRel(f);
     const reviews = Array.isArray(b.human_review) ? b.human_review : [];
@@ -900,9 +938,11 @@
             ${nearBadge}
             ${llmBadge}
             ${huntMoaBadgeHtml(f)}
+            ${policyTrusted && b.policy_match ? `<span class="badge policy" title="Matched an operator security policy rule">policy ${esc(b.policy_match.rule_id || "")}</span>` : ""}
           </div>
         </div>
         <p class="report-detail-summary">${esc(b.summary || "No summary.")}</p>
+        ${policyBox}
         ${rejectBox}
         ${llmDetail}
         ${huntMoaDetailHtml(f)}
