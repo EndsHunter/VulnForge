@@ -3,7 +3,7 @@ CLI entrypoints for vulnforge.
 
 Commands: vf init | run-once | status | project | apply-candidate | delete-run |
 dashboard | tool-gaps | export | export-validation-job | validate-poc |
-develop-fix | verify-fix | hitl
+develop-fix | verify-fix | hitl | policy | ci
 """
 
 from __future__ import annotations
@@ -42,11 +42,12 @@ from vulnforge.control.exit_codes import (
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    cmd: Optional[str] = None
     try:
         parser = build_parser()
         args = parser.parse_args(argv)
-        cfg = load_config(getattr(args, "config", None))
         cmd = args.command
+        cfg = load_config(getattr(args, "config", None))
         if cmd == "init":
             return cmd_init(args, cfg)
         if cmd == "run-once":
@@ -77,6 +78,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_hitl(args, cfg)
         if cmd == "policy":
             return cmd_policy(args, cfg)
+        if cmd == "ci":
+            return cmd_ci(args, cfg)
         print(f"unknown command: {cmd}", file=sys.stderr)
         return EXIT_CONFIG
     except SystemExit as e:
@@ -87,6 +90,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"vf fatal: {e}", file=sys.stderr)
         if os.environ.get("VF_DEBUG"):
             traceback.print_exc()
+        if cmd == "ci":
+            # vf ci speaks outcome codes only (vulnforge/ci/exit_codes.py).
+            from vulnforge.ci.exit_codes import CI_ERROR
+
+            return CI_ERROR
         return EXIT_CONFIG
 
 
@@ -101,128 +109,118 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     init_p = sub.add_parser("init", help="Initialize a new audit run")
-    init_p.add_argument("--target", type=Path, required=True)
-    init_p.add_argument(
-        "--profile",
-        default=None,
-        help="Profile (default from config; source analysis only: code_static)",
-    )
-    init_p.add_argument(
-        "--runs-root",
-        type=Path,
-        default=None,
-        help="Override runs root directory",
-    )
-    init_p.add_argument(
-        "--strategy",
-        choices=["discovery", "file_by_file", "recon_docs"],
-        default="discovery",
-        help="Init strategy: discovery, file_by_file, or recon_docs",
-    )
-    init_p.add_argument(
-        "--docs-path",
-        type=Path,
-        default=None,
-        help="Docs file or directory for recon_docs strategy",
-    )
-    init_p.add_argument(
-        "--recon-agent",
-        dest="agent_ids",
-        action="append",
-        default=None,
-        help="Recon agent id to run (repeatable; default: active collection set)",
-    )
-    init_p.add_argument(
-        "--recon-brief",
-        dest="operator_notes",
-        default="",
-        help="Extra instructions for the recon agent(s)",
-    )
-    init_p.add_argument(
-        "--dynamic-skills",
-        action="store_true",
-        default=False,
-        help="After recon, generate N target-specific hunt skills for this run",
-    )
-    init_p.add_argument(
-        "--dynamic-skill-count",
-        type=int,
-        default=3,
-        help="Number of custom hunt skills to generate (min 1; default 3)",
-    )
-    init_p.add_argument(
-        "--hunt-skill-mode",
-        dest="hunt_skill_mode",
-        choices=["all_active", "seed_active", "custom_only", "explicit"],
-        default=None,
-        help=(
-            "Run-scoped hunt skills: all_active (default), seed_active, "
-            "custom_only, or explicit (with --hunt-skill)"
-        ),
-    )
-    init_p.add_argument(
-        "--hunt-skill",
-        dest="hunt_skill_ids",
-        action="append",
-        default=None,
-        help="Hunt skill id when --hunt-skill-mode=explicit (repeatable)",
-    )
-    init_p.add_argument(
-        "--model-validate",
-        default=None,
-        help=(
-            "Dedicated validate_llm / PoC referee model. "
-            "Bare model id when no hosts are saved (ids may contain slashes). "
-            "host_id/model_id when a host catalog is saved — the first slash "
-            "separates the host; a bare id is refused so it cannot match another host. "
-            "Writes Settings and this run's config. Omit to leave the role unchanged "
-            "(blank = same as hunt). Never auto-confirms."
-        ),
-    )
-    init_p.add_argument(
-        "--sandbox-poc",
-        dest="sandbox_poc_validate",
-        action="store_true",
-        default=False,
-        help=(
-            "Opt in at run start: queue one sandbox validate_poc per harness-ready "
-            "needs_human finding (microVM or gVisor only). Default off. "
-            "Refuses to create the run when this process cannot use the Docker API "
-            "or select_isolation would be sandbox_unavailable. "
-            "A missing sandbox at task time fails closed and does not confirm."
-        ),
-    )
-    init_p.add_argument(
-        "--no-enqueue-hunts",
-        dest="enqueue_hunts",
-        action="store_false",
-        default=True,
-        help=(
-            "Do not auto-queue hunt tasks after recon (architecture-only). "
-            "Enqueue later from Hunts / Explorer. "
-            "For file_by_file, create the run with zero hunt tasks."
-        ),
-    )
+    add_init_arguments(init_p)
 
-    init_p.add_argument(
-        "--diff",
-        dest="diff",
-        default=None,
-        metavar="BASE..HEAD",
-        help=(
-            "Diff-scoped audit: hunt only files changed between the BASE and HEAD "
-            "commit trees (two-tree compare, not merge-base) plus their callers/"
-            "callees from the codemap. BASE.. means BASE..HEAD. The target checkout "
-            "must be at HEAD; the repository is never modified."
+    ci_p = sub.add_parser(
+        "ci",
+        help="Headless CI campaign: init → Ralph → render, outcome exit code",
+        description=(
+            "Run a campaign to completion without a UI and exit with an OUTCOME "
+            "code (not the run-once protocol codes): 0 = finished (or stopped "
+            "on a budget) with no finding meeting --fail-on-*, 1 = threshold "
+            "met, 2 = infra/integrity failure. Coverage gaps alone do not fail. "
+            "CI never sets confirmed; a needs_human hit means needs review, "
+            "not proven."
         ),
     )
-    init_p.add_argument(
-        "--diff-depth",
-        dest="diff_depth",
+    add_init_arguments(ci_p, target_required=False)
+    ci_p.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help="Resume an existing run instead of --target (no init)",
+    )
+    ci_p.add_argument(
+        "--max-cost-usd",
+        type=float,
+        default=None,
+        help=(
+            "Advisory spend cap for this invocation: stop leasing new tasks once "
+            "the estimate reaches it (in-flight tasks may overrun). Needs prices "
+            "(--price-*-per-mtok or ci.pricing). Unpriced or unmeasured usage "
+            "stops leasing and exits 2."
+        ),
+    )
+    ci_p.add_argument(
+        "--price-input-per-mtok",
+        type=float,
+        default=None,
+        help="Default USD per 1M input tokens for models without a ci.pricing entry",
+    )
+    ci_p.add_argument(
+        "--price-output-per-mtok",
+        type=float,
+        default=None,
+        help="Default USD per 1M output tokens for models without a ci.pricing entry",
+    )
+    ci_p.add_argument(
+        "--max-time",
+        default=None,
+        help=(
+            "Advisory wall-clock cap (seconds, or 90s / 45m / 2h / 1h30m): stop "
+            "leasing new tasks once exceeded; in-flight tasks may overrun"
+        ),
+    )
+    ci_p.add_argument(
+        "--fail-on-state",
+        action="append",
+        default=None,
+        metavar="STATE",
+        help=(
+            "Exit 1 if a finding is in this state: needs_human (needs review, "
+            "not proven) or confirmed (human-accepted). Repeatable or comma list. "
+            "With --fail-on-severity both must match."
+        ),
+    )
+    ci_p.add_argument(
+        "--fail-on-severity",
+        default=None,
+        metavar="LEVEL",
+        help=(
+            "Exit 1 if a needs_human/confirmed finding has severity_claim >= LEVEL "
+            "(critical|high|medium|low|informational). Unrated findings meet it "
+            "(fail closed)."
+        ),
+    )
+    ci_p.add_argument(
+        "--task-timeout",
+        type=float,
+        default=900.0,
+        metavar="SECONDS",
+        help=(
+            "Kill one hung vf run-once after this many seconds (default 900). "
+            "Raise it for slow models: 5 consecutive timeouts end the run with exit 2."
+        ),
+    )
+    ci_p.add_argument(
+        "--max-iterations",
         type=int,
         default=None,
-        help="Caller/callee expansion depth for --diff (0-3; default diff.expand_depth or 1)",
+        help="Optional cap on run-once invocations (default: unlimited)",
     )
+    ci_p.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Copy ci_result.json and the rendered report (project/) here for upload",
+    )
+    ci_p.add_argument(
+        "--sarif",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write SARIF 2.1.0 here (default with --output-dir: DIR/vulnforge.sarif). "
+            "Includes confirmed and needs_human; needs_human alerts are titled "
+            "'not a confirmed vulnerability'. An export failure exits 2."
+        ),
+    )
+    ci_p.add_argument(
+        "--sarif-confirmed-only",
+        action="store_true",
+        help="Leave needs_human (review items) out of the SARIF file",
+    )
+    ci_p.add_argument("-q", "--quiet", action="store_true", help="Less Ralph logging")
 
     once = sub.add_parser("run-once", help="Lease and execute one task")
     once.add_argument("--run-dir", type=Path, default=None)
@@ -484,6 +482,131 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # load_config imported from vulnforge.settings.load (shim for callers of cli.load_config)
+
+
+def add_init_arguments(init_p: argparse.ArgumentParser, *, target_required: bool = True) -> None:
+    """``vf init`` flags. ``vf ci`` reuses them so CI passes the real init surface."""
+    init_p.add_argument("--target", type=Path, required=target_required, default=None)
+    init_p.add_argument(
+        "--profile",
+        default=None,
+        help="Profile (default from config; source analysis only: code_static)",
+    )
+    init_p.add_argument(
+        "--runs-root",
+        type=Path,
+        default=None,
+        help="Override runs root directory",
+    )
+    init_p.add_argument(
+        "--strategy",
+        choices=["discovery", "file_by_file", "recon_docs"],
+        default="discovery",
+        help="Init strategy: discovery, file_by_file, or recon_docs",
+    )
+    init_p.add_argument(
+        "--docs-path",
+        type=Path,
+        default=None,
+        help="Docs file or directory for recon_docs strategy",
+    )
+    init_p.add_argument(
+        "--recon-agent",
+        dest="agent_ids",
+        action="append",
+        default=None,
+        help="Recon agent id to run (repeatable; default: active collection set)",
+    )
+    init_p.add_argument(
+        "--recon-brief",
+        dest="operator_notes",
+        default="",
+        help="Extra instructions for the recon agent(s)",
+    )
+    init_p.add_argument(
+        "--dynamic-skills",
+        action="store_true",
+        default=False,
+        help="After recon, generate N target-specific hunt skills for this run",
+    )
+    init_p.add_argument(
+        "--dynamic-skill-count",
+        type=int,
+        default=3,
+        help="Number of custom hunt skills to generate (min 1; default 3)",
+    )
+    init_p.add_argument(
+        "--hunt-skill-mode",
+        dest="hunt_skill_mode",
+        choices=["all_active", "seed_active", "custom_only", "explicit"],
+        default=None,
+        help=(
+            "Run-scoped hunt skills: all_active (default), seed_active, "
+            "custom_only, or explicit (with --hunt-skill)"
+        ),
+    )
+    init_p.add_argument(
+        "--hunt-skill",
+        dest="hunt_skill_ids",
+        action="append",
+        default=None,
+        help="Hunt skill id when --hunt-skill-mode=explicit (repeatable)",
+    )
+    init_p.add_argument(
+        "--model-validate",
+        default=None,
+        help=(
+            "Dedicated validate_llm / PoC referee model. "
+            "Bare model id when no hosts are saved (ids may contain slashes). "
+            "host_id/model_id when a host catalog is saved — the first slash "
+            "separates the host; a bare id is refused so it cannot match another host. "
+            "Writes Settings and this run's config. Omit to leave the role unchanged "
+            "(blank = same as hunt). Never auto-confirms."
+        ),
+    )
+    init_p.add_argument(
+        "--sandbox-poc",
+        dest="sandbox_poc_validate",
+        action="store_true",
+        default=False,
+        help=(
+            "Opt in at run start: queue one sandbox validate_poc per harness-ready "
+            "needs_human finding (microVM or gVisor only). Default off. "
+            "Refuses to create the run when this process cannot use the Docker API "
+            "or select_isolation would be sandbox_unavailable. "
+            "A missing sandbox at task time fails closed and does not confirm."
+        ),
+    )
+    init_p.add_argument(
+        "--no-enqueue-hunts",
+        dest="enqueue_hunts",
+        action="store_false",
+        default=True,
+        help=(
+            "Do not auto-queue hunt tasks after recon (architecture-only). "
+            "Enqueue later from Hunts / Explorer. "
+            "For file_by_file, create the run with zero hunt tasks."
+        ),
+    )
+    init_p.add_argument(
+        "--diff",
+        dest="diff",
+        default=None,
+        metavar="BASE..HEAD",
+        help=(
+            "Diff-scoped audit: hunt only files changed between the BASE and HEAD "
+            "commit trees (two-tree compare, not merge-base) plus their callers/"
+            "callees from the codemap. BASE.. means BASE..HEAD. The target checkout "
+            "must be at HEAD; the repository is never modified."
+        ),
+    )
+    init_p.add_argument(
+        "--diff-depth",
+        dest="diff_depth",
+        type=int,
+        default=None,
+        help="Caller/callee expansion depth for --diff (0-3; default diff.expand_depth or 1)",
+    )
 
 
 def resolve_runs_root(cfg: dict, override: Optional[Path] = None) -> Path:
@@ -1051,8 +1174,45 @@ def cmd_init(args, cfg: dict) -> int:
         },
     )
 
+    setattr(args, "created_run_dir", run_dir)
     print(str(run_dir))
     return EXIT_PROGRESS
+
+
+def cmd_ci(args, cfg: dict) -> int:
+    """Headless CI campaign. Returns vulnforge.ci.exit_codes (0/1/2) only."""
+    from vulnforge.ci.exit_codes import CI_ERROR
+    from vulnforge.ci.runner import CIOptions, run_ci
+
+    if getattr(args, "run_dir", None) is not None and getattr(args, "target", None):
+        print("vf ci: pass --target or --run-dir, not both", file=sys.stderr)
+        return CI_ERROR
+    if getattr(args, "run_dir", None) is None and not getattr(args, "target", None):
+        print("vf ci: pass --target (new run) or --run-dir (resume)", file=sys.stderr)
+        return CI_ERROR
+    if getattr(args, "run_dir", None) is not None and getattr(args, "diff", None):
+        # A run's diff scope is fixed at init; ignoring --diff here would
+        # silently audit (or report) a different scope than asked.
+        print("vf ci: --diff applies to a new run (--target), not --run-dir", file=sys.stderr)
+        return CI_ERROR
+    opts = CIOptions(
+        run_dir=args.run_dir,
+        init_args=args,
+        config_path=getattr(args, "config", None),
+        max_cost_usd=args.max_cost_usd,
+        price_input_per_mtok=args.price_input_per_mtok,
+        price_output_per_mtok=args.price_output_per_mtok,
+        max_time=args.max_time,
+        fail_on_states=list(args.fail_on_state or []),
+        fail_on_severity=args.fail_on_severity,
+        task_timeout=args.task_timeout,
+        max_iterations=args.max_iterations,
+        output_dir=args.output_dir,
+        sarif_path=args.sarif,
+        sarif_confirmed_only=bool(args.sarif_confirmed_only),
+        verbose=not args.quiet,
+    )
+    return run_ci(opts, cfg).exit_code
 
 
 def cmd_status(args, cfg: dict) -> int:

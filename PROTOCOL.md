@@ -49,6 +49,9 @@ vf policy set --file policy.json [--note TEXT] [--run-dir PATH]
 vf policy history [--run-dir PATH]
 vf policy restore --revision N [--run-dir PATH]
 vf policy draft-security-md [--save] [--run-dir PATH]
+vf ci (--target PATH [init flags, incl. --diff BASE..HEAD] | --run-dir PATH) [--max-cost-usd N --price-input-per-mtok X --price-output-per-mtok Y]
+      [--max-time 2h] [--fail-on-state needs_human|confirmed] [--fail-on-severity LEVEL] [--output-dir DIR]
+      [--sarif PATH] [--sarif-confirmed-only]
 ```
 
 `vf hitl` is the durable report↔responses inbox (`vulnforge/hitl-report@1`). `inbox` lists `awaiting-review` items. `responses` prints stored answers keyed by block id (`value`, `note`, `at`). Missing keys are unanswered. `respond` records an explicit human answer; a finding approval delegates to human review and is the only HITL path that can set `confirmed`. `emit` stores an explicit gate packet and does not change findings. See `docs/harness/validate/HITL.md`.
@@ -68,6 +71,18 @@ Outer loop: `python scripts/ralph.py` — thin client of `run-once` (not a `vf` 
 | 30 | Config / hard error | halt |
 
 Ralph process codes: `0` clean STOP, `10` idle, `20` infra give-up, `30` config, `40` budget, `130` interrupt.
+
+## `vf ci` outcome exit codes
+
+`vf ci` is a headless campaign (init → Ralph → render). It returns **outcome** codes, a separate namespace from the protocol codes above (`vulnforge/ci/exit_codes.py`):
+
+| Code | Meaning |
+|------|---------|
+| 0 | Finished, or stopped early on a time/cost budget, and no finding meets `--fail-on-*`. Coverage gaps alone do not fail. |
+| 1 | At least one finding meets `--fail-on-*`. A `needs_human` hit means **needs review**, not proven. |
+| 2 | Infra or integrity failure (init, Ralph give-up/config, render, unenforceable cost cap, `confirmed` without a human review, queue drained with zero successes). Wins over 1. |
+
+CI never sets `confirmed`. See `docs/harness/CI.md`.
 
 Multi-worker note: Settings **max concurrent agents** is the fallback when a
 `(host, model)` row has no concurrent number, and it sets `run.max_leases_parallel=N`.

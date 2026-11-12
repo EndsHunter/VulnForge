@@ -1,0 +1,178 @@
+# VulnForge headless CI — TEMPLATE for a *target* repository.
+#
+# Copy to .github/workflows/vulnforge.yml in the repo you want audited. It is not
+# wired into VulnForge's own CI: it needs an LLM endpoint and secrets, and a full
+# audit costs real tokens. Contract: docs/harness/CI.md in the VulnForge repo.
+#
+#   weekly        schedule / workflow_dispatch: full audit of the default branch
+#   pull_request  diff-scoped audit of the PR (vf ci --diff base..head)
+#
+# Exit codes of `vf ci` (the step result):
+#   0 pass       finished (or stopped on a budget) and no finding meets --fail-on-*
+#   1 threshold  a finding meets --fail-on-*  -> the job fails (the gate)
+#   2 error      infra / integrity failure    -> the job fails
+# Coverage gaps alone do not fail; they show as ::warning:: annotations.
+#
+# Honesty: CI never sets `confirmed`. A failure on `needs_human` means
+# "needs review" (mechanical gates passed), not a proven vulnerability.
+#
+# Steps are shared with YAML anchors (&name / *name), which github.com Actions
+# supports; on an older GitHub Enterprise Server, copy the steps instead.
+#
+# Secrets / variables (Settings -> Secrets and variables -> Actions):
+#   VULNFORGE_LLM_BASE_URL  secret    OpenAI-compatible (or Messages API) base URL
+#   VULNFORGE_LLM_API_KEY   secret    API key for that endpoint
+#   VULNFORGE_LLM_MODEL     variable  model id, e.g. claude-sonnet-5-5
+#   VULNFORGE_LLM_API_MODE  variable  chat_completions | responses | messages (optional)
+
+name: vulnforge
+
+on:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write # upload SARIF to code scanning
+  actions: read # upload-sarif on private repos
+
+concurrency:
+  group: vulnforge-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin VulnForge to a tag or commit SHA you have reviewed.
+  VULNFORGE_REPO: EndsHunter/VulnForge
+  VULNFORGE_REF: main
+  # Prices for the advisory cost cap (USD per 1M tokens). Use 0 for a local model.
+  PRICE_IN: "3"
+  PRICE_OUT: "15"
+
+jobs:
+  weekly:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out target
+        uses: actions/checkout@v4
+        with:
+          path: target
+          persist-credentials: false
+
+      - &checkout_vulnforge
+        name: Check out VulnForge
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.VULNFORGE_REPO }}
+          ref: ${{ env.VULNFORGE_REF }}
+          path: vulnforge-src # outside target/, so it is not audited
+          persist-credentials: false
+
+      - &setup_python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - &install
+        name: Install VulnForge
+        # Editable install: vf ci loads scripts/ralph.py from the checkout.
+        run: pip install -e ./vulnforge-src
+
+      - &write_config
+        name: Write config
+        env:
+          VF_URL: ${{ secrets.VULNFORGE_LLM_BASE_URL }}
+          VF_KEY: ${{ secrets.VULNFORGE_LLM_API_KEY }}
+          VF_MODEL_ID: ${{ vars.VULNFORGE_LLM_MODEL }}
+          VF_API_MODE: ${{ vars.VULNFORGE_LLM_API_MODE }}
+        run: |
+          python - <<'EOF'
+          import os, pathlib, yaml
+          src = pathlib.Path("vulnforge-src/config/default.yaml")
+          cfg = yaml.safe_load(src.read_text())
+          llm = cfg.setdefault("llm", {})
+          llm["base_url"] = os.environ["VF_URL"]
+          llm["api_key"] = os.environ["VF_KEY"]
+          llm["model"] = os.environ["VF_MODEL_ID"]
+          if os.environ.get("VF_API_MODE"):
+              llm["api_mode"] = os.environ["VF_API_MODE"]
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "vulnforge-ci.yaml"
+          out.write_text(yaml.safe_dump(cfg, sort_keys=False))
+          out.chmod(0o600)
+          EOF
+
+      - name: vf ci (full audit)
+        # No continue-on-error: exit 1 (threshold) and 2 (error) fail the job.
+        run: >
+          vf --config "$RUNNER_TEMP/vulnforge-ci.yaml" ci
+          --target target
+          --runs-root "$RUNNER_TEMP/vf-runs"
+          --max-time 5h
+          --max-cost-usd 50 --price-input-per-mtok "$PRICE_IN" --price-output-per-mtok "$PRICE_OUT"
+          --fail-on-state needs_human --fail-on-severity high
+          --output-dir vulnforge-out
+
+      - &upload_sarif
+        name: Upload SARIF to code scanning
+        if: always() && hashFiles('vulnforge-out/vulnforge.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: vulnforge-out/vulnforge.sarif
+          checkout_path: target # SARIF URIs are relative to the audited target
+          category: vulnforge-${{ github.event_name == 'pull_request' && 'pr' || 'full' }}
+
+      - &upload_report
+        name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulnforge-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'full' }}
+          path: vulnforge-out
+          if-no-files-found: warn
+
+  pull_request:
+    # Fork PRs get no secrets; skip them rather than fail on a missing endpoint.
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out target at the PR head
+        uses: actions/checkout@v4
+        with:
+          path: target
+          # The default PR checkout is the merge commit; --diff needs HEAD == head.
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Both commit trees must be present for the two-tree compare.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - *checkout_vulnforge
+      - *setup_python
+      - *install
+      - *write_config
+
+      - name: vf ci (diff-scoped)
+        # --diff is a direct two-tree compare. Diffing from the merge-base keeps
+        # commits that landed on the base branch after the PR branched out of scope.
+        # A PR with no hunt-able code changes passes as "nothing audited".
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          MERGE_BASE="$(git -C target merge-base "$BASE_SHA" "$HEAD_SHA")"
+          vf --config "$RUNNER_TEMP/vulnforge-ci.yaml" ci \
+            --target target \
+            --diff "$MERGE_BASE..$HEAD_SHA" \
+            --runs-root "$RUNNER_TEMP/vf-runs" \
+            --max-time 75m \
+            --max-cost-usd 10 --price-input-per-mtok "$PRICE_IN" --price-output-per-mtok "$PRICE_OUT" \
+            --fail-on-state needs_human --fail-on-severity high \
+            --output-dir vulnforge-out
+
+      - *upload_sarif
+      - *upload_report
