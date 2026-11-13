@@ -3,10 +3,9 @@
 import json
 import subprocess
 import sys
-from pathlib import Path
 
-from vulnforge.eval.recall import load_ground_truth, parse_line_number, score_findings
-from vulnforge.eval.vulngym import (
+from vulnforge.benchmarks.match import load_ground_truth, parse_line_number, score_findings
+from vulnforge.benchmarks.vulngym import (
     SLICE_IDS,
     SLICE_PATH,
     difficulty_for_oracle,
@@ -14,7 +13,7 @@ from vulnforge.eval.vulngym import (
 )
 from vulnforge.paths import PROJECT_ROOT
 
-EVAL_SCRIPT = PROJECT_ROOT / "scripts" / "eval_vulngym.py"
+SLICE_SCRIPT = PROJECT_ROOT / "scripts" / "vulngym_slice.py"
 
 
 def test_parse_line_ranges():
@@ -145,7 +144,7 @@ def test_line_within_slop_hits():
 
 def test_sensitivity_cli():
     r = subprocess.run(
-        [sys.executable, str(EVAL_SCRIPT), "--sensitivity"],
+        [sys.executable, str(SLICE_SCRIPT), "--sensitivity"],
         cwd=str(PROJECT_ROOT),
         capture_output=True,
         text=True,
@@ -158,23 +157,18 @@ def test_sensitivity_cli():
     assert data["perfect_recall"] == 1.0
 
 
-def test_eval_script_endpoint_flags_and_python():
-    import scripts.eval_vulngym as ev
-
+def test_slice_script_has_no_live_mode_or_pinned_endpoint():
+    """Live runs moved to `vf bench`; the slice script keeps maintenance only."""
     help_r = subprocess.run(
-        [sys.executable, str(EVAL_SCRIPT), "--help"],
+        [sys.executable, str(SLICE_SCRIPT), "--help"],
         cwd=str(PROJECT_ROOT),
         capture_output=True,
         text=True,
         check=False,
     )
     assert help_r.returncode == 0, help_r.stderr or help_r.stdout
-    assert "--host" in help_r.stdout
-    assert "--model" in help_r.stdout
-    ev.set_endpoint("192.168.80.4", "11434", "ornith-1.5:35b")
-    assert ev.MODEL_HOST == "192.168.80.4"
-    assert ev.MODEL_PORT == "11434"
-    assert ev.MODEL_ID == "ornith-1.5:35b"
-    py = ev._python()
-    assert py
-    assert Path(py).name.lower().startswith("python")
+    for flag in ("--freeze", "--prepare", "--sensitivity"):
+        assert flag in help_r.stdout
+    assert "--live" not in help_r.stdout
+    src = SLICE_SCRIPT.read_text(encoding="utf-8")
+    assert "192.168." not in src and "10.0.0." not in src

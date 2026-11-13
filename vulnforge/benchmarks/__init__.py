@@ -1,22 +1,28 @@
-"""Benchmark library + runs (hunt / recon / finding_report / poc_dev).
+"""Benchmarks: did a change make VulnForge find more real bugs, for less?
 
-First ``ensure_library()`` seeds from ``fixtures/ground_truth/*.json`` (hunt,
-including profile_eval ``pe-*`` one-finding defs),
-``fixtures/hunt_extra/*.json`` (micro-fixture hunts),
-``fixtures/vulngym/slice.json`` (one hunt def per finding), and
-``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev). Re-seed
-via ``seed_from_ground_truth(missing_only=True)`` / ``POST /api/benchmarks/seed``
-adds missing ids only and never clobbers operator edits.
-
-Runs: ``run_benchmark`` / ``POST /api/benchmarks/runs`` — mechanical L0 by
-default; ``mode=live`` hunts go through ``start_live_run`` (async).
-``poc_dev`` refused on the Run path. Workshop:
-``run_poc_workshop`` / ``POST /api/benchmarks/poc/runs`` (network:none).
-Results under ``benchmarks/runs/``.
+- **Library** (``store``): versioned case defs seeded from
+  ``fixtures/ground_truth``, ``fixtures/hunt_extra``, ``fixtures/benchmarks``
+  (recon / finding_report) and ``fixtures/vulngym/slice.json``.
+- **Suites** (``suites``): ``realworld`` / ``synthetic`` / ``fixtures``.
+- **Tiers**: ``l0`` (mechanical fixture checks, ``runner``) and ``directed``
+  (live hunts pointed at the oracle file, ``live``).
+- **Scoring**: oracle matching (``match``), state-aware live scoring
+  (``live_score``), aggregates and run-vs-baseline compare (``compare``),
+  run fingerprints (``fingerprint``).
+- Runs persist under ``benchmarks/runs/``. Nothing here ever sets a finding
+  ``confirmed``.
 """
 
 from __future__ import annotations
 
+from vulnforge.benchmarks.compare import (
+    aggregate,
+    compare_runs,
+    member_row,
+    run_duration_s,
+    summarize_repeats,
+)
+from vulnforge.benchmarks.fingerprint import capture_fingerprint, fingerprint_diff
 from vulnforge.benchmarks.live import (
     HuntHint,
     cancel_live_run,
@@ -28,20 +34,12 @@ from vulnforge.benchmarks.live import (
     start_live_run,
     start_live_suite,
 )
-from vulnforge.benchmarks.poc_workshop import (
-    generate_pack_stub,
-    run_pack_subprocess,
-    run_poc_workshop,
-    score_poc_dev,
-)
+from vulnforge.benchmarks.live_score import GATED_STATES, score_case
 from vulnforge.benchmarks.runner import (
-    SUITE_DEF_IDS,
-    defs_for_suite,
     mechanical_hunt_score,
     run_benchmark,
-    run_benchmark_suite,
+    run_fixture_checks,
     run_hunt,
-    suite_types_for,
 )
 from vulnforge.benchmarks.runs import (
     PERSISTED_TYPES,
@@ -51,30 +49,25 @@ from vulnforge.benchmarks.runs import (
     SUITE_PARENT_IDS,
     TERMINAL_STATUSES,
     BenchmarkRunError,
+    baseline_for,
     create_run,
     get_run,
     is_suite_run,
     list_runs,
+    load_baselines,
     reset_runs_root_override,
     runs_root,
+    set_baseline,
     set_runs_root,
     update_run,
 )
 from vulnforge.benchmarks.scorers import score_finding_report, score_recon
-from vulnforge.benchmarks.series import (
-    build_series,
-    compare_versions,
-    empty_side,
-    extract_score,
-    run_duration_s,
-    summarize_version,
-)
 from vulnforge.benchmarks.store import (
     BENCH_TYPES,
     BENCHMARK_FIXTURES_ROOT,
-    HUNT_EXTRA_ROOT,
     COLLECTION_FORMAT,
     DEF_ID_RE,
+    HUNT_EXTRA_ROOT,
     BenchmarkLibraryError,
     create_def,
     delete_def,
@@ -90,68 +83,72 @@ from vulnforge.benchmarks.store import (
     set_library_root,
     update_def,
 )
+from vulnforge.benchmarks.suites import SUITES, TIERS, suite_members, suite_of
 
 __all__ = [
     "BENCH_TYPES",
     "BENCHMARK_FIXTURES_ROOT",
-    "HUNT_EXTRA_ROOT",
     "COLLECTION_FORMAT",
     "DEF_ID_RE",
+    "GATED_STATES",
+    "HUNT_EXTRA_ROOT",
     "PERSISTED_TYPES",
     "RUNNABLE_TYPES",
     "RUN_STATUSES",
     "SORT_KEYS",
+    "SUITES",
     "SUITE_PARENT_IDS",
     "TERMINAL_STATUSES",
+    "TIERS",
     "BenchmarkLibraryError",
     "BenchmarkRunError",
     "HuntHint",
-    "build_series",
+    "aggregate",
+    "baseline_for",
     "cancel_live_run",
-    "compare_versions",
+    "capture_fingerprint",
+    "compare_runs",
     "create_def",
     "create_run",
     "delete_def",
-    "empty_side",
-    "eval_runs_root_for",
-    "extract_score",
-    "run_duration_s",
     "ensure_library",
+    "eval_runs_root_for",
+    "fingerprint_diff",
     "get_def",
     "get_run",
     "get_version",
-    "library_root",
-    "list_defs",
     "is_suite_run",
+    "library_root",
+    "list_active_runs",
+    "list_defs",
     "list_runs",
     "list_versions",
-    "list_active_runs",
     "live_refusal",
+    "load_baselines",
     "mechanical_hunt_score",
+    "member_row",
     "oracle_snapshot_hash",
     "reconcile_live_run",
     "require_live_llm",
     "reset_library_root_override",
     "reset_runs_root_override",
-    "generate_pack_stub",
-    "run_pack_subprocess",
-    "run_poc_workshop",
-    "score_poc_dev",
-    "SUITE_DEF_IDS",
-    "defs_for_suite",
     "run_benchmark",
-    "run_benchmark_suite",
+    "run_duration_s",
+    "run_fixture_checks",
     "run_hunt",
-    "start_live_run",
-    "start_live_suite",
-    "suite_types_for",
     "runs_root",
+    "score_case",
     "score_finding_report",
     "score_recon",
     "seed_from_ground_truth",
+    "set_baseline",
     "set_library_root",
     "set_runs_root",
-    "summarize_version",
+    "start_live_run",
+    "start_live_suite",
+    "suite_members",
+    "suite_of",
+    "summarize_repeats",
     "update_def",
     "update_run",
 ]

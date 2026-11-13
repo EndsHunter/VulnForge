@@ -35,7 +35,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Mechanical codemap (not architecture) | `vulnforge/tools/codemap.py` → `runs.codemap_json` (v2: modules + files + symbols; hunts get area slice) |
 | Sink residual coverage (per path:line:kind) | `db.sink_coverage_facts` + `tools/sink_preindex.record_sink_coverage`; Hunts cell detail |
 | Coarse reachability (`query_flows`) | `tools/flows.py` + `tools/agent/query_flows.py` — import BFS + call heuristic (**not** taint) |
-| Fixture recall oracles (L0 CI) | `fixtures/ground_truth/*.json` + `vulnforge/eval/recall.py` + `tests/test_fixture_recall_mechanical.py` |
+| Fixture recall oracles (L0 CI) | `fixtures/ground_truth/*.json` + `vulnforge/benchmarks/match.py` + `tests/test_fixture_recall_mechanical.py` |
 | Function-level symbol extract | `vulnforge/tools/symbols/` (heuristic always; tree-sitter via optional `vulnforge[codemap]`) |
 | Languages / extensions / entrypoints catalog | `vulnforge/languages.py` (SOURCE_EXTS, ENTRYPOINT_NAMES, package markers; used by inventory, codemap, sinks, strategies) |
 | Tool-gap mining | `vulnforge/tool_gaps.py` |

@@ -831,63 +831,40 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             {"runs_root": str(app.state.runs_root)},
         )
 
+    def _bench_page(request: Request, view: str, **ctx: Any):
+        return TEMPLATES.TemplateResponse(request, "benchmarks.html", {"view": view, **ctx})
+
     @app.get("/benchmarks", response_class=HTMLResponse)
-    def benchmarks_root(request: Request):
-        """Bench desk hub — redirect to Run so /benchmarks lands on a page."""
-        return RedirectResponse(url="/benchmarks/run", status_code=307)
+    def benchmarks_scoreboard(request: Request):
+        """Benchmarks desk: suites × tiers vs baseline, active runs, recent runs."""
+        return _bench_page(request, "scoreboard")
 
-    @app.get("/benchmarks/run", response_class=HTMLResponse)
-    def benchmarks_run_page(request: Request):
-        """Bench desk: Run (stub)."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {"runs_root": str(app.state.runs_root), "active": "run"},
-        )
+    @app.get("/benchmarks/cases", response_class=HTMLResponse)
+    def benchmarks_cases(request: Request):
+        return _bench_page(request, "cases")
 
-    @app.get("/benchmarks/poc", response_class=HTMLResponse)
-    def benchmarks_poc_page(request: Request):
-        """Bench desk: POC workshop (stub)."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {"runs_root": str(app.state.runs_root), "active": "poc"},
-        )
+    @app.get("/benchmarks/runs/{run_id}", response_class=HTMLResponse)
+    def benchmarks_run(request: Request, run_id: str):
+        return _bench_page(request, "run", run_id=run_id)
 
-    @app.get("/benchmarks/results", response_class=HTMLResponse)
-    def benchmarks_results_page(request: Request):
-        """Bench desk: Results history table."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {
-                "runs_root": str(app.state.runs_root),
-                "active": "results",
-                "detail_run_id": None,
-            },
-        )
+    @app.get("/benchmarks/compare", response_class=HTMLResponse)
+    def benchmarks_compare(request: Request, a: str = "", b: str = ""):
+        return _bench_page(request, "compare", compare_a=a, compare_b=b)
 
-    @app.get("/benchmarks/results/{run_id}", response_class=HTMLResponse)
-    def benchmarks_results_detail_page(request: Request, run_id: str):
-        """Bench desk: single BenchmarkRun detail."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {
-                "runs_root": str(app.state.runs_root),
-                "active": "results",
-                "detail_run_id": run_id,
-            },
-        )
+    # Pre-#204 bench desk URLs.
+    @app.get("/benchmarks/results/{run_id}")
+    def benchmarks_legacy_result(run_id: str):
+        from urllib.parse import quote
 
-    @app.get("/benchmarks/library", response_class=HTMLResponse)
-    def benchmarks_library_page(request: Request):
-        """Bench desk: Library (lists defs from /api/benchmarks)."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {"runs_root": str(app.state.runs_root), "active": "library"},
-        )
+        return RedirectResponse(url=f"/benchmarks/runs/{quote(run_id)}", status_code=308)
+
+    @app.get("/benchmarks/{legacy}")
+    def benchmarks_legacy(legacy: str):
+        if legacy == "library":
+            return RedirectResponse(url="/benchmarks/cases", status_code=308)
+        if legacy in ("run", "poc", "results"):
+            return RedirectResponse(url="/benchmarks", status_code=308)
+        raise HTTPException(404, "not found")
 
     # ---------- API: operator AI chat ----------
 

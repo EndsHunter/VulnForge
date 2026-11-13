@@ -68,6 +68,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_validate_poc(args, cfg)
         if cmd == "hitl":
             return cmd_hitl(args, cfg)
+        if cmd == "bench":
+            from vulnforge.benchmarks.cli import cmd_bench
+
+            return cmd_bench(args, cfg)
         print(f"unknown command: {cmd}", file=sys.stderr)
         return EXIT_CONFIG
     except SystemExit as e:
@@ -353,6 +357,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     emit_p.add_argument("--run-dir", type=Path, default=None)
     emit_p.add_argument("--file", type=Path, required=True, help="Report JSON file")
+
+    from vulnforge.benchmarks.cli import add_bench_parser
+
+    add_bench_parser(sub)
 
     return p
 

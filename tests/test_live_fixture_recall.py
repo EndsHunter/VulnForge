@@ -21,12 +21,12 @@ pytestmark = [
 
 
 def test_live_recall_placeholder():
-    """Placeholder so the module is discoverable; full campaign lives in scripts/eval_recall.
+    """Placeholder so the module is discoverable; the live run is ``vf bench``.
 
     Implementing a full Ralph campaign here is expensive; operators can run:
 
-        python scripts/eval_recall.py --target fixtures/toy_sqli
+        vf bench run --suite synthetic --only toy_sqli
 
-    when that script is available. This test documents the opt-in.
+    which uses the Settings LLM and records a comparable, fingerprinted run.
     """
     assert os.environ.get("VF_LIVE")

@@ -119,7 +119,7 @@ def test_run_finding_report_bench_terminal_with_metrics():
     assert "finding_report" in (metrics.get("by_type") or {})
 
 
-def test_api_recon_and_report_runs_and_refuse_poc_dev():
+def test_api_recon_and_report_runs_and_refuse_retired_poc_dev():
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
         recon = client.post(
@@ -151,9 +151,10 @@ def test_api_recon_and_report_runs_and_refuse_poc_dev():
         )
         assert refuse.status_code == 400
         assert "poc_dev" in refuse.text.lower()
+        assert "poc_dev" not in {t for d in list_defs() for t in d["types"]}
 
 
-def test_create_multi_type_def_and_run_page_lists_types():
+def test_create_multi_type_def_runs_one_type_slice():
     create_def(
         "multi_type_toy",
         name="Multi type toy",
@@ -173,13 +174,6 @@ def test_create_multi_type_def_and_run_page_lists_types():
 
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        page = client.get("/benchmarks/run")
-        assert page.status_code == 200
-        assert "bench-run-type-filter" in page.text
-        assert "finding_report" in page.text
-        assert "recon" in page.text
-        assert "poc_dev" not in page.text.split("bench-run-type-filter")[1].split("</select>")[0]
-
         lib = client.get("/api/benchmarks")
         assert lib.status_code == 200
         row = next(b for b in lib.json()["benchmarks"] if b["id"] == "multi_type_toy")
