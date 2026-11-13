@@ -20,7 +20,7 @@ Loader: `vulnforge.packet.load_prompt_slice` prefers override for top-level base
 
 | Seed file | Group doc | Used by | Stage / feature |
 |-----------|-----------|---------|-----------------|
-| `preamble.md` | [SHARED.md](SHARED.md) | `packet.py` | recon, hunt, disprove, develop_poc packing |
+| `preamble.md` | [SHARED.md](SHARED.md) | `packet.py`, `develop_fix.py`, `verify_fix.py` | recon, hunt, disprove, develop_poc, PoC referee, develop_fix, verify_fix (target-content-as-data rule) |
 | `PRINCIPLES.md` | [SHARED.md](SHARED.md) | `packet.py` | hunt (audit principles) |
 | `recon.md` | [RECON.md](RECON.md) | `packet.py` legacy pack | recon |
 | `architecture_merge.md` | [RECON.md](RECON.md) | `stages/recon.py` merge | recon multi-agent / re-run |

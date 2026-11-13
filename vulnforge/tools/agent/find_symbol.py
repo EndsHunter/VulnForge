@@ -9,6 +9,7 @@ from vulnforge.tools.symbol_find import find_symbol as _find_symbol
 
 SPEC = ToolSpec(
     name="find_symbol",
+    returns_target_content=True,
     stages=("recon", "hunt", "develop_poc"),
     description=(
         "Locate likely definitions of a function/class/type name in the target "

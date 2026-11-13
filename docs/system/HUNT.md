@@ -12,7 +12,8 @@
 
 ## Also used on hunt packets
 
-- `PRINCIPLES.md` as the hunt **system** prompt — [SHARED.md](SHARED.md)
+- `preamble.md` then `PRINCIPLES.md` as the hunt **system** prompt — [SHARED.md](SHARED.md).
+  The preamble carries the shared target-content-as-data rule.
 - `continue_hunt` is a hunt-stage tool (not a prompt file): when context is high the
   harness instructs the model to hand off remaining work to a child hunt.
 

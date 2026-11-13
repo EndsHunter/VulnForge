@@ -9,6 +9,7 @@ from vulnforge.tools.fs_read import read_file as _read_file
 
 SPEC = ToolSpec(
     name="read_file",
+    returns_target_content=True,
     stages=("recon", "hunt", "develop_poc"),
     description=(
         "Read a text file (or line range) from the audit target (read-only). "

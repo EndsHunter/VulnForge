@@ -33,6 +33,7 @@ Checklist of record for humans and local/offline models. Linked from `AGENTS.md`
 | Allowlist | `CodeStaticProfile.allowed_tools()` ← registry (+ extras) |
 | LLM schema | `packet.tool_schemas_for` ← registry SPECs (+ extras) |
 | Critical keep | `ToolSpec.critical_for` (e.g. `submit_*` on hunt) |
+| Target-text marker | `ToolSpec.returns_target_content=True` when results carry target file text (lines, search hits); dispatch adds a leading `target_content` note on success. See `docs/system/SHARED.md`. |
 | Legacy extras | `extra_registry.EXTRA_TOOL_SPECS` only when not writing agent SPECs |
 | Caps | `config/default.yaml` → `tools.*` (optional) |
 | Docs | `PROTOCOL.md` tool list; `docs/LAYOUT.md` |
