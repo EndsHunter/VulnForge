@@ -17,7 +17,13 @@ from vulnforge.usage import load_usage_for_task
 
 
 SUBMIT_TOOLS = frozenset(
-    {"submit_candidate", "submit_none", "submit_architecture", "write_evidence"}
+    {
+        "submit_candidate",
+        "submit_none",
+        "submit_architecture",
+        "submit_flow",
+        "write_evidence",
+    }
 )
 
 
@@ -61,7 +67,12 @@ def _detect_submit(messages: list[dict], result: dict) -> Optional[str]:
         if not isinstance(m, dict) or m.get("role") != "tool":
             continue
         name = str(m.get("name") or "")
-        if name in ("submit_candidate", "submit_none", "submit_architecture"):
+        if name in (
+            "submit_candidate",
+            "submit_none",
+            "submit_architecture",
+            "submit_flow",
+        ):
             try:
                 body = json.loads(m.get("content") or "{}")
             except (json.JSONDecodeError, TypeError):

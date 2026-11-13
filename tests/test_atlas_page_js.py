@@ -51,6 +51,18 @@ def test_atlas_page_wiring():
     # Honesty copy: no pin / calm shading is not proof of safety.
     assert "not evidence of safety" in atlas
     assert "not proof of safety" in atlas
+    # Flow map (docs/harness/recon/FLOWS.md): layers, flows panel, honesty copy.
+    assert "Arrows are recon's map of how data moves." in atlas
+    assert "no arrow is not proof of safety" in atlas
+    assert "No data flows traced yet." in atlas
+    assert "Mechanical skeleton — recon has not labelled this yet." in atlas
+    for layer in ("flows", "links", "imports"):
+        assert f'data-layer="{layer}"' in atlas
+    assert 'data-left-tab="flows"' in atlas
+    assert "Hunt this flow" in atlas
+    assert '"Escape"' in atlas
+    assert "architecture_skeleton" in atlas
+    assert (TEST_JS.parent / "fixtures" / "arch_v2_toy_sqli.json").is_file()
 
     explorer = EXPLORER_JS.read_text(encoding="utf-8")
     assert "listDir" in explorer

@@ -2066,6 +2066,20 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 codemap = merge_annotations_into_codemap(codemap, prior_notes)
             db.set_codemap(codemap, source=str(codemap.get("source") or "mechanical"))
             stored = db.get_codemap()
+            # Refresh the R0 skeleton alongside (separate file; never raises).
+            from vulnforge.recon_skeleton import (
+                build_and_store_skeleton,
+                seed_sinks_for_target,
+            )
+
+            try:
+                sk_sinks = seed_sinks_for_target(target, ignore)
+            except Exception as exc:
+                from vulnforge.errors import note_swallowed
+
+                note_swallowed(exc, context="codemap_rebuild.seed_sinks", run_dir=run.path)
+                sk_sinks = []
+            build_and_store_skeleton(run.path, stored or codemap, sk_sinks, None, target)
             summary = codemap_summary_for_ui(stored)
             from vulnforge.tools.codemap import slim_codemap_for_ui
 

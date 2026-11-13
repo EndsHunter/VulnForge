@@ -7,13 +7,13 @@ Local, model-agnostic vulnerability discovery harness for [LM Studio](https://lm
 | Label | Meaning |
 |-------|---------|
 | **`needs_human`** | Passed **mechanical** gates (shape, citations, evidence / justified `no_poc`). **Not** exploit proof. |
-| **`confirmed`** | A **human** accepted the finding in the Report UI. Still **not** exploit proof. |
+| **`confirmed`** | A **human** accepted the finding on the Review tab. Still **not** exploit proof. |
 
 Automation never auto-confirms. Prefer honest `submit_none` over inventing findings.
 
-While `validation_mech.pending_llm` is true (LLM disprove still running), **Accept is hard-blocked** on the server and in both the Report UI and the HITL inbox — Reject stays available, and there is no force override (shipped in #160, closes #154).
+While `validation_mech.pending_llm` is true (LLM disprove still running), **Accept is hard-blocked** on the server and in both the Review tab and the HITL inbox — Reject stays available, and there is no force override (shipped in #160, closes #154).
 
-![Mission Overview on a fresh toy_sqli run, idle with recon queued](docs/images/home-runs.png)
+![Home — all runs on a fresh toy_sqli run, idle with recon queued](docs/images/home-runs.png)
 
 ---
 
@@ -71,27 +71,33 @@ Windows PowerShell install notes: [docs/README.md](docs/README.md) (operator pat
 
 ## How a run looks
 
-A **run** is one durable audit against a target tree. Ralph drains the queue: recon → hunts → validate. Mission shows progress, the findings queue, and what still needs a human.
+A **run** is one durable audit against a target tree. Ralph drains the queue: recon → hunts → validate. Each run page has five tabs under one header: **Review**, **Campaign** (the default), **Atlas**, **Evidence** and **Tasks**. The header strip carries the run totals (recon, hunts, review, confirmed).
 
-![Mission Overview — pipeline and needs-human queue](docs/images/mission-overview.png)
+**Campaign** shows the pipeline stage by stage and the hunt-coverage matrix (area × skill), with what is running and what is next:
 
-What the strip is telling you:
+![Campaign — pipeline, hunt coverage matrix and live work](docs/images/campaign.png)
+
+**Review** is the human gate: a queue, the finding with its cited code, and a verdict rail with the mechanical gates, disprove judges, PoC and Accept / Reject:
+
+![Review — queue, finding and verdict rail](docs/images/review.png)
+
+What the pipeline is telling you:
 
 - **Needs Human** — mechanical gates passed; open **Report** (or the HITL inbox) to accept or reject. Neither state is exploit proof. Accept stays disabled while `pending_llm` is true.
 - **Confirmed / Rejected** — only change when a human acts in Report / HITL. The LLM may **disprove** (reject path); it never auto-confirms. Accept cannot fire until dual disprove settles.
 - **Pipeline** — stage state from task kinds on this run (`Recon → hunt → validate (mech, then LLM disprove)`).
 
-Steer from **Explorer** (enqueue hunts), **Hunts** (residual cells), and **Report** (accept / reject / develop PoC).
+Steer from **Atlas** (hunt an area or a traced flow, or select code and enqueue a hunt), **Campaign** (re-queue open cells, plan hunts) and **Review** (accept / reject / develop PoC). Coverage cells that are not hunted, too shallow, aborted or "nothing found" are all **open**: a miss is not proof of safety.
 
 ---
 
 ## Architecture map
 
-Mission → **Architecture** is the LLM recon map for the run (components, surfaces, trust boundaries, hunt focus). It is stored in the run DB — use Hunts and Explorer to drive work, not the diagram alone.
+**Atlas** is the recon map for the run: components in trust-zone bands (Internet-facing, Authenticated, Internal, External, Build) with arrows for how data moves. Flows are traced by recon from an entry point to a sink, and every step cites `path:line`; uncited links are drawn dashed. Pick a flow to highlight its path and hunt it.
 
-![Mission Architecture — LLM recon map](docs/images/mission-architecture.png)
+![Atlas — trust zones and a traced data flow](docs/images/atlas-flows.png)
 
-Mechanical structure (codemap) lives separately in the run database; it does not replace this high-level view.
+Before any model runs, Atlas shows a **mechanical skeleton** built from the codemap, import edges and the sink pre-index. Recon then labels it (zones, cited relations) and the flow tracer adds flows. Arrows steer hunts; they are not proof of a bug, and no arrow is not proof of safety. Spec: [`docs/harness/recon/FLOWS.md`](docs/harness/recon/FLOWS.md).
 
 ---
 
@@ -102,9 +108,9 @@ Mechanical structure (codemap) lives separately in the run database; it does not
 | New audit | Dashboard **New**, or `vf init --target PATH` |
 | Drive queue | Dashboard **Start** / **Resume**, or `python scripts/ralph.py --run-dir DIR` |
 | One task | `vf run-once --run-dir DIR` |
-| Status | `vf status --run-dir DIR`, Mission strip |
+| Status | `vf status --run-dir DIR`, run header strip |
 | Campaign verbs | `start` `stop` `pause` `resume` `status` `findings` `gate` — [docs/harness/CAMPAIGN.md](docs/harness/CAMPAIGN.md) |
-| Steer | Explorer, Hunts, Report |
+| Steer | Atlas, Campaign, Review |
 | Dev tools | Home → **Dev** (hunt skills, recon agents) |
 | Tool gaps | `vf tool-gaps --run-dir DIR` or Home **Tool gaps** |
 
@@ -134,10 +140,9 @@ vf dashboard --host 127.0.0.1 --port 8787
 | Surface | Purpose |
 |---------|---------|
 | **Home** | All runs, progress, LLM token rollups |
-| **Mission** | Architecture map, campaign strip, operator recon re-run |
-| **Hunts** | Plan area×skill batches; residual-risk matrix |
-| **Explorer** | Browse target; enqueue class×path hunts |
-| **Report** | Findings review (accept / reject / develop PoC); Accept hard-blocked while `pending_llm` |
+| **Review** | Findings review (accept / reject / develop PoC); Accept hard-blocked while `pending_llm` |
+| **Campaign** | Pipeline, hunt-coverage matrix, plan hunts, re-queue open cells (default tab) |
+| **Atlas** | Trust-zone map with data-flow arrows; recon re-run, History; browse code and enqueue hunts |
 | **Evidence** | On-disk evidence packs |
 | **Tasks** | Queue, transcripts, event timeline |
 | **AI** | Run-bound co-pilot (mutating tools need Confirm) |

@@ -156,6 +156,7 @@ Schemas live on tool `SPEC` objects under `vulnforge/tools/agent/`. `packet.tool
 | `get_architecture` | hunt | Current architecture map (not the mechanical codemap) |
 | `note` | recon, hunt, develop_poc | wishlist / sibling_seed / codemap (does not finish task). Mechanical codemap is built at recon (`runs.codemap_json`); `note(kind=codemap)` only annotates high-value paths |
 | `submit_architecture` | recon only | Finish recon architecture map (not findings; separate from mechanical codemap) |
+| `submit_flow` | recon (flow-tracer only) | Finish a flow-tracer task with cited data flows (entrypoint → steps → sink). Steering hints for hunts, never findings |
 | `submit_candidate` / `submit_none` | hunt only | Finish hunt (candidate is not confirmed) |
 | `preflight_candidate` | hunt | Dry-run mech-shaped checks before submit |
 | `write_evidence` | hunt, develop_poc | Write under `evidence/` only |

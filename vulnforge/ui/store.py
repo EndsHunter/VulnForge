@@ -497,6 +497,77 @@ def _target_inventory(
     }
 
 
+def _architecture_skeleton(
+    run: RunRef,
+    codemap: Any,
+    arch: Any,
+    target_path: Any,
+) -> Optional[dict[str, Any]]:
+    """Stored R0 skeleton, or build + cache it for runs that predate it."""
+    try:
+        from vulnforge.recon_skeleton import (
+            build_skeleton,
+            read_skeleton,
+            write_skeleton,
+        )
+
+        skel = read_skeleton(run.path)
+        if skel is not None or not isinstance(codemap, dict):
+            return skel
+        inv: dict[str, Any] = {}
+        sinks: list = []
+        if isinstance(arch, dict):
+            inv = arch.get("inventory") if isinstance(arch.get("inventory"), dict) else {}
+            raw = arch.get("seed_sinks") or inv.get("seed_sinks")
+            sinks = raw if isinstance(raw, list) else []
+        root: Optional[Path] = None
+        if target_path:
+            tp = Path(str(target_path))
+            if tp.exists():
+                root = tp
+        skel = build_skeleton(codemap, sinks, inv or None, root)
+        try:
+            write_skeleton(run.path, skel)
+        except OSError as exc:
+            from vulnforge.errors import note_swallowed
+
+            note_swallowed(exc, context="snapshot.skeleton_cache", run_dir=run.path)
+        return skel
+    except Exception as exc:
+        from vulnforge.errors import note_swallowed
+
+        note_swallowed(exc, context="snapshot.architecture_skeleton", run_dir=run.path)
+        return None
+
+
+def _architecture_v2_view(
+    arch: Any, arch_summary: Any
+) -> tuple[Any, Any]:
+    """Overlay normalized v2 fields when the stored map is ``architecture@2``.
+
+    v1 maps are returned unchanged.
+    """
+    try:
+        from vulnforge.architecture_schema import is_v2, normalize_architecture_v2
+
+        if not is_v2(arch):
+            return arch, arch_summary
+        norm = normalize_architecture_v2(arch)
+        full = {**arch, **norm}
+        summary = dict(arch_summary) if isinstance(arch_summary, dict) else {}
+        for key in ("schema", "zones", "boundaries", "flows", "components", "relations"):
+            summary[key] = norm[key]
+        summary["modules"] = norm["components"]
+        if norm.get("origin"):
+            summary["origin"] = norm["origin"]
+        return full, summary
+    except Exception as exc:
+        from vulnforge.errors import note_swallowed
+
+        note_swallowed(exc, context="snapshot.architecture_v2_view")
+        return arch, arch_summary
+
+
 def run_snapshot(run: RunRef) -> dict[str, Any]:
     """Full snapshot for run detail page / API."""
     card = run_card(run)
@@ -556,6 +627,9 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
             sink_coverage_summary = {"total": 0, "planned": 0, "residual": 0}
     finally:
         db.close()
+
+    # R0 mechanical skeleton (file beside the run; lazily built for older runs).
+    architecture_skeleton = _architecture_skeleton(run, codemap, arch, card.get("target_path"))
 
     evidence = list_evidence(run)
     project = list_project_files(run)
@@ -670,6 +744,9 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
     if not isinstance(run_cfg, dict):
         run_cfg = {}
 
+    # v2 passthrough (read path only — the DB is not rewritten here).
+    arch, arch_summary = _architecture_v2_view(arch, arch_summary)
+
     max_task_attempts = 3
     try:
         max_task_attempts = max(1, int((run_cfg.get("run") or {}).get("max_task_attempts", 3)))
@@ -719,6 +796,7 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
         "findings_summary": findings_summary,
         "architecture": arch,
         "architecture_summary": arch_summary,
+        "architecture_skeleton": architecture_skeleton,
         "codemap": codemap if isinstance(codemap, dict) else None,
         "codemap_summary": codemap_summary,
         "has_codemap": bool(

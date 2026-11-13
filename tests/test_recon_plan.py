@@ -179,6 +179,9 @@ def test_recon_string_focus_integration(tmp_path: Path, toy_sqli: Path):
             "max_tool_rounds": 4,
         },
         "run": {"ignore_globs": [], "max_tasks": 10},
+        # R3 flow tracer off: this test checks map -> hunts directly
+        # (with R3 on, hunts are planned by the last flow-tracer task).
+        "recon": {"flow_tracer": {"enabled": False}},
         "packet": {},
         "tools": {},
     }
@@ -234,6 +237,9 @@ def test_recon_salvages_json_architecture_after_no_submit(tmp_path: Path, toy_sq
             "max_tool_rounds": 4,
         },
         "run": {"ignore_globs": [], "max_tasks": 10, "max_recon_auto_retries": 0},
+        # R3 flow tracer off: this test checks map -> hunts directly
+        # (with R3 on, hunts are planned by the last flow-tracer task).
+        "recon": {"flow_tracer": {"enabled": False}},
         "packet": {},
         "tools": {},
     }

@@ -12,6 +12,7 @@ TERMINAL_TOOLS = frozenset(
         "submit_candidate",
         "submit_none",
         "submit_architecture",
+        "submit_flow",
         "continue_hunt",
         "continue_recon",
     }
@@ -81,7 +82,7 @@ def architecture_from_content(content: str | None) -> dict[str, Any] | None:
             return list(v)
         return []
 
-    return {
+    out = {
         "summary": summary,
         "trust_boundaries": _list_field("trust_boundaries"),
         "components": _list_field("components"),
@@ -89,6 +90,86 @@ def architecture_from_content(content: str | None) -> dict[str, Any] | None:
         "hunt_focus": _list_field("hunt_focus"),
         "relations": _list_field("relations"),
     }
+    # Architecture v2 slices (zones / boundaries) when the model wrote them.
+    for key in ("zones", "boundaries"):
+        if _list_field(key):
+            out[key] = _list_field(key)
+    return out
+
+
+def _json_candidates(text: str) -> list[Any]:
+    """Whole-text JSON, fenced blocks, then the outermost ``{…}`` / ``[…]`` slices."""
+    out: list[Any] = []
+    t = str(text or "").strip()
+    if not t:
+        return out
+    chunks = [t]
+    if "```" in t:
+        parts = t.split("```")
+        for i in range(1, len(parts), 2):
+            body = parts[i]
+            nl = body.find("\n")
+            if nl >= 0 and not body[:nl].strip().startswith(("{", "[")):
+                body = body[nl + 1 :]
+            chunks.append(body.strip())
+    for chunk in chunks:
+        try:
+            out.append(json.loads(chunk))
+            continue
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        for open_c, close_c in (("{", "}"), ("[", "]")):
+            start = chunk.find(open_c)
+            end = chunk.rfind(close_c)
+            if start < 0 or end <= start:
+                continue
+            try:
+                out.append(json.loads(chunk[start : end + 1]))
+                break
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+    return out
+
+
+def _looks_like_flow(item: Any) -> bool:
+    return isinstance(item, dict) and (
+        isinstance(item.get("source"), (dict, str))
+        or isinstance(item.get("sink"), (dict, str))
+    ) and bool(item.get("steps") or item.get("sink") or item.get("source"))
+
+
+def flows_from_content(
+    content: str | None,
+    transcript: list | None = None,
+) -> list[dict[str, Any]] | None:
+    """Parse flow objects the model described in free text (no submit_flow).
+
+    Accepts ``{"flows": [...]}``, a bare list of flow dicts, or one flow dict
+    with ``source`` / ``sink``. Looks at *content* first, then assistant
+    messages in *transcript* newest-first. Returns None when nothing parses —
+    never invents a flow. Citations are validated later by the stage.
+    """
+    texts: list[str] = []
+    if content and str(content).strip():
+        texts.append(str(content))
+    for m in reversed(list(transcript or [])[-12:]):
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            c = m.get("content")
+            if isinstance(c, str) and c.strip():
+                texts.append(c)
+    for text in texts:
+        for data in _json_candidates(text):
+            flows: list[Any] = []
+            if isinstance(data, dict) and isinstance(data.get("flows"), list):
+                flows = data["flows"]
+            elif isinstance(data, list):
+                flows = data
+            elif _looks_like_flow(data):
+                flows = [data]
+            kept = [f for f in flows if _looks_like_flow(f)]
+            if kept:
+                return [dict(f) for f in kept[:16]]
+    return None
 
 
 def try_force_continue(
@@ -128,10 +209,12 @@ def try_force_terminal_submit(
     max_rounds: int,
     reason_prefix: str = "auto",
     content: str | None = None,
+    transcript: list | None = None,
 ) -> tuple[str | None, dict[str, Any] | None]:
     """Call submit_none or submit_architecture when rounds are exhausted.
 
-    Prefer submit_none (hunt). For recon:
+    Prefer submit_none (hunt). Flow tracer (``submit_flow``): submit the
+    flows parsed from content/transcript (or zero flows). For recon:
       - If free-text content already has parseable architecture with a summary,
         skip force so the stage salvage path can win (no incomplete stub).
       - Otherwise force a minimal architecture summary so the task is not
@@ -155,6 +238,23 @@ def try_force_terminal_submit(
             out["forced"] = True
             out["forced_reason"] = "max_tool_rounds"
             return "submit_none", out
+
+    if "submit_flow" in names:
+        # Flow tracer: keep whatever flows the model already described (the
+        # stage validates citations and marks uncited steps inferred). No
+        # flows parsed -> submit zero flows with the round-limit reason.
+        flows = flows_from_content(content, transcript) or []
+        body_f: dict[str, Any] = {"flows": flows, "reason": reason}
+        try:
+            out = tool_handler("submit_flow", body_f)
+        except Exception as e:
+            out = {"ok": False, "error": str(e)}
+        if isinstance(out, dict) and out.get("ok") is True:
+            out = dict(out)
+            out["forced"] = True
+            out["forced_reason"] = "max_tool_rounds"
+            out["salvaged_flows"] = len(flows)
+            return "submit_flow", out
 
     if "submit_architecture" in names:
         # Do not force an incomplete stub when content is salvageable — recon
@@ -275,6 +375,7 @@ def apply_round_limit_fallback(
         schema,
         max_rounds=max_rounds,
         content=result.content,
+        transcript=list(transcript if transcript is not None else (result.transcript or [])),
     )
     if not name or not out:
         return result
