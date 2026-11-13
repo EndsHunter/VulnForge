@@ -34,3 +34,38 @@ jobs:
 
       - name: Offline pytest (exclude live)
         run: pytest -q -m "not live"
+
+  # The documented two-command install must work on a stock machine.
+  install:
+    name: install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Windows runners default to an older Python; Linux / macOS use whatever is there.
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.12"
+
+      - name: Install (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: ./install.sh --yes
+
+      - name: Install (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: install.cmd
+
+      - name: Smoke
+        shell: bash
+        run: |
+          vf=.venv/bin/vf
+          [ -x "$vf" ] || vf=.venv/Scripts/vf.exe
+          "$vf" --help > /dev/null
+          "$vf" init --target fixtures/toy_sqli

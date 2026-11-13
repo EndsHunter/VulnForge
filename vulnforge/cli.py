@@ -2187,7 +2187,8 @@ def cmd_dashboard(args, cfg: dict) -> int:
     except ImportError as e:
         print(
             f"dashboard dependencies missing: {e}\n"
-            "  pip install -e \".[ui]\"   # or install fastapi uvicorn jinja2",
+            "  Re-run ./install.sh (Windows: install.ps1) from the repo root,\n"
+            "  or: pip install -e .",
             file=sys.stderr,
         )
         return EXIT_CONFIG
