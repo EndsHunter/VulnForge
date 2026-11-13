@@ -266,6 +266,41 @@ body[data-page="settings"] { background: var(--bg); }
   color: var(--text-soft);
 }
 .vfs-report[hidden] { display: none; }
+.vfs-tune { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.vfs-tune[hidden] { display: none; }
+.vfs-tune-log {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 12rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.vfs-tune-log li { padding: 2px 0; }
+.vfs-tune-log li[data-state="run"] { color: var(--text); }
+.vfs-tune-recs { display: flex; flex-direction: column; gap: 6px; }
+.vfs-rec {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+}
+.vfs-rec-key { font-size: 12px; color: var(--text); }
+.vfs-rec-val { font-size: 12px; }
+.vfs-rec-why { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--text-soft); }
+.vfs-rec-conf { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+.vfs-rec-conf[data-level="high"] { color: var(--accent-bright); }
+.vfs-rec-conf[data-level="medium"] { color: var(--warn, var(--text-soft)); }
+.vfs-rec-conf[data-level="low"] { color: var(--text-faint); }
 
 /* ---------- Hunt perspectives ---------- */
 .vfs-persp-head, .vfs-persp-row {

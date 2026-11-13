@@ -3125,6 +3125,37 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             app.state.config = load_config()
         return redact_secrets(result)
 
+    @app.post("/api/settings/optimize/jobs")
+    def api_optimize_job(body: SettingsOptimizeBody = Body(default_factory=SettingsOptimizeBody)):
+        """Start auto-tune for the selected pairs. Poll the job for progress."""
+        from vulnforge.settings_probe import start_optimize_job
+
+        if not body.targets:
+            raise HTTPException(400, "select at least one verified model")
+        test_context = True if body.test_context is None else bool(body.test_context)
+        job_id = start_optimize_job(
+            targets=list(body.targets),
+            test_context=test_context,
+        )
+        return {"ok": True, "job_id": job_id}
+
+    @app.get("/api/settings/optimize/jobs/{job_id}")
+    def api_optimize_job_status(job_id: str):
+        from vulnforge.settings_probe import get_optimize_job
+
+        job = get_optimize_job(job_id)
+        if job is None:
+            raise HTTPException(404, "probe job not found")
+        return redact_secrets(job)
+
+    @app.post("/api/settings/optimize/jobs/{job_id}/cancel")
+    def api_optimize_job_cancel(job_id: str):
+        from vulnforge.settings_probe import cancel_optimize_job
+
+        if not cancel_optimize_job(job_id):
+            raise HTTPException(404, "probe job not found")
+        return {"ok": True, "job_id": job_id}
+
     @app.post("/api/settings/hosts/{host_id}/catalog")
     def api_refresh_host_catalog(host_id: str):
         """GET /v1/models for one host. Does not verify. Not called on page open."""

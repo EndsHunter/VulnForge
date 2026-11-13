@@ -241,10 +241,14 @@
           </table>
         </div>
         <div class="vfs-row-actions">
-          <button type="button" class="vf-btn vfs-btn-sm" id="settings-optimize">Optimize selected</button>
-          <span class="vfs-hint">Probes the selected models and fills in their cells. Nothing is saved until you click Save.</span>
+          <button type="button" class="vf-btn vfs-btn-sm" id="settings-optimize">Auto-tune selected</button>
+          <button type="button" class="vf-btn vf-btn--ghost vfs-btn-sm" id="settings-optimize-cancel" hidden>Cancel</button>
+          <span class="vfs-hint">Probes the selected models one at a time and shows why each number was chosen. Accept the ones you want. Nothing is saved until you click Save.</span>
         </div>
-        <pre class="vfs-report vf-mono" id="settings-optimize-report" hidden></pre>
+        <div class="vfs-tune" id="settings-optimize-panel" hidden>
+          <ol class="vfs-tune-log" id="settings-optimize-log"></ol>
+          <div class="vfs-tune-recs" id="settings-optimize-recs"></div>
+        </div>
       </section>
 
       <!-- 5. Sandbox -->

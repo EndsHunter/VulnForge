@@ -1,20 +1,26 @@
 """Probe a live LLM endpoint and recommend UI settings.
 
-Used by dashboard **Settings → Optimize AI settings**. Tests are sequential and
+Used by dashboard **Settings → Auto-tune**. Tests are sequential and
 read-only against the model server (no target tree access).
 
 Context recommendation order is empirical probe, then model card, then a
 name heuristic (any ``Nk`` / ``Nm`` marker, including 256k-class windows).
-The probe uses tiny completions. An unclaimed ladder starts at the 256k
-rung so a ~45s budget can reach a large window. Runtime recommendations
-use more of a large discovered window than a conservative local default.
-``max_tokens`` is max output and stays capped separately from context.
+The probe uses tiny completions and walks the ladder upward from a small
+prompt. A rung that does not finish, or a slow accept followed by a rung
+above the local cap, stops the climb. That measured size is the practical
+window. A fast server still reaches the 256k-class rungs inside the budget.
+Runtime recommendations use more of a large discovered window than a
+conservative local default. ``max_tokens`` is max output and stays capped
+separately from context.
 """
 
 from __future__ import annotations
 
 import re
+import threading
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 from urllib.parse import quote
 
@@ -92,8 +98,9 @@ CONTEXT_PROBE_MAX_TOKENS = 1048576
 CONTEXT_PROBE_MIN_TOKENS = 1024
 CONTEXT_PROBE_COMPLETION_TOKENS = 4
 CONTEXT_PROBE_PER_REQUEST_S = 25.0
-# Coarse rungs. Binary search fills the gaps. The unclaimed probe starts at
-# the 256k-class rung so the time budget is not spent on 1k–8k steps.
+# Coarse rungs. Binary search fills the gaps. The probe walks these upward.
+# A fast server still reaches the large rungs. A slow one stops at the last
+# accept instead of opening on a 256k prompt that consumes the whole budget.
 CONTEXT_PROBE_STEPS = (
     4096,
     8192,
@@ -103,7 +110,11 @@ CONTEXT_PROBE_STEPS = (
     524288,
     1048576,
 )
-# First unclaimed attempt. Larger rungs are tried only after this one accepts.
+# After a slow accept, do not send a prompt larger than this. A shared local
+# GPU can spend minutes on a 100k-class prefill.
+CONTEXT_PROBE_LOCAL_CAP = 98304
+CONTEXT_PROBE_SLOW_SECONDS = 8.0
+# Kept so older callers can read the old start rung. The walk no longer uses it.
 CONTEXT_PROBE_LARGE_START = 262144
 _NAMED_CONTEXT_RE = re.compile(
     r"(?<![a-z0-9])(\d+(?:\.\d+)?)[\s_\-]*([km])(?![a-z0-9])",
@@ -111,6 +122,11 @@ _NAMED_CONTEXT_RE = re.compile(
 )
 
 PostJsonFn = Callable[..., tuple[int, dict[str, Any] | str, float]]
+ProgressFn = Callable[[dict[str, Any]], None]
+
+
+class ProbeCancelled(Exception):
+    """The operator cancelled an auto-tune job between steps."""
 
 
 def _base_url(host: str, port: int) -> str:
@@ -332,23 +348,107 @@ def _message_has_tool_call(data: dict[str, Any]) -> bool:
     return bool(tcs)
 
 
-def _message_content_nonempty(data: dict[str, Any]) -> bool:
+def _choice_message(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
-        return False
+        return {}
     choices = data.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return False
-    msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return {}
+    msg = choices[0].get("message")
+    return msg if isinstance(msg, dict) else {}
+
+
+def message_reasoning_text(msg: Any) -> str:
+    """Thinking text from either OpenAI-style field local servers use.
+
+    llama.cpp and many proxies send ``reasoning_content``. Flint and some
+    other local servers send ``reasoning``. A list under ``reasoning_details``
+    is accepted when the string fields are empty.
+    """
     if not isinstance(msg, dict):
-        return False
+        return ""
+    for key in ("reasoning_content", "reasoning"):
+        val = msg.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    details = msg.get("reasoning_details")
+    if isinstance(details, list):
+        parts: list[str] = []
+        for item in details:
+            if isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+            elif isinstance(item, dict):
+                for key in ("text", "content", "summary"):
+                    val = item.get(key)
+                    if isinstance(val, str) and val.strip():
+                        parts.append(val.strip())
+                        break
+        if parts:
+            return "\n".join(parts)
+    return ""
+
+
+def message_content_text(msg: Any) -> str:
+    if not isinstance(msg, dict):
+        return ""
     content = msg.get("content")
-    if isinstance(content, str) and content.strip():
+    if isinstance(content, str):
+        return content.strip()
+    return ""
+
+
+def _usage_counts(data: Any) -> tuple[Optional[int], Optional[int]]:
+    """Server ``usage.prompt_tokens`` and ``completion_tokens``, when present."""
+    if not isinstance(data, dict):
+        return None, None
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return None, None
+
+    def one(key: str) -> Optional[int]:
+        val = usage.get(key)
+        if val is None or isinstance(val, bool):
+            return None
+        try:
+            n = int(val)
+        except (TypeError, ValueError):
+            return None
+        return n if n >= 0 else None
+
+    return one("prompt_tokens"), one("completion_tokens")
+
+
+def _message_content_nonempty(data: dict[str, Any]) -> bool:
+    msg = _choice_message(data)
+    if message_content_text(msg):
         return True
-    # Reasoning-only models sometimes only fill reasoning_content
-    rc = msg.get("reasoning_content")
-    if isinstance(rc, str) and rc.strip():
+    # Reasoning-only models sometimes only fill a reasoning field.
+    return bool(message_reasoning_text(msg))
+
+
+def _is_slow(status: int, data: Any, elapsed: float, per_req: float) -> bool:
+    """A request that did not finish inside its own deadline.
+
+    That is not an over-context error. The previous accept is the practical
+    window for this budget.
+    """
+    if status == 0:
+        text = _error_text(data).lower()
+        if "timeout" in text or "timed out" in text:
+            return True
+    if per_req and elapsed >= max(1.0, float(per_req) * 0.92) and status != 200:
         return True
     return False
+
+
+def _check_cancel(cancel_event: Any) -> None:
+    if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+        raise ProbeCancelled("cancelled")
+
+
+def _emit(on_progress: Optional[ProgressFn], event: dict[str, Any]) -> None:
+    if on_progress is not None:
+        on_progress(event)
 
 
 def _error_text(data: dict[str, Any] | str) -> str:
@@ -449,8 +549,16 @@ def recommend_runtime_settings(
     tool_ok: bool,
     avg_latency_s: float,
     p95_latency_s: float,
+    gen_seconds: Optional[float] = None,
+    gen_completion_tokens: Optional[int] = None,
+    concurrent_parallel: Optional[bool] = None,
 ) -> dict[str, Any]:
-    """Map a known context window to ferocious (but bounded) runtime settings."""
+    """Map a known context window to ferocious (but bounded) runtime settings.
+
+    ``concurrent_parallel`` overrides the latency guess when a two-request
+    probe actually ran. ``gen_seconds`` is a finished completion sample, not
+    a truncated 16-token ping.
+    """
     ctx = max(1024, int(ctx))
     if reasoning_heavy:
         max_tok = min(16384, max(8192, ctx // 4))
@@ -489,8 +597,22 @@ def recommend_runtime_settings(
         timeout_rec = max(timeout_rec, 900)
 
     workers = 1
-    if tool_ok and float(avg_latency_s) < 3.0 and not reasoning_heavy:
+    if concurrent_parallel is False:
+        workers = 1
+    elif concurrent_parallel is True and not reasoning_heavy:
         workers = 2
+    elif tool_ok and float(avg_latency_s) < 3.0 and not reasoning_heavy:
+        workers = 2
+
+    if (
+        gen_seconds is not None
+        and gen_completion_tokens is not None
+        and float(gen_seconds) > 0
+        and int(gen_completion_tokens) > 0
+    ):
+        per_tok = float(gen_seconds) / float(gen_completion_tokens)
+        projected = per_tok * int(max_tok) * 1.5 + 90
+        timeout_rec = int(max(timeout_rec, min(1800, projected)))
 
     return {
         "max_tokens": int(max_tok),
@@ -510,22 +632,32 @@ def probe_context_window(
     budget_s: float = CONTEXT_PROBE_BUDGET_S,
     max_size: int = CONTEXT_PROBE_MAX_TOKENS,
     post_json: Optional[PostJsonFn] = None,
+    on_progress: Optional[ProgressFn] = None,
+    cancel_event: Any = None,
 ) -> dict[str, Any]:
-    """Empirically find the largest prompt (chars/4 tokens) the endpoint accepts.
+    """Empirically find the largest prompt the endpoint accepts in this budget.
 
     Completions use ``max_tokens`` of 1–8 so only **prompt** capacity is tested.
+    When the server reports ``usage.prompt_tokens``, that count is the measured
+    size. The local chars/4 estimate only sizes the request.
+
     When ``claimed`` is set (model card or a context-size token in the model
-    id), that size is tried first, then slightly above; a fail binary-searches
-    down. Otherwise the ladder starts at the 256k-class rung (then larger
-    rungs, or downward on over-context) so a ~45s budget can reach a large
-    window. Binary search closes the gap between the last accept and the
-    first over-context reject.
+    id), that size is tried first, then slightly above. An over-context reject
+    binary-searches down. A timeout walks down to the largest rung that finishes.
+
+    With no claim, the ladder starts at 4k and walks up. A rung that times out
+    stops the climb. After an accept slower than
+    ``CONTEXT_PROBE_SLOW_SECONDS``, the next rung above
+    ``CONTEXT_PROBE_LOCAL_CAP`` is not sent. A fast server still climbs through
+    the 256k-class rungs. Binary search closes a hard over-context gap.
     """
     post = post_json or _post_json
     t0 = time.perf_counter()
     last_ok: Optional[int] = None
     first_fail: Optional[int] = None
     attempts: list[dict[str, Any]] = []
+    scales: list[float] = []
+    time_bounded = False
     cap = max(CONTEXT_PROBE_MIN_TOKENS, min(int(max_size), CONTEXT_PROBE_MAX_TOKENS))
     budget = max(3.0, float(budget_s))
 
@@ -534,6 +666,7 @@ def probe_context_window(
 
     def try_size(n: int) -> str:
         nonlocal last_ok, first_fail
+        _check_cancel(cancel_event)
         n = max(CONTEXT_PROBE_MIN_TOKENS, min(int(n), cap))
         if remaining() < 2.0:
             return "timeout"
@@ -551,23 +684,43 @@ def probe_context_window(
             timeout=per_req,
         )
         outcome = "error"
+        server_prompt: Optional[int] = None
         if _is_chat_ok(status, data):
             outcome = "ok"
-            last_ok = actual if last_ok is None else max(last_ok, actual)
+            server_prompt, _completion = _usage_counts(data)
+            recorded = actual
+            if isinstance(server_prompt, int) and server_prompt >= 128 and actual > 0:
+                recorded = server_prompt
+                scales.append(server_prompt / actual)
+            last_ok = recorded if last_ok is None else max(last_ok, recorded)
         elif _is_over_context(status, data):
             outcome = "over"
             first_fail = actual if first_fail is None else min(first_fail, actual)
-        attempts.append(
+        elif _is_slow(status, data, elapsed, per_req):
+            outcome = "slow"
+        attempt = {
+            "tokens": actual,
+            "outcome": outcome,
+            "status": status,
+            "seconds": round(elapsed, 3),
+        }
+        if server_prompt is not None:
+            attempt["server_prompt"] = server_prompt
+        attempts.append(attempt)
+        _emit(
+            on_progress,
             {
+                "id": "context_attempt",
+                "detail": f"{actual} tokens → {outcome} ({elapsed:.1f}s)",
                 "tokens": actual,
                 "outcome": outcome,
-                "status": status,
                 "seconds": round(elapsed, 3),
-            }
+            },
         )
         return outcome
 
     def binary_between(lo: int, hi: int) -> None:
+        nonlocal time_bounded
         lo = max(CONTEXT_PROBE_MIN_TOKENS, int(lo))
         hi = max(lo + 1, int(hi))
         while hi - lo > 2048 and remaining() > 3.0:
@@ -578,7 +731,16 @@ def probe_context_window(
             elif result == "over":
                 hi = mid
             else:
+                if result == "slow":
+                    time_bounded = True
                 break
+
+    def steps_under(limit: int) -> list[int]:
+        return [
+            s
+            for s in CONTEXT_PROBE_STEPS
+            if CONTEXT_PROBE_MIN_TOKENS <= s <= cap and s < limit
+        ]
 
     claimed_n: Optional[int] = None
     if claimed is not None:
@@ -596,7 +758,9 @@ def probe_context_window(
             above = min(cap, max(int(target * 1.1), target + 4096))
             if above > target and remaining() > 3.0:
                 up = try_size(above)
-                if up == "over" and last_ok is not None and first_fail is not None:
+                if up == "slow":
+                    time_bounded = True
+                elif up == "over" and last_ok is not None and first_fail is not None:
                     binary_between(last_ok, first_fail)
         elif result == "over":
             lo = CONTEXT_PROBE_MIN_TOKENS
@@ -604,48 +768,67 @@ def probe_context_window(
                 low_try = try_size(lo)
                 if low_try == "ok" and first_fail is not None:
                     binary_between(last_ok or lo, first_fail)
-        # error / timeout: do not treat as a measured window
+        elif result == "slow":
+            time_bounded = True
+            for step in reversed(steps_under(target)):
+                if remaining() < 3.0:
+                    break
+                sub = try_size(step)
+                if sub == "ok":
+                    break
+                if sub == "over":
+                    break
+                if sub == "slow":
+                    continue
+                break
+        # other errors are not a measured window
     else:
         steps = [s for s in CONTEXT_PROBE_STEPS if CONTEXT_PROBE_MIN_TOKENS <= s <= cap]
         if not steps or steps[-1] != cap:
             steps.append(cap)
-        # 256k-class first (or the cap, when the cap is smaller) so the
-        # budget is not consumed by 1k–8k accepts on the way up.
-        start_at = len(steps) - 1
-        for i, step in enumerate(steps):
-            if step >= CONTEXT_PROBE_LARGE_START:
-                start_at = i
+        prev_seconds = 0.0
+        for step in steps:
+            if remaining() < 3.0:
                 break
-        result = try_size(steps[start_at])
-        if result == "ok":
-            for step in steps[start_at + 1 :]:
-                if remaining() < 3.0:
-                    break
-                if try_size(step) != "ok":
-                    break
-        elif result == "over":
-            for step in reversed(steps[:start_at]):
-                if remaining() < 3.0:
-                    break
-                if try_size(step) == "ok":
-                    break
-            if last_ok is None and remaining() > 3.0:
-                try_size(CONTEXT_PROBE_MIN_TOKENS)
-        else:
-            # Timeout or a transport error is not a measured ceiling.
-            for step in steps[:start_at]:
-                if remaining() < 3.0:
-                    break
-                if try_size(step) != "ok":
-                    break
-        if last_ok is not None and first_fail is not None and first_fail > last_ok:
-            binary_between(last_ok, first_fail)
+            if prev_seconds > CONTEXT_PROBE_SLOW_SECONDS and step > CONTEXT_PROBE_LOCAL_CAP:
+                time_bounded = True
+                _emit(
+                    on_progress,
+                    {
+                        "id": "context_stop",
+                        "detail": (
+                            f"stopped before {step} tokens; the previous accept "
+                            f"took {prev_seconds:.1f}s"
+                        ),
+                    },
+                )
+                break
+            result = try_size(step)
+            if attempts:
+                prev_seconds = float(attempts[-1].get("seconds") or 0.0)
+            if result == "ok":
+                continue
+            if result == "over":
+                if last_ok is not None and first_fail is not None and first_fail > last_ok:
+                    binary_between(last_ok, first_fail)
+                elif last_ok is None and remaining() > 3.0:
+                    if try_size(CONTEXT_PROBE_MIN_TOKENS) == "ok" and first_fail is not None:
+                        binary_between(last_ok or CONTEXT_PROBE_MIN_TOKENS, first_fail)
+                break
+            if result == "slow":
+                time_bounded = True
+                break
+            break
 
     elapsed = time.perf_counter() - t0
     measured = last_ok
     ok = last_ok is not None
+    token_scale = (sum(scales) / len(scales)) if scales else None
     if ok:
-        detail = f"last_ok={last_ok} first_fail={first_fail} attempts={len(attempts)}"
+        detail = (
+            f"last_ok={last_ok} first_fail={first_fail} attempts={len(attempts)}"
+            + (" time_bounded" if time_bounded else "")
+        )
     else:
         detail = f"no successful prompt-capacity probe ({len(attempts)} attempt(s))"
     return {
@@ -657,6 +840,8 @@ def probe_context_window(
         "attempts": attempts,
         "detail": detail,
         "claimed": claimed_n,
+        "time_bounded": time_bounded,
+        "token_scale": token_scale,
     }
 
 
@@ -666,14 +851,20 @@ def _recommend_context_tokens(
     claimed: Optional[int],
     heuristic: int,
     ceiling: bool = True,
+    time_bounded: bool = False,
 ) -> tuple[int, Optional[int], str]:
     """Return (recommended, measured, source).
 
     ``source`` is ``empirical``, ``model_card``, or ``heuristic``.
     A partial accept with no over-context ceiling does not override a
     larger model-card or name-heuristic window (the ladder ran out of
-    budget before the real limit).
+    budget before the real limit). A time-bounded accept does: the next
+    size did not finish, so the larger name is not usable here.
     """
+    if last_ok is not None and time_bounded:
+        measured = int(last_ok)
+        rec = max(CONTEXT_PROBE_MIN_TOKENS, int(measured * 0.9))
+        return rec, measured, "empirical"
     if last_ok is not None:
         measured = int(last_ok)
         larger_prior = max(int(claimed or 0), int(heuristic or 0))
@@ -801,7 +992,354 @@ def verify_model_pair(
         return {"ok": False, "detail": "response was not JSON"}
     if isinstance(data, dict) and data.get("error"):
         return {"ok": False, "detail": str(data.get("error"))[:240]}
+    msg = _choice_message(data)
+    if message_reasoning_text(msg) and not message_content_text(msg):
+        return {
+            "ok": True,
+            "detail": (
+                f"HTTP 200 {mode}; thinking used the token budget and no answer came back. "
+                "Auto-tune will raise max output."
+            ),
+        }
     return {"ok": True, "detail": f"HTTP 200 {mode}"}
+
+
+def _probe_concurrency(
+    post: PostJsonFn,
+    client: Any,
+    chat_url: str,
+    model: str,
+) -> dict[str, Any]:
+    """Two short requests at once, against one request alone.
+
+    A result under 50ms on both sides is too fast to trust (unit-test fakes).
+    Parallel means the pair finished in under 1.7× the single request.
+    """
+    payload = _chat_payload(
+        model,
+        messages=[{"role": "user", "content": "Reply with ok. concurrency-probe"}],
+        max_tokens=8,
+    )
+    status, _data, one = post(client, chat_url, payload, timeout=20)
+    if status != 200:
+        return {
+            "measured": False,
+            "parallel": None,
+            "one_seconds": round(one, 3),
+            "two_seconds": None,
+            "detail": f"baseline HTTP {status}",
+        }
+    t0 = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(post, client, chat_url, payload, 20) for _ in range(2)]
+        rows = [fut.result() for fut in futures]
+    wall = time.perf_counter() - t0
+    ok = all(row[0] == 200 for row in rows)
+    if not ok or (one < 0.05 and wall < 0.05):
+        return {
+            "measured": False,
+            "parallel": None,
+            "one_seconds": round(one, 3),
+            "two_seconds": round(wall, 3),
+            "detail": "too fast to measure" if ok else "a parallel request failed",
+        }
+    parallel = wall < (one * 1.7)
+    how = "overlapped" if parallel else "ran one after the other"
+    return {
+        "measured": True,
+        "parallel": parallel,
+        "one_seconds": round(one, 3),
+        "two_seconds": round(wall, 3),
+        "detail": f"one={one:.2f}s two={wall:.2f}s ({how})",
+    }
+
+
+def _first_tool_call(data: Any) -> Optional[dict[str, Any]]:
+    msg = _choice_message(data)
+    calls = msg.get("tool_calls")
+    if isinstance(calls, list):
+        for call in calls:
+            if isinstance(call, dict):
+                return call
+    function_call = msg.get("function_call")
+    if isinstance(function_call, dict) and function_call.get("name"):
+        return {"id": "probe", "type": "function", "function": function_call}
+    return None
+
+
+def _probe_tool_loop(
+    post: PostJsonFn,
+    client: Any,
+    chat_url: str,
+    model: str,
+    first: dict[str, Any] | str,
+) -> dict[str, Any]:
+    """Second turn: feed the tool result back and ask for a short answer.
+
+    One toy tool call is not a hunt loop. This checks the model can read a
+    tool result and answer. A server that only echoes the first call still
+    counts as a failed loop, not a failed probe.
+    """
+    call = _first_tool_call(first)
+    if call is None:
+        return {"ok": False, "detail": "no tool call to continue", "seconds": 0.0}
+    call_id = str(call.get("id") or "probe")
+    function = call.get("function") if isinstance(call.get("function"), dict) else {}
+    status, data, elapsed = post(
+        client,
+        chat_url,
+        _chat_payload(
+            model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Call the ping tool now with message pong.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [call],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": "pong",
+                },
+                {
+                    "role": "user",
+                    "content": "The tool returned. Reply with the single word pong.",
+                },
+            ],
+            max_tokens=256,
+        ),
+        timeout=30,
+    )
+    msg = _choice_message(data)
+    content = message_content_text(msg)
+    ok = status == 200 and bool(content)
+    name = function.get("name") or "tool"
+    detail = f"HTTP {status} after {name}"
+    if ok:
+        detail = f"continued after {name}"
+    elif status == 200:
+        detail = f"HTTP 200 but no answer after {name}"
+    return {"ok": ok, "detail": detail, "seconds": round(elapsed, 3)}
+
+
+def build_setting_recommendations(
+    *,
+    host_id: str = "",
+    model_id: str = "",
+    recommended: dict[str, Any],
+    context_source: str,
+    time_bounded: bool,
+    measured_context: Optional[int],
+    token_scale: Optional[float],
+    reasoning_heavy: bool,
+    reasoning_field: str,
+    tool_ok: bool,
+    tool_loop_ok: Optional[bool],
+    gen_seconds: Optional[float],
+    gen_completion_tokens: Optional[int],
+    concurrency: Optional[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """One row per knob the operator can accept on its own."""
+    rows: list[dict[str, Any]] = []
+
+    def add(
+        key: str,
+        scope: str,
+        confidence: str,
+        reason: str,
+        measurements: dict[str, Any],
+    ) -> None:
+        if recommended.get(key) is None:
+            return
+        row: dict[str, Any] = {
+            "key": key,
+            "value": recommended.get(key),
+            "scope": scope,
+            "confidence": confidence,
+            "reason": reason,
+            "measurements": measurements,
+        }
+        if scope == "pair":
+            row["host_id"] = host_id
+            row["model_id"] = model_id
+        rows.append(row)
+
+    if context_source == "empirical" and not time_bounded:
+        ctx_confidence = "high"
+        ctx_reason = (
+            f"Largest prompt the server accepted"
+            + (f" ({measured_context} tokens)" if measured_context else "")
+            + ". The next size was rejected as over context. "
+            "The recommendation keeps 90% of that accept."
+        )
+    elif context_source == "empirical" and time_bounded:
+        ctx_confidence = "medium"
+        ctx_reason = (
+            "Largest prompt that finished inside the probe budget"
+            + (f" ({measured_context} tokens)" if measured_context else "")
+            + ". The next size did not finish, so this is a practical window, "
+            "not a hard maximum. The recommendation keeps 90% of that accept."
+        )
+    elif context_source == "model_card":
+        ctx_confidence = "medium"
+        ctx_reason = "Taken from the model card. The prompt probe did not confirm it."
+    else:
+        ctx_confidence = "low"
+        ctx_reason = "No measurement and no model card. This is the name heuristic or the current seed."
+    if token_scale and token_scale > 1.15:
+        ctx_reason += (
+            f" The server's prompt token count was about {token_scale:.2f}× the local estimate, "
+            "and the measured size uses the server count."
+        )
+    add(
+        "context_tokens",
+        "pair",
+        ctx_confidence,
+        ctx_reason,
+        {
+            "measured_tokens": measured_context,
+            "source": context_source,
+            "time_bounded": time_bounded,
+            "token_scale": token_scale,
+        },
+    )
+
+    if reasoning_heavy:
+        tok_confidence = "medium" if not gen_completion_tokens else "high"
+        field = reasoning_field or "reasoning"
+        tok_reason = (
+            f"The model writes thinking in `{field}` before the answer. "
+            "A short max output is spent on thinking and the hunt sees an empty reply. "
+            f"Max output is {recommended.get('max_tokens')} so a turn can finish thinking and still answer."
+        )
+    else:
+        tok_confidence = "medium"
+        tok_reason = (
+            f"Max output {recommended.get('max_tokens')} is a share of the context window, "
+            "capped so one completion cannot consume the whole window."
+        )
+    add(
+        "max_tokens",
+        "pair",
+        tok_confidence,
+        tok_reason,
+        {
+            "reasoning_heavy": reasoning_heavy,
+            "gen_seconds": gen_seconds,
+            "gen_completion_tokens": gen_completion_tokens,
+        },
+    )
+
+    conc = concurrency or {}
+    if conc.get("measured") and conc.get("parallel") is False:
+        workers_confidence = "high"
+        workers_reason = (
+            "Two short requests ran one after the other. "
+            "This server handles a single completion at a time, so concurrent agents stay at 1."
+        )
+    elif conc.get("measured") and conc.get("parallel") is True:
+        workers_confidence = "high"
+        workers_reason = (
+            "Two short requests overlapped, so two agents can run."
+            if not reasoning_heavy
+            else "Two short requests overlapped, but a reasoning model holds the GPU for a long turn, so concurrent agents stay at 1."
+        )
+    elif int(recommended.get("max_concurrent_agents") or 1) >= 2:
+        workers_confidence = "low"
+        workers_reason = (
+            "Not measured. Latency on the tiny probes was low, so the guess is 2. "
+            "Two concurrent prefills can OOM a local GPU."
+        )
+    else:
+        workers_confidence = "low"
+        workers_reason = "Not measured. Left at 1, which is the safe default for a local GPU."
+    add(
+        "max_concurrent_agents",
+        "pair",
+        workers_confidence,
+        workers_reason,
+        {
+            "one_seconds": conc.get("one_seconds"),
+            "two_seconds": conc.get("two_seconds"),
+            "parallel": conc.get("parallel"),
+        },
+    )
+
+    if tool_loop_ok:
+        rounds_confidence = "medium"
+        rounds_reason = (
+            f"The model called a tool and then answered from the tool result. "
+            f"Max tool rounds is {recommended.get('max_tool_rounds')}."
+        )
+    elif tool_ok:
+        rounds_confidence = "low"
+        rounds_reason = (
+            "The model emitted one tool call. A follow-up turn was not confirmed. "
+            f"Max tool rounds is {recommended.get('max_tool_rounds')}."
+        )
+    else:
+        rounds_confidence = "low"
+        rounds_reason = (
+            "The model did not emit a tool call. Extra rounds leave room for a later salvage. "
+            "Recon can still end with no submit."
+        )
+    add("max_tool_rounds", "global", rounds_confidence, rounds_reason, {"tool_ok": tool_ok, "tool_loop_ok": tool_loop_ok})
+
+    if gen_seconds and gen_completion_tokens:
+        timeout_confidence = "medium"
+        rate = float(gen_completion_tokens) / float(gen_seconds) if gen_seconds else 0
+        per_tok = float(gen_seconds) / float(gen_completion_tokens)
+        max_tok = int(recommended.get("max_tokens") or 0)
+        projected = int(min(1800, per_tok * max_tok * 1.5 + 90)) if max_tok else 0
+        chosen = int(recommended.get("timeout_seconds") or 0)
+        if reasoning_heavy and chosen > projected + 30:
+            timeout_reason = (
+                f"A {gen_completion_tokens}-token completion took {gen_seconds:.1f}s "
+                f"({rate:.1f} tok/s). That sample would only need about {projected}s. "
+                f"The timeout stays at {chosen}s because this model thinks before it answers, "
+                "and a short sample does not show a full thinking turn."
+            )
+        else:
+            timeout_reason = (
+                f"A {gen_completion_tokens}-token completion took {gen_seconds:.1f}s "
+                f"({rate:.1f} tok/s). The timeout covers the recommended max output, "
+                "with room for prefill, and is capped at 1800s."
+            )
+    elif reasoning_heavy:
+        timeout_confidence = "medium"
+        timeout_reason = (
+            "No finished generation sample. A reasoning model needs a long timeout; "
+            f"{recommended.get('timeout_seconds')}s is the floor for that case."
+        )
+    else:
+        timeout_confidence = "low"
+        timeout_reason = (
+            "Derived from the tiny probe latencies, not from a full completion. "
+            "Raise it if hunts die on a read timeout."
+        )
+    add(
+        "timeout_seconds",
+        "global",
+        timeout_confidence,
+        timeout_reason,
+        {"gen_seconds": gen_seconds, "gen_completion_tokens": gen_completion_tokens},
+    )
+
+    add(
+        "max_context_fraction",
+        "global",
+        "low",
+        (
+            f"Fraction {recommended.get('max_context_fraction')} of the context window "
+            "is packed into one prompt. This stays global and is not written onto the model row."
+        ),
+        {},
+    )
+    return rows
 
 
 def optimize_ui_settings(
@@ -814,6 +1352,8 @@ def optimize_ui_settings(
     timeout_seconds: float = 90.0,
     test_context: bool = True,
     strict_model: bool = False,
+    on_progress: Optional[ProgressFn] = None,
+    cancel_event: Any = None,
 ) -> dict[str, Any]:
     """Probe endpoint and return recommendations.
 
@@ -866,9 +1406,22 @@ def optimize_ui_settings(
     tool_ok = False
     latencies: list[float] = []
     reasoning_heavy = False
+    reasoning_field = ""
     measured_context_tokens: Optional[int] = None
     context_source = "heuristic"
+    time_bounded = False
+    token_scale: Optional[float] = None
+    gen_seconds: Optional[float] = None
+    gen_completion_tokens: Optional[int] = None
+    tool_loop_ok: Optional[bool] = None
+    concurrency: dict[str, Any] = {}
     optimize_t0 = time.perf_counter()
+
+    def progress(step: str, detail: str, **extra: Any) -> None:
+        _check_cancel(cancel_event)
+        event: dict[str, Any] = {"id": step, "detail": detail}
+        event.update(extra)
+        _emit(on_progress, event)
 
     probe_headers: dict[str, str] = {}
     if key:
@@ -876,6 +1429,7 @@ def optimize_ui_settings(
 
     with httpx.Client(timeout=timeout_seconds, headers=probe_headers) as client:
         # ---- 1. /v1/models ----
+        progress("models", f"Listing models at {base}")
         t0 = time.perf_counter()
         try:
             r = client.get(f"{base}/models")
@@ -985,16 +1539,13 @@ def optimize_ui_settings(
             detail = f"model={cand!r} HTTP {status}"
             if ok:
                 picked = cand
-                if isinstance(data, dict):
-                    # Detect reasoning-only empty content
-                    choices = data.get("choices") or []
-                    if choices and isinstance(choices[0], dict):
-                        msg = choices[0].get("message") or {}
-                        if isinstance(msg, dict):
-                            c = msg.get("content")
-                            rc = msg.get("reasoning_content")
-                            if (not c or not str(c).strip()) and isinstance(rc, str) and rc.strip():
-                                reasoning_heavy = True
+                msg = _choice_message(data)
+                if message_reasoning_text(msg) and not message_content_text(msg):
+                    reasoning_heavy = True
+                    if isinstance(msg.get("reasoning"), str) and msg.get("reasoning", "").strip():
+                        reasoning_field = "reasoning"
+                    else:
+                        reasoning_field = "reasoning_content"
                 tests.append(
                     {
                         "id": "model_resolve",
@@ -1077,6 +1628,7 @@ def optimize_ui_settings(
                 "input": "Say ok",
                 "max_output_tokens": 16,
             },
+            timeout=8,
         )
         latencies.append(elapsed)
         mode_scores["responses"] = status == 200 and isinstance(data, dict)
@@ -1097,6 +1649,7 @@ def optimize_ui_settings(
                 "max_tokens": 16,
                 "messages": [{"role": "user", "content": "Say ok"}],
             },
+            timeout=8,
         )
         latencies.append(elapsed)
         mode_scores["messages"] = status == 200 and isinstance(data, dict)
@@ -1140,6 +1693,7 @@ def optimize_ui_settings(
         latencies.append(elapsed)
         tool_ok = status == 200 and isinstance(data, dict) and _message_has_tool_call(data)
         content_ok = status == 200 and isinstance(data, dict) and _message_content_nonempty(data)
+        tool_body: Any = data if tool_ok else None
         if status == 200 and isinstance(data, dict) and not tool_ok:
             # One retry with forced tool_choice if server supports it
             status2, data2, elapsed2 = _post_json(
@@ -1162,6 +1716,8 @@ def optimize_ui_settings(
             tool_ok = status2 == 200 and isinstance(data2, dict) and _message_has_tool_call(
                 data2
             )
+            if tool_ok:
+                tool_body = data2
             tests.append(
                 {
                     "id": "tool_call_forced",
@@ -1189,8 +1745,83 @@ def optimize_ui_settings(
                 "`no_submit` / weak tool use. Prefer a tool-capable model or "
                 "raise max_tool_rounds and rely on free-text salvage."
             )
+        elif tool_body is not None:
+            progress("tool_loop", "Sending the tool result back for a second turn")
+            loop = _probe_tool_loop(post=_post_json, client=client, chat_url=chat_url, model=resolved_model, first=tool_body)
+            tool_loop_ok = bool(loop.get("ok"))
+            tests.append(
+                {
+                    "id": "tool_loop",
+                    "ok": tool_loop_ok,
+                    "detail": loop.get("detail") or "",
+                    "seconds": loop.get("seconds") or 0.0,
+                }
+            )
+            if not tool_loop_ok:
+                warnings.append(
+                    "The model emitted a tool call but did not answer after the tool result."
+                )
+
+        # A finished completion, not the 16–32 token ping. Reasoning models
+        # spend a short budget on thinking and never answer.
+        progress("generation", "Measuring a finished completion")
+        sample_max = 1024 if reasoning_heavy else 256
+        status, gen_data, gen_elapsed = _post_json(
+            client,
+            chat_url,
+            _chat_payload(
+                resolved_model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "Reply with exactly the single word ok",
+                    }
+                ],
+                max_tokens=sample_max,
+            ),
+            timeout=45,
+        )
+        latencies.append(gen_elapsed)
+        gen_msg = _choice_message(gen_data)
+        gen_content = message_content_text(gen_msg)
+        gen_reason = message_reasoning_text(gen_msg)
+        _gen_prompt, gen_completion_tokens = _usage_counts(gen_data)
+        if gen_reason and not gen_content:
+            reasoning_heavy = True
+            if isinstance(gen_msg.get("reasoning"), str) and str(gen_msg.get("reasoning")).strip():
+                reasoning_field = "reasoning"
+            elif not reasoning_field:
+                reasoning_field = "reasoning_content"
+        if status == 200 and gen_content:
+            gen_seconds = gen_elapsed
+            if not gen_completion_tokens:
+                gen_completion_tokens = max(1, len(gen_content) // 4)
+        tests.append(
+            {
+                "id": "generation",
+                "ok": status == 200 and bool(gen_content),
+                "detail": (
+                    f"answer in {gen_elapsed:.2f}s"
+                    + (f", {gen_completion_tokens} completion tokens" if gen_completion_tokens else "")
+                    + (", reasoning field held the tokens" if reasoning_heavy and not gen_content else "")
+                ),
+                "seconds": round(gen_elapsed, 3),
+            }
+        )
+
+        progress("concurrency", "Checking whether two requests run together")
+        concurrency = _probe_concurrency(_post_json, client, chat_url, resolved_model)
+        tests.append(
+            {
+                "id": "concurrency",
+                "ok": True,
+                "detail": concurrency.get("detail") or "",
+                "seconds": concurrency.get("two_seconds") or concurrency.get("one_seconds") or 0.0,
+            }
+        )
 
         # ---- 5. Context window (card + optional empirical probe) ----
+        progress("context", "Walking the context window upward")
         named_ctx = _named_context_tokens(resolved_model)
         heuristic_ctx = (
             named_ctx
@@ -1213,8 +1844,12 @@ def optimize_ui_settings(
                 claimed=probe_hint,
                 budget_s=budget,
                 max_size=CONTEXT_PROBE_MAX_TOKENS,
+                on_progress=on_progress,
+                cancel_event=cancel_event,
             )
             last_ok_ctx = probe.get("last_ok")
+            time_bounded = bool(probe.get("time_bounded"))
+            token_scale = probe.get("token_scale")
             aimed = probe_hint if probe_hint is not None else CONTEXT_PROBE_MAX_TOKENS
             aimed = min(int(CONTEXT_PROBE_MAX_TOKENS), int(aimed))
             reached_aim = last_ok_ctx is not None and int(last_ok_ctx) >= int(aimed * 0.9)
@@ -1261,6 +1896,7 @@ def optimize_ui_settings(
             claimed=context_from_card,
             heuristic=heuristic_ctx,
             ceiling=probe_ceiling,
+            time_bounded=time_bounded,
         )
         for row in tests:
             if row.get("id") == "context_window":
@@ -1287,11 +1923,19 @@ def optimize_ui_settings(
             tool_ok=tool_ok,
             avg_latency_s=avg,
             p95_latency_s=p95,
+            gen_seconds=gen_seconds,
+            gen_completion_tokens=gen_completion_tokens,
+            concurrent_parallel=concurrency.get("parallel") if concurrency.get("measured") else None,
         )
         if reasoning_heavy:
             warnings.append(
-                "Model often returns reasoning_content with empty content; "
-                "raised max_tokens for headroom."
+                "Model returns thinking in a reasoning field with empty content; "
+                "raised max_tokens so a turn can finish thinking and still answer."
+            )
+        if token_scale and float(token_scale) > 1.15:
+            warnings.append(
+                "The server counted more prompt tokens than the local estimate. "
+                "The measured context window uses the server count."
             )
         if runtime["max_concurrent_agents"] >= 2:
             warnings.append(
@@ -1384,6 +2028,21 @@ def optimize_ui_settings(
         "base_url": base,
         "measured_context_tokens": measured_context_tokens,
         "context_source": context_source,
+        "time_bounded": time_bounded,
+        "recommendations": build_setting_recommendations(
+            recommended=recommended,
+            context_source=context_source,
+            time_bounded=time_bounded,
+            measured_context=measured_context_tokens,
+            token_scale=float(token_scale) if token_scale else None,
+            reasoning_heavy=reasoning_heavy,
+            reasoning_field=reasoning_field,
+            tool_ok=tool_ok,
+            tool_loop_ok=tool_loop_ok,
+            gen_seconds=gen_seconds,
+            gen_completion_tokens=gen_completion_tokens,
+            concurrency=concurrency,
+        ),
     }
 
 
@@ -1393,6 +2052,8 @@ def optimize_selected_pairs(
     apply: bool = False,
     timeout_seconds: float = 90.0,
     test_context: bool = True,
+    on_progress: Optional[ProgressFn] = None,
+    cancel_event: Any = None,
 ) -> dict[str, Any]:
     """Probe each selected ``(host_id, model_id)`` on that host.
 
@@ -1436,18 +2097,46 @@ def optimize_selected_pairs(
                 }
             )
             continue
-        probed = optimize_ui_settings(
-            host=str(host.get("base_url") or ""),
-            port=None,
-            model=mid,
-            api_key=str(host.get("api_key") or ""),
-            apply=False,
-            timeout_seconds=timeout_seconds,
-            test_context=test_context,
-            strict_model=True,
+        _check_cancel(cancel_event)
+        _emit(
+            on_progress,
+            {"id": "pair", "detail": f"{mid} on {hid}", "host_id": hid, "model_id": mid},
         )
+        try:
+            probed = optimize_ui_settings(
+                host=str(host.get("base_url") or ""),
+                port=None,
+                model=mid,
+                api_key=str(host.get("api_key") or ""),
+                apply=False,
+                timeout_seconds=timeout_seconds,
+                test_context=test_context,
+                strict_model=True,
+                on_progress=on_progress,
+                cancel_event=cancel_event,
+            )
+        except ProbeCancelled:
+            results.append(
+                {
+                    "host_id": hid,
+                    "model_id": mid,
+                    "ok": False,
+                    "error": "cancelled",
+                    "recommendations": [],
+                }
+            )
+            break
         rec = probed.get("recommended") if isinstance(probed.get("recommended"), dict) else {}
         ok = bool(probed.get("ok"))
+        recommendations = []
+        for item in probed.get("recommendations") or []:
+            if not isinstance(item, dict):
+                continue
+            stamped = dict(item)
+            if stamped.get("scope") == "pair":
+                stamped["host_id"] = hid
+                stamped["model_id"] = mid
+            recommendations.append(stamped)
         results.append(
             {
                 "host_id": hid,
@@ -1456,14 +2145,18 @@ def optimize_selected_pairs(
                 "error": None if ok else (probed.get("error") or "probe failed"),
                 "context_tokens": rec.get("context_tokens") if ok else None,
                 "max_tokens": rec.get("max_tokens") if ok else None,
+                "max_concurrent_agents": rec.get("max_concurrent_agents") if ok else None,
                 "measured_context_tokens": probed.get("measured_context_tokens"),
                 "context_source": probed.get("context_source"),
                 "summary": probed.get("summary") or "",
                 "warnings": list(probed.get("warnings") or []),
                 "tests": list(probed.get("tests") or []),
+                "recommendations": recommendations,
                 "base_url": str(host.get("base_url") or ""),
             }
         )
+        if not ok and probed.get("error") == "cancelled":
+            break
 
     applied = False
     if apply:
@@ -1499,4 +2192,106 @@ def optimize_selected_pairs(
         "applied": applied,
         "current": current,
         "warnings": [w for row in results for w in (row.get("warnings") or [])],
+        "recommendations": [
+            item
+            for row in results
+            for item in (row.get("recommendations") or [])
+            if isinstance(item, dict)
+        ],
     }
+
+
+_JOBS_LOCK = threading.Lock()
+_JOBS: dict[str, dict[str, Any]] = {}
+_JOB_KEEP = 40
+
+
+def start_optimize_job(
+    *,
+    targets: list[dict[str, Any]],
+    test_context: bool = True,
+    timeout_seconds: float = 180.0,
+) -> str:
+    """Run pair auto-tune on a daemon thread. Poll with ``get_optimize_job``."""
+    job_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+    job: dict[str, Any] = {
+        "id": job_id,
+        "status": "running",
+        "events": [],
+        "result": None,
+        "error": None,
+        "_cancel": cancel_event,
+    }
+    with _JOBS_LOCK:
+        _JOBS[job_id] = job
+        if len(_JOBS) > _JOB_KEEP:
+            for old in list(_JOBS):
+                if len(_JOBS) <= _JOB_KEEP:
+                    break
+                if old != job_id and _JOBS[old].get("status") != "running":
+                    _JOBS.pop(old, None)
+
+    def on_progress(event: dict[str, Any]) -> None:
+        row = dict(event)
+        row["at"] = time.time()
+        with _JOBS_LOCK:
+            events = job["events"]
+            events.append(row)
+            if len(events) > 200:
+                del events[: len(events) - 200]
+
+    def run() -> None:
+        try:
+            result = optimize_selected_pairs(
+                targets=targets,
+                apply=False,
+                timeout_seconds=timeout_seconds,
+                test_context=test_context,
+                on_progress=on_progress,
+                cancel_event=cancel_event,
+            )
+            status = "cancelled" if result.get("error") == "cancelled" else "done"
+            with _JOBS_LOCK:
+                if job["status"] != "cancelling":
+                    job["status"] = status
+                else:
+                    job["status"] = "cancelled"
+                job["result"] = result
+        except ProbeCancelled:
+            with _JOBS_LOCK:
+                job["status"] = "cancelled"
+                job["error"] = "cancelled"
+        except Exception as exc:
+            with _JOBS_LOCK:
+                job["status"] = "error"
+                job["error"] = f"{type(exc).__name__}: {exc}"
+
+    threading.Thread(target=run, name=f"vf-autotune-{job_id[:8]}", daemon=True).start()
+    return job_id
+
+
+def get_optimize_job(job_id: str) -> Optional[dict[str, Any]]:
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            return None
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "status": job["status"],
+            "events": list(job["events"]),
+            "result": job["result"],
+            "error": job["error"],
+        }
+
+
+def cancel_optimize_job(job_id: str) -> bool:
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is None:
+            return False
+        job["_cancel"].set()
+        if job["status"] == "running":
+            job["status"] = "cancelling"
+    return True

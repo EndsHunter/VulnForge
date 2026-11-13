@@ -1216,6 +1216,17 @@ def _finalize_llm_result(
     )
 
 
+def _message_reasoning_text(msg: Any) -> Optional[str]:
+    """Thinking text from ``reasoning_content`` or ``reasoning``."""
+    if not isinstance(msg, dict):
+        return None
+    for key in ("reasoning_content", "reasoning"):
+        val = msg.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return None
+
+
 def classify_responses_api(status_code: int, body: Any, model: str) -> LLMResult:
     """Parse OpenAI Responses API body into LLMResult."""
     if status_code != 200:
@@ -1437,8 +1448,9 @@ def classify_response(status_code: int, body: Any, model: str) -> LLMResult:
     content = msg.get("content")
     if content is not None and not isinstance(content, str):
         content = str(content)
-    # Some local reasoning models put chain-of-thought in reasoning_content
-    reasoning = msg.get("reasoning_content")
+    # llama.cpp uses reasoning_content. Flint and some other local servers
+    # use reasoning. A short max_tokens is spent there and content stays empty.
+    reasoning = _message_reasoning_text(msg)
     tool_calls = normalize_tool_calls(msg.get("tool_calls"))
 
     if finish in ("length", "max_tokens"):
@@ -1453,6 +1465,7 @@ def classify_response(status_code: int, body: Any, model: str) -> LLMResult:
                 model_id=model,
                 error="finish_reason=length (empty content; raise llm.max_tokens for reasoning models)",
                 usage=usage,
+                reasoning_content=reasoning,
             )
         # partial ok if tools present; else truncated
         if not tool_calls and (not content or not str(content).strip()):

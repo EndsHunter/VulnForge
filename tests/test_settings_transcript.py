@@ -542,7 +542,7 @@ def test_context_from_model_name_large_windows():
     assert _context_from_model_name("plain-model", 32768) == 32768
 
 
-def test_probe_ladder_reaches_256k_before_small_rungs():
+def test_probe_ladder_walks_up_and_reaches_256k():
     from vulnforge.settings_probe import probe_context_window
 
     seen: list[int] = []
@@ -567,8 +567,9 @@ def test_probe_ladder_reaches_256k_before_small_rungs():
         post_json=fake_post,
     )
     assert seen, "ladder made no attempts"
-    assert seen[0] >= 262144
-    assert 1024 not in seen[:1]
+    # Walk upward. A fast server still reaches the 256k rung inside the budget.
+    assert seen[0] <= 8192
+    assert any(tokens >= 262144 for tokens in seen)
     assert result["ok"] is True
     assert result["last_ok"] is not None
     assert result["last_ok"] >= limit - 2048

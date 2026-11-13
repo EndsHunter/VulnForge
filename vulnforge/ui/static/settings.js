@@ -922,63 +922,172 @@
     }
   }
 
-  // ---------- Optimize ----------
+  // ---------- Auto-tune ----------
 
-  function applyPairRecommendations(data) {
-    for (const row of data.targets || []) {
-      if (!row || !row.ok) continue;
+  const GLOBAL_FIELDS = {
+    context_tokens: "#set-ctx",
+    max_tokens: "#set-maxtok",
+    max_concurrent_agents: "#set-workers",
+    max_context_fraction: "#set-frac",
+    max_tool_rounds: "#set-rounds",
+    timeout_seconds: "#set-timeout",
+  };
+  const FIELD_LABELS = {
+    context_tokens: "Context window",
+    max_tokens: "Max output",
+    max_concurrent_agents: "Concurrent agents",
+    max_context_fraction: "Max context fraction",
+    max_tool_rounds: "Max tool rounds",
+    timeout_seconds: "HTTP timeout (s)",
+  };
+
+  let tuneTimer = 0;
+  let tuneJobId = "";
+
+  function tunePanel() {
+    return $("#settings-optimize-panel");
+  }
+
+  function renderTuneLog(events) {
+    const log = $("#settings-optimize-log");
+    if (!log) return;
+    log.replaceChildren();
+    const rows = events && events.length ? events : [{ id: "wait", detail: "Starting the probe…" }];
+    rows.forEach((event) => {
+      const li = el("li", {
+        text: `${event.detail || event.id || "step"}`,
+        dataset: { state: event.id === "context_attempt" ? "run" : "" },
+      });
+      log.appendChild(li);
+    });
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function acceptRecommendation(rec) {
+    if (!rec || rec.value == null) return;
+    if (rec.scope === "pair" && rec.host_id && rec.model_id) {
       const tr = document.querySelector(
-        `#set-available .vfs-pair-row[data-host-id="${cssEscape(row.host_id)}"][data-model-id="${cssEscape(row.model_id)}"]`
+        `#set-available .vfs-pair-row[data-host-id="${cssEscape(rec.host_id)}"][data-model-id="${cssEscape(rec.model_id)}"]`
       );
-      if (!tr) continue;
-      const ctx = tr.querySelector("[data-field=context_tokens]");
-      const maxTok = tr.querySelector("[data-field=max_tokens]");
-      if (ctx && row.context_tokens != null) ctx.value = String(row.context_tokens);
-      if (maxTok && row.max_tokens != null) maxTok.value = String(row.max_tokens);
+      const input = tr?.querySelector(`[data-field=${rec.key}]`);
+      if (input) input.value = String(rec.value);
+    } else {
+      const node = $(GLOBAL_FIELDS[rec.key] || "");
+      if (node) node.value = String(rec.value);
     }
     updateBudgetEffective();
     updateDirty();
+    toast(`Accepted ${FIELD_LABELS[rec.key] || rec.key}`);
   }
 
-  function formatSelectedReport(data) {
-    const lines = [];
-    if (data.summary) lines.push(data.summary);
-    if (data.error && !(data.targets || []).length) lines.push("Error: " + data.error);
-    for (const row of data.targets || []) {
-      const name = `${row.host_id} · ${row.model_id}`;
-      if (!row.ok) {
-        lines.push(`${name}: ${row.error || "failed"}`);
-        continue;
-      }
-      lines.push(`${name}: context window ${row.context_tokens} (${row.context_source || "heuristic"}), max output ${row.max_tokens}`);
-      for (const w of row.warnings || []) lines.push(`  ⚠ ${w}`);
+  function renderRecommendations(data) {
+    const box = $("#settings-optimize-recs");
+    if (!box) return;
+    box.replaceChildren();
+    const recs = data?.recommendations || [];
+    if (!recs.length) {
+      const err = data?.error;
+      if (err && err !== "cancelled") box.appendChild(el("p", { class: "vfs-hint", text: err }));
+      return;
     }
-    lines.push("Review the values, then Save to keep them.");
-    return lines.join("\n");
+    recs.forEach((rec) => {
+      const who = rec.scope === "pair" && rec.model_id ? `${rec.model_id} · ` : "Global · ";
+      const label = `${who}${FIELD_LABELS[rec.key] || rec.key}`;
+      const accept = el("button", { type: "button", class: "vf-btn vfs-btn-sm", text: "Accept" });
+      accept.addEventListener("click", () => {
+        acceptRecommendation(rec);
+        accept.disabled = true;
+        accept.textContent = "Accepted";
+      });
+      box.appendChild(
+        el("article", { class: "vfs-rec" }, [
+          el("div", {}, [
+            el("div", { class: "vfs-rec-key", text: label }),
+            el("div", { class: "vf-mono vfs-rec-val", text: String(rec.value) }),
+          ]),
+          el("div", {}, [
+            el("div", { class: "vfs-rec-conf", text: rec.confidence || "low", dataset: { level: rec.confidence || "low" } }),
+            accept,
+          ]),
+          el("p", { class: "vfs-rec-why", text: rec.reason || "" }),
+        ])
+      );
+    });
+  }
+
+  function stopTunePoll() {
+    if (tuneTimer) window.clearInterval(tuneTimer);
+    tuneTimer = 0;
+    const cancel = $("#settings-optimize-cancel");
+    if (cancel) cancel.hidden = true;
+    const done = $("#settings-optimize");
+    if (done) {
+      done.disabled = false;
+      done.textContent = "Auto-tune selected";
+    }
+  }
+
+  async function pollTune() {
+    if (!tuneJobId) return;
+    try {
+      const job = await api(`/api/settings/optimize/jobs/${encodeURIComponent(tuneJobId)}`);
+      renderTuneLog(job.events || []);
+      const status = job.status;
+      if (status === "running" || status === "cancelling") return;
+      stopTunePoll();
+      renderRecommendations(job.result || { error: job.error });
+      if (status === "cancelled") toast("Auto-tune cancelled");
+      else if (status === "error" || (job.result && job.result.ok === false)) {
+        toast((job.result && job.result.error) || job.error || "Auto-tune failed", true);
+      } else toast("Auto-tune finished. Accept the values you want, then Save.");
+      tuneJobId = "";
+    } catch (e) {
+      stopTunePoll();
+      tuneJobId = "";
+      toast(e.message || String(e), true);
+    }
   }
 
   async function optimizeSettings() {
-    const report = $("#settings-optimize-report");
     const targets = selectedPairs();
     if (!targets.length) {
       toast("Select a verified model", true);
       return;
     }
-    const done = setBusyButton($("#settings-optimize"), "Optimizing…");
-    if (report) {
-      report.hidden = false;
-      report.textContent = `Probing ${targets.length} selected model${targets.length === 1 ? "" : "s"}…`;
+    const panel = tunePanel();
+    if (panel) panel.hidden = false;
+    renderTuneLog([{ id: "wait", detail: `Probing ${targets.length} selected model${targets.length === 1 ? "" : "s"}…` }]);
+    const recs = $("#settings-optimize-recs");
+    if (recs) recs.replaceChildren();
+    const btn = $("#settings-optimize");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Auto-tuning…";
     }
+    const cancel = $("#settings-optimize-cancel");
+    if (cancel) cancel.hidden = false;
     try {
-      const data = await api("/api/settings/optimize", { method: "POST", body: JSON.stringify({ targets, apply: false }) });
-      applyPairRecommendations(data);
-      if (report) report.textContent = formatSelectedReport(data);
-      toast(data.ok ? "Budgets filled. Review, then Save" : data.error || "Optimize failed", !data.ok);
+      const started = await api("/api/settings/optimize/jobs", {
+        method: "POST",
+        body: JSON.stringify({ targets, apply: false }),
+      });
+      tuneJobId = started.job_id;
+      if (tuneTimer) window.clearInterval(tuneTimer);
+      tuneTimer = window.setInterval(pollTune, 700);
+      await pollTune();
     } catch (e) {
-      if (report) report.textContent = String(e.message || e);
+      stopTunePoll();
       toast(e.message || String(e), true);
-    } finally {
-      done();
+    }
+  }
+
+  async function cancelTune() {
+    if (!tuneJobId) return;
+    const id = tuneJobId;
+    try {
+      await api(`/api/settings/optimize/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: "{}" });
+    } catch (e) {
+      toast(e.message || String(e), true);
     }
   }
 
@@ -1002,6 +1111,7 @@
     });
     $("#settings-discard")?.addEventListener("click", discardChanges);
     $("#settings-optimize")?.addEventListener("click", optimizeSettings);
+    $("#settings-optimize-cancel")?.addEventListener("click", cancelTune);
     $("#set-host-add")?.addEventListener("click", () => {
       $("#set-hosts [data-role=hosts-empty]")?.remove();
       const row = hostRow({});
