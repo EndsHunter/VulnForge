@@ -41,7 +41,7 @@ Run pages are tabs under one header (run switcher, tabs, pipeline totals, Ralph 
 | Tab (mode id) | Job |
 |------|-----|
 | **Review** (`report`) | Human gate: queue → finding (data flow, cited code) → verdict rail (mech gates, disprove judges as a weak signal, PoC, notes, **Accept / Reject**); exports. Badge counts `needs_human` only |
-| **Campaign** (`hunts`, default) | Pipeline (recon → hunt → gates → disprove → review → PoC), hunt-coverage matrix (area × skill, re-queue open cells), cell inspector, now running / up next / activity, **Plan hunts** drawer |
+| **Campaign** (`hunts`, default) | Pipeline (recon → hunt → gates → disprove → review → PoC) with an advisory yield sparkline (gated findings per token, last 20 hunts, beside the open-cell count), hunt-coverage matrix (area × skill, re-queue open cells), cell inspector, now running / up next / activity, **Plan hunts** drawer |
 | **Atlas** (`explorer`) | Architecture map in trust-zone bands with data-flow arrows (flows / links / imports), Files and Flows tabs, area or flow inspector, **Hunt this area / flow**, Code view (select lines → enqueue hunt), recon brief, History, Codemap |
 | **Evidence** | On-disk evidence packs (browse / open from Review) |
 | **Tasks** (`audit`) | Task queue / transcripts, event timeline |

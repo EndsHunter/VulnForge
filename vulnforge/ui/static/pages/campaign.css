@@ -186,3 +186,29 @@ span.cmp-cell { cursor: default; }
 }
 .cmp-drawer-panel .coverage-mode-bar { margin: 0; }
 body.cmp-drawer-open { overflow: hidden; }
+
+/* ---------- Yield curve (advisory; #211) ---------- */
+.cmp-yield {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+.cmp-yield:empty { display: none; }
+.cmp-yield-label { font-weight: 600; color: var(--text-soft); cursor: help; }
+.cmp-yield-spark { flex: none; display: block; overflow: visible; }
+.cmp-yield-base { stroke: var(--border); stroke-width: 1; }
+.cmp-yield-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.cmp-yield-end { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
+.cmp-yield-hit { fill: transparent; cursor: crosshair; }
+.cmp-yield-hit:hover { fill: var(--row-hover); }
+.cmp-yield-text { color: var(--text-soft); cursor: help; min-width: 0; overflow-wrap: anywhere; }
+.cmp-yield[data-state="unavailable"] .cmp-yield-text,
+.cmp-yield[data-state="empty"] .cmp-yield-text { color: var(--muted); }
+.cmp-yield-rate { margin-left: 4px; color: var(--text-faint); white-space: nowrap; }
+.cmp-yield-open { padding: 2px 10px; font-size: 12px; }
+@media (max-width: 720px) { .cmp-yield { margin-left: 0; width: 100%; } }

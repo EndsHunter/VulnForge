@@ -2019,7 +2019,13 @@
     bindPlannerDrawer();
   }
 
+  /** Matrix rollup of the last render (open / deep / total), for page widgets. */
+  function summary() {
+    return covCache ? matrixSummary(covCache, window.__VF_last_snap) : null;
+  }
+
   window.VulnForgeCoverage = {
+    summary,
     openPlanner,
     closePlanner,
     render: renderCoverage,

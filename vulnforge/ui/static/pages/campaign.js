@@ -12,6 +12,8 @@
 
   const ACTIVITY_LIMIT = 12;
   const LIVE_POLL_MS = 5000;
+  /** Re-read the yield curve at most this often when nothing visible changed. */
+  const YIELD_MAX_AGE_MS = 60000;
 
   let root = null;
   let activity = [];
@@ -19,6 +21,11 @@
   let livePoll = null;
   /** task id → /tasks/{id}/live payload */
   const liveInfo = new Map();
+  /** campaign/status → yield (vulnforge.yield@1); advisory, never stops Ralph. */
+  let yieldData = null;
+  let yieldFor = null;
+  let yieldAt = 0;
+  let yieldBusy = false;
 
   const H = () => window.MissionOverviewHelpers || {};
   const $ = (sel, el) => (el || document).querySelector(sel);
@@ -94,6 +101,94 @@
         else if (s.nav.mode !== "hunts") modes.setMode?.(s.nav.mode);
       });
     });
+  }
+
+  // ---------- Yield curve (advisory) ----------
+
+  const UNFINISHED = new Set(["queued", "leased", "paused", "cancelled", "running"]);
+
+  /** Changes when a task finishes or a finding moves, so the curve refetches then. */
+  function yieldFingerprint(snap) {
+    let done = 0;
+    for (const t of snap.tasks || []) {
+      const st = String(t.state || "").toLowerCase();
+      if (st && !UNFINISHED.has(st)) done += 1;
+    }
+    const f = snap.findings_summary || {};
+    return `${window.currentKey || ""}|${done}|${JSON.stringify(f)}`;
+  }
+
+  function openCellCount(snap) {
+    const sum = window.VulnForgeCoverage?.summary?.();
+    if (sum && Number.isFinite(Number(sum.open))) return { open: Number(sum.open), total: Number(sum.total) || 0 };
+    if (snap?.coverage && H().summarizeResidualMatrix) {
+      const m = H().summarizeResidualMatrix(snap.coverage, []);
+      return { open: m.open, total: m.total };
+    }
+    return null;
+  }
+
+  function renderYield(snap) {
+    const el = $("#campaign-yield", root);
+    if (!el || !H().buildYieldView) return;
+    if (yieldFor === null || !yieldData) {
+      // Not read yet for this run, or an older server without the field:
+      // say nothing rather than a wrong "no hunts".
+      el.innerHTML = "";
+      return;
+    }
+    const v = H().buildYieldView(yieldData, openCellCount(snap), { width: 120, height: 28 });
+    let spark = "";
+    if (v.state === "ok") {
+      const n = v.hits.length;
+      const slot = n > 1 ? (v.width - 8) / (n - 1) : v.width;
+      const hits = v.hits
+        .map(
+          (h) =>
+            `<rect class="cmp-yield-hit" x="${(h.x - slot / 2).toFixed(1)}" y="0" width="${slot.toFixed(1)}" height="${v.height}"><title>${esc(h.title)}</title></rect>`
+        )
+        .join("");
+      const end = v.last ? `<circle class="cmp-yield-end" cx="${v.last.x.toFixed(1)}" cy="${v.last.y.toFixed(1)}" r="4"></circle>` : "";
+      spark = `<svg class="cmp-yield-spark" viewBox="0 0 ${v.width} ${v.height}" width="${v.width}" height="${v.height}" role="img" aria-label="${esc(`Yield per window. ${v.sentence}`)}">
+        <line class="cmp-yield-base" x1="4" y1="${v.height - 4}" x2="${v.width - 4}" y2="${v.height - 4}"></line>
+        <path class="cmp-yield-line" d="${esc(v.path)}"></path>${end}${hits}
+      </svg>`;
+    }
+    const rate = v.rateText ? ` <span class="cmp-yield-rate vf-mono">${esc(v.rateText)}</span>` : "";
+    const open = v.openText
+      ? `<button type="button" class="vf-chip cmp-yield-open" title="${esc(v.openTitle)}">${esc(v.openText)}</button>`
+      : "";
+    el.dataset.state = v.state;
+    el.innerHTML = `<span class="cmp-yield-label" title="${esc(v.title)}">Yield</span>${spark}
+      <span class="cmp-yield-text" title="${esc(v.title)}">${esc(v.sentence)}${rate}</span>${open}`;
+    el.querySelector(".cmp-yield-open")?.addEventListener("click", () => {
+      window.VulnForgeCoverage?.setFilter?.("residual");
+      $("#cmp-matrix-title", root)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    });
+  }
+
+  async function loadYield(snap) {
+    const key = yieldFingerprint(snap);
+    const runKey = String(window.currentKey || "");
+    if (yieldFor && !yieldFor.startsWith(runKey + "|")) {
+      yieldData = null; // run switched
+      yieldFor = null;
+      renderYield(snap);
+    }
+    if (yieldBusy || (key === yieldFor && Date.now() - yieldAt < YIELD_MAX_AGE_MS)) return;
+    yieldBusy = true;
+    try {
+      const status = await api(`${apiBase()}/campaign/status`);
+      if (String(window.currentKey || "") !== runKey) return;
+      yieldData = status && status.yield ? status.yield : null;
+      yieldFor = key;
+      yieldAt = Date.now();
+      renderYield(window.__VF_last_snap || snap);
+    } catch {
+      /* advisory read; keep the last value */
+    } finally {
+      yieldBusy = false;
+    }
   }
 
   // ---------- Now running / Up next ----------
@@ -257,6 +352,8 @@
   function render(snap) {
     if (!root || !snap) return;
     renderPipeline(snap);
+    renderYield(snap);
+    loadYield(snap);
     renderWork(snap);
     renderActivity();
     loadActivity(snap);
