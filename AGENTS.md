@@ -7,7 +7,7 @@
 **VulnForge** runs a durable security-audit loop against a **read-only target tree**:
 
 1. **init** — snapshot inventory, create `harness.db`, enqueue `recon`
-2. **recon** (LLM) — map architecture; enqueue **hunt** tasks. When a map already exists, each recon **merges** (LLM merge with mechanical fallback) instead of blank-overwriting; Mission **History** can view/restore prior revisions. Mechanical **codemap** (`runs.codemap_json`) is structure-only (modules/entrypoints), separate from architecture.
+2. **recon** (LLM) — mechanical skeleton first (no LLM), then map agents label it with trust zones and cited relations, then a **flow-tracer** fan-out records data flows (entrypoint → sink, cited `path:line`); then enqueue **hunt** tasks. Flows steer hunts; they are never findings. When a map already exists, each recon **merges** (LLM merge with mechanical fallback) instead of blank-overwriting; Mission **History** can view/restore prior revisions. Mechanical **codemap** (`runs.codemap_json`) is structure-only (modules/entrypoints), separate from architecture.
 3. **hunt** (LLM) — one area × weakness class; candidate or `submit_none`
 4. **validate_mech** (no LLM) — mechanical gates → `needs_human` or `rejected_mech`
 5. **validate_llm** (default on) — dual adversarial disprove; both reject → `rejected_llm`, else stay `needs_human`. Never auto-confirms. Set `stages.validate_llm: false` to skip for speed/debug.

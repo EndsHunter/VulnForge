@@ -14,6 +14,7 @@ STAGES = ("recon", "hunt", "develop_poc")
 HARNESS_TOOLS = frozenset(
     {
         "submit_architecture",
+        "submit_flow",
         "submit_candidate",
         "submit_none",
         "list_hunt_profiles",

@@ -5,8 +5,9 @@ description: >-
   surfaces. Use when lockfiles, manifests, vendored trees, plugins, auto-updaters,
   CI install scripts, or dynamic loaders matter for security review. Prefer
   evidence from inventory plus list/read/grep over inventing dependency graphs
-  or dumping CVEs. Merges into components and input_surfaces; finishes with
-  submit_architecture only — never vulnerability findings.
+  or dumping CVEs. Owns the external and build zones and depends_on /
+  http_out relations with cited lines; finishes with submit_architecture
+  only — never vulnerability findings.
 ---
 
 # Recon agent: dependency-risk
@@ -36,6 +37,7 @@ Map third-party dependencies, supply-chain surfaces, and update/install paths th
 | `surface-mapper` | Runtime input channels (HTTP/CLI/queues) |
 | **dependency-risk** (this) | Deps, supply-chain, install/update, secrets/config *around* deps |
 | `auth-model` | Identity and authorization boundaries |
+| `flow-tracer` | Runs after the map: traces data from each top entrypoint to sinks (`submit_flow`) |
 
 Stay on dependency and install trust; do not re-map every HTTP route.
 
@@ -70,6 +72,7 @@ Stay on dependency and install trust; do not re-map every HTTP route.
 
 ## Method / workflow
 
+0. **Skeleton first** — Read the Mechanical skeleton in the packet. Plan which skeleton ids you will relabel, which zone each gets, and which relations you can cite.
 1. **Locate manifests/lockfiles** — Note major ecosystems and roots.
 2. **Vendored & plugins** — `third_party`, vendor dirs, plugins, themes, extension loaders.
 3. **Install/update paths** — CI, postinstall, auto-updaters, markets; path_hints.
@@ -87,11 +90,22 @@ Stay on dependency and install trust; do not re-map every HTTP route.
 | `components` | Manifest roots, loaders, updaters with path_hints |
 | `input_surfaces` | Install scripts, plugin install, remote package fetch, update endpoints |
 | `hunt_focus` | Prefer registered `supply-chain` (and related) only where justified |
-| `relations` | Optional formal edges `[{ from, to, kind, note }]` when known — omit if unsure |
+| `zones` / `components` | `external` services and `build` roots as components with `zone` |
+| `relations` | `depends_on` / `http_out` `{from, to, kind, evidence: {path, line}, confidence}`; else `confidence: "inferred"` |
 
-### Formal relations (optional)
+### Map v2: skeleton, zones, citations
 
-When inspection shows clear trust or data-flow edges between named components, emit `relations` as `{ "from": "<component>", "to": "<component>", "kind": "<kind>", "note": "<optional path/role>" }`. Use component names that match `components[].name`. Kinds may include `trust_boundary`, `calls`, `data_flow`, `depends_on`, `auth_gate`. Omit when unknown — the UI falls back to inferred edges. Architecture only: no exploit/PoC content in notes.
+The packet has a **Mechanical skeleton** (no LLM): components from the codemap, import / `db` / `http_out` relations marked `mechanical`, file entrypoints and pre-indexed sinks, and heuristic zone guesses. Start from it:
+
+- **Keep skeleton ids.** To relabel a component, submit it with the same `id` and a better `name` / `role` / `kind`. Merge, rename or split only with a path you read. `datastore` and `external-http` are synthetic placeholders; rename or replace them when you find the real store / client.
+- **Zone per component.** `zone` is one of `internet` (no session needed), `authenticated`, `internal`, `external` (third-party services), `build` (CI / install). Declare the zones you use in `zones` (`{id, kind, label, evidence: [{path, line}]}`).
+- **Cite `path` + `line`** you actually read for every entrypoint, sink, boundary and relation (`evidence: {path, line}`). The harness checks each citation: a good one becomes `cited`, a bad or missing one becomes `inferred` (drawn dashed). Mechanical relations are kept for you; do not resubmit them.
+- **Relations are expected now.** Emit the edges you saw as `{from, to, kind, evidence, confidence}` with `from` / `to` = component ids and `kind` one of `calls`, `data_flow`, `imports`, `queue`, `db`, `http_out`, `auth_gate`, `depends_on`, `trust_boundary`. If you could not cite a line, still emit it with `confidence: "inferred"` — never invent an edge you have no reason to believe.
+- Architecture only: notes describe roles, not exploits. Data flows (entrypoint → steps → sink) belong to the `flow-tracer` agent, which runs after this map.
+
+### Your slice (dependency-risk)
+
+You own the **`external`** and **`build`** zones: third-party services the code calls (payment API, object store, LLM API) as components in zone `external`, package roots / CI / install scripts as components in zone `build`, and `depends_on` / `http_out` relations to them with the line of the client call or manifest entry as `evidence`. Rename the synthetic `external-http` component when you find the real service. No CVE lists.
 
 ## Hunt focus discipline
 
@@ -114,6 +128,8 @@ When inspection shows clear trust or data-flow edges between named components, e
 
 ## Submit checklist
 
+- [ ] Skeleton ids kept when relabelling; every component has a `zone`
+- [ ] Every relation / entrypoint / boundary cites `path` + `line` you read, or the relation says `confidence: "inferred"`
 - [ ] `submit_architecture` only (no `submit_candidate` / `submit_none`)
 - [ ] Non-empty `summary` covering dependency landscape
 - [ ] Path-backed notes in `components` / `input_surfaces` for manifests and loaders

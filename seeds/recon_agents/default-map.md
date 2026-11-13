@@ -8,8 +8,9 @@ description: >-
   surfaces are clear; omitting hunt_focus is the intentional B0 hybrid
   fallback (active profile set) when recon is shy, thin, binary-only, or low
   confidence. Emits full architecture (summary, trust boundaries, components,
-  input surfaces, hunt_focus, comparables) via submit_architecture only —
-  never vulnerability findings.
+  input surfaces, hunt_focus, comparables) plus v2 zones, boundaries and
+  cited relations, starting from the mechanical skeleton, via
+  submit_architecture only — never vulnerability findings or data flows.
 ---
 
 # Recon agent: default-map
@@ -43,6 +44,7 @@ Primary architecture + hunt_focus planner. Map the application so hunt tasks are
 | `surface-mapper` | Deepens `input_surfaces` / entrypoints after the base map |
 | `dependency-risk` | Deps, supply-chain, secrets/config install surfaces |
 | `auth-model` | Roles, sessions, multi-tenant, authz boundaries |
+| `flow-tracer` | Runs after the map: traces data from each top entrypoint to sinks (`submit_flow`) |
 
 Do not duplicate specialized agents' deep dives; give them a solid base map and focused `hunt_focus` when evidence supports it.
 
@@ -106,6 +108,7 @@ Use **short class id strings** only from the **Registered hunt classes** section
 
 ## Method / workflow
 
+0. **Skeleton first** — Read the Mechanical skeleton in the packet. Plan which skeleton ids you will relabel, which zone each gets, and which relations you can cite.
 1. **Inventory + codemap** — Skim mechanical inventory (`languages`, extensions, entrypoints, counts) and the mechanical codemap modules/package roots. Trust them over guesswork; do not ignore non-web stacks (C/C++/Ada/Java/Perl/…).
 2. **Sample** — List/read/grep a few real paths that look like apps, APIs, workers, configs, or auth.
 3. **Components** — Name major modules/services with path hints from the codemap / paths you actually saw; do not invent modules outside the map without tool evidence.
@@ -125,12 +128,25 @@ Call **`submit_architecture`** with these fields (only `summary` is strictly req
 | `components` | `{ name, path_hints[] }` major modules/services |
 | `input_surfaces` | HTTP, CLI, queues, files, IPC, webhooks, etc. |
 | `hunt_focus` | `[{ area, class, path_hints }]` — registered class ids only. Must-emit a small set (~3–8) when surfaces are clear; omit only for the shy **B0 hybrid** fallback |
-| `relations` | Optional formal edges `[{ from, to, kind, note }]` when known — omit if unsure |
+| `zones` | Zones you use, `{id, kind, label, evidence}` |
+| `components` (v2) | Same skeleton `id`, plus `kind`, `zone`, optional `entrypoints` / `sinks` with `path` + `line` |
+| `boundaries` | `{from_zone, to_zone, control, path, line}` |
+| `relations` | `{from, to, kind, evidence: {path, line}, confidence}` — cite a line, else `confidence: "inferred"` |
 | *(comparables)* | Similar systems for baseline — put in `summary` (no separate tool field) |
 
-### Formal relations (optional)
+### Map v2: skeleton, zones, citations
 
-When inspection shows clear trust or data-flow edges between named components, emit `relations` as `{ "from": "<component>", "to": "<component>", "kind": "<kind>", "note": "<optional path/role>" }`. Use component names that match `components[].name`. Kinds may include `trust_boundary`, `calls`, `data_flow`, `depends_on`, `auth_gate`. Omit when unknown — the UI falls back to inferred edges. Architecture only: no exploit/PoC content in notes.
+The packet has a **Mechanical skeleton** (no LLM): components from the codemap, import / `db` / `http_out` relations marked `mechanical`, file entrypoints and pre-indexed sinks, and heuristic zone guesses. Start from it:
+
+- **Keep skeleton ids.** To relabel a component, submit it with the same `id` and a better `name` / `role` / `kind`. Merge, rename or split only with a path you read. `datastore` and `external-http` are synthetic placeholders; rename or replace them when you find the real store / client.
+- **Zone per component.** `zone` is one of `internet` (no session needed), `authenticated`, `internal`, `external` (third-party services), `build` (CI / install). Declare the zones you use in `zones` (`{id, kind, label, evidence: [{path, line}]}`).
+- **Cite `path` + `line`** you actually read for every entrypoint, sink, boundary and relation (`evidence: {path, line}`). The harness checks each citation: a good one becomes `cited`, a bad or missing one becomes `inferred` (drawn dashed). Mechanical relations are kept for you; do not resubmit them.
+- **Relations are expected now.** Emit the edges you saw as `{from, to, kind, evidence, confidence}` with `from` / `to` = component ids and `kind` one of `calls`, `data_flow`, `imports`, `queue`, `db`, `http_out`, `auth_gate`, `depends_on`, `trust_boundary`. If you could not cite a line, still emit it with `confidence: "inferred"` — never invent an edge you have no reason to believe.
+- Architecture only: notes describe roles, not exploits. Data flows (entrypoint → steps → sink) belong to the `flow-tracer` agent, which runs after this map.
+
+### Your slice (default-map)
+
+You own component **names, roles and kinds**, the **zone of each component**, the `zones` list, `boundaries` you can see (for example a login decorator between `internet` and `authenticated`), and `calls` / `data_flow` / `db` / `http_out` relations between components. You also own `hunt_focus`. Leave deep entrypoint lists to `surface-mapper`, auth controls to `auth-model` and third-party services to `dependency-risk` when those agents are active; when they are not, a short path-backed version of each is welcome.
 
 ## Hunt focus discipline
 
@@ -161,6 +177,8 @@ When inspection shows clear trust or data-flow edges between named components, e
 
 ## Submit checklist
 
+- [ ] Skeleton ids kept when relabelling; every component has a `zone`
+- [ ] Every relation / entrypoint / boundary cites `path` + `line` you read, or the relation says `confidence: "inferred"`
 - [ ] `submit_architecture` only (no `submit_candidate` / `submit_none`)
 - [ ] Non-empty `summary`
 - [ ] Path-backed components / surfaces / boundaries where claimed

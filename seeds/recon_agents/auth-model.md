@@ -5,8 +5,9 @@ description: >-
   boundaries. Use when login, OAuth/OIDC/SAML, API keys, JWT, session stores,
   middleware, admin routes, or tenant isolation matter for hunt planning.
   Prefer evidence from auth modules and path inspection over assuming “has
-  auth.” Updates trust_boundaries, components, and input_surfaces; finishes
-  with submit_architecture only — never vulnerability findings.
+  auth.” Owns v2 boundaries (control + path:line), the authenticated zone and
+  auth_gate relations, plus trust_boundaries; finishes with
+  submit_architecture only — never vulnerability findings.
 ---
 
 # Recon agent: auth-model
@@ -36,6 +37,7 @@ Map authentication, session/token handling, roles, and authorization boundaries 
 | `surface-mapper` | Full untrusted input catalog |
 | `dependency-risk` | Package/install trust (not session logic) |
 | **auth-model** (this) | Roles, sessions, multi-tenant, authn/authz boundaries |
+| `flow-tracer` | Runs after the map: traces data from each top entrypoint to sinks (`submit_flow`) |
 
 Map identity and access; do not deep-dive unrelated parsers or full dep graphs.
 
@@ -67,6 +69,7 @@ Map identity and access; do not deep-dive unrelated parsers or full dep graphs.
 
 ## Method / workflow
 
+0. **Skeleton first** — Read the Mechanical skeleton in the packet. Plan which skeleton ids you will relabel, which zone each gets, and which relations you can cite.
 1. **Locate auth modules** — Login, SSO, API keys, sessions, JWT, password reset; path_hints.
 2. **Roles & isolation** — Permission checks, admin routes, multi-tenant, service-to-service.
 3. **Trust boundaries** — Anonymous → authenticated, user → admin, tenant A → B, edge → internal.
@@ -84,11 +87,23 @@ Map identity and access; do not deep-dive unrelated parsers or full dep graphs.
 | `components` | Auth modules, middleware, session/token stores with path_hints |
 | `input_surfaces` | Login, OAuth callbacks, token/API-key endpoints, admin gates |
 | `hunt_focus` | Prefer registered `access-control` / `web-protocol-auth` where justified |
-| `relations` | Optional formal edges `[{ from, to, kind, note }]` when known — omit if unsure |
+| `boundaries` | **Primary v2 deliverable** — `{from_zone, to_zone, control, path, line}` |
+| `components[].zone` | Move session-only components to `authenticated` |
+| `relations` | `auth_gate` edges `{from, to, kind, evidence: {path, line}, confidence}`; else `confidence: "inferred"` |
 
-### Formal relations (optional)
+### Map v2: skeleton, zones, citations
 
-When inspection shows clear trust or data-flow edges between named components, emit `relations` as `{ "from": "<component>", "to": "<component>", "kind": "<kind>", "note": "<optional path/role>" }`. Use component names that match `components[].name`. Kinds may include `trust_boundary`, `calls`, `data_flow`, `depends_on`, `auth_gate`. Omit when unknown — the UI falls back to inferred edges. Architecture only: no exploit/PoC content in notes.
+The packet has a **Mechanical skeleton** (no LLM): components from the codemap, import / `db` / `http_out` relations marked `mechanical`, file entrypoints and pre-indexed sinks, and heuristic zone guesses. Start from it:
+
+- **Keep skeleton ids.** To relabel a component, submit it with the same `id` and a better `name` / `role` / `kind`. Merge, rename or split only with a path you read. `datastore` and `external-http` are synthetic placeholders; rename or replace them when you find the real store / client.
+- **Zone per component.** `zone` is one of `internet` (no session needed), `authenticated`, `internal`, `external` (third-party services), `build` (CI / install). Declare the zones you use in `zones` (`{id, kind, label, evidence: [{path, line}]}`).
+- **Cite `path` + `line`** you actually read for every entrypoint, sink, boundary and relation (`evidence: {path, line}`). The harness checks each citation: a good one becomes `cited`, a bad or missing one becomes `inferred` (drawn dashed). Mechanical relations are kept for you; do not resubmit them.
+- **Relations are expected now.** Emit the edges you saw as `{from, to, kind, evidence, confidence}` with `from` / `to` = component ids and `kind` one of `calls`, `data_flow`, `imports`, `queue`, `db`, `http_out`, `auth_gate`, `depends_on`, `trust_boundary`. If you could not cite a line, still emit it with `confidence: "inferred"` — never invent an edge you have no reason to believe.
+- Architecture only: notes describe roles, not exploits. Data flows (entrypoint → steps → sink) belong to the `flow-tracer` agent, which runs after this map.
+
+### Your slice (auth-model)
+
+You own **`boundaries`**: `{from_zone, to_zone, control, path, line}` for each control you read (`login_required`, JWT middleware, API-key check, tenant filter, admin role check). Move components behind a session into the `authenticated` zone, and emit `auth_gate` relations from the gate component to what it protects, with the line of the check as `evidence`. Keep v1 `trust_boundaries` strings too. A missing check is mapped as a boundary note, never filed as a finding.
 
 ## Hunt focus discipline
 
@@ -111,6 +126,8 @@ When inspection shows clear trust or data-flow edges between named components, e
 
 ## Submit checklist
 
+- [ ] Skeleton ids kept when relabelling; every component has a `zone`
+- [ ] Every relation / entrypoint / boundary cites `path` + `line` you read, or the relation says `confidence: "inferred"`
 - [ ] `submit_architecture` only (no `submit_candidate` / `submit_none`)
 - [ ] Non-empty `summary` of the auth model
 - [ ] Explicit `trust_boundaries` and path-backed auth-related `components`
