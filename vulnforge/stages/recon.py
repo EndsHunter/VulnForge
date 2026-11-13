@@ -1219,6 +1219,7 @@ def _trace_one_flow(
         "flows": flows,
         "entry": entry,
         "usage": usage,
+        "status": status,
         "infra": status == "failed_infra" and not flows,
         "error": entry.get("error"),
     }
@@ -1313,6 +1314,25 @@ def _trace_flows_inprocess(
     return out
 
 
+def _flow_phase_task_status(
+    *,
+    infra_error: str | None,
+    trace_status: str | None,
+    flow_count: int,
+) -> str:
+    """Ralph status for one flow-tracer lease.
+
+    Infra is a platform failure and is retried. A model cutoff with no
+    submitted flows is one failed_task. A finished trace, including zero
+    flows, stays succeeded.
+    """
+    if infra_error:
+        return "failed_infra"
+    if trace_status == "failed_task" and flow_count == 0:
+        return "failed_task"
+    return "succeeded"
+
+
 def _run_flow_phase_task(
     task,
     db,
@@ -1362,6 +1382,7 @@ def _run_flow_phase_task(
     flows: list[dict[str, Any]] = []
     usage_fields: dict[str, Any] = {}
     infra_error: str | None = None
+    trace_status: str | None = None
     model_id = None
     if agent is None or not arch or not entrypoint:
         entry: dict[str, Any] = {
@@ -1409,6 +1430,8 @@ def _run_flow_phase_task(
                 flows = r["flows"]
                 if r["infra"]:
                     infra_error = r["error"] or "failed_infra"
+                else:
+                    trace_status = r.get("status")
         finally:
             client.close()
     if not infra_error:
@@ -1456,8 +1479,13 @@ def _run_flow_phase_task(
                 model_id=model_id,
                 agents_run=[entry],
             )
+    task_status = _flow_phase_task_status(
+        infra_error=infra_error,
+        trace_status=trace_status,
+        flow_count=len(flows),
+    )
     out: dict[str, Any] = {
-        "status": "failed_infra" if infra_error else "succeeded",
+        "status": task_status,
         "recon_phase": FLOW_PHASE,
         "model_id": model_id,
         "flows_submitted": len(flows),
@@ -1477,6 +1505,8 @@ def _run_flow_phase_task(
     }
     if infra_error:
         out["error"] = infra_error
+    elif task_status == "failed_task":
+        out["error"] = (entry or {}).get("error") or "truncated"
     return out
 
 

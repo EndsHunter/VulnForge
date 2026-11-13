@@ -21,6 +21,16 @@ from vulnforge.agent_runtime.transcript import (
 
 logger = logging.getLogger(__name__)
 
+# One short follow-up after Strands MaxTokensReachedException. The partial
+# tool call is already replaced in history; a second long generation would
+# hit the same cap and get filed as a task failure, not retried as infra.
+_OUTPUT_LIMIT_NUDGE = (
+    "The previous reply was cut off at the output token limit and its tool "
+    "call was discarded. Finish this turn with one short terminal call "
+    "(submit_flow, submit_architecture, submit_candidate, submit_none, "
+    "continue_recon, or continue_hunt). Do not repeat a long argument."
+)
+
 TERMINAL_TOOLS = frozenset(
     {
         "submit_candidate",
@@ -31,6 +41,36 @@ TERMINAL_TOOLS = frozenset(
         "continue_recon",
     }
 )
+
+
+def _is_output_token_limit(exc: BaseException) -> bool:
+    """True for Strands' output-cap exception, not a context-window overflow.
+
+    The raised text is "maximum token limit". It contains "token" and not
+    "context", so a context-window check must not be used to detect it.
+    """
+    if "maxtokens" in type(exc).__name__.lower():
+        return True
+    low = str(exc).lower()
+    return (
+        "maximum token limit" in low
+        or "max tokens reached" in low
+        or "maxtokensreachedexception" in low
+    )
+
+
+def classify_loop_exception(exc: BaseException) -> ResponseClass:
+    """Map a Strands agent exception onto an LLMResult classification.
+
+    An output-token cutoff is a truncated turn (``failed_task``). Filing it
+    as transport makes Ralph requeue the same prompt until the attempt cap.
+    """
+    if _is_output_token_limit(exc):
+        return ResponseClass.TRUNCATED
+    low = str(exc).lower()
+    if "context" in low and ("length" in low or "window" in low or "token" in low):
+        return ResponseClass.CONTEXT_LENGTH
+    return ResponseClass.TRANSPORT
 
 
 def _require_strands() -> None:
@@ -533,6 +573,50 @@ def _tool_calls_from_transcript(openaiish: list[dict[str, Any]]) -> list[dict]:
     return out
 
 
+def _transcript_from_agent(agent: Any, system: str) -> list[dict[str, Any]]:
+    """OpenAI-ish view of the live agent, including a recovered partial turn."""
+    try:
+        openaiish = strands_messages_to_openaiish(list(agent.messages))
+    except Exception as exc:
+        note_swallowed(exc, context="strands_loop.transcript_on_error")
+        return []
+    transcript: list[dict[str, Any]] = []
+    if system:
+        transcript.append({"role": "system", "content": system})
+    transcript.extend(openaiish)
+    return transcript
+
+
+def _loop_exception_result(
+    exc: BaseException,
+    *,
+    client: Any,
+    packet: Any,
+    agent: Any,
+    system: str,
+) -> LLMResult:
+    """LLMResult for an exception that aborted the agent before a normal stop."""
+    classification = classify_loop_exception(exc)
+    err = str(exc)
+    if classification == ResponseClass.TRUNCATED:
+        err = f"truncated: output token limit reached ({err})"
+        transcript = _transcript_from_agent(agent, system) or messages_from_packet(packet)
+    else:
+        # Transport and context failures keep the original packet. The live
+        # turn may be incomplete, and retrying it is the caller's decision.
+        transcript = messages_from_packet(packet)
+    return LLMResult(
+        ok=False,
+        classification=classification,
+        content=None,
+        tool_calls=[],
+        raw=None,
+        model_id=getattr(client, "model", None) or getattr(client, "model_id", None),
+        error=err,
+        transcript=transcript,
+    )
+
+
 def run_strands_tool_loop(
     client: Any,
     packet: Any,
@@ -593,30 +677,40 @@ def run_strands_tool_loop(
     strip_reasoning_from_strands_messages(list(agent.messages))
 
     result = None
+    pending_exc: BaseException | None = None
     try:
         result = agent(
             user,
             limits={"turns": turns},
         )
     except Exception as e:
-        if not (session.get("terminal_ok") or session.get("operator_abort")):
-            err = str(e)
-            low = err.lower()
-            # Map transport-ish failures to infra-style classification
-            classification = ResponseClass.TRANSPORT
-            if "context" in low and ("length" in low or "window" in low or "token" in low):
-                classification = ResponseClass.CONTEXT_LENGTH
-            return LLMResult(
-                ok=False,
-                classification=classification,
-                content=None,
-                tool_calls=[],
-                raw=None,
-                model_id=getattr(client, "model", None)
-                or getattr(client, "model_id", None),
-                error=err,
-                transcript=messages_from_packet(packet),
-            )
+        pending_exc = e
+
+    # Strands raises after it has already stored the cutoff turn. One short
+    # resume can still submit. A second cutoff is a task failure, not infra.
+    if (
+        pending_exc is not None
+        and result is None
+        and _is_output_token_limit(pending_exc)
+        and not session.get("terminal_ok")
+        and not session.get("operator_abort")
+    ):
+        try:
+            result = agent(_OUTPUT_LIMIT_NUDGE, limits={"turns": 2})
+            pending_exc = None
+        except Exception as e2:
+            pending_exc = e2
+
+    if pending_exc is not None and not (
+        session.get("terminal_ok") or session.get("operator_abort")
+    ):
+        return _loop_exception_result(
+            pending_exc,
+            client=client,
+            packet=packet,
+            agent=agent,
+            system=system,
+        )
 
     openaiish = strands_messages_to_openaiish(list(agent.messages))
     # Prepend system for dashboard / tool-gaps transcript consumers

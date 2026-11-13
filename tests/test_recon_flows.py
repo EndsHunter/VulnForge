@@ -377,6 +377,65 @@ def test_flow_salvage_on_round_limit(toy_sqli: Path):
     assert flows[0]["sink"]["line"] == 12
 
 
+def test_flow_trace_output_limit_is_failed_task_not_infra(tmp_path: Path, monkeypatch):
+    """A truncated flow trace must not be filed as infra or as a clean miss."""
+    from vulnforge.packet import Packet
+    from vulnforge.stages import recon as recon_mod
+
+    def fake_loop(*_a, **_k):
+        return LLMResult(
+            ok=False,
+            classification=ResponseClass.TRUNCATED,
+            content=None,
+            tool_calls=[],
+            raw=None,
+            model_id="flint",
+            error="truncated: output token limit reached (maximum token limit)",
+            transcript=[{"role": "user", "content": "trace"}],
+        )
+
+    monkeypatch.setattr(recon_mod, "run_agent_tool_loop", fake_loop)
+    monkeypatch.setattr(recon_mod, "record_llm_result", lambda *_a, **_k: {})
+    monkeypatch.setattr(recon_mod, "save_transcript", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        recon_mod, "pack_flow_tracer", lambda *_a, **_k: Packet(system="s", user="u")
+    )
+
+    class Task:
+        id = 3
+
+    out = recon_mod._trace_one_flow(
+        client=object(),
+        model_id="flint",
+        role_cfg={},
+        task=Task(),
+        run_dir=tmp_path,
+        handler=lambda _n, _a: {"ok": True},
+        session={},
+        prompts_root=tmp_path,
+        tool_root=tmp_path,
+        agent={"id": "flow-tracer", "body_md": ""},
+        entrypoint={"label": "POST /q", "path": "app.py", "line": 8},
+        arch={"summary": "mapped"},
+        skeleton=None,
+        operator_brief="",
+        max_rounds=4,
+        temperature=0.0,
+    )
+    assert out["infra"] is False
+    assert out["status"] == "failed_task"
+    assert out["flows"] == []
+    assert recon_mod._flow_phase_task_status(
+        infra_error=None, trace_status=out["status"], flow_count=0
+    ) == "failed_task"
+    assert recon_mod._flow_phase_task_status(
+        infra_error="connection refused", trace_status="failed_infra", flow_count=0
+    ) == "failed_infra"
+    assert recon_mod._flow_phase_task_status(
+        infra_error=None, trace_status="ok", flow_count=0
+    ) == "succeeded"
+
+
 def test_flows_from_content_never_invents():
     from vulnforge.agent_runtime.round_limit import flows_from_content
 

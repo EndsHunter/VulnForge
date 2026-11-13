@@ -401,6 +401,227 @@ def test_run_strands_tool_loop_with_scripted_client(monkeypatch):
     assert result.raw and result.raw.get("strands") is True
 
 
+def test_classify_loop_exception_output_limit_is_truncated():
+    from vulnforge.agent_runtime.strands_loop import classify_loop_exception
+
+    class MaxTokensReachedException(Exception):
+        pass
+
+    assert (
+        classify_loop_exception(MaxTokensReachedException("maximum token limit"))
+        == ResponseClass.TRUNCATED
+    )
+    assert (
+        classify_loop_exception(RuntimeError("context length exceeded the token window"))
+        == ResponseClass.CONTEXT_LENGTH
+    )
+    assert (
+        classify_loop_exception(ConnectionError("connection refused"))
+        == ResponseClass.TRANSPORT
+    )
+
+
+def test_output_token_limit_resumes_once_then_truncated(monkeypatch):
+    """A cutoff is not infra. One short resume is attempted; a second cutoff sticks."""
+    pytest.importorskip("strands")
+    from strands.models.model import Model
+
+    import vulnforge.agent_runtime.strands_loop as sl
+    from vulnforge.llm import classify_llm_failure
+
+    class ScriptedModel(Model):
+        def __init__(self) -> None:
+            self._i = 0
+            self._config = {"model_id": "scripted"}
+
+        def update_config(self, **kwargs: Any) -> None:
+            self._config.update(kwargs)
+
+        def get_config(self) -> dict[str, Any]:
+            return self._config
+
+        async def structured_output(self, *a: Any, **k: Any):  # noqa: ANN401
+            raise NotImplementedError
+
+        async def stream(  # type: ignore[no-untyped-def]
+            self, messages, tool_specs=None, system_prompt=None, **kwargs: Any
+        ) -> AsyncIterable[dict[str, Any]]:
+            self._i += 1
+            yield {"messageStart": {"role": "assistant"}}
+            if self._i == 1:
+                yield {
+                    "contentBlockStart": {
+                        "start": {"toolUse": {"name": "submit_flow", "toolUseId": "cut"}}
+                    }
+                }
+                yield {
+                    "contentBlockDelta": {
+                        "delta": {"toolUse": {"input": '{"flows":['}}
+                    }
+                }
+                yield {"contentBlockStop": {}}
+                yield {"messageStop": {"stopReason": "max_tokens"}}
+            else:
+                yield {"contentBlockStart": {"start": {}}}
+                yield {
+                    "contentBlockDelta": {
+                        "delta": {"text": "still too long " * 20}
+                    }
+                }
+                yield {"contentBlockStop": {}}
+                yield {"messageStop": {"stopReason": "max_tokens"}}
+            yield {
+                "metadata": {
+                    "usage": {
+                        "inputTokens": 3,
+                        "outputTokens": 4096,
+                        "totalTokens": 4099,
+                    },
+                    "metrics": {"latencyMs": 1},
+                }
+            }
+
+    monkeypatch.setattr(sl, "_model_from_client", lambda client, temperature: ScriptedModel())
+
+    class DummyClient:
+        model = "scripted"
+        base_url = "http://example.invalid/v1"
+        api_key = "x"
+        timeout = 30
+        max_tokens = 256
+
+    packet = Packet(
+        system="sys",
+        user="trace the entrypoint",
+        tools_schema=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "submit_flow",
+                    "description": "submit",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+    calls: list[str] = []
+
+    def handler(name: str, args: dict) -> dict:
+        calls.append(name)
+        return {"ok": True}
+
+    result = sl.run_strands_tool_loop(
+        DummyClient(), packet, handler, max_rounds=4, temperature=0.1
+    )
+    assert result.ok is False
+    assert result.classification == ResponseClass.TRUNCATED
+    assert result.error and result.error.startswith("truncated:")
+    assert classify_llm_failure(result) == "failed_task"
+    assert calls == []
+    roles = [m.get("role") for m in (result.transcript or [])]
+    assert "assistant" in roles
+    assert "system" in roles
+
+
+def test_output_token_limit_resume_can_submit(monkeypatch):
+    pytest.importorskip("strands")
+    from strands.models.model import Model
+
+    import vulnforge.agent_runtime.strands_loop as sl
+
+    class ScriptedModel(Model):
+        def __init__(self) -> None:
+            self._i = 0
+            self._config = {"model_id": "scripted"}
+
+        def update_config(self, **kwargs: Any) -> None:
+            self._config.update(kwargs)
+
+        def get_config(self) -> dict[str, Any]:
+            return self._config
+
+        async def structured_output(self, *a: Any, **k: Any):  # noqa: ANN401
+            raise NotImplementedError
+
+        async def stream(  # type: ignore[no-untyped-def]
+            self, messages, tool_specs=None, system_prompt=None, **kwargs: Any
+        ) -> AsyncIterable[dict[str, Any]]:
+            self._i += 1
+            yield {"messageStart": {"role": "assistant"}}
+            if self._i == 1:
+                yield {"contentBlockStart": {"start": {}}}
+                yield {"contentBlockDelta": {"delta": {"text": "partial"}}}
+                yield {"contentBlockStop": {}}
+                yield {"messageStop": {"stopReason": "max_tokens"}}
+            else:
+                yield {
+                    "contentBlockStart": {
+                        "start": {
+                            "toolUse": {"name": "submit_none", "toolUseId": "ok1"}
+                        }
+                    }
+                }
+                yield {
+                    "contentBlockDelta": {
+                        "delta": {
+                            "toolUse": {
+                                "input": json.dumps({"reason": "cut off, submitting none"})
+                            }
+                        }
+                    }
+                }
+                yield {"contentBlockStop": {}}
+                yield {"messageStop": {"stopReason": "tool_use"}}
+            yield {
+                "metadata": {
+                    "usage": {
+                        "inputTokens": 2,
+                        "outputTokens": 4,
+                        "totalTokens": 6,
+                    },
+                    "metrics": {"latencyMs": 1},
+                }
+            }
+
+    monkeypatch.setattr(sl, "_model_from_client", lambda client, temperature: ScriptedModel())
+
+    class DummyClient:
+        model = "scripted"
+        base_url = "http://example.invalid/v1"
+        api_key = "x"
+        timeout = 30
+        max_tokens = 256
+
+    packet = Packet(
+        system="sys",
+        user="finish",
+        tools_schema=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "submit_none",
+                    "description": "done",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"reason": {"type": "string"}},
+                        "required": ["reason"],
+                    },
+                },
+            }
+        ],
+    )
+
+    def handler(name: str, args: dict) -> dict:
+        assert name == "submit_none"
+        return {"ok": True, "stored": "none"}
+
+    result = sl.run_strands_tool_loop(
+        DummyClient(), packet, handler, max_rounds=4, temperature=0.1
+    )
+    assert result.ok is True
+    assert result.classification == ResponseClass.OK
+
+
 def test_operator_loop_fake_client():
     from vulnforge.operator_chat.loop import run_operator_loop
 
