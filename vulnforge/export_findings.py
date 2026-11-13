@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from vulnforge.errors import note_swallowed
+from vulnforge.evidence_tier import evidence_tier
 from vulnforge.util import utc_now_iso
 
 DISCLAIMER = (
@@ -32,6 +33,7 @@ ROW_COLUMNS = [
     "id",
     "state",
     "severity",
+    "evidence_tier",
     "weakness_class",
     "title",
     "summary",
@@ -925,11 +927,13 @@ def findings_to_rows(db: Any) -> list[dict[str, Any]]:
         )
         evid = evid or body.get("evidence_id") or ""
         hr = _human_review_latest(body)
+        tier = evidence_tier(body, state)
         rows.append(
             {
                 "id": fid,
                 "state": state or "",
                 "severity": _severity(body, f if not isinstance(f, dict) else None),
+                "evidence_tier": tier["tier"],
                 "weakness_class": body.get("weakness_class") or "",
                 "title": body.get("title") or stable or f"Finding #{fid}",
                 "summary": body.get("summary") or "",
@@ -957,6 +961,7 @@ def findings_to_rows(db: Any) -> list[dict[str, Any]]:
                 "_body": body,
                 "_finding": f,
                 "_human_review": hr,
+                "_evidence_tier": tier,
             }
         )
     return rows
@@ -1018,6 +1023,7 @@ def export_json(
                 "stable_key": r.get("stable_key"),
                 "state": r.get("state"),
                 "evidence_id": r.get("evidence_id"),
+                "evidence_tier": r.get("_evidence_tier"),
                 "body": r.get("_body")
                 or (getattr(f, "body", None) if f is not None else {}),
             }
@@ -1051,6 +1057,13 @@ def export_json(
         payload["codemap"] = ctx.get("codemap")
     return json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
 
+def _tier_md(r: dict) -> str:
+    """`tier` plus the derived summary (label only; not exploit proof)."""
+    t = r.get("_evidence_tier") or {}
+    name = r.get("evidence_tier") or t.get("tier") or "-"
+    return f"`{name}` ({t['summary']})" if t.get("summary") else f"`{name}`"
+
+
 def _md_finding_block(r: dict) -> list[str]:
     """Markdown bullets + body for one finding row."""
     body = r.get("_body") or {}
@@ -1061,6 +1074,7 @@ def _md_finding_block(r: dict) -> list[str]:
         f"- **state:** {r['state']}",
         f"- **class:** {r['weakness_class'] or '-'}",
         f"- **severity:** {r['severity'] or '-'}",
+        f"- **evidence_tier:** {_tier_md(r)}",
         f"- **stable_key:** `{r['stable_key'] or '-'}`",
     ]
     if r.get("attacker"):
@@ -1356,6 +1370,8 @@ def export_html(
             f"<dl class='kv'>"
             f"<dt>Class</dt><dd class='mono'>{_esc(r['weakness_class'] or '-')}</dd>"
             f"<dt>Severity</dt><dd>{_esc(r['severity'] or '-')}</dd>"
+            f"<dt>Evidence tier</dt><dd><span class='mono'>{_esc(r.get('evidence_tier') or '-')}</span>"
+            f"{(' — ' + _esc((r.get('_evidence_tier') or {}).get('summary'))) if (r.get('_evidence_tier') or {}).get('summary') else ''}</dd>"
             f"<dt>stable_key</dt><dd class='mono'>{_esc(r['stable_key'] or '-')}</dd>"
             f"<dt>Evidence</dt><dd class='mono'>{_esc(r['evidence_id'] or '-')}</dd>"
             f"<dt>PoC path</dt><dd class='mono'>{_esc(r.get('poc_relpath') or '-')}</dd>"
@@ -1387,6 +1403,7 @@ def export_html(
             f"<td>{_esc(r['title'])}</td>"
             f'<td class="mono">{_esc(r["weakness_class"])}</td>'
             f"<td>{_esc(r['severity'])}</td>"
+            f'<td class="mono">{_esc(r.get("evidence_tier") or "-")}</td>'
             f'<td><span class="badge state-{_esc(state_cls)}">{_esc(r["state"])}</span></td>'
             f'<td class="mono">{_esc(loc or "-")}</td>'
             f'<td><a href="#f-{_esc(fid)}">Details</a></td>'
@@ -1396,7 +1413,7 @@ def export_html(
     table_body = (
         "\n".join(table_rows)
         if table_rows
-        else '<tr><td colspan="7" class="empty">No findings.</td></tr>'
+        else '<tr><td colspan="8" class="empty">No findings.</td></tr>'
     )
 
     buckets = _partition_rows(rows)
@@ -1452,7 +1469,7 @@ def export_html(
       <thead>
         <tr>
           <th>ID</th><th>Title</th><th>Class</th><th>Severity</th>
-          <th>State</th><th>Location</th><th></th>
+          <th>Evidence tier</th><th>State</th><th>Location</th><th></th>
         </tr>
       </thead>
       <tbody>
@@ -1938,6 +1955,7 @@ def export_docx(
                         f"state: {r['state']}",
                         f"class: {r['weakness_class'] or '-'}",
                         f"severity: {r['severity'] or '-'}",
+                        f"evidence_tier: {r.get('evidence_tier') or '-'}",
                         f"stable_key: {r['stable_key'] or '-'}",
                     ]
                     if r.get("attacker"):

@@ -17,6 +17,8 @@
 
 **`needs_human` = mech gates passed (and disprove did not kill, if enabled). `confirmed` = human accepted.** Neither is exploit proof.
 
+**Evidence tier.** Every finding also carries a derived `evidence_tier`, weakest first: `ungated` (gates not passed), `gated` (gates passed; disprove off, pending, split or not run), `stood` (every disprove slot returned `stand`; same-model stand is weaker still) and `reproduced` (the latest finished sandbox PoC run returned `signal_observed`). One pure function, `vulnforge/evidence_tier.py`, computes it from `validation_mech`, `validation_llm` and `poc_validation_latest`; the snapshot, HITL packet, exports and the `human_review` entry (tier at verdict time) all read it. The Review queue sorts by tier, then severity. It is a label: it never changes state, never raises severity and never confirms. A failed or inconclusive PoC run does not raise the tier but is shown next to it.
+
 ## Quick start
 
 ```bash

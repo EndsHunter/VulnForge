@@ -384,7 +384,7 @@
     const key = sortKey || "severity";
     const H = RH();
     if (key === "severity" && H) {
-      // Severity desc, then needs review first, then newest (asc flips it).
+      // Evidence tier desc, severity desc, needs review first, newest (asc flips it).
       const q = H.compareQueue(a, b);
       return sortDir === "asc" ? -q : q;
     }
@@ -660,13 +660,26 @@
                 `<li class="mono">${esc(r.at || "")} · ${esc(r.from_state || "?")} → ${esc(
                   r.to_state || "?"
                 )} · ${esc(r.action || "")}${
+                  r.evidence_tier ? ` · tier ${esc(r.evidence_tier)}` : ""
+                }${
                   r.notes ? ` — ${esc(String(r.notes).slice(0, 160))}` : ""
                 }</li>`
             )
             .join("")}</ul></details>`
         : "";
+    const tierPill = tierPillHtml(f);
+    const tierInfo = H && typeof H.tierOf === "function" ? H.tierOf(f) : null;
+    const tierSection = tierPill
+      ? `<section class="rv-tier-block">
+          <h3 class="vf-section-label">Evidence tier</h3>
+          <div class="rv-row">${tierPill}</div>
+          <p class="rv-note">${esc(tierInfo ? tierInfo.summary : "")}</p>
+          <p class="rv-note vf-faint">A label for queue order. It does not change state or severity and does not confirm.</p>
+        </section>`
+      : "";
     return `
       <div class="rv-verdict-inner" data-fid="${f.id}">
+        ${tierSection}
         <section>
           <h3 class="vf-section-label">Mechanical gates ${gateHead}</h3>
           <ul class="rv-gates">${gateRows}${otherRows}</ul>
@@ -838,6 +851,26 @@
     const k = H ? H.sevKey(f) : "";
     const label = H ? H.sevLabel(f) : String(f.severity || bodyOf(f).severity_claim || "unknown");
     return `<span class="vf-sev${k ? " vf-sev--" + k : ""}">${esc(label)}</span>`;
+  }
+
+  /**
+   * Evidence tier pill (derived label from the server; never a state). A PoC run that
+   * did not raise the tier is shown beside it. Empty when the API sent no tier.
+   */
+  function tierPillHtml(f, opts) {
+    const H = RH();
+    const t = H && typeof H.tierPill === "function" ? H.tierPill(f) : null;
+    if (!t) return "";
+    const bars = [1, 2, 3]
+      .map((i) => `<i class="${i <= t.steps ? "is-on" : ""}"></i>`)
+      .join("");
+    const side =
+      t.side && !(opts && opts.noSide)
+        ? ` <span class="rv-tier-side mono" title="Latest sandbox run did not raise the tier">${esc(t.side)}</span>`
+        : "";
+    return `<span class="vf-pill rv-tier is-${esc(t.tier)}" data-tier="${esc(t.tier)}" title="${esc(
+      t.title
+    )}"><span class="rv-tier-bars" aria-hidden="true">${bars}</span>${esc(t.label)}</span>${side}`;
   }
 
   /** Current state only (never the trail) — queue rows and the finding header. */
@@ -1063,6 +1096,7 @@
             state: r.to_state,
             evidence_id: r.evidence_id || cache[idx].evidence_id,
             body: r.finding.body || cache[idx].body,
+            evidence_tier: r.finding.evidence_tier || cache[idx].evidence_tier,
           };
         }
         renderSummary();
@@ -2065,6 +2099,7 @@
             <span class="rv-row rv-queue-top">
               ${sevTagHtml(f)}
               <span class="mono vf-faint">#${f.id}</span>
+              ${tierPillHtml(f, { noSide: true })}
               <span class="rv-spacer"></span>
               <span class="report-state-cell">${statePill(f)}</span>
             </span>
@@ -2208,6 +2243,7 @@
       id: f.id,
       state: f.state || "",
       severity: f.severity || b.severity_claim || "",
+      evidence_tier: (f.evidence_tier && f.evidence_tier.tier) || "",
       weakness_class: b.weakness_class || "",
       title: b.title || f.stable_key || `Finding #${f.id}`,
       summary: b.summary || "",
