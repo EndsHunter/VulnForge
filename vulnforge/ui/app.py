@@ -438,6 +438,9 @@ class ToolIntegrateBody(BaseModel):
     dry_run: bool = True
     apply: bool = False
     add_to_profiles: Optional[list[str]] = None
+    # Apply gate: hash from a fresh dry-run; explicit consent to replace files.
+    plan_hash: Optional[str] = None
+    allow_overwrite: bool = False
 
 
 class ToolRejectBody(BaseModel):
@@ -452,11 +455,6 @@ class HuntGenerateBody(BaseModel):
     activate: bool = False
     save: bool = True
     signals: Optional[Any] = None
-
-
-class HuntImportBody(BaseModel):
-    data: Any
-    mode: str = "merge"
 
 
 class DevSetupImportBody(BaseModel):
@@ -481,11 +479,6 @@ class ReconAgentBody(BaseModel):
     temperature: Optional[float] = None
     max_tool_rounds: Optional[int] = None
     output: Optional[str] = None
-
-
-class ReconAgentImportBody(BaseModel):
-    data: Any
-    mode: str = "merge"
 
 
 class CoverageRequeueBody(BaseModel):
@@ -2822,32 +2815,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(500, f"hunt profiles failed: {e}") from e
 
-    @app.get("/api/hunt-profiles/export")
-    def api_hunt_profiles_export():
-        """Legacy: hunt-only export. Prefer GET /api/dev-setup/export for full setup."""
-        from vulnforge.hunt_profiles import HuntProfileError, export_collection
-
-        try:
-            data = export_collection()
-            return JSONResponse(
-                content=data,
-                headers={
-                    "Content-Disposition": 'attachment; filename="hunt_collection.json"'
-                },
-            )
-        except HuntProfileError as e:
-            raise HTTPException(400, str(e)) from e
-
-    @app.post("/api/hunt-profiles/import")
-    def api_hunt_profiles_import(body: HuntImportBody):
-        from vulnforge.hunt_profiles import HuntProfileError, import_collection
-
-        try:
-            result = import_collection(body.data, mode=body.mode or "merge")
-            return result
-        except HuntProfileError as e:
-            raise HTTPException(400, str(e)) from e
-
     @app.post("/api/hunt-profiles/reseed")
     def api_hunt_profiles_reseed():
         from vulnforge.hunt_profiles import HuntProfileError, reseed_from_package
@@ -3058,31 +3025,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             raise HTTPException(400, str(e)) from e
         except Exception as e:
             raise HTTPException(500, f"recon agents failed: {e}") from e
-
-    @app.get("/api/recon-agents/export")
-    def api_recon_agents_export():
-        from vulnforge.recon_agents import ReconAgentError, export_collection
-
-        try:
-            data = export_collection()
-            return JSONResponse(
-                content=data,
-                headers={
-                    "Content-Disposition": 'attachment; filename="recon_collection.json"'
-                },
-            )
-        except ReconAgentError as e:
-            raise HTTPException(400, str(e)) from e
-
-    @app.post("/api/recon-agents/import")
-    def api_recon_agents_import(body: ReconAgentImportBody):
-        from vulnforge.recon_agents import ReconAgentError, import_collection
-
-        try:
-            result = import_collection(body.data, mode=body.mode or "merge")
-            return result
-        except ReconAgentError as e:
-            raise HTTPException(400, str(e)) from e
 
     @app.post("/api/recon-agents/reseed")
     def api_recon_agents_reseed():
@@ -3459,22 +3401,28 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/tool-drafts/{draft_id}/integrate")
     def api_tool_draft_integrate(draft_id: str, body: Optional[ToolIntegrateBody] = None):
-        from vulnforge.toolgen.integrate import IntegrateToolError, integrate
+        from vulnforge.toolgen.integrate import (
+            IntegrateConflictError,
+            IntegrateToolError,
+            integrate,
+        )
         from vulnforge.toolgen.store import ToolDraftError
 
-        dry = body.dry_run if body else True
         apply = body.apply if body else False
-        add = body.add_to_profiles if body else None
         try:
             result = integrate(
                 draft_id,
-                dry_run=dry if not apply else False,
+                dry_run=not apply,
                 apply=apply,
-                add_to_profiles=add,
+                plan_hash=body.plan_hash if body else None,
+                allow_overwrite=bool(body.allow_overwrite) if body else False,
+                add_to_profiles=body.add_to_profiles if body else None,
             )
             return {"ok": True, **result}
         except ToolDraftError as e:
             raise HTTPException(404, str(e)) from e
+        except IntegrateConflictError as e:
+            raise HTTPException(409, str(e)) from e
         except IntegrateToolError as e:
             raise HTTPException(400, str(e)) from e
 

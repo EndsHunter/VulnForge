@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import difflib
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -20,6 +22,10 @@ from vulnforge.util import utc_now_iso
 
 class IntegrateToolError(ValueError):
     """Integration refused or failed."""
+
+
+class IntegrateConflictError(IntegrateToolError):
+    """Apply refused: stale/missing dry-run plan, or an unapproved overwrite."""
 
 
 def _registry_path() -> Path:
@@ -235,22 +241,81 @@ def plan_integration(draft_id: str) -> dict[str, Any]:
             callable_name=callable_name,
         )
 
+    test_stub = d.get("test_stub") or ""
+    contents: dict[str, str] = {str(impl_path.relative_to(PROJECT_ROOT)): impl_py}
+    if not write_agent_spec:
+        contents[str(_registry_path().relative_to(PROJECT_ROOT))] = _render_registry_file(
+            new_specs
+        )
+    if test_stub.strip():
+        contents[str(test_path.relative_to(PROJECT_ROOT))] = test_stub
+    registry_rel = str(_registry_path().relative_to(PROJECT_ROOT))
+    test_rel_norm = str(test_path.relative_to(PROJECT_ROOT))
+    for op in ops:
+        _describe_op(
+            op,
+            contents.get(op["path"], ""),
+            is_registry=op["path"] == registry_rel,
+            is_test=op["path"] == test_rel_norm,
+        )
+
     return {
         "ok": True,
         "draft_id": tid,
         "tool_name": name,
         "spec": spec,
         "ops": ops,
+        "plan_hash": _plan_hash(ops, contents),
+        "overwrites": [o["path"] for o in ops if o.get("overwrite")],
         "impl_path": str(impl_path.relative_to(PROJECT_ROOT)),
         "test_path": str(test_path.relative_to(PROJECT_ROOT)),
         "registry_path": str(_registry_path().relative_to(PROJECT_ROOT)),
         "write_agent_spec": write_agent_spec,
         "impl_py": impl_py,
-        "test_stub": d.get("test_stub") or "",
+        "test_stub": test_stub,
+        "contents": contents,
         "new_specs": new_specs,
         "validation": report,
         "planned_at": utc_now_iso(),
     }
+
+
+def _describe_op(op: dict[str, Any], content: str, *, is_registry: bool, is_test: bool) -> None:
+    """Annotate a planned write with existence, overwrite risk and a unified diff."""
+    path = PROJECT_ROOT / op["path"]
+    exists = path.is_file()
+    current = path.read_text(encoding="utf-8", errors="replace") if exists else ""
+    op["exists"] = exists
+    if is_test and exists:
+        # apply never replaces an existing test file
+        op["op"] = "skip"
+        op["description"] = "Test file exists; left unchanged"
+        op["overwrite"] = False
+        op["diff"] = ""
+        return
+    # The registry is rewritten by design; any other existing file is an overwrite.
+    op["overwrite"] = bool(exists and not is_registry and current != content)
+    op["diff"] = "".join(
+        difflib.unified_diff(
+            current.splitlines(keepends=True),
+            content.splitlines(keepends=True),
+            fromfile=f"a/{op['path']}" if exists else "/dev/null",
+            tofile=f"b/{op['path']}",
+        )
+    )
+
+
+def _plan_hash(ops: list[dict[str, Any]], contents: dict[str, str]) -> str:
+    """Stable hash of what apply would write and what it would replace."""
+    h = hashlib.sha256()
+    for op in ops:
+        h.update(json.dumps([op["op"], op["path"], bool(op.get("exists"))]).encode())
+        h.update(b"\0")
+        h.update(contents.get(op["path"], "").encode("utf-8"))
+        h.update(b"\0")
+        h.update((op.get("diff") or "").encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()
 
 
 def _wrap_agent_spec_module(
@@ -310,30 +375,42 @@ def run(ctx: dict, **args: Any) -> dict[str, Any]:
 def apply_integration(
     draft_id: str,
     *,
+    plan_hash: Optional[str],
+    allow_overwrite: bool = False,
     add_to_profiles: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Write files and mark draft integrated."""
-    plan = plan_integration(draft_id)
-    written: list[str] = []
+    """Write files and mark draft integrated.
 
-    impl_path = PROJECT_ROOT / plan["impl_path"]
-    impl_path.parent.mkdir(parents=True, exist_ok=True)
-    impl_py = plan["impl_py"]
-    if (
-        not plan.get("write_agent_spec")
-        and not impl_py.lstrip().startswith('"""')
-        and not impl_py.lstrip().startswith("#")
-    ):
-        header = f'"""Agent tool: {plan["tool_name"]} (toolgen integrated)."""\n\n'
-        impl_py = header + impl_py
-    impl_path.write_text(impl_py, encoding="utf-8")
-    written.append(plan["impl_path"])
+    Refuses unless ``plan_hash`` matches a fresh dry-run of the same draft and
+    tree state, and unless ``allow_overwrite`` is set when an existing module
+    file would be replaced.
+    """
+    plan = plan_integration(draft_id)
+    want = str(plan_hash or "").strip()
+    if not want:
+        raise IntegrateConflictError("apply requires plan_hash from a dry-run; run dry-run first")
+    if want != plan["plan_hash"]:
+        raise IntegrateConflictError(
+            "draft or target files changed since the dry-run; re-run dry-run and review the diff"
+        )
+    if plan["overwrites"] and not allow_overwrite:
+        raise IntegrateConflictError(
+            "apply would overwrite existing file(s): "
+            + ", ".join(plan["overwrites"])
+            + " (pass allow_overwrite to confirm)"
+        )
+    written: list[str] = []
+    contents: dict[str, str] = plan["contents"]
+    for op in plan["ops"]:
+        if op["op"] != "write":
+            continue
+        rel = op["path"]
+        target = PROJECT_ROOT / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(contents.get(rel, ""), encoding="utf-8")
+        written.append(rel)
 
     if not plan.get("write_agent_spec"):
-        reg_path = _registry_path()
-        reg_path.write_text(_render_registry_file(plan["new_specs"]), encoding="utf-8")
-        written.append(plan["registry_path"])
-
         # Hot-reload in-process registry
         try:
             import importlib
@@ -354,14 +431,6 @@ def apply_integration(
             clear_registry_cache()
         except Exception as exc:
             note_swallowed(exc, context="toolgen_integrate.clear_registry_cache")
-
-    test_stub = (plan.get("test_stub") or "").strip()
-    if test_stub:
-        test_path = PROJECT_ROOT / plan["test_path"]
-        test_path.parent.mkdir(parents=True, exist_ok=True)
-        if not test_path.is_file():
-            test_path.write_text(test_stub if test_stub.startswith('"""') or "import" in test_stub[:200] else test_stub, encoding="utf-8")
-            written.append(plan["test_path"])
 
     # Optional: append tool to hunt profile allowlists
     profiles_updated: list[str] = []
@@ -395,7 +464,7 @@ def apply_integration(
         "tool_name": plan["tool_name"],
         "written": written,
         "profiles_updated": profiles_updated,
-        "ops": plan["ops"],
+        "ops": [{k: v for k, v in op.items() if k != "diff"} for op in plan["ops"]],
     }
 
 
@@ -404,19 +473,27 @@ def integrate(
     *,
     dry_run: bool = True,
     apply: bool = False,
+    plan_hash: Optional[str] = None,
+    allow_overwrite: bool = False,
     add_to_profiles: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    if apply and not dry_run:
-        return apply_integration(draft_id, add_to_profiles=add_to_profiles)
-    if apply and dry_run:
-        # apply wins
-        return apply_integration(draft_id, add_to_profiles=add_to_profiles)
+    """Dry-run (default) returns the plan with per-file diffs and ``plan_hash``.
+
+    ``apply=True`` writes only when ``plan_hash`` matches that dry-run.
+    """
+    if apply:
+        return apply_integration(
+            draft_id,
+            plan_hash=plan_hash,
+            allow_overwrite=allow_overwrite,
+            add_to_profiles=add_to_profiles,
+        )
     plan = plan_integration(draft_id)
-    # Don't include full impl in API dry-run by default size — keep preview snippet
     preview = dict(plan)
     impl = preview.pop("impl_py", "")
     preview["impl_preview"] = impl[:2000] + ("…" if len(impl) > 2000 else "")
     preview.pop("test_stub", None)
     preview.pop("new_specs", None)
+    preview.pop("contents", None)
     preview["dry_run"] = True
     return preview

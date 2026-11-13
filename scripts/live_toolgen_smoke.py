@@ -93,7 +93,10 @@ def main() -> int:
                 print("REFUSE apply: validation not ok", file=sys.stderr)
                 return 2
             print("→ APPLY integrate …")
-            applied = integrate(did, dry_run=False, apply=True)
+            if dry.get("overwrites"):
+                print("REFUSE apply: would overwrite " + ", ".join(dry["overwrites"]), file=sys.stderr)
+                return 2
+            applied = integrate(did, apply=True, plan_hash=dry.get("plan_hash"))
             print(applied)
         else:
             print("dry-run only (pass --apply to write package files after review)")
