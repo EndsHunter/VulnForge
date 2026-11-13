@@ -1,11 +1,11 @@
-"""Benchmark runner — mechanical L0 for hunt / recon / finding_report.
+"""Benchmark runner: mechanical **L0 fixture checks** for hunt / recon / finding_report.
 
-Mechanical hunt reuses sink preindex → synthetic findings → ``score_findings``.
-Recon / finding_report use ``vulnforge.benchmarks.scorers`` (no live LLM).
-``poc_dev`` is refused on the Run path.
+L0 says the fixture and scorer still line up. It is not a measure of model
+quality: mechanical hunt builds synthetic findings from the sink preindex at
+the oracle's own path; recon / finding_report score fixture inputs.
 
-Live mode is async: call ``start_live_run`` / ``start_live_suite`` in
-``vulnforge.benchmarks.live``. Passing ``mode=live`` here raises.
+``run_fixture_checks`` runs every vendored case as one ``suite-fixtures``
+parent. Live (directed) runs are in ``vulnforge.benchmarks.live``.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+from vulnforge.benchmarks.compare import member_row, summarize_repeats
 from vulnforge.benchmarks.runs import (
     RUNNABLE_TYPES,
     BenchmarkRunError,
@@ -26,7 +27,7 @@ from vulnforge.benchmarks.store import (
     get_version,
     list_defs,
 )
-from vulnforge.eval.recall import score_findings
+from vulnforge.benchmarks.match import score_findings
 from vulnforge.paths import PROJECT_ROOT
 from vulnforge.tools.codemap import build_codemap
 from vulnforge.tools.sink_preindex import build_sink_preindex
@@ -35,14 +36,7 @@ from vulnforge.tools.sink_preindex import build_sink_preindex
 PASS_RECALL_BAR = 0.0  # passed when recall > PASS_RECALL_BAR, or oracle_count==0
 PASS_SCORE_BAR = 0.0
 
-# Synthetic Run-page ids: one click runs every library def of that type.
 SUITE_TYPE_ORDER = ("hunt", "recon", "finding_report")
-SUITE_DEF_IDS: dict[str, tuple[str, ...]] = {
-    "all-hunt": ("hunt",),
-    "all-recon": ("recon",),
-    "all-finding_report": ("finding_report",),
-    "all-runnable": SUITE_TYPE_ORDER,
-}
 
 
 def _resolve_target(target_ref: str) -> Path:
@@ -94,7 +88,7 @@ def mechanical_hunt_score(
                     )
                     break
     sc = score_findings(synthetic, list(oracles or []))
-    # Symbol coverage (informational; same as eval_recall.mechanical_score)
+    # Symbol coverage (informational)
     sym_ok = 0
     for o in oracles or []:
         if not isinstance(o, dict):
@@ -164,11 +158,6 @@ def _normalize_request_types(
             # run only the requested subset later; here keep all runnable snap types.
             pass
 
-    if any(t == "poc_dev" for t in raw):
-        raise BenchmarkRunError(
-            "poc_dev is not supported on the Run path (use POST /api/benchmarks/poc/runs)"
-        )
-
     out: list[str] = []
     seen: set[str] = set()
     for t in raw:
@@ -201,39 +190,6 @@ def _score_type(
     raise BenchmarkRunError(f"unsupported run type: {bench_type}")
 
 
-def suite_types_for(def_id: str) -> Optional[tuple[str, ...]]:
-    """Return suite types for a synthetic ``all-*`` def id, else None."""
-    bid = str(def_id or "").strip().lower()
-    return SUITE_DEF_IDS.get(bid)
-
-
-def defs_for_suite(types: list[str]) -> list[tuple[dict[str, Any], list[str]]]:
-    """Library defs that declare at least one of ``types``, with the intersection.
-
-    Sorted by def id. ``poc_dev`` is never included.
-    """
-    want = [t for t in SUITE_TYPE_ORDER if t in {str(x).strip().lower() for x in types}]
-    if not want:
-        want = [t for t in types if str(t).strip().lower() in RUNNABLE_TYPES]
-        want = [str(t).strip().lower() for t in want]
-    out: list[tuple[dict[str, Any], list[str]]] = []
-    for d in list_defs():
-        declared = [str(t).strip().lower() for t in (d.get("types") or [])]
-        match = [t for t in want if t in declared]
-        if match:
-            out.append((d, match))
-    out.sort(key=lambda pair: str(pair[0].get("id") or ""))
-    return out
-
-
-def _suite_def_id(types: list[str]) -> str:
-    key = tuple(t for t in SUITE_TYPE_ORDER if t in types)
-    for sid, mapped in SUITE_DEF_IDS.items():
-        if tuple(mapped) == key:
-            return sid
-    return "all-runnable"
-
-
 def _member_score(metrics: dict[str, Any]) -> Optional[float]:
     if not isinstance(metrics, dict):
         return None
@@ -250,114 +206,67 @@ def _member_score(metrics: dict[str, Any]) -> Optional[float]:
     return None
 
 
-def run_benchmark_suite(
-    *,
-    types: Optional[list[str]] = None,
-    mode: str = "mechanical",
-) -> dict[str, Any]:
-    """Run every library def that declares one of ``types`` (mechanical L0).
+def run_fixture_checks(*, note: str = "") -> dict[str, Any]:
+    """L0 over every vendored case (synthetic hunts + recon + finding_report).
 
-    Persists one parent BenchmarkRun (``all-hunt`` / ``all-recon`` /
-    ``all-finding_report`` / ``all-runnable``) plus a child run per member.
-    Parent ``metrics.members`` lists each child id/status/score. Never
-    auto-confirms findings. ``poc_dev`` is excluded.
+    One ``suite-fixtures`` parent (tier ``l0``) plus a child per case. Parent
+    ``status`` is ``passed`` only when every case passed. Never confirms.
     """
-    raw = [str(t).strip().lower().replace(" ", "_") for t in (types or []) if str(t).strip()]
-    if any(t == "poc_dev" for t in raw):
-        raise BenchmarkRunError(
-            "poc_dev is not supported on the Run path (use POST /api/benchmarks/poc/runs)"
-        )
-    types_n = [t for t in SUITE_TYPE_ORDER if t in set(raw)]
-    if not types_n:
-        if raw:
-            raise BenchmarkRunError(
-                f"unsupported suite types {raw!r}; allow recon|hunt|finding_report"
-            )
-        types_n = list(SUITE_TYPE_ORDER)
+    from vulnforge.benchmarks.suites import suite_members
 
-    mode_n = str(mode or "mechanical").strip().lower()
-    if mode_n not in ("mechanical", "live"):
-        raise BenchmarkRunError("mode must be 'mechanical' or 'live'")
-    if mode_n == "live":
-        raise BenchmarkRunError("live mode is async; call start_live_run")
-
-    members = defs_for_suite(types_n)
+    members = suite_members("fixtures", "l0", list_defs())
     if not members:
-        raise BenchmarkRunError(
-            "no matching benchmarks for suite types " + ",".join(types_n)
-        )
-
-    suite_id = _suite_def_id(types_n)
+        raise BenchmarkRunError("no vendored cases to check")
     parent = create_run(
-        def_id=suite_id,
+        def_id="suite-fixtures",
         version=1,
-        types_run=types_n,
-        mode=mode_n,
-        target_ref="",
-        oracle_hash="",
+        types_run=list(SUITE_TYPE_ORDER),
+        mode="mechanical",
         status="running",
+        suite_id="fixtures",
+        tier="l0",
+        note=note,
     )
     rid = parent["id"]
-
     rows: list[dict[str, Any]] = []
-    for defn, member_types in members:
-        bid = str(defn.get("id") or "")
+    for defn in members:
+        types = [t for t in SUITE_TYPE_ORDER if t in (defn.get("types") or [])]
         child = run_benchmark(
-            def_id=bid,
-            types=member_types,
-            mode=mode_n,
+            def_id=str(defn.get("id") or ""),
+            types=types,
+            mode="mechanical",
+            parent_id=rid,
         )
-        metrics = child.get("metrics") if isinstance(child.get("metrics"), dict) else {}
-        rows.append(
-            {
-                "def_id": bid,
-                "run_id": child.get("id"),
-                "status": child.get("status"),
-                "types_run": list(child.get("types_run") or member_types),
-                "score": _member_score(metrics),
-                "recall": metrics.get("recall"),
-                "error": child.get("error"),
-            }
-        )
+        row = member_row(child)
+        m = child.get("metrics") if isinstance(child.get("metrics"), dict) else {}
+        row["score"] = _member_score(m)
+        row["types_run"] = list(child.get("types_run") or types)
+        rows.append(row)
 
     n = len(rows)
     n_pass = sum(1 for r in rows if r.get("status") == "passed")
-    n_fail = sum(1 for r in rows if r.get("status") == "failed")
     n_err = sum(1 for r in rows if r.get("status") == "error")
-    scores = [float(r["score"]) for r in rows if r.get("score") is not None]
-    if n_pass == n and n > 0:
-        status = "passed"
-    elif n_err == n:
-        status = "error"
-    else:
-        status = "failed"
-
-    parent_metrics: dict[str, Any] = {
+    status = "passed" if n_pass == n else ("error" if n_err == n else "failed")
+    metrics: dict[str, Any] = {
         "suite": True,
-        "mode": mode_n,
-        "types_run": list(types_n),
+        "suite_id": "fixtures",
+        "tier": "l0",
+        "mode": "mechanical",
+        "confirmed": False,
         "count": n,
         "passed_count": n_pass,
-        "failed_count": n_fail,
+        "failed_count": sum(1 for r in rows if r.get("status") == "failed"),
         "error_count": n_err,
-        "score": round(sum(scores) / len(scores), 4) if scores else 0.0,
         "passed": status == "passed",
-        "confirmed": False,
         "members": rows,
         "member_run_ids": [r.get("run_id") for r in rows],
-        "by_def": {str(r["def_id"]): r for r in rows if r.get("def_id")},
+        "summary": summarize_repeats(rows),
     }
-    err_msg = None
+    err = None
     if n_err:
         sample = [str(r.get("def_id")) for r in rows if r.get("status") == "error"][:8]
-        err_msg = f"{n_err}/{n} members error" + (": " + ", ".join(sample) if sample else "")
-    return update_run(
-        rid,
-        status=status,
-        metrics=parent_metrics,
-        error=err_msg,
-        harness_run_dir=None,
-    )
+        err = f"{n_err}/{n} cases error: " + ", ".join(sample)
+    return update_run(rid, status=status, metrics=metrics, error=err)
 
 
 def run_benchmark(
@@ -366,8 +275,9 @@ def run_benchmark(
     version: Optional[int] = None,
     types: Optional[list[str]] = None,
     mode: str = "mechanical",
+    parent_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Create + execute a BenchmarkRun for recon / hunt / finding_report.
+    """Create + execute an L0 BenchmarkRun for recon / hunt / finding_report.
 
     Parameters
     ----------
@@ -376,7 +286,7 @@ def run_benchmark(
     version:
         Immutable snapshot version; default ``head_version``.
     types:
-        Subset of ``recon`` / ``hunt`` / ``finding_report`` (``poc_dev`` refused).
+        Subset of ``recon`` / ``hunt`` / ``finding_report``.
         Default: all runnable types declared on the snapshot.
     mode:
         ``mechanical`` (default). ``live`` raises; call ``start_live_run``.
@@ -421,6 +331,8 @@ def run_benchmark(
         target_ref=target_ref,
         oracle_hash=oracle_hash,
         status="running",
+        tier="l0",
+        parent_id=parent_id,
     )
     rid = run["id"]
 

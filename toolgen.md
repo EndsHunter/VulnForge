@@ -7,7 +7,7 @@ Checklist of record for humans and local/offline models. Linked from `AGENTS.md`
 - Tool-gap report suggests a missing capability (`vf tool-gaps`, dashboard **Tool gaps**)
 - Extending `grep` / `file_inventory` / etc. with new args
 - Adding a brand-new `code_static` tool name
-- Dev dashboard **Tools** tab → **Generate tool…**
+- Dev dashboard **Tool lab** → **New draft**
 
 **Prefer extend** when the model only needs a filter or argument on an existing tool.
 
@@ -53,9 +53,9 @@ Primary surface for VulnForge: **LM Studio** (or compatible) OpenAI chat API on 
 
 **Alternate mlx servers** (often `:8080`, used by Grok CLI) are not shipped in this repo. If you point VulnForge at one, raise the server token cap well above 512 and set Settings host/port/model to match. A 512-token server cap truncates toolgen JSON even when the client requests 8192.
 
-**AI fix** is **single-shot per click** in the Dev wizard — re-run validate / AI fix until hard checks pass. Do not weaken safety to pass.
+**AI fix** is **single-shot per click** in the Dev Tool lab — re-run validate / AI fix until hard checks pass. Do not weaken safety to pass.
 
-**Integrate apply** defaults to `vulnforge/tools/agent/<id>.py` (SPEC module). Explicit wireup may still write `vulnforge/tools/<id>.py` + `extra_registry.py` (legacy). Always dry-run first; review `impl.py` before Apply.
+**Integrate apply** defaults to `vulnforge/tools/agent/<id>.py` (SPEC module). Explicit wireup may still write `vulnforge/tools/<id>.py` + `extra_registry.py` (legacy). Apply is gated: `POST /api/tool-drafts/{id}/integrate` with `dry_run` returns per-file `ops` (each with `exists`, `overwrite` and a unified `diff`) plus a `plan_hash`. Apply must send that `plan_hash`; if the draft or any target file changed since, the server answers **409**. Overwriting an existing file (other than the extra registry) also needs `allow_overwrite: true`. An existing test file is skipped, never replaced.
 
 ### Live smoke (not FakeLLM)
 
@@ -70,7 +70,7 @@ python scripts/live_toolgen_smoke.py   # dry-run integrate only
 
 ## Dev workflow (AI-assisted)
 
-1. **Tool gaps** (`/tool-gaps`) or Dev **Tools** → note a capability.
+1. **Tool gaps** (`/tool-gaps`) or Dev **Tool lab** → note a capability.
 2. Confirm Ornith settings (section above).
 3. **Create draft** — brief, stages, risk class, prompt slots (problem / non-goals / I/O / safety). Prefer a **small** first tool.
 4. **Preview prompts** — see exactly what the model will be told.
@@ -152,7 +152,7 @@ Fix any hard_fail without weakening safety.
 
 ## Hunt profile tools allowlist
 
-On Dev → Hunt profiles, set **Approved tools** (optional). `null`/empty = full hunt set.
+On Dev → Hunt skills (Edit), set **Approved tools** (optional). `null`/empty = full hunt set.
 When set, `pack_hunt` filters schemas; `submit_candidate` and `submit_none` always remain.
 
 ## Verify

@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from vulnforge.control.yield_curve import SCHEMA as YIELD_SCHEMA
+from vulnforge.control.yield_curve import run_yield
 from vulnforge.db import Database
+from vulnforge.errors import note_swallowed
 from vulnforge.operator_chat.tools_common import get_status_impl, list_findings_impl
 from vulnforge.ui import runner as runctl
 from vulnforge.ui.store import RunRef
@@ -93,7 +96,8 @@ _SPECS: tuple[dict[str, Any], ...] = (
         "chat": "get_status",
         "effect": (
             "Read Ralph runner_status plus durable task and finding counts "
-            "from harness.db. Does not lease or spawn."
+            "from harness.db, and the advisory yield curve (gated findings per "
+            "million tokens). Does not lease, spawn, pause or stop."
         ),
     },
     {
@@ -185,6 +189,18 @@ def _status(run: RunRef, _args: dict[str, Any]) -> dict[str, Any]:
     try:
         summary = db.summary()
         leased = db.count_leased_tasks()
+        try:
+            yield_curve = run_yield(run.path, db)
+        except Exception as exc:  # advisory read: never fail status over it
+            note_swallowed(exc, context="campaign.status.yield", run_dir=run.path)
+            yield_curve = {
+                "schema": YIELD_SCHEMA,
+                "advisory": True,
+                "available": False,
+                "reason": "error",
+                "latest": None,
+                "series": [],
+            }
     finally:
         db.close()
     base["harness"] = {
@@ -194,6 +210,8 @@ def _status(run: RunRef, _args: dict[str, Any]) -> dict[str, Any]:
         "has_work": bool(summary.get("has_work")),
         "leased": int(leased or 0),
     }
+    # Advisory: gated findings per million tokens. Never pauses or stops Ralph.
+    base["yield"] = yield_curve
     return base
 
 

@@ -3,7 +3,7 @@
 Durable store under ``<project>/benchmarks/library/`` (not ``project/``).
 Seeded from ``fixtures/ground_truth/*.json`` (hunt),
 ``fixtures/hunt_extra/*.json`` (hunt micro-fixtures),
-``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev), and
+``fixtures/benchmarks/*.json`` (recon / finding_report), and
 ``fixtures/vulngym/slice.json`` (one hunt def per frozen finding).
 """
 
@@ -20,8 +20,9 @@ from typing import Any, Optional
 
 import yaml
 
-from vulnforge.eval.recall import GROUND_TRUTH_ROOT, load_ground_truth
-from vulnforge.eval.vulngym import SLICE_PATH, difficulty_for_oracle
+from vulnforge.benchmarks.match import GROUND_TRUTH_ROOT, load_ground_truth
+from vulnforge.benchmarks.suites import suite_of
+from vulnforge.benchmarks.vulngym import SLICE_PATH, difficulty_for_oracle
 from vulnforge.paths import PROJECT_ROOT
 from vulnforge.util import utc_now_iso
 
@@ -29,7 +30,7 @@ COLLECTION_FORMAT = "vulnforge.benchmark_library/v1"
 DEFAULT_LIBRARY_ROOT = PROJECT_ROOT / "benchmarks" / "library"
 BENCHMARK_FIXTURES_ROOT = PROJECT_ROOT / "fixtures" / "benchmarks"
 HUNT_EXTRA_ROOT = PROJECT_ROOT / "fixtures" / "hunt_extra"
-BENCH_TYPES = frozenset({"recon", "hunt", "finding_report", "poc_dev"})
+BENCH_TYPES = frozenset({"recon", "hunt", "finding_report"})
 # Underscore allowed so GT stems (toy_sqli, mono_synth) are valid ids.
 DEF_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 MAX_NAME = 200
@@ -239,27 +240,6 @@ def _normalize_oracle(raw: object, *, default_type: str = "hunt") -> dict[str, A
                 out[key] = deepcopy(raw[key]) if isinstance(raw[key], (dict, list)) else raw[key]
         return out
 
-    if otype == "poc_dev":
-        for key in (
-            "pack_files",
-            "expected_pack_files",
-            "poc_run",
-            "signal",
-            "network",
-        ):
-            if key in raw:
-                out[key] = (
-                    deepcopy(raw[key]) if isinstance(raw[key], (dict, list)) else raw[key]
-                )
-        # Preserve any extra opaque keys (workshop may extend)
-        for key, val in raw.items():
-            if key in out or key == "type":
-                continue
-            out[key] = deepcopy(val) if isinstance(val, (dict, list)) else val
-        if "network" not in out:
-            out["network"] = "none"
-        return out
-
     # future types: keep opaque body
     for key, val in raw.items():
         if key == "type":
@@ -307,7 +287,7 @@ def _load_oracle_from_ref(oracle_ref: str) -> dict[str, Any]:
 
 def _public_def(entry: dict[str, Any]) -> dict[str, Any]:
     types = _normalize_types(entry.get("types"))
-    return {
+    out = {
         "id": str(entry.get("id") or ""),
         "name": str(entry.get("name") or entry.get("id") or "")[:MAX_NAME],
         "types": types,
@@ -320,6 +300,8 @@ def _public_def(entry: dict[str, Any]) -> dict[str, Any]:
         "head_version": int(entry.get("head_version") or 1),
         "source": str(entry.get("source") or "custom")[:32],
     }
+    out["suite"] = suite_of(out)
+    return out
 
 
 def _content_fingerprint(defn: dict[str, Any], oracle: dict[str, Any]) -> str:
@@ -370,7 +352,11 @@ def _normalize_collection(raw: dict[str, Any]) -> dict[str, Any]:
         seen.add(bid)
         entry = dict(item)
         entry["id"] = bid
-        defs.append(_public_def(entry))
+        public = _public_def(entry)
+        if not public["types"]:
+            # Retired types (e.g. poc_dev) leave nothing runnable: skip, don't crash.
+            continue
+        defs.append(public)
     out["defs"] = defs
     return out
 
@@ -557,9 +543,9 @@ def _seed_payload_from_bench_fixture(path: Path) -> tuple[dict[str, Any], dict[s
     if not isinstance(raw, dict):
         raise BenchmarkLibraryError(f"bench fixture must be object: {path}")
     otype = str(raw.get("type") or "").strip().lower()
-    if otype not in {"recon", "finding_report", "poc_dev"}:
+    if otype not in {"recon", "finding_report"}:
         raise BenchmarkLibraryError(
-            f"bench fixture {path.name} type must be recon, finding_report, or poc_dev"
+            f"bench fixture {path.name} type must be recon or finding_report"
         )
     oracle_ref = _rel_to_project(path)
     target_ref = str(raw.get("target") or "").strip()
@@ -600,7 +586,7 @@ def seed_from_ground_truth(
     Sources: ``fixtures/ground_truth/*.json`` (hunt; ``pe-*`` are one-finding
     profile_eval seeds with optional ``difficulty`` / ``tags``),
     ``fixtures/hunt_extra/*.json`` (Juliet/CVE-shaped micro-fixture hunts),
-    ``fixtures/benchmarks/*.json`` (recon / finding_report / poc_dev),
+    ``fixtures/benchmarks/*.json`` (recon / finding_report),
     ``fixtures/vulngym/slice.json`` (one hunt def per finding).
 
     Default is skip-if-exists (``missing_only=True``): never duplicates or
@@ -729,7 +715,7 @@ def _require_types(types: list[str]) -> list[str]:
     if not types:
         raise BenchmarkLibraryError(
             "types must be a non-empty subset of "
-            "{recon, hunt, finding_report, poc_dev}"
+            "{recon, hunt, finding_report}"
         )
     return types
 

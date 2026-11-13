@@ -165,3 +165,114 @@ def test_integrate_rejects_invalid(drafts_root: Path):
     create_draft(brief="incomplete", suggested_id="nope_tool")
     with pytest.raises(IntegrateToolError):
         plan_integration("nope_tool")
+
+
+# ---- apply gate: dry-run plan_hash, diffs, overwrite refusal ----
+
+
+@pytest.fixture
+def fake_project(tmp_path: Path, monkeypatch):
+    """Point integrate writes at a temp project root (never the real package)."""
+    import vulnforge.toolgen.integrate as integ
+
+    root = tmp_path / "proj"
+    (root / "vulnforge" / "tools" / "agent").mkdir(parents=True)
+    (root / "tests").mkdir()
+    monkeypatch.setattr(integ, "PROJECT_ROOT", root)
+    return root
+
+
+def test_dry_run_reports_diff_and_plan_hash(drafts_root: Path, fake_project: Path):
+    did = _seed_valid_draft_agent()
+    out = integrate(did, dry_run=True)
+    assert out["dry_run"] is True
+    assert len(out["plan_hash"]) == 64
+    assert out["overwrites"] == []
+    impl_op = next(o for o in out["ops"] if "tools/agent/" in o["path"])
+    assert impl_op["exists"] is False
+    assert impl_op["overwrite"] is False
+    assert impl_op["diff"].startswith("--- /dev/null")
+    assert "+SPEC = ToolSpec(" in impl_op["diff"]
+    assert "contents" not in out
+    # Same draft + same tree → same hash
+    assert integrate(did, dry_run=True)["plan_hash"] == out["plan_hash"]
+
+
+def test_apply_requires_plan_hash(drafts_root: Path, fake_project: Path):
+    from vulnforge.toolgen.integrate import IntegrateConflictError
+
+    did = _seed_valid_draft_agent()
+    with pytest.raises(IntegrateConflictError, match="dry-run"):
+        integrate(did, apply=True)
+    assert not (fake_project / "vulnforge/tools/agent/count_entries.py").exists()
+
+
+def test_apply_refuses_stale_plan(drafts_root: Path, fake_project: Path):
+    from vulnforge.toolgen.integrate import IntegrateConflictError
+
+    did = _seed_valid_draft_agent()
+    h = integrate(did, dry_run=True)["plan_hash"]
+    update_draft(did, impl_py=GOOD_IMPL + "\n# edited after dry-run\n")
+    with pytest.raises(IntegrateConflictError, match="changed since the dry-run"):
+        integrate(did, apply=True, plan_hash=h)
+    assert not (fake_project / "vulnforge/tools/agent/count_entries.py").exists()
+
+
+def test_apply_with_fresh_plan_writes_files(drafts_root: Path, fake_project: Path):
+    did = _seed_valid_draft_agent()
+    dry = integrate(did, dry_run=True)
+    out = integrate(did, apply=True, plan_hash=dry["plan_hash"])
+    assert out["ok"]
+    impl = fake_project / "vulnforge/tools/agent/count_entries.py"
+    assert impl.is_file()
+    assert "SPEC = ToolSpec" in impl.read_text()
+    assert "vulnforge/tools/agent/count_entries.py" in out["written"]
+    assert (fake_project / "tests/test_tool_count_entries.py").is_file()
+
+
+def test_apply_refuses_overwrite_without_consent(drafts_root: Path, fake_project: Path):
+    from vulnforge.toolgen.integrate import IntegrateConflictError
+
+    did = _seed_valid_draft_agent()
+    existing = fake_project / "vulnforge/tools/agent/count_entries.py"
+    existing.write_text("# builtin tool, do not clobber\n", encoding="utf-8")
+    dry = integrate(did, dry_run=True)
+    assert dry["overwrites"] == ["vulnforge/tools/agent/count_entries.py"]
+    op = next(o for o in dry["ops"] if o["path"] == dry["overwrites"][0])
+    assert op["exists"] is True and op["overwrite"] is True
+    assert "-# builtin tool, do not clobber" in op["diff"]
+    with pytest.raises(IntegrateConflictError, match="overwrite"):
+        integrate(did, apply=True, plan_hash=dry["plan_hash"])
+    assert existing.read_text() == "# builtin tool, do not clobber\n"
+    integrate(did, apply=True, plan_hash=dry["plan_hash"], allow_overwrite=True)
+    assert "SPEC = ToolSpec" in existing.read_text()
+
+
+def test_existing_test_file_is_skipped_not_overwritten(drafts_root: Path, fake_project: Path):
+    did = _seed_valid_draft_agent()
+    t = fake_project / "tests/test_tool_count_entries.py"
+    t.write_text("# operator test\n", encoding="utf-8")
+    dry = integrate(did, dry_run=True)
+    op = next(o for o in dry["ops"] if o["path"].endswith("test_tool_count_entries.py"))
+    assert op["op"] == "skip" and op["overwrite"] is False
+    assert dry["overwrites"] == []
+    out = integrate(did, apply=True, plan_hash=dry["plan_hash"])
+    assert t.read_text() == "# operator test\n"
+    assert not any(p.endswith("test_tool_count_entries.py") for p in out["written"])
+
+
+def test_integrate_api_maps_conflict_to_409(drafts_root: Path, fake_project: Path, tmp_path: Path):
+    from fastapi.testclient import TestClient
+
+    from vulnforge.ui.app import create_app
+
+    did = _seed_valid_draft_agent()
+    with TestClient(create_app(runs_root=tmp_path / "runs")) as c:
+        r = c.post(f"/api/tool-drafts/{did}/integrate", json={"apply": True})
+        assert r.status_code == 409
+        dry = c.post(f"/api/tool-drafts/{did}/integrate", json={"dry_run": True})
+        assert dry.status_code == 200
+        h = dry.json()["plan_hash"]
+        ok = c.post(f"/api/tool-drafts/{did}/integrate", json={"apply": True, "plan_hash": h})
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["tool_name"] == did

@@ -417,6 +417,8 @@ def requeue_hunts_bulk_impl(run: RunRef, args: dict) -> dict[str, Any]:
 
 
 def list_findings_impl(run: RunRef, args: dict) -> dict[str, Any]:
+    from vulnforge.evidence_tier import evidence_tier
+
     state = str(args.get("state") or "").strip() or None
     cls = str(args.get("class") or args.get("attack_class") or "").strip()
     q = str(args.get("q") or args.get("text") or "").strip().lower()
@@ -447,6 +449,8 @@ def list_findings_impl(run: RunRef, args: dict) -> dict[str, Any]:
                     "poc_relpath": body.get("poc_relpath"),
                     "evidence_files": evidence_files_for_pack(run, eid),
                     "severity": body.get("severity_claim"),
+                    # Derived label only; never a state (vulnforge/evidence_tier.py).
+                    "evidence_tier": evidence_tier(body, f.state)["tier"],
                     "url": f"/runs/{run.target_id}/{run.run_id}#report",
                 }
             )

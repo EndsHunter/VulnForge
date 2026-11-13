@@ -1,4 +1,4 @@
-"""Benchmark hunt runs — mechanical path prove bar (ticket 3)."""
+"""Benchmark runs: single-case L0, fixture checks suite, listing and routes."""
 
 from __future__ import annotations
 
@@ -95,41 +95,6 @@ def test_api_unknown_def_400():
         assert r.status_code in (400, 404)
 
 
-def test_run_and_results_page_hooks():
-    app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
-    with TestClient(app) as client:
-        run_page = client.get("/benchmarks/run")
-        assert run_page.status_code == 200
-        assert 'id="bench-run-mechanical"' in run_page.text
-        assert 'id="bench-run-live"' in run_page.text
-        assert 'id="bench-active"' in run_page.text
-        assert "/api/benchmarks/runs/active" in run_page.text
-        assert 'mode: "live"' in run_page.text
-        assert 'id="bench-run-def"' in run_page.text
-        assert "/api/benchmarks/runs" in run_page.text
-        assert "all-hunt" in run_page.text
-        assert "all-recon" in run_page.text
-        assert "all-finding_report" in run_page.text
-        assert "all-runnable" in run_page.text
-        assert 'data-suite' in run_page.text
-
-        results = client.get("/benchmarks/results")
-        assert results.status_code == 200
-        assert 'id="bench-results-table"' in results.text
-        assert 'data-bench-results-filters="1"' in results.text
-        assert 'id="bench-filter-kind"' in results.text
-        assert 'id="bench-filter-def"' in results.text
-        assert 'id="bench-filter-status"' in results.text
-        assert 'id="bench-filter-type"' in results.text
-        assert "All hunts" in results.text
-        assert "all-hunt" in results.text
-        assert 'data-bench-sort="1"' in results.text
-        assert 'data-bench-order="1"' in results.text
-        assert 'id="bench-results-apply"' in results.text
-        assert "/api/benchmarks/runs" in results.text
-        assert "/benchmarks/results/" in results.text
-
-
 def test_api_runs_filter_and_sort():
     """GET /api/benchmarks/runs supports def_id/status/type + sort/order."""
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
@@ -218,85 +183,75 @@ def test_results_detail_route_and_list_prove():
         assert listed.status_code == 200
         assert any(r["id"] == rid for r in listed.json()["runs"])
 
-        page = client.get(f"/benchmarks/results/{rid}")
+        page = client.get(f"/benchmarks/runs/{rid}")
         assert page.status_code == 200
-        assert 'data-bench-page="results"' in page.text
-        assert f'data-detail-run-id="{rid}"' in page.text
-        assert 'data-bench-results-detail="1"' in page.text
-        assert 'id="bench-detail-body"' in page.text
-        assert f"/api/benchmarks/runs/{rid}" in page.text or "/api/benchmarks/runs/" in page.text
-        assert 'id="bench-results-back"' in page.text
-        assert 'id="bench-detail-suite"' in page.text
-        assert 'id="bench-detail-members"' in page.text
+        assert 'data-bench-view="run"' in page.text
+        assert f'data-run-id="{rid}"' in page.text
+
+        old = client.get(f"/benchmarks/results/{rid}", follow_redirects=False)
+        assert old.status_code == 308
+        assert old.headers["location"] == f"/benchmarks/runs/{rid}"
+
+        detail = client.get(f"/api/benchmarks/runs/{rid}").json()["run"]
+        assert detail["tier"] == "l0"
+        assert detail["suite_id"] is None
 
 
-def test_defs_for_suite_excludes_poc_dev():
-    from vulnforge.benchmarks import defs_for_suite, list_defs
+def test_suite_members_partition_library():
+    from vulnforge.benchmarks import list_defs, suite_members, suite_of
 
-    hunts = defs_for_suite(["hunt"])
-    recons = defs_for_suite(["recon"])
-    reports = defs_for_suite(["finding_report"])
-    runnable = defs_for_suite(["hunt", "recon", "finding_report"])
-    hunt_ids = [d["id"] for d, _ in hunts]
-    recon_ids = [d["id"] for d, _ in recons]
-    report_ids = [d["id"] for d, _ in reports]
-    assert "toy_sqli" in hunt_ids
-    assert "toy_sqli_recon" in recon_ids
-    assert "toy_sqli_finding_report" in report_ids
-    assert "toy_poc_dev" not in hunt_ids
-    assert "toy_poc_dev" not in recon_ids
-    assert "toy_poc_dev" not in report_ids
-    by_id = {d["id"]: d for d in list_defs()}
-    for bid in hunt_ids:
-        assert "hunt" in (by_id[bid].get("types") or [])
-    assert {d["id"] for d, _ in runnable} == (
-        set(hunt_ids) | set(recon_ids) | set(report_ids)
-    )
+    defs = list_defs()
+    real = {d["id"] for d in suite_members("realworld", "directed", defs)}
+    synth = {d["id"] for d in suite_members("synthetic", "directed", defs)}
+    checks = {d["id"] for d in suite_members("fixtures", "l0", defs)}
+    assert "toy_sqli" in synth and "mono_synth" in synth
+    assert all(i.startswith("entry-") for i in real) and len(real) == 16
+    assert not real & synth
+    # Fixture checks cover every vendored case, never the un-vendored OSS trees.
+    assert synth <= checks
+    assert not real & checks
+    assert {"toy_sqli_recon", "toy_sqli_finding_report"} <= checks
+    # Directed is hunt-only; poc_dev is retired.
+    by_id = {d["id"]: d for d in defs}
+    for bid in real | synth:
+        assert "hunt" in by_id[bid]["types"]
+    assert all("poc_dev" not in d["types"] for d in defs)
+    assert suite_of({"types": ["hunt"], "tags": ["suite:realworld"], "target_ref": "fixtures/x"}) == "realworld"
 
 
-def test_api_suite_all_recon_one_parent_plus_children():
-    """All recons is one parent run; each recon def is a child."""
-    from vulnforge.benchmarks import defs_for_suite
+def test_api_fixture_checks_one_parent_plus_children():
+    """Fixture checks are one suite-fixtures parent (tier l0); each case is a child."""
+    from vulnforge.benchmarks import list_defs, suite_members
 
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        created = client.post(
-            "/api/benchmarks/runs",
-            json={"def_id": "all-recon", "types": ["recon"], "mode": "mechanical"},
-        )
+        created = client.post("/api/benchmarks/runs", json={"suite": "fixtures", "tier": "l0", "note": "ci"})
         assert created.status_code == 200, created.text
         body = created.json()
-        assert body["ok"]
-        assert body.get("suite") is True
+        assert body["ok"] and body.get("suite") is True
         run = body["run"]
-        assert run["def_id"] == "all-recon"
-        assert run["types_run"] == ["recon"]
+        assert run["def_id"] == "suite-fixtures"
+        assert run["suite_id"] == "fixtures"
+        assert run["tier"] == "l0"
+        assert run["note"] == "ci"
+        assert run["status"] in TERMINAL_STATUSES
         metrics = run["metrics"]
         assert metrics.get("suite") is True
-        expect = [d["id"] for d, _ in defs_for_suite(["recon"])]
-        assert metrics["count"] == len(expect)
-        members = metrics.get("members") or []
-        got = [m["def_id"] for m in members]
-        assert got == sorted(expect)
-        assert "toy_sqli_recon" in got
-        assert run["status"] == "passed"
-        assert metrics["passed_count"] == len(expect)
         assert metrics.get("confirmed") is False
+        expect = [d["id"] for d in suite_members("fixtures", "l0", list_defs())]
+        members = metrics.get("members") or []
+        assert [m["def_id"] for m in members] == expect
+        by = {m["def_id"]: m for m in members}
+        assert by["toy_sqli_recon"]["status"] == "passed"
+        assert by["toy_sqli"]["status"] == "passed"
+        assert metrics["count"] == len(expect)
         child_ids = metrics.get("member_run_ids") or []
         assert len(child_ids) == len(expect)
-        listed = client.get("/api/benchmarks/runs").json()["runs"]
-        listed_ids = {r["id"] for r in listed}
-        assert run["id"] in listed_ids
-        for cid in child_ids:
-            assert cid in listed_ids
-            detail = client.get(f"/api/benchmarks/runs/{cid}")
-            assert detail.status_code == 200
-            child = detail.json()["run"]
-            assert child["status"] == "passed"
-            assert "recon" in child["types_run"]
+        child = client.get(f"/api/benchmarks/runs/{child_ids[0]}").json()["run"]
+        assert child["parent_id"] == run["id"]
+        assert child["tier"] == "l0"
 
         parents = client.get("/api/benchmarks/runs", params={"suite": "true"})
-        assert parents.status_code == 200
         parent_ids = [r["id"] for r in parents.json()["runs"]]
         assert run["id"] in parent_ids
         assert not any(cid in parent_ids for cid in child_ids)
@@ -304,61 +259,27 @@ def test_api_suite_all_recon_one_parent_plus_children():
         kid_ids = [r["id"] for r in kids.json()["runs"]]
         assert run["id"] not in kid_ids
         assert all(cid in kid_ids for cid in child_ids)
+        by_suite = client.get("/api/benchmarks/runs", params={"suite_id": "fixtures", "tier": "l0"})
+        assert [r["id"] for r in by_suite.json()["runs"]] == [run["id"]]
         mixed = client.get("/api/benchmarks/runs", params={"sort": "started_at", "order": "desc"})
         mixed_ids = [r["id"] for r in mixed.json()["runs"]]
         assert mixed_ids.index(run["id"]) < min(mixed_ids.index(cid) for cid in child_ids)
 
-        series = client.get(
-            "/api/benchmarks/runs/series",
-            params={"def_id": "all-recon", "type": "recon"},
-        )
-        assert series.status_code == 200, series.text
-        points = series.json()["points"]
-        assert all(p.get("mode") == "live" for p in points)
-        assert not any(p["run_id"] == run["id"] for p in points)
-
-        detail_page = client.get(f"/benchmarks/results/{run['id']}")
-        assert detail_page.status_code == 200
-        assert 'id="bench-detail-members"' in detail_page.text
-        assert 'data-bench-detail-suite="1"' in detail_page.text
+        suites = client.get("/api/benchmarks/suites").json()
+        fx = next(s for s in suites["suites"] if s["id"] == "fixtures")
+        assert fx["runs"]["l0"]["latest"]["id"] == run["id"]
 
 
-def test_api_suite_all_hunt_includes_toy_and_flag():
-    from vulnforge.benchmarks import defs_for_suite
-
+def test_api_suite_run_refusals():
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        created = client.post(
-            "/api/benchmarks/runs",
-            json={"def_id": "all-hunt", "suite": True, "mode": "mechanical"},
-        )
-        assert created.status_code == 200, created.text
-        run = created.json()["run"]
-        assert run["def_id"] == "all-hunt"
-        metrics = run["metrics"]
-        expect = {d["id"] for d, _ in defs_for_suite(["hunt"])}
-        got = {m["def_id"] for m in (metrics.get("members") or [])}
-        assert got == expect
-        assert "toy_sqli" in got
-        toy = metrics["by_def"]["toy_sqli"]
-        assert toy["status"] == "passed"
-        assert toy.get("recall") is not None and toy["recall"] > 0
-        assert metrics.get("confirmed") is False
-
-
-def test_api_suite_true_without_def_id():
-    app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
-    with TestClient(app) as client:
-        created = client.post(
-            "/api/benchmarks/runs",
-            json={"suite": True, "types": ["finding_report"], "mode": "mechanical"},
-        )
-        assert created.status_code == 200, created.text
-        run = created.json()["run"]
-        assert run["def_id"] == "all-finding_report"
-        assert run["metrics"].get("suite") is True
-        ids = [m["def_id"] for m in run["metrics"]["members"]]
-        assert "toy_sqli_finding_report" in ids
+        bad_tier = client.post("/api/benchmarks/runs", json={"suite": "synthetic", "tier": "l0"})
+        assert bad_tier.status_code == 400
+        missing = client.post("/api/benchmarks/runs", json={})
+        assert missing.status_code == 400
+        # Retired type-based suites are no longer accepted as def ids.
+        legacy = client.post("/api/benchmarks/runs", json={"def_id": "all-recon", "mode": "mechanical"})
+        assert legacy.status_code in (400, 404)
 
 
 def test_list_runs_started_at_parent_before_later_children():

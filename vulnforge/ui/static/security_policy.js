@@ -1,4 +1,4 @@
-/* Mission → Security policy panel (operator-owned; vulnforge/security-policy@1).
+/* Atlas → Security policy fold (operator-owned; vulnforge/security-policy@1).
  *
  * The policy only narrows scope and demotes findings (exclusion gate →
  * rejected_mech with the rule cited; severity cap). It never confirms anything.
@@ -210,6 +210,14 @@
     }
   }
 
+  /** Show the panel and load the current policy (Atlas fold opens it). */
+  async function open() {
+    const panel = document.getElementById("policy-panel");
+    if (!panel) return;
+    panel.style.display = "block";
+    await load();
+  }
+
   async function toggle() {
     const panel = document.getElementById("policy-panel");
     if (!panel) return;
@@ -232,7 +240,7 @@
     });
   }
 
-  /** Keep an open editor (and unsaved text) across Mission re-renders. */
+  /** Keep an open editor (and unsaved text) across re-renders. */
   function capture() {
     const panel = document.getElementById("policy-panel");
     if (!panel || panel.style.display === "none") return null;
@@ -256,5 +264,5 @@
     if (rev) rev.textContent = state.rev;
   }
 
-  window.VFSecurityPolicy = { panelHtml, bind, toggle, capture, restore };
+  window.VFSecurityPolicy = { panelHtml, bind, open, toggle, capture, restore };
 })();

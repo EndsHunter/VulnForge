@@ -1,0 +1,251 @@
+/*
+ * Benchmarks desk (issue #204). Page-owned. shell.css primitives + :root
+ * tokens from styles.css only; no new hues.
+ */
+
+body[data-page="benchmarks"] { background: var(--bg); }
+
+.bench-desk {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px 20px 72px;
+}
+
+/* ---------- Header ---------- */
+.bench-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.bench-head .home-mark .logo { width: 28px; height: 28px; border-radius: 7px; display: block; }
+.bench-title { margin: 0 8px 0 0; font-size: 18px; font-weight: 600; }
+.bench-head .vf-tab { text-decoration: none; }
+.bench-head .vf-tab[aria-current="page"] { color: var(--text); background: var(--bg-card); font-weight: 600; }
+.bench-menu > summary { min-height: 32px; }
+.bench-menu .danger-menu-body { right: 0; left: auto; min-width: 160px; }
+
+.bench-main { display: flex; flex-direction: column; gap: 16px; }
+
+/* ---------- Shared bits ---------- */
+.bench-purpose { margin: 0; color: var(--text-soft); font-size: 13px; max-width: 80ch; }
+.bench-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bench-row--end { justify-content: flex-end; }
+.bench-caveat {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: 12px;
+  background: var(--bg-inset);
+  border-radius: 0 6px 6px 0;
+}
+.bench-caveat[data-tier="directed"] { border-left-color: var(--warn); }
+.bench-tier[data-tier="directed"] { color: var(--warn); border-color: var(--tone-warn-border); background: var(--tone-warn-bg); }
+.bench-tier[data-tier="l0"] { color: var(--text-muted); }
+.bench-pill--fail { color: var(--bad); background: var(--tone-bad-bg); border-color: var(--tone-bad-border); }
+.bench-error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--tone-bad-border);
+  background: var(--tone-bad-bg);
+  color: var(--bad);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.bench-error-inline { color: var(--bad); font-size: 12px; }
+.bench-warning {
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--tone-warn-border);
+  background: var(--tone-warn-bg);
+  color: var(--warn);
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.bench-refusal { border-color: var(--tone-bad-border); color: var(--text-soft); }
+.bench-refusal strong { color: var(--bad); }
+.bench-live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+  flex: 0 0 auto;
+}
+.bench-input {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  color-scheme: dark;
+  min-width: 0;
+}
+.bench-input:focus { outline: none; border-color: var(--accent); }
+select.bench-input { flex: 1 1 220px; max-width: 100%; }
+
+/* ---------- Metric tiles ---------- */
+.bench-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+.bench-metric {
+  background: var(--bg-inset);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+.bench-metric-label { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bench-metric-value { font-size: 20px; font-weight: 600; color: var(--text-bright); margin-top: 2px; overflow-wrap: anywhere; }
+.bench-metric-range { font-size: 11.5px; color: var(--text-muted); }
+.bench-delta { font-size: 11.5px; margin-top: 2px; color: var(--text-faint); }
+[data-tone="good"] { color: var(--ok); }
+[data-tone="bad"] { color: var(--bad); }
+[data-tone="flat"] { color: var(--text-muted); }
+
+/* ---------- Active ---------- */
+.bench-active { border-color: var(--accent-dim); }
+.bench-active-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.bench-active-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bench-active-name { font-weight: 600; color: var(--text); }
+
+/* ---------- Suite cards ---------- */
+.bench-suites { display: flex; flex-direction: column; gap: 16px; }
+.bench-suite { display: flex; flex-direction: column; gap: 10px; }
+.bench-suite-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bench-suite-title { margin: 0; font-size: 15px; font-weight: 600; }
+.bench-suite-blurb { margin: 0; font-size: 12.5px; }
+.bench-suite-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font-size: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+.bench-run-ref, .bench-base-ref { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.bench-spark { width: 160px; height: 36px; flex: 0 0 auto; }
+.bench-spark-base { stroke: var(--hairline-strong); stroke-width: 1; }
+.bench-spark-line { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+.bench-spark-dot { fill: var(--accent-bright); }
+
+/* ---------- Fixture checks ---------- */
+.bench-fixtures-details { display: flex; flex-direction: column; gap: 10px; }
+.bench-fixtures-details[open] > * + * { margin-top: 10px; }
+.bench-fixtures-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.bench-fixtures-summary::-webkit-details-marker { display: none; }
+.bench-fixtures-summary .vf-section-label { margin: 0; }
+.bench-fixtures-summary::before { content: "▸"; color: var(--text-faint); font-size: 11px; }
+.bench-fixtures-details[open] .bench-fixtures-summary::before { content: "▾"; }
+
+/* ---------- Tables ---------- */
+.bench-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.bench-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.bench-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 11.5px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.bench-table td { padding: 6px 8px; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+.bench-table tbody tr:hover { background: var(--row-hover); }
+.bench-recent tbody tr { cursor: pointer; }
+.bench-table a { color: var(--link); text-decoration: none; }
+.bench-table a:hover { text-decoration: underline; }
+.bench-col-model { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bench-col-note { color: var(--text-muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bench-col-target { color: var(--text-muted); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bench-col-runs { display: flex; flex-wrap: wrap; gap: 6px; }
+.bench-tag { font-size: 11px; padding: 0 6px; margin-right: 4px; }
+
+/* ---------- Run page ---------- */
+.bench-back { color: var(--text-muted); text-decoration: none; font-size: 12.5px; align-self: flex-start; }
+.bench-back:hover { color: var(--text); }
+.bench-run-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.bench-run-title { margin: 0; font-size: 18px; font-weight: 600; }
+.bench-note { margin: 0; color: var(--text-soft); font-style: italic; }
+.bench-progress { margin: 0; display: flex; align-items: center; gap: 6px; color: var(--accent-bright); font-family: var(--mono); font-size: 12px; }
+.bench-totals { margin: 10px 0 0; font-size: 12px; }
+.bench-run-grid { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.bench-run-grid > :first-child { flex: 999 1 560px; min-width: 0; }
+.bench-run-side { flex: 1 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.bench-fp-list { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 12.5px; }
+.bench-fp-list dt { color: var(--muted); }
+.bench-fp-list dd { margin: 0; overflow-wrap: anywhere; }
+.bench-compare-to .bench-row { flex-wrap: nowrap; }
+.bench-compare-to p { margin: 8px 0 0; font-size: 12px; }
+.bench-sub { margin: 16px 0 6px; font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.bench-kv { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 3px 0; }
+.bench-path { margin: 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.bench-oracle-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.bench-oracle-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bench-oracle-kind {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.bench-oracle-list li[data-kind="hit"] .bench-oracle-kind { color: var(--ok); border-color: var(--tone-good-border); background: var(--tone-good-bg); }
+.bench-oracle-list li[data-kind="raw"] .bench-oracle-kind { color: var(--warn); border-color: var(--tone-warn-border); background: var(--tone-warn-bg); }
+.bench-oracle-list li[data-kind="miss"] .bench-oracle-kind { color: var(--bad); border-color: var(--tone-bad-border); background: var(--tone-bad-bg); }
+
+/* ---------- Compare ---------- */
+.bench-cmp-side { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.bench-cmp-side .vf-section-label { margin: 0; }
+.bench-cmp-arrow { color: var(--text-faint); }
+.bench-flip-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.bench-flips[data-kind="regression"] { border-color: var(--tone-bad-border); }
+.bench-flips[data-kind="gain"] { border-color: var(--tone-good-border); }
+.bench-flip-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.bench-flip-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* ---------- Cases ---------- */
+.bench-case-groups { display: flex; flex-direction: column; gap: 16px; }
+.bench-case-group { display: flex; flex-direction: column; gap: 8px; }
+
+/* ---------- Composer dialog ---------- */
+.bench-dialog {
+  width: min(480px, calc(100vw - 32px));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+  color: var(--text);
+  padding: 18px;
+}
+.bench-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.bench-form { display: flex; flex-direction: column; gap: 12px; }
+.bench-dialog-title { margin: 0; font-size: 16px; }
+.bench-field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.bench-field > span:first-child { color: var(--text-soft); font-weight: 600; }
+.bench-field .vf-faint { font-size: 11.5px; }
+.bench-field--check { flex-direction: row; align-items: center; gap: 8px; }
+.bench-field--check > span { font-weight: 400 !important; }
+.bench-cost { margin: 0; font-size: 12px; }
+
+@media (max-width: 640px) {
+  .bench-desk { padding: 12px 16px 64px; }
+  .bench-metric-value { font-size: 17px; }
+  .bench-spark { width: 120px; }
+}

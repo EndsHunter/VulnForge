@@ -112,3 +112,34 @@ def test_new_host_without_id_does_not_inherit_a_key(tmp_path, monkeypatch):
     hosts = load_ui_settings()["hosts"]
     assert hosts[0]["api_key"] == SECRET
     assert hosts[1]["api_key"] == ""
+
+
+def test_settings_page_never_renders_a_key(tmp_path, monkeypatch):
+    """#202 redesign: the page HTML and its key input never carry a stored key."""
+    import re
+
+    from vulnforge.paths import PROJECT_ROOT
+
+    _isolate(tmp_path, monkeypatch)
+    _seed()
+    with TestClient(create_app(runs_root=tmp_path / "runs")) as client:
+        page = client.get("/settings")
+        assert page.status_code == 200
+        assert SECRET not in page.text
+        html = page.text
+        # Regrouped by job: Connections → Roles → Validation and MoA → Budgets → Sandbox.
+        order = [
+            'id="settings-connections"',
+            'id="settings-roles"',
+            'id="settings-validation"',
+            'id="settings-budget"',
+            'id="settings-poc-iterate"',
+        ]
+        assert [html.index(x) for x in order] == sorted(html.index(x) for x in order)
+        assert "/static/pages/settings.css" in html
+        assert "/static/pages/settings_helpers.js" in html
+    js = (PROJECT_ROOT / "vulnforge/ui/static/settings.js").read_text(encoding="utf-8")
+    # The key input is created empty and only ever read; nothing assigns host.api_key into it.
+    assert not re.search(r"api_key\s*[^=!]=\s*host", js)
+    assert "host?.api_key_set" in js
+    assert not re.search(r"\.value\s*=\s*[^;]*api_key", js)

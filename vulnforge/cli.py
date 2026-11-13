@@ -80,6 +80,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_policy(args, cfg)
         if cmd == "ci":
             return cmd_ci(args, cfg)
+        if cmd == "bench":
+            from vulnforge.benchmarks.cli import cmd_bench
+
+            return cmd_bench(args, cfg)
         print(f"unknown command: {cmd}", file=sys.stderr)
         return EXIT_CONFIG
     except SystemExit as e:
@@ -477,6 +481,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pol_md.add_argument("--run-dir", type=Path, default=None)
     pol_md.add_argument("--save", action="store_true", help="Store the draft as a new revision")
+
+    from vulnforge.benchmarks.cli import add_bench_parser
+
+    add_bench_parser(sub)
 
     return p
 
@@ -976,6 +984,20 @@ def cmd_init(args, cfg: dict) -> int:
             return EXIT_CONFIG
         db.set_diff_scope(diff_scope)
         write_json(run_dir / "diff_scope.json", diff_scope)
+    # R0 mechanical skeleton (no LLM): zones/arrows for Atlas before recon runs.
+    # Stored in {run_dir}/architecture_skeleton.json, never architecture_json.
+    if bool((cfg.get("recon_skeleton") or {}).get("at_init", True)):
+        try:
+            from vulnforge.recon_skeleton import build_skeleton_for_target, write_skeleton
+
+            write_skeleton(
+                run_dir,
+                build_skeleton_for_target(target, cfg, ignore_globs=list(ignore)),
+            )
+        except Exception as exc:
+            from vulnforge.errors import note_swallowed
+
+            note_swallowed(exc, context="init.recon_skeleton", run_dir=run_dir)
 
     # Optional operator recon selection / brief (UI + CLI)
     init_agent_ids = [

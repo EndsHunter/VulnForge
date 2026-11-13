@@ -38,7 +38,7 @@ exit codes) is unchanged by this layout; this document is navigation only.
 | Mechanical codemap (not architecture) | `vulnforge/tools/codemap.py` → `runs.codemap_json` (v2: modules + files + symbols; hunts get area slice) |
 | Sink residual coverage (per path:line:kind) | `db.sink_coverage_facts` + `tools/sink_preindex.record_sink_coverage`; Hunts cell detail |
 | Coarse reachability (`query_flows`) | `tools/flows.py` + `tools/agent/query_flows.py` — import BFS + call heuristic (**not** taint) |
-| Fixture recall oracles (L0 CI) | `fixtures/ground_truth/*.json` + `vulnforge/eval/recall.py` + `tests/test_fixture_recall_mechanical.py` |
+| Fixture recall oracles (L0 CI) | `fixtures/ground_truth/*.json` + `vulnforge/benchmarks/match.py` + `tests/test_fixture_recall_mechanical.py` |
 | Function-level symbol extract | `vulnforge/tools/symbols/` (heuristic always; tree-sitter via optional `vulnforge[codemap]`) |
 | Languages / extensions / entrypoints catalog | `vulnforge/languages.py` (SOURCE_EXTS, ENTRYPOINT_NAMES, package markers; used by inventory, codemap, sinks, strategies) |
 | Tool-gap mining | `vulnforge/tool_gaps.py` |
@@ -94,7 +94,7 @@ A role ref resolves to that host's URL + API mode + API key + model (`vulnforge/
 1. Create `vulnforge/tools/agent/<name>.py` with `SPEC = ToolSpec(...)` and `run(ctx, **args)`.
 2. Registry auto-discovers the module (no hand edit of `packet.py` / giant if/elif).
 3. Add a unit test under `tests/`.
-4. Or use Dev → Tools → generate/validate/integrate (writes SPEC module when possible).
+4. Or use Dev → Tool lab → generate/validate/integrate (writes SPEC module when possible; dry-run + diff required before apply).
 
 Wire-up checklist (historical multi-touch path): see `toolgen.md`.
 

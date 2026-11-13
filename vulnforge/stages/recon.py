@@ -19,12 +19,32 @@ from vulnforge.hunt_profiles import (
 )
 from vulnforge.agent_runtime import run_tool_loop as run_agent_tool_loop
 from vulnforge.llm import InfraError, classify_llm_failure
-from vulnforge.packet import pack_recon_agent
+from vulnforge.architecture_schema import (
+    SCHEMA_V2,
+    is_v2,
+    merge_v2,
+    validate_citations,
+)
+from vulnforge.packet import pack_flow_tracer, pack_recon_agent
 from vulnforge.recon_agents import (
+    FLOW_AGENT_ID,
     ReconAgentError,
     active_agents,
+    flow_agent,
     get_body,
+    is_flow_phase_agent,
 )
+from vulnforge.recon_flows import (
+    FLOW_PHASE,
+    flow_extras,
+    flow_tracer_settings,
+    merge_flows_into_architecture,
+    normalize_submitted_flows,
+    prior_architecture_text,
+    restore_flow_extras,
+    select_flow_entrypoints,
+)
+from vulnforge.recon_skeleton import read_skeleton
 from vulnforge.tools import build_tool_handler
 from vulnforge.tools.codemap import (
     build_codemap,
@@ -109,7 +129,23 @@ def resolve_recon_agent_ids(agent_ids: Optional[list[str]] = None) -> list[str]:
         if not filter_ids:
             filter_ids = None
     agents = active_agents(agent_ids=filter_ids)
-    return [str(a.get("id") or "").strip().lower() for a in agents if a.get("id")]
+    ids = [
+        str(a.get("id") or "").strip().lower()
+        for a in agents
+        if a.get("id") and not is_flow_phase_agent(a)
+    ]
+    if not ids and filter_ids and any(is_flow_phase_agent(x) for x in filter_ids):
+        # Operator asked for the flow step only: one recon task that fans out
+        # flow tracers from the current map (flow-tracer may be seed-only).
+        return [FLOW_AGENT_ID]
+    if not ids and not filter_ids:
+        # Only phase agents active: fall back to every map agent (never deadlock).
+        from vulnforge.recon_agents import list_agents
+
+        ids = [
+            str(a["id"]) for a in list_agents() if not is_flow_phase_agent(a)
+        ]
+    return ids
 
 
 def expand_recon_agent_tasks(
@@ -280,26 +316,44 @@ def llm_merge_architectures(
     operator_brief: str = "",
     prompts_root: Path | None = None,
     security_policy: dict | None = None,
+    summary_only: bool = False,
 ) -> tuple[dict[str, Any] | None, Any]:
     """Ask the model to merge prior + incoming architecture maps.
 
     Returns (merged_structure_or_None, LLMResult_or_None).
     On failure returns (None, result_or_None); caller should fall back mechanically.
+
+    ``summary_only`` (recon v2 / R5): send only the two summary paragraphs; the
+    structure merges deterministically (``merge_v2``) and only ``summary`` of
+    the reply is used.
     """
     root = prompts_root or system_prompts_root()
-    try:
-        prompt_body = (root / "architecture_merge.md").read_text(
-            encoding="utf-8", errors="replace"
-        )
-    except OSError:
+    if summary_only:
         prompt_body = (
-            "Merge prior and incoming architecture JSON into one map. "
-            "Keep solid prior detail; union lists; cohesive summary. "
-            "Reply with JSON only: summary, components, trust_boundaries, "
-            "input_surfaces, hunt_focus, relations.\n"
+            "Merge two architecture summaries of the same codebase into one "
+            "cohesive summary (1-4 short paragraphs). Keep every concrete fact "
+            "(paths, components, surfaces) from both; drop repetition; do not "
+            "add facts that are in neither. Reply with JSON only: "
+            '{"summary": "..."}\n'
         )
-    prior_j = _arch_json_for_merge(prior)
-    inc_j = _arch_json_for_merge(incoming)
+    else:
+        try:
+            prompt_body = (root / "architecture_merge.md").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            prompt_body = (
+                "Merge prior and incoming architecture JSON into one map. "
+                "Keep solid prior detail; union lists; cohesive summary. "
+                "Reply with JSON only: summary, components, trust_boundaries, "
+                "input_surfaces, hunt_focus, relations.\n"
+            )
+    if summary_only:
+        prior_j = {"summary": str((prior or {}).get("summary") or "")}
+        inc_j = {"summary": str((incoming or {}).get("summary") or "")}
+    else:
+        prior_j = _arch_json_for_merge(prior)
+        inc_j = _arch_json_for_merge(incoming)
     # Bound size so local models stay within context
     try:
         max_chars = int((cfg.get("packet") or {}).get("max_architecture_merge_chars", 6000))
@@ -343,7 +397,11 @@ def llm_merge_architectures(
         from vulnforge.packet import _policy_block
 
         user += _policy_block(security_policy, stage="recon", cfg=cfg)
-    user += "\nRespond with the merged architecture JSON object only.\n"
+    user += (
+        '\nRespond with {"summary": "..."} JSON only.\n'
+        if summary_only
+        else "\nRespond with the merged architecture JSON object only.\n"
+    )
     messages = [
         {"role": "system", "content": prompt_body.strip()},
         {"role": "user", "content": user},
@@ -402,6 +460,116 @@ def _load_security_policy(db) -> dict[str, Any] | None:
     from vulnforge.security_policy import load_current
 
     return load_current(db, context="recon.load_security_policy")
+def _llm_summary_merge(
+    client: Any,
+    cfg: dict,
+    existing: dict[str, Any],
+    part: dict[str, Any],
+    *,
+    operator_brief: str,
+    run_dir: Path | None,
+    task_id: int | None,
+    security_policy: dict | None = None,
+) -> str | None:
+    """LLM merge of the two summary paragraphs only (R5). None on failure."""
+    llm_part, llm_result = llm_merge_architectures(
+        client,
+        cfg,
+        existing,
+        part,
+        operator_brief=operator_brief,
+        security_policy=security_policy,
+        summary_only=True,
+    )
+    if run_dir is not None and llm_result is not None:
+        try:
+            pass_usage = record_llm_result(
+                run_dir,
+                task_id=task_id or 0,
+                kind="architecture_merge",
+                model_id=getattr(llm_result, "model_id", None),
+                result=llm_result,
+            )
+        except Exception:
+            pass_usage = {}
+        try:
+            merge_messages = list(getattr(llm_result, "transcript", None) or [])
+            if not merge_messages and getattr(llm_result, "content", None):
+                merge_messages = [
+                    {
+                        "role": "assistant",
+                        "content": str(getattr(llm_result, "content", "") or ""),
+                    }
+                ]
+            save_transcript(
+                run_dir,
+                task_id or 0,
+                kind="architecture_merge",
+                model_id=getattr(llm_result, "model_id", None),
+                messages=merge_messages,
+                result={
+                    "ok": bool(getattr(llm_result, "ok", False)),
+                    "classification": getattr(
+                        getattr(llm_result, "classification", None),
+                        "value",
+                        None,
+                    ),
+                    "error": getattr(llm_result, "error", None),
+                    "content": getattr(llm_result, "content", None),
+                    "merged": bool(llm_part),
+                    **(pass_usage if isinstance(pass_usage, dict) else {}),
+                },
+                meta={
+                    "merge": "llm_summary" if llm_part else "llm_failed_fallback",
+                    "structure_merge": "deterministic",
+                },
+                pass_key="architecture_merge",
+            )
+        except OSError:
+            pass
+        try:
+            append_event(
+                run_dir,
+                {
+                    "source": "vf",
+                    "event": "architecture_merge",
+                    "task_id": task_id,
+                    "method": "llm" if llm_part else "mechanical_fallback",
+                    "scope": "summary",
+                    "ok": bool(llm_part),
+                },
+            )
+        except OSError:
+            pass
+    if not llm_part:
+        return None
+    summary = str(llm_part.get("summary") or "").strip()
+    return summary or None
+
+
+def merge_architecture_parts(
+    parts: list[dict[str, Any]],
+    *,
+    base: dict[str, Any] | None = None,
+    agents_run: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Deterministic v2 merge of agent parts on top of *base* (skeleton / prior).
+
+    Structure folds through ``merge_v2`` (components by id/name, relations by
+    (from, to, kind), flows by id; unknown endpoints dropped). The summary is
+    the unique paragraphs of the parts (no LLM). Extras of *base* are kept.
+    """
+    acc: dict[str, Any] = dict(base or {})
+    extras = flow_extras(*(list(reversed(parts)) + [acc]))
+    for part in parts:
+        if isinstance(part, dict):
+            acc = merge_v2(acc, part)
+    restore_flow_extras(acc, extras)
+    acc["summary"] = _merge_summary_paragraphs(parts)
+    acc["schema"] = SCHEMA_V2
+    if agents_run is not None:
+        acc["recon_agents_run"] = list(agents_run)
+    return acc
 
 
 def store_merged_architecture(
@@ -419,23 +587,38 @@ def store_merged_architecture(
     run_dir: Path | None = None,
     task_id: int | None = None,
     force_replace: bool = False,
+    target_root: Path | None = None,
+    skeleton: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Write architecture, merging with the map already in the DB when present.
+    """Write architecture (v2), merging with the map already in the DB.
 
-    Never blank-overwrites a non-empty prior map unless ``force_replace`` is True.
-    When prior exists and an LLM client+cfg are provided (and not disabled),
-    the model is tasked with the merge; mechanical merge is the fallback.
+    R5 merge (deterministic): start from the prior map (or the mechanical
+    skeleton when there is none) → ``merge_v2`` the incoming part →
+    ``validate_citations`` against *target_root* → store with
+    ``schema: vulnforge/architecture@2``. Only the summary paragraphs may go
+    through the LLM (``architecture_llm_merge``); concatenation is the
+    mechanical fallback. Never blank-overwrites a non-empty prior map unless
+    ``force_replace`` is True. Every write records an architecture revision.
     """
     cfg = cfg if isinstance(cfg, dict) else {}
     security_policy = _load_security_policy(db)
     existing = None if force_replace else db.get_architecture()
-    # Always preserve prior when present (batch index 0 re-runs, solo re-runs, etc.)
     should_merge = bool(existing) and not force_replace
-    if merge_with_existing and not existing:
-        should_merge = False
+    if skeleton is None and run_dir is not None:
+        skeleton = read_skeleton(run_dir)
+    skel = skeleton if isinstance(skeleton, dict) and skeleton.get("components") else None
 
     merge_method = "none"
     note = ""
+    if target_root is not None and isinstance(part, dict):
+        # Strip bad lines before the merge so they never replace good ones.
+        part_extras = flow_extras(part)
+        part = {
+            **part,
+            **validate_citations(part, Path(target_root)),
+            "summary": part.get("summary") or "",
+        }
+        restore_flow_extras(part, part_extras)
 
     if should_merge and existing:
         agents = _merge_agents_run(existing.get("recon_agents_run"), agents_run)
@@ -447,103 +630,83 @@ def store_merged_architecture(
         if stages_cfg.get("architecture_llm_merge") is False:
             llm_enabled = False
 
-        llm_part: dict[str, Any] | None = None
-        if llm_enabled and client is not None:
-            llm_part, llm_result = llm_merge_architectures(
+        # v1 prior (older runs): lay it over the skeleton so it gains zones and
+        # mechanical relations. A v2 prior already went through this once.
+        base: dict[str, Any] = dict(existing)
+        if skel and not is_v2(existing):
+            base = {**existing, **merge_v2(skel, existing)}
+        extras = flow_extras(part, existing)
+        structure = merge_v2(base, part)
+        restore_flow_extras(structure, extras)
+
+        prior_summary = str(existing.get("summary") or "").strip()
+        new_summary = str(part.get("summary") or "").strip()
+        summary: str | None = None
+        if (
+            llm_enabled
+            and client is not None
+            and prior_summary
+            and new_summary
+            and _normalize_summary_para(prior_summary) != _normalize_summary_para(new_summary)
+        ):
+            summary = _llm_summary_merge(
                 client,
                 cfg,
                 existing,
                 part,
                 operator_brief=operator_brief,
                 security_policy=security_policy,
+                run_dir=run_dir,
+                task_id=task_id,
             )
-            if run_dir is not None and llm_result is not None:
-                try:
-                    pass_usage = record_llm_result(
-                        run_dir,
-                        task_id=task_id or 0,
-                        kind="architecture_merge",
-                        model_id=getattr(llm_result, "model_id", None),
-                        result=llm_result,
-                    )
-                except Exception:
-                    pass_usage = {}
-                try:
-                    merge_messages = list(getattr(llm_result, "transcript", None) or [])
-                    if not merge_messages and getattr(llm_result, "content", None):
-                        merge_messages = [
-                            {
-                                "role": "assistant",
-                                "content": str(getattr(llm_result, "content", "") or ""),
-                            }
-                        ]
-                    save_transcript(
-                        run_dir,
-                        task_id or 0,
-                        kind="architecture_merge",
-                        model_id=getattr(llm_result, "model_id", None),
-                        messages=merge_messages,
-                        result={
-                            "ok": bool(getattr(llm_result, "ok", False)),
-                            "classification": getattr(
-                                getattr(llm_result, "classification", None),
-                                "value",
-                                None,
-                            ),
-                            "error": getattr(llm_result, "error", None),
-                            "content": getattr(llm_result, "content", None),
-                            "merged": bool(llm_part),
-                            **(pass_usage if isinstance(pass_usage, dict) else {}),
-                        },
-                        meta={"merge": "llm" if llm_part else "llm_failed_fallback"},
-                        pass_key="architecture_merge",
-                    )
-                except OSError:
-                    pass
-                try:
-                    append_event(
-                        run_dir,
-                        {
-                            "source": "vf",
-                            "event": "architecture_merge",
-                            "task_id": task_id,
-                            "method": "llm" if llm_part else "mechanical_fallback",
-                            "ok": bool(llm_part),
-                        },
-                    )
-                except OSError:
-                    pass
-
-        if llm_part:
-            arch = merge_architectures([llm_part], agents_run=agents)
+        if summary:
             merge_method = "llm"
             note = "llm_merge"
         else:
-            arch = merge_architectures(
-                [_arch_structure_part(existing), part],
-                agents_run=agents,
-            )
+            summary = _merge_summary_paragraphs([existing, part])
             merge_method = "mechanical"
-            note = "mechanical_merge" if not (llm_enabled and client) else "mechanical_fallback"
-
+            note = (
+                "mechanical_merge"
+                if not (llm_enabled and client)
+                else "mechanical_fallback"
+            )
+        arch: dict[str, Any] = dict(structure)
+        arch["recon_agents_run"] = agents
         # Prefer newest inventory; keep older if this pass lacks counts
         prev_inv = existing.get("inventory") if isinstance(existing.get("inventory"), dict) else {}
         inv = dict(prev_inv)
         inv.update({k: v for k, v in (inventory or {}).items() if v is not None})
         arch["inventory"] = inv
-        if existing.get("operator_notes_applied") and not operator_brief:
-            arch["operator_notes_applied"] = existing.get("operator_notes_applied")
+        for key in ("operator_notes_applied", "recon_flow_runs", "flow_batches"):
+            if existing.get(key) and not (key == "operator_notes_applied" and operator_brief):
+                arch[key] = existing.get(key)
         # Preserve batch finalize markers across merges
         if isinstance(existing.get("recon_batch_finalize"), dict):
             arch["recon_batch_finalize"] = dict(existing["recon_batch_finalize"])
         source = "merge"
         arch["merge_method"] = merge_method
     else:
-        arch = merge_architectures([part], agents_run=agents_run)
+        extras = flow_extras(part)
+        structure = merge_v2(skel or {}, part)
+        restore_flow_extras(structure, extras)
+        summary = str(part.get("summary") or "")
+        arch = dict(structure)
         arch["inventory"] = inventory
         arch["recon_agents_run"] = list(agents_run)
         source = "recon"
         merge_method = "none"
+
+    if target_root is not None:
+        report: dict[str, int] = {}
+        extras = flow_extras(arch)
+        checked = validate_citations(arch, Path(target_root), report=report)
+        restore_flow_extras(checked, extras)
+        arch.update(checked)
+        arch["citation_check"] = report
+    arch["schema"] = SCHEMA_V2
+    arch["structure_merge"] = "deterministic"
+    # Summary stays uncapped (Mission overview); hunt packets clip separately.
+    arch["summary"] = summary or arch.get("summary") or ""
 
     arch["seed_sinks"] = seed_sinks[:200]
     # Truncation honesty for sink catalog (from inventory or caller).
@@ -582,7 +745,7 @@ def store_merged_architecture(
     return arch
 
 
-def _batch_sibling_tasks(db, batch_id: str) -> list:
+def _batch_sibling_tasks(db, batch_id: str, *, key: str = "recon_batch_id") -> list:
     if not batch_id:
         return []
     out = []
@@ -590,14 +753,16 @@ def _batch_sibling_tasks(db, batch_id: str) -> list:
         if getattr(t, "kind", None) != "recon":
             continue
         pl = t.payload if isinstance(getattr(t, "payload", None), dict) else {}
-        if str(pl.get("recon_batch_id") or "") == str(batch_id):
+        if str(pl.get(key) or "") == str(batch_id):
             out.append(t)
     return out
 
 
-def _batch_ready_to_finalize(db, batch_id: str, current_task_id: int) -> bool:
+def _batch_ready_to_finalize(
+    db, batch_id: str, current_task_id: int, *, key: str = "recon_batch_id"
+) -> bool:
     """True when every sibling is terminal (treat current as about to succeed)."""
-    siblings = _batch_sibling_tasks(db, batch_id)
+    siblings = _batch_sibling_tasks(db, batch_id, key=key)
     if not siblings:
         return True
     terminal = frozenset(
@@ -705,6 +870,7 @@ def maybe_auto_retry_recon(
         "dynamic_skill_count",
         "dynamic_skills_activate",
         "strategy",
+        "flow_tracer",
     ):
         if key in payload and payload[key] is not None:
             child_payload[key] = payload[key]
@@ -807,19 +973,569 @@ def _failed_task_result(
     return out
 
 
-def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
-    run_row = db.get_run()
-    if not run_row:
-        return {"status": "failed_task", "error": "no_run"}
-    target = Path(run_row["target_path"])
-    ignore = list((cfg.get("run") or {}).get("ignore_globs") or [])
-    try:
-        profile = str(run_row["profile"] or "")
-    except (KeyError, IndexError, TypeError):
-        profile = ""
-    if not profile:
-        profile = str((cfg.get("run") or {}).get("profile") or "code_static")
+# ---------------------------------------------------------------------------
+# R3 flow tracer (flow-tracer agent; FLOWS.md "Recon pipeline v2")
+# ---------------------------------------------------------------------------
 
+# Flow tasks run after the map batch and before bulk hunts (50).
+from vulnforge.task_priority import RECON_CHILD_PRIORITY as _RECON_CHILD_PRIORITY  # noqa: E402
+
+FLOW_TRACER_PRIORITY = int(_RECON_CHILD_PRIORITY) + 2
+
+# Payload keys a flow task inherits from the map task (brief, skills, hunts).
+_FLOW_INHERIT = (
+    "operator_notes",
+    "operator_brief",
+    "operator_reason",
+    "operator_requested",
+    "focus_paths",
+    "hunt_skill_mode",
+    "hunt_skill_ids",
+    "dynamic_skills",
+    "dynamic_skill_count",
+    "dynamic_skills_activate",
+    "recon_generation",
+    "target",
+    "strategy",
+)
+
+
+def _make_submit_flow(session: dict, tool_root: Path):
+    """Session hook behind the ``submit_flow`` tool (flow-tracer passes only)."""
+
+    def submit_flow(args: dict) -> dict:
+        if not session.get("flow_phase"):
+            return {
+                "ok": False,
+                "error": (
+                    "submit_flow is only for the flow-tracer agent; map agents "
+                    "finish with submit_architecture"
+                ),
+            }
+        flows, report = normalize_submitted_flows(
+            args if isinstance(args, dict) else {},
+            arch=session.get("flow_arch") or {},
+            target_root=tool_root,
+            entrypoint=session.get("flow_entrypoint"),
+        )
+        session["flows"] = flows
+        session["flow_report"] = report
+        return {"ok": True, "stored": "flows", **report}
+
+    return submit_flow
+
+
+def _payload_brief(payload: dict[str, Any]) -> str:
+    return str(
+        payload.get("operator_notes")
+        or payload.get("operator_brief")
+        or payload.get("operator_reason")
+        or ""
+    )
+
+
+def _enqueue_flow_tracer_tasks(
+    db,
+    run_dir: Path,
+    task,
+    payload: dict[str, Any],
+    cfg: dict,
+    *,
+    arch: dict[str, Any],
+    want_hunts: bool,
+    max_flows: int,
+) -> list[int]:
+    """Fan out one Ralph recon task per selected entrypoint (shared flow batch).
+
+    Entrypoints: internet zone first, then components with sinks, then the
+    rest; deduped by path:line; capped at ``max_flows``. Returns [] when the
+    flow-tracer is disabled or the map has no entrypoints (caller plans hunts).
+    """
+    if flow_agent() is None:
+        return []
+    eps = select_flow_entrypoints(arch, max_flows)
+    if not eps:
+        return []
+    batch_id = str(uuid.uuid4())
+    base = {k: payload[k] for k in _FLOW_INHERIT if payload.get(k) is not None}
+    ids: list[int] = []
+    for i, ep in enumerate(eps):
+        pl = {
+            **base,
+            "recon_phase": FLOW_PHASE,
+            "agent_ids": [FLOW_AGENT_ID],
+            "flow_batch_id": batch_id,
+            "flow_batch_index": i,
+            "flow_batch_size": len(eps),
+            "flow_entrypoint": ep,
+            "batch_enqueue_hunts": bool(want_hunts),
+            "enqueue_hunts": False,
+            "parent_task_id": getattr(task, "id", None),
+        }
+        ids.append(db.enqueue_task("recon", pl, priority=FLOW_TRACER_PRIORITY + i))
+    try:
+        append_event(
+            run_dir,
+            {
+                "source": "vf",
+                "event": "recon_flow_fanout",
+                "task_id": getattr(task, "id", None),
+                "flow_batch_id": batch_id,
+                "flow_task_ids": ids,
+                "entrypoints": [
+                    f"{e.get('path') or e.get('label')}:{e.get('line') or ''}" for e in eps
+                ],
+            },
+        )
+    except OSError:
+        pass
+    return ids
+
+
+def _trace_one_flow(
+    *,
+    client: Any,
+    model_id: Any,
+    role_cfg: dict,
+    task,
+    run_dir: Path,
+    handler,
+    session: dict,
+    prompts_root: Path,
+    tool_root: Path,
+    agent: dict[str, Any],
+    entrypoint: dict[str, Any],
+    arch: dict[str, Any],
+    skeleton: dict[str, Any] | None,
+    operator_brief: str,
+    max_rounds: int,
+    temperature: float,
+    pass_index: int = 0,
+) -> dict[str, Any]:
+    """Run the flow-tracer loop for one entrypoint; salvage flows from text."""
+    from vulnforge.agent_runtime.round_limit import flows_from_content
+
+    session["flow_phase"] = True
+    session["flows"] = None
+    session["flow_report"] = None
+    session["flow_arch"] = arch or skeleton or {}
+    session["flow_entrypoint"] = entrypoint
+    tools_allow = agent.get("tools") if isinstance(agent.get("tools"), list) else None
+    packet = pack_flow_tracer(
+        role_cfg,
+        prompts_root,
+        str(agent.get("body_md") or ""),
+        entrypoint=entrypoint,
+        architecture=arch,
+        skeleton=skeleton,
+        operator_brief=operator_brief,
+        tools_allowlist=tools_allow,
+    )
+    rounds = agent.get("max_tool_rounds") or max_rounds
+    temp = agent.get("temperature")
+    temp = temperature if temp is None else temp
+    try:
+        result = run_agent_tool_loop(
+            client,
+            packet,
+            handler,
+            max_rounds=int(rounds),
+            temperature=float(temp),
+            cfg=role_cfg,
+        )
+    finally:
+        session["flow_phase"] = False
+    pass_key = f"{FLOW_AGENT_ID}:{pass_index}" if pass_index else FLOW_AGENT_ID
+    usage = record_llm_result(
+        run_dir,
+        task_id=task.id,
+        kind=f"recon:{FLOW_AGENT_ID}",
+        model_id=model_id,
+        result=result,
+    )
+    flows = session.get("flows")
+    report = session.get("flow_report") or {}
+    salvaged = False
+    if flows is None:
+        raw = flows_from_content(result.content, list(result.transcript or []))
+        if raw:
+            flows, report = normalize_submitted_flows(
+                {"flows": raw},
+                arch=session.get("flow_arch") or {},
+                target_root=tool_root,
+                entrypoint=entrypoint,
+            )
+            salvaged = bool(flows)
+        else:
+            flows = []
+    try:
+        save_transcript(
+            run_dir,
+            task.id,
+            kind=f"recon:{FLOW_AGENT_ID}",
+            model_id=model_id,
+            messages=list(result.transcript or []),
+            result={
+                "ok": result.ok,
+                "classification": result.classification.value,
+                "error": result.error,
+                "content": result.content,
+                "recon_agent_id": FLOW_AGENT_ID,
+                "flows": len(flows),
+                **usage,
+            },
+            meta={
+                "pass_key": pass_key,
+                "recon_agent_id": FLOW_AGENT_ID,
+                "recon_phase": FLOW_PHASE,
+                "flow_entrypoint": entrypoint,
+                "agent_runtime": "strands",
+                "payload": {"recon_agent_id": FLOW_AGENT_ID, "agent_id": FLOW_AGENT_ID},
+            },
+            pass_key=pass_key,
+        )
+    except OSError:
+        pass
+    status = "ok" if result.ok else classify_llm_failure(result)
+    entry: dict[str, Any] = {
+        "id": FLOW_AGENT_ID,
+        "ok": bool(result.ok or salvaged),
+        "task_id": getattr(task, "id", None),
+        "entrypoint": {
+            k: entrypoint[k] for k in ("component", "label", "path", "line") if entrypoint.get(k)
+        },
+        "flows": len(flows),
+        "cited": int(report.get("cited") or 0),
+    }
+    if not result.ok:
+        entry["error"] = result.error or result.classification.value
+    if salvaged:
+        entry["salvaged_from_content"] = True
+    if report.get("reason"):
+        entry["reason"] = report["reason"]
+    if report.get("dropped_classes"):
+        entry["dropped_classes"] = report["dropped_classes"]
+    return {
+        "flows": flows,
+        "entry": entry,
+        "usage": usage,
+        "infra": status == "failed_infra" and not flows,
+        "error": entry.get("error"),
+    }
+
+
+def _store_flows(
+    db,
+    run_dir: Path,
+    flows: list[dict[str, Any]],
+    *,
+    tool_root: Path,
+    entry: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Merge flows into the stored map (one revision per non-empty merge)."""
+    current = db.get_architecture()
+    if not current:
+        # Never let a flow pass create the map (skeleton must not become it).
+        return None
+    if flows:
+        arch = merge_flows_into_architecture(current, flows, target_root=tool_root)
+    else:
+        arch = dict(current)
+    runs = [r for r in (arch.get("recon_flow_runs") or []) if isinstance(r, dict)]
+    runs.append(entry)
+    arch["recon_flow_runs"] = runs[-32:]
+    label = (entry.get("entrypoint") or {}).get("label") or ""
+    db.set_architecture(
+        arch,
+        source="flows",
+        note=f"flow-tracer {label}"[:200],
+        agent_ids=[FLOW_AGENT_ID],
+        recon_generation=arch.get("recon_generation"),
+        record_history=bool(flows),
+    )
+    return arch
+
+
+def _trace_flows_inprocess(
+    task,
+    db,
+    run_dir: Path,
+    cfg: dict,
+    *,
+    client: Any,
+    model_id: Any,
+    role_cfg: dict,
+    handler,
+    session: dict,
+    prompts_root: Path,
+    tool_root: Path,
+    operator_brief: str,
+    max_flows: int,
+    max_rounds: int,
+    temperature: float,
+) -> dict[str, Any]:
+    """inprocess / graph orchestrators: trace flows sequentially in this task."""
+    out: dict[str, Any] = {"flows_traced": 0, "entrypoints": 0, "usage": {}}
+    agent = flow_agent()
+    arch = db.get_architecture() or {}
+    if agent is None or not arch:
+        out["skipped"] = "flow_tracer_disabled" if agent is None else "no_architecture"
+        return out
+    skeleton = read_skeleton(run_dir)
+    eps = select_flow_entrypoints(arch, max_flows)
+    out["entrypoints"] = len(eps)
+    for i, ep in enumerate(eps, 1):
+        r = _trace_one_flow(
+            client=client,
+            model_id=model_id,
+            role_cfg=role_cfg,
+            task=task,
+            run_dir=run_dir,
+            handler=handler,
+            session=session,
+            prompts_root=prompts_root,
+            tool_root=tool_root,
+            agent=agent,
+            entrypoint=ep,
+            arch=db.get_architecture() or arch,
+            skeleton=skeleton,
+            operator_brief=operator_brief,
+            max_rounds=max_rounds,
+            temperature=temperature,
+            pass_index=i,
+        )
+        out["usage"] = _merge_usage_fields(out["usage"], r["usage"])
+        if r["infra"]:
+            out["infra_error"] = r["error"] or "failed_infra"
+            return out
+        _store_flows(db, run_dir, r["flows"], tool_root=tool_root, entry=r["entry"])
+        out["flows_traced"] += len(r["flows"])
+    return out
+
+
+def _run_flow_phase_task(
+    task,
+    db,
+    run_dir: Path,
+    cfg: dict,
+    *,
+    target: Path,
+    profile: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """One R3 Ralph task: trace one entrypoint, merge flows, maybe finalize hunts.
+
+    Never fails on "no flows" (zero flows is a valid answer). The last task
+    of the flow batch plans hunts + dynamic skills exactly once.
+    """
+    from vulnforge.llm_models import cfg_for_stage, make_client_for_stage
+    from vulnforge.util import target_tool_root
+
+    if not isinstance(cfg.get("run"), dict):
+        cfg = dict(cfg)
+        cfg["run"] = {}
+    cfg = merge_skill_policy_into_cfg(cfg, payload)
+    cfg["run"]["profile"] = profile
+    ignore = list((cfg.get("run") or {}).get("ignore_globs") or [])
+    tool_root = target_tool_root(target)
+    entrypoint = payload.get("flow_entrypoint")
+    entrypoint = entrypoint if isinstance(entrypoint, dict) else {}
+    operator_brief = _payload_brief(payload)
+    arch = db.get_architecture() or {}
+    skeleton = read_skeleton(run_dir)
+    agent = flow_agent()
+
+    session: dict = {"architecture": None, "flows": None, "notes": [], "tools_used": []}
+    ctx = {
+        "target_root": str(tool_root),
+        "evidence_root": str(run_dir / "evidence"),
+        "task_id": task.id,
+        "cfg": cfg,
+        "session": session,
+        "submit_flow": _make_submit_flow(session, tool_root),
+        "run_dir": run_dir,
+        "db": db,
+        "task_payload": payload,
+    }
+    handler = build_tool_handler(ctx)
+
+    flows: list[dict[str, Any]] = []
+    usage_fields: dict[str, Any] = {}
+    infra_error: str | None = None
+    model_id = None
+    if agent is None or not arch or not entrypoint:
+        entry: dict[str, Any] = {
+            "id": FLOW_AGENT_ID,
+            "ok": False,
+            "task_id": task.id,
+            "error": (
+                "flow_tracer_disabled"
+                if agent is None
+                else ("no_architecture" if not arch else "no_entrypoint")
+            ),
+        }
+    else:
+        role_cfg = cfg_for_stage(cfg, "recon")
+        client = make_client_for_stage(role_cfg, "recon")
+        try:
+            try:
+                model_id = client.fingerprint_model()
+            except InfraError as e:
+                infra_error = str(e)
+            entry = {"id": FLOW_AGENT_ID, "ok": False, "task_id": task.id, "error": infra_error}
+            if not infra_error:
+                ft = flow_tracer_settings(cfg)
+                llm_cfg = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+                r = _trace_one_flow(
+                    client=client,
+                    model_id=model_id,
+                    role_cfg=role_cfg,
+                    task=task,
+                    run_dir=run_dir,
+                    handler=handler,
+                    session=session,
+                    prompts_root=system_prompts_root(),
+                    tool_root=tool_root,
+                    agent=agent,
+                    entrypoint=entrypoint,
+                    arch=arch,
+                    skeleton=skeleton,
+                    operator_brief=operator_brief,
+                    max_rounds=int(ft["max_tool_rounds"] or llm_cfg.get("max_tool_rounds", 12)),
+                    temperature=float(llm_cfg.get("temperature_recon", 0.3)),
+                )
+                usage_fields = dict(r["usage"] or {})
+                entry = r["entry"]
+                flows = r["flows"]
+                if r["infra"]:
+                    infra_error = r["error"] or "failed_infra"
+        finally:
+            client.close()
+    if not infra_error:
+        _store_flows(db, run_dir, flows, tool_root=tool_root, entry=entry)
+    flush_notes_to_db(ctx, db)
+
+    batch_id = str(payload.get("flow_batch_id") or "")
+    want_hunts = payload.get("batch_enqueue_hunts")
+    want_hunts = True if want_hunts is None else bool(want_hunts)
+    if batch_id:
+        should_finalize = _batch_ready_to_finalize(
+            db, batch_id, task.id, key="flow_batch_id"
+        ) and _claim_batch_finalize(db, batch_id)
+    else:
+        should_finalize = True
+    fin: dict[str, Any] = {
+        "hunt_enqueued": 0,
+        "hunt_plan_source": "pending_batch" if not should_finalize else "skipped_manual",
+        "dynamic_skills": bool(payload.get("dynamic_skills")),
+        "dynamic_skill_count": 0,
+        "generate_run_skills_task_id": None,
+    }
+    if should_finalize:
+        built = _build_recon_inventory(target, ignore)
+        if built is not None:
+            inventory, seed_sinks, _meta = built
+            try:
+                codemap = db.get_codemap() or {}
+            except sqlite3.Error:
+                codemap = {}
+            fin = _finalize_hunts_and_skills(
+                task,
+                db,
+                run_dir,
+                cfg,
+                payload=payload,
+                arch=db.get_architecture() or arch,
+                inventory=inventory,
+                seed_sinks=seed_sinks,
+                codemap=codemap,
+                operator_brief=operator_brief,
+                batch_id=batch_id or "flows",
+                want_hunts=want_hunts,
+                should_finalize=True,
+                model_id=model_id,
+                agents_run=[entry],
+            )
+    out: dict[str, Any] = {
+        "status": "failed_infra" if infra_error else "succeeded",
+        "recon_phase": FLOW_PHASE,
+        "model_id": model_id,
+        "flows_submitted": len(flows),
+        "flow_entrypoint": entrypoint or None,
+        "flow_batch_id": batch_id or None,
+        "flow_batch_index": payload.get("flow_batch_index"),
+        "flow_batch_size": payload.get("flow_batch_size"),
+        "batch_finalized": bool(should_finalize),
+        "hunt_enqueued": fin.get("hunt_enqueued", 0),
+        "hunt_plan_source": fin.get("hunt_plan_source"),
+        "dynamic_skills": fin.get("dynamic_skills"),
+        "dynamic_skill_count": fin.get("dynamic_skill_count") or 0,
+        "generate_run_skills_task_id": fin.get("generate_run_skills_task_id"),
+        "recon_agents_run": [entry],
+        "transcript": f"task-{task.id}",
+        **usage_fields,
+    }
+    if infra_error:
+        out["error"] = infra_error
+    return out
+
+
+def _start_flows_only(
+    task,
+    db,
+    run_dir: Path,
+    cfg: dict,
+    *,
+    payload: dict[str, Any],
+    inventory: dict[str, Any],
+    seed_sinks: list,
+    codemap: dict | None,
+) -> dict[str, Any]:
+    """Operator selected only the flow step: fan out tracers from the stored map."""
+    arch = db.get_architecture()
+    if not arch:
+        return {"status": "failed_task", "error": "no_architecture_for_flows"}
+    want_hunts = payload.get("enqueue_hunts")
+    want_hunts = True if want_hunts is None else bool(want_hunts)
+    max_flows = flow_tracer_settings(cfg)["max_flows"] or 8
+    ids = _enqueue_flow_tracer_tasks(
+        db, run_dir, task, payload, cfg, arch=arch, want_hunts=want_hunts, max_flows=max_flows
+    )
+    out: dict[str, Any] = {
+        "status": "succeeded",
+        "recon_phase": "flows_fanout",
+        "flow_task_ids": ids or None,
+        "hunt_enqueued": 0,
+        "hunt_plan_source": "pending_flows" if ids else "no_entrypoints",
+        "operator_requested": bool(payload.get("operator_requested")),
+    }
+    if not ids and want_hunts:
+        fin = _finalize_hunts_and_skills(
+            task,
+            db,
+            run_dir,
+            cfg,
+            payload=payload,
+            arch=arch,
+            inventory=inventory,
+            seed_sinks=seed_sinks,
+            codemap=codemap,
+            operator_brief=_payload_brief(payload),
+            batch_id="flows-only",
+            want_hunts=True,
+            should_finalize=True,
+            model_id=None,
+            agents_run=[],
+        )
+        out["hunt_enqueued"] = fin.get("hunt_enqueued", 0)
+        out["hunt_plan_source"] = fin.get("hunt_plan_source")
+    return out
+
+
+def _build_recon_inventory(
+    target: Path, ignore: list
+) -> tuple[dict[str, Any], list, dict[str, Any]] | None:
+    """Mechanical inventory + sink pre-index (None when the tree is empty)."""
     if target.is_file():
         # Single source file (code_static): one-file inventory, tools use parent root.
         from vulnforge.util import hash_file
@@ -878,7 +1594,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
     else:
         inventory = build_file_index(target, ignore)
         if inventory["file_count"] == 0:
-            return {"status": "failed_task", "error": "empty_inventory"}
+            return None
 
         # P2.1: mechanical sink preindex (also used for class routing / hunt seeds)
         try:
@@ -892,6 +1608,33 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         inventory["dir_partitions"] = partition_by_top_dir(
             inventory.get("sample_paths") or []
         )
+        return inventory, seed_sinks, seed_sinks_meta
+
+
+def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
+    run_row = db.get_run()
+    if not run_row:
+        return {"status": "failed_task", "error": "no_run"}
+    target = Path(run_row["target_path"])
+    ignore = list((cfg.get("run") or {}).get("ignore_globs") or [])
+    try:
+        profile = str(run_row["profile"] or "")
+    except (KeyError, IndexError, TypeError):
+        profile = ""
+    if not profile:
+        profile = str((cfg.get("run") or {}).get("profile") or "code_static")
+
+    first_payload = task.payload if isinstance(getattr(task, "payload", None), dict) else {}
+    if str(first_payload.get("recon_phase") or "") == FLOW_PHASE:
+        # R3: one flow-tracer task (enqueued by the map finalizer).
+        return _run_flow_phase_task(
+            task, db, run_dir, cfg, target=target, profile=profile, payload=first_payload
+        )
+
+    built = _build_recon_inventory(target, ignore)
+    if built is None:
+        return {"status": "failed_task", "error": "empty_inventory"}
+    inventory, seed_sinks, seed_sinks_meta = built
 
     # Mechanical codemap (structure scaffold) — no LLM; grounds recon + hunts.
     codemap: dict = {}
@@ -906,9 +1649,21 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
 
     # Operator security policy: ground truth for recon packets (guidance only).
     security_policy = _load_security_policy(db)
+    # R0 skeleton refresh from the fresh codemap + sink pre-index (separate
+    # file; never architecture_json). build_and_store_skeleton never raises.
+    skeleton: dict | None = None
+    if codemap:
+        from vulnforge.recon_skeleton import build_and_store_skeleton
+
+        skeleton = build_and_store_skeleton(
+            run_dir, codemap, inventory.get("seed_sinks") or [], inventory, target
+        )
+    if not skeleton:
+        skeleton = read_skeleton(run_dir)
 
     session: dict = {
         "architecture": None,
+        "flows": None,
         "notes": [],
         "tools_used": [],
     }
@@ -919,13 +1674,17 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
 
     from vulnforge.util import target_tool_root
 
+    tool_root = target_tool_root(target)
+    submit_flow = _make_submit_flow(session, tool_root)
+
     ctx = {
-        "target_root": str(target_tool_root(target)),
+        "target_root": str(tool_root),
         "evidence_root": str(run_dir / "evidence"),
         "task_id": task.id,
         "cfg": cfg,
         "session": session,
         "submit_architecture": submit_architecture,
+        "submit_flow": submit_flow,
         "run_dir": run_dir,
         "db": db,
         "task_payload": task.payload if isinstance(getattr(task, "payload", None), dict) else {},
@@ -954,17 +1713,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         if not prior:
             existing = existing_arch or db.get_architecture()
             if existing:
-                prior = json.dumps(
-                    {
-                        "summary": existing.get("summary"),
-                        "components": existing.get("components"),
-                        "trust_boundaries": existing.get("trust_boundaries"),
-                        "input_surfaces": existing.get("input_surfaces"),
-                        "hunt_focus": existing.get("hunt_focus"),
-                        "relations": existing.get("relations"),
-                    },
-                    indent=2,
-                )
+                prior = prior_architecture_text(existing)
         architecture_so_far = str(prior or "")
     operator_brief = str(
         payload.get("operator_notes")
@@ -1016,6 +1765,22 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         agents = active_agents(agent_ids=filter_ids)
     except ReconAgentError as e:
         return {"status": "failed_task", "error": f"recon_agents: {e}"}
+    # Flow-phase agents (flow-tracer) never join the first map batch: R3 runs
+    # after the map batch finalizes (_enqueue_flow_tracer_tasks).
+    flows_only = bool(
+        filter_ids
+        and all(is_flow_phase_agent(str(x)) for x in filter_ids)
+    )
+    agents = [a for a in agents if not is_flow_phase_agent(a)]
+    if not agents and not filter_ids:
+        from vulnforge.recon_agents import list_agents
+
+        agents = [a for a in list_agents() if not is_flow_phase_agent(a)]
+    if flows_only:
+        return _start_flows_only(
+            task, db, run_dir, cfg, payload=payload, inventory=inventory,
+            seed_sinks=seed_sinks, codemap=codemap,
+        )
     if not agents:
         return {"status": "failed_task", "error": "no_recon_agents"}
 
@@ -1075,16 +1840,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         if not architecture_so_far:
             existing = db.get_architecture()
             if existing:
-                architecture_so_far = json.dumps(
-                    {
-                        "summary": existing.get("summary"),
-                        "components": existing.get("components"),
-                        "trust_boundaries": existing.get("trust_boundaries"),
-                        "input_surfaces": existing.get("input_surfaces"),
-                        "hunt_focus": existing.get("hunt_focus"),
-                    },
-                    indent=2,
-                )
+                architecture_so_far = prior_architecture_text(existing)
 
     ctx["task_payload"] = payload
     if payload.get("continue_handoff") and "Continuation of recon" not in operator_brief:
@@ -1148,6 +1904,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                     agent_id=agent_id,
                     codemap=codemap,
                     security_policy=security_policy,
+                    skeleton=skeleton,
                 )
                 max_rounds = agent.get("max_tool_rounds")
                 if max_rounds is None:
@@ -1307,13 +2064,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 else:
                     arch_snap = nr.get("architecture")
                     if isinstance(arch_snap, dict) and arch_snap.get("summary"):
-                        part = {
-                            "summary": arch_snap.get("summary") or "",
-                            "trust_boundaries": arch_snap.get("trust_boundaries") or [],
-                            "components": arch_snap.get("components") or [],
-                            "input_surfaces": arch_snap.get("input_surfaces") or [],
-                            "hunt_focus": arch_snap.get("hunt_focus") or [],
-                        }
+                        part = architecture_part(arch_snap)
                     else:
                         # Temporarily restore snapshot into session for parse_architecture
                         prev = session.get("architecture")
@@ -1394,6 +2145,7 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
                 agent_id=agent_id,
                 codemap=codemap,
                 security_policy=security_policy,
+                skeleton=skeleton,
             )
             max_rounds = agent.get("max_tool_rounds")
             if max_rounds is None:
@@ -1576,21 +2328,20 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             )
             partial_archs.append(part)
             # Feed merged-so-far into the next sequential agent
-            merged_so_far = merge_architectures(
-                partial_archs, agents_run=agents_run
+            merged_so_far = merge_architecture_parts(
+                partial_archs,
+                base=db.get_architecture() or skeleton,
+                agents_run=agents_run,
             )
-            arch_so_far_text = json.dumps(
-                {
-                    "summary": merged_so_far.get("summary"),
-                    "components": merged_so_far.get("components"),
-                    "trust_boundaries": merged_so_far.get("trust_boundaries"),
-                    "input_surfaces": merged_so_far.get("input_surfaces"),
-                    "hunt_focus": merged_so_far.get("hunt_focus"),
-                },
-                indent=2,
-            )
+            arch_so_far_text = prior_architecture_text(merged_so_far)
 
-        part_merged = merge_architectures(partial_archs, agents_run=agents_run)
+        # Parts fold onto the prior map / skeleton so relations that point at
+        # base-only components survive (merge_v2 drops unknown endpoints).
+        part_merged = merge_architecture_parts(
+            partial_archs,
+            base=db.get_architecture() or skeleton,
+            agents_run=agents_run,
+        )
         if not part_merged.get("summary"):
             return _failed_task_result(
                 task,
@@ -1625,6 +2376,8 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             cfg=cfg,
             run_dir=run_dir,
             task_id=getattr(task, "id", None),
+            target_root=tool_root,
+            skeleton=skeleton,
         )
 
         # Hunts / dynamic skills: single-task or last-completed batch member only.
@@ -1647,138 +2400,89 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         else:
             should_finalize = True
 
-        hunt_enqueued = 0
-        if not should_finalize:
-            hunt_plan_source = "pending_batch"
-        elif not want_hunts:
-            hunt_plan_source = "skipped_manual"
-        else:
-            hunt_plan_source = "pending"
-        if should_finalize and want_hunts:
-            # Re-read full merged map after batch siblings
-            arch = db.get_architecture() or arch
-            try:
-                codemap = db.get_codemap() or codemap
-            except sqlite3.Error:
-                pass
-            tasks, hunt_plan_source = plan_hunt_tasks(
-                arch, inventory, cfg, codemap=codemap or None
-            )
-            # Diff-scoped audit (#185): clip to the scope before the empty check so an
-            # all-out-of-scope hunt_focus still yields changed-file hunts.
-            diff_manifest = db.get_diff_scope()
-            if diff_manifest:
-                tasks = apply_diff_scope_to_plan(
-                    tasks, diff_manifest, inventory, cfg, codemap=codemap or None
+        # R3 flow tracer: after the map batch finalizes, before hunt planning.
+        flow_cfg = flow_tracer_settings(cfg, payload)
+        flow_task_ids: list[int] = []
+        flows_inprocess: dict[str, Any] | None = None
+        defer_to_flows = False
+        if should_finalize and flow_cfg["enabled"]:
+            if recon_orch == "ralph":
+                flow_task_ids = _enqueue_flow_tracer_tasks(
+                    db,
+                    run_dir,
+                    task,
+                    payload,
+                    cfg,
+                    arch=db.get_architecture() or arch,
+                    want_hunts=want_hunts,
+                    max_flows=flow_cfg["max_flows"],
                 )
-                hunt_plan_source = f"{hunt_plan_source}+diff_scope"
-            if not tasks:
-                # Only fail the finalizer hard when this is a non-batch recon;
-                # batch members already contributed architecture.
-                if not batch_id:
-                    return _failed_task_result(
-                        task,
-                        db,
-                        cfg,
-                        run_dir,
-                        "no_hunt_tasks",
-                        model_id=model_id,
-                        hunt_plan_source=hunt_plan_source,
-                        recon_agents_run=agents_run,
-                    )
-                hunt_plan_source = hunt_plan_source or "no_hunt_tasks"
+                defer_to_flows = bool(flow_task_ids)
             else:
-                for t in tasks:
-                    t["seed_sinks"] = filter_sinks_for_paths(
-                        seed_sinks,
-                        t.get("path_hints") or [],
-                        top_k=int((cfg.get("packet") or {}).get("max_seed_sinks", 12)),
-                    )
-                    if payload.get("operator_requested"):
-                        t["operator_requested"] = True
-                        if operator_brief:
-                            t["operator_notes"] = (
-                                f"From refined recon: {operator_brief[:500]}"
-                            )
-                    t["parent_task_id"] = task.id
-                    db.enqueue_task("hunt", t, priority=50)
-                    area_t = t.get("area", "app")
-                    class_t = t.get("class", "wildcard")
-                    db.upsert_coverage_fact(
-                        area_t,
-                        class_t,
-                        path=(t.get("path_hints") or [""])[0],
-                        visit_delta=0,
-                        last_depth="planned",
-                    )
-                    # Sink rows are additive. The matrix paints the area×skill fact above.
-                    record_sink_coverage(
-                        db,
-                        t.get("seed_sinks") or [],
-                        area=str(area_t),
-                        attack_class=str(class_t),
-                        visit_delta=0,
-                        last_depth="planned",
-                    )
-                hunt_enqueued = len(tasks)
-
-        # Optional: enqueue dynamic skill authoring once (with hunt finalize)
-        dynamic_skills = bool(payload.get("dynamic_skills"))
-        dynamic_skill_count = 0
-        generate_run_skills_task_id = None
-        if should_finalize and dynamic_skills:
-            from vulnforge.hunt_profiles.generate import clamp_skill_count
-
-            dynamic_skill_count = clamp_skill_count(
-                payload.get("dynamic_skill_count") or 3
-            )
-            try:
-                kinds = sink_kinds_present(seed_sinks)
-                sink_kinds = list(kinds)[:24] if kinds else []
-            except Exception:
-                sink_kinds = []
-            inv_signals = {
-                "extensions": inventory.get("extensions"),
-                "file_count": inventory.get("file_count"),
-                "entrypoints": inventory.get("entrypoints"),
-                "dir_partitions": (inventory.get("dir_partitions") or [])[:20],
-                "sink_kinds": sink_kinds,
-            }
-            arch = db.get_architecture() or arch
-            gen_payload = {
-                "count": dynamic_skill_count,
-                "architecture": {
-                    k: arch.get(k)
-                    for k in (
-                        "summary",
-                        "trust_boundaries",
-                        "components",
-                        "input_surfaces",
-                        "hunt_focus",
-                        "inventory",
-                        "seed_sinks",
-                        "operator_notes_applied",
-                    )
-                    if arch.get(k) is not None
-                },
-                "signals": inv_signals,
-                "operator_brief": operator_brief,
-                "operator_notes": operator_brief,
-                # Respect architecture-only / manual hunt mode
-                "enqueue_hunts": bool(want_hunts),
-                "activate": bool(payload.get("dynamic_skills_activate")),
-                "reason": "dynamic_skills_init",
-            }
-            arch_snap = gen_payload["architecture"]
-            if isinstance(arch_snap.get("seed_sinks"), list):
-                arch_snap["seed_sinks"] = arch_snap["seed_sinks"][:80]
-            try:
-                generate_run_skills_task_id = db.enqueue_task(
-                    "generate_run_skills", gen_payload, priority=20
+                flows_inprocess = _trace_flows_inprocess(
+                    task,
+                    db,
+                    run_dir,
+                    cfg,
+                    client=client,
+                    model_id=model_id,
+                    role_cfg=role_cfg,
+                    handler=handler,
+                    session=session,
+                    prompts_root=prompts_root,
+                    tool_root=tool_root,
+                    operator_brief=operator_brief,
+                    max_flows=flow_cfg["max_flows"],
+                    max_rounds=flow_cfg["max_tool_rounds"] or default_max_rounds,
+                    temperature=default_temp,
                 )
-            except Exception:
-                generate_run_skills_task_id = None
+                usage_fields = _merge_usage_fields(
+                    usage_fields, flows_inprocess.pop("usage", {}) or {}
+                )
+                if flows_inprocess.get("infra_error"):
+                    return {
+                        "status": "failed_infra",
+                        "error": flows_inprocess["infra_error"],
+                        "model_id": model_id,
+                        "transcript": f"task-{task.id}",
+                        "recon_agents_run": agents_run,
+                        **usage_fields,
+                    }
 
+        if defer_to_flows:
+            fin = {
+                "failed": None,
+                "hunt_enqueued": 0,
+                "hunt_plan_source": "pending_flows",
+                "dynamic_skills": bool(payload.get("dynamic_skills")),
+                "dynamic_skill_count": 0,
+                "generate_run_skills_task_id": None,
+            }
+        else:
+            fin = _finalize_hunts_and_skills(
+                task,
+                db,
+                run_dir,
+                cfg,
+                payload=payload,
+                arch=arch,
+                inventory=inventory,
+                seed_sinks=seed_sinks,
+                codemap=codemap,
+                operator_brief=operator_brief,
+                batch_id=batch_id,
+                want_hunts=want_hunts,
+                should_finalize=should_finalize,
+                model_id=model_id,
+                agents_run=agents_run,
+            )
+        if fin.get("failed"):
+            return fin["failed"]
+        hunt_enqueued = fin["hunt_enqueued"]
+        hunt_plan_source = fin["hunt_plan_source"]
+        dynamic_skills = fin["dynamic_skills"]
+        dynamic_skill_count = fin["dynamic_skill_count"]
+        generate_run_skills_task_id = fin["generate_run_skills_task_id"]
         flush_notes_to_db(ctx, db)
         # Fold agent codemap notes into stored map (annotations)
         try:
@@ -1804,7 +2508,10 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
             "model_id": model_id,
             "file_count": inventory["file_count"],
             "operator_requested": bool(payload.get("operator_requested")),
-            "enqueue_hunts": bool(should_finalize and want_hunts),
+            "enqueue_hunts": bool(should_finalize and want_hunts and not defer_to_flows),
+            "recon_phase": "map",
+            "flow_task_ids": flow_task_ids or None,
+            "flows_traced": (flows_inprocess or {}).get("flows_traced"),
             "recon_agents_run": agents_run,
             "recon_batch_id": batch_id or None,
             "recon_batch_index": payload.get("recon_batch_index"),
@@ -1823,6 +2530,176 @@ def run(task, db, run_dir: Path, cfg: dict) -> dict[str, Any]:
         return result_out
     finally:
         client.close()
+
+
+def _finalize_hunts_and_skills(
+    task,
+    db,
+    run_dir: Path,
+    cfg: dict,
+    *,
+    payload: dict[str, Any],
+    arch: dict[str, Any],
+    inventory: dict[str, Any],
+    seed_sinks: list,
+    codemap: dict | None,
+    operator_brief: str,
+    batch_id: str,
+    want_hunts: bool,
+    should_finalize: bool,
+    model_id: Any,
+    agents_run: list,
+) -> dict[str, Any]:
+    """Plan hunts (hunt_focus / active fallback) + dynamic skills once.
+
+    Runs on the map finalizer when R3 is off or found no entrypoints, or on
+    the last flow-tracer task of the flow batch. Returns counters; ``failed``
+    holds a failed_task result when a non-batch recon planned zero hunts.
+    """
+    out: dict[str, Any] = {"failed": None}
+    hunt_enqueued = 0
+    if not should_finalize:
+        hunt_plan_source = "pending_batch"
+    elif not want_hunts:
+        hunt_plan_source = "skipped_manual"
+    else:
+        hunt_plan_source = "pending"
+    if should_finalize and want_hunts:
+        # Re-read full merged map after batch siblings
+        arch = db.get_architecture() or arch
+        try:
+            codemap = db.get_codemap() or codemap
+        except sqlite3.Error:
+            pass
+        tasks, hunt_plan_source = plan_hunt_tasks(
+            arch, inventory, cfg, codemap=codemap or None
+        )
+        # Diff-scoped audit (#185): clip to the scope before the empty check so an
+        # all-out-of-scope hunt_focus still yields changed-file hunts.
+        diff_manifest = db.get_diff_scope()
+        if diff_manifest:
+            tasks = apply_diff_scope_to_plan(
+                tasks, diff_manifest, inventory, cfg, codemap=codemap or None
+            )
+            hunt_plan_source = f"{hunt_plan_source}+diff_scope"
+        if not tasks:
+            # Only fail the finalizer hard when this is a non-batch recon;
+            # batch members already contributed architecture.
+            if not batch_id:
+                out["failed"] = _failed_task_result(
+                    task,
+                    db,
+                    cfg,
+                    run_dir,
+                    "no_hunt_tasks",
+                    model_id=model_id,
+                    hunt_plan_source=hunt_plan_source,
+                    recon_agents_run=agents_run,
+                )
+                return out
+            hunt_plan_source = hunt_plan_source or "no_hunt_tasks"
+        else:
+            for t in tasks:
+                t["seed_sinks"] = filter_sinks_for_paths(
+                    seed_sinks,
+                    t.get("path_hints") or [],
+                    top_k=int((cfg.get("packet") or {}).get("max_seed_sinks", 12)),
+                )
+                if payload.get("operator_requested"):
+                    t["operator_requested"] = True
+                    if operator_brief:
+                        t["operator_notes"] = (
+                            f"From refined recon: {operator_brief[:500]}"
+                        )
+                t["parent_task_id"] = task.id
+                db.enqueue_task("hunt", t, priority=50)
+                area_t = t.get("area", "app")
+                class_t = t.get("class", "wildcard")
+                db.upsert_coverage_fact(
+                    area_t,
+                    class_t,
+                    path=(t.get("path_hints") or [""])[0],
+                    visit_delta=0,
+                    last_depth="planned",
+                )
+                # Sink rows are additive. The matrix paints the area×skill fact above.
+                record_sink_coverage(
+                    db,
+                    t.get("seed_sinks") or [],
+                    area=str(area_t),
+                    attack_class=str(class_t),
+                    visit_delta=0,
+                    last_depth="planned",
+                )
+            hunt_enqueued = len(tasks)
+
+    # Optional: enqueue dynamic skill authoring once (with hunt finalize)
+    dynamic_skills = bool(payload.get("dynamic_skills"))
+    dynamic_skill_count = 0
+    generate_run_skills_task_id = None
+    if should_finalize and dynamic_skills:
+        from vulnforge.hunt_profiles.generate import clamp_skill_count
+
+        dynamic_skill_count = clamp_skill_count(
+            payload.get("dynamic_skill_count") or 3
+        )
+        try:
+            kinds = sink_kinds_present(seed_sinks)
+            sink_kinds = list(kinds)[:24] if kinds else []
+        except Exception:
+            sink_kinds = []
+        inv_signals = {
+            "extensions": inventory.get("extensions"),
+            "file_count": inventory.get("file_count"),
+            "entrypoints": inventory.get("entrypoints"),
+            "dir_partitions": (inventory.get("dir_partitions") or [])[:20],
+            "sink_kinds": sink_kinds,
+        }
+        arch = db.get_architecture() or arch
+        gen_payload = {
+            "count": dynamic_skill_count,
+            "architecture": {
+                k: arch.get(k)
+                for k in (
+                    "summary",
+                    "trust_boundaries",
+                    "components",
+                    "input_surfaces",
+                    "hunt_focus",
+                    "inventory",
+                    "seed_sinks",
+                    "operator_notes_applied",
+                )
+                if arch.get(k) is not None
+            },
+            "signals": inv_signals,
+            "operator_brief": operator_brief,
+            "operator_notes": operator_brief,
+            # Respect architecture-only / manual hunt mode
+            "enqueue_hunts": bool(want_hunts),
+            "activate": bool(payload.get("dynamic_skills_activate")),
+            "reason": "dynamic_skills_init",
+        }
+        arch_snap = gen_payload["architecture"]
+        if isinstance(arch_snap.get("seed_sinks"), list):
+            arch_snap["seed_sinks"] = arch_snap["seed_sinks"][:80]
+        try:
+            generate_run_skills_task_id = db.enqueue_task(
+                "generate_run_skills", gen_payload, priority=20
+            )
+        except Exception:
+            generate_run_skills_task_id = None
+
+    out.update(
+        {
+            "hunt_enqueued": hunt_enqueued,
+            "hunt_plan_source": hunt_plan_source,
+            "dynamic_skills": dynamic_skills,
+            "dynamic_skill_count": dynamic_skill_count,
+            "generate_run_skills_task_id": generate_run_skills_task_id,
+        }
+    )
+    return out
 
 
 def _merge_usage_fields(acc: dict[str, Any], more: dict[str, Any]) -> dict[str, Any]:
@@ -2066,36 +2943,61 @@ def normalize_relations(value: object, *, limit: int = 80) -> list[dict[str, Any
         rel: dict[str, Any] = {"from": frm, "to": to, "kind": kind}
         if note:
             rel["note"] = note[:400]
+        # v2 passthrough (only when present, so v1 relations stay unchanged):
+        # citation + confidence are checked later by validate_citations.
+        ev = item.get("evidence")
+        if not ev and (item.get("path") or item.get("line")):
+            ev = {"path": item.get("path"), "line": item.get("line")}
+        if isinstance(ev, (dict, str)) and ev:
+            if isinstance(ev, dict):
+                ev = {k: ev[k] for k in ("path", "line", "text") if ev.get(k) is not None}
+            if ev:
+                rel["evidence"] = ev
+        conf = str(item.get("confidence") or "").strip().lower()
+        if conf in ("mechanical", "cited", "inferred"):
+            rel["confidence"] = conf
         out.append(rel)
         if len(out) >= limit:
             break
     return out
 
 
+_V2_PART_FIELDS = ("zones", "boundaries", "flows")
+
+
+def architecture_part(a: object) -> dict:
+    """Coerce submit_architecture args (v1 and/or v2) into a merge part.
+
+    v1 lists keep their shape; components keep v2 keys (id, kind, zone,
+    entrypoints, sinks); relations keep evidence/confidence; zones,
+    boundaries and flows pass through for ``merge_v2`` to normalize.
+    """
+    if not isinstance(a, dict):
+        a = {}
+    out: dict[str, Any] = {
+        "summary": str(a.get("summary") or "").strip() if not isinstance(a.get("summary"), (dict, list)) else "",
+        "trust_boundaries": _coerce_list_field(a.get("trust_boundaries")),
+        "components": _coerce_list_field(a.get("components")),
+        "input_surfaces": _coerce_list_field(a.get("input_surfaces")),
+        "hunt_focus": _coerce_list_field(a.get("hunt_focus")),
+        "relations": normalize_relations(a.get("relations"), limit=120),
+    }
+    for key in _V2_PART_FIELDS:
+        items = _coerce_list_field(a.get(key))
+        if items:
+            out[key] = items
+    return out
+
+
 def parse_architecture(llm_result, session: dict) -> dict:
     if session.get("architecture"):
-        a = session["architecture"]
-        return {
-            "summary": a.get("summary") or "",
-            "trust_boundaries": _coerce_list_field(a.get("trust_boundaries")),
-            "components": _coerce_list_field(a.get("components")),
-            "input_surfaces": _coerce_list_field(a.get("input_surfaces")),
-            "hunt_focus": _coerce_list_field(a.get("hunt_focus")),
-            "relations": normalize_relations(a.get("relations")),
-        }
+        return architecture_part(session["architecture"])
     # Shared free-text / JSON-slice parser (force-submit salvage uses the same).
     from vulnforge.agent_runtime.round_limit import architecture_from_content
 
     parsed = architecture_from_content(getattr(llm_result, "content", None))
     if parsed and parsed.get("summary"):
-        return {
-            "summary": parsed.get("summary") or "",
-            "trust_boundaries": _coerce_list_field(parsed.get("trust_boundaries")),
-            "components": _coerce_list_field(parsed.get("components")),
-            "input_surfaces": _coerce_list_field(parsed.get("input_surfaces")),
-            "hunt_focus": _coerce_list_field(parsed.get("hunt_focus")),
-            "relations": normalize_relations(parsed.get("relations")),
-        }
+        return architecture_part(parsed)
     return {
         "summary": "",
         "trust_boundaries": [],

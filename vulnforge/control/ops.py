@@ -2531,6 +2531,11 @@ def review_finding(
                 if isinstance(body["validation_reasons"], list):
                     body["validation_reasons"].append(f"human_note_write_failed:{e}")
 
+        from vulnforge.evidence_tier import evidence_tier
+
+        # Tier the finding had when the person decided (before this review).
+        # Lets confirm rate per tier be computed later. Label only.
+        tier_at = evidence_tier(finding.body or {}, prev)
         entry = {
             "at": now,
             "operator": operator,
@@ -2539,6 +2544,12 @@ def review_finding(
             "to_state": new_state,
             "notes": notes_s or None,
             "note_relpath": note_rel,
+            "evidence_tier": tier_at["tier"],
+            "evidence_tier_detail": {
+                "disprove": tier_at["disprove"]["status"],
+                "same_model": tier_at["disprove"]["same_model"],
+                "poc_verdict": (tier_at["poc"] or {}).get("verdict"),
+            },
         }
         history.append(entry)
         # keep last 50 reviews
@@ -2614,6 +2625,7 @@ def review_finding(
                 "stable_key": finding.stable_key,
                 "evidence_id": eid_col,
                 "body": body,
+                "evidence_tier": evidence_tier(body, new_state),
             },
         }
     finally:

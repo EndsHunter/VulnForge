@@ -61,34 +61,34 @@
   function defineCockpitTheme(monaco) {
     if (!monaco || monaco.__vfCockpitTheme) return;
     // Hex only: monaco.editor.defineTheme does not accept CSS variables.
-    // Pairing: bg-inset #121317, text #ece7dc, muted #9a9488, accent #6aa8a2,
-    // accent-bright #8bc0bb, bg-card #26272e, bg-card-hover #2c2d35,
-    // border #2d2e32, border-strong #3a3b40.
+    // Pairing: bg-inset #0b0d10, text #e7e9ee, muted #a2aab6, accent #5cc8b8,
+    // accent-bright #8fe0d4, bg-card #1d2129, bg-card-hover #232833,
+    // border #2a2f39, border-strong #3a414c.
     monaco.editor.defineTheme("vulnforge-cockpit", {
       base: "vs-dark",
       inherit: true,
       rules: [
-        { token: "comment", foreground: "9a9488", fontStyle: "italic" },
+        { token: "comment", foreground: "a2aab6", fontStyle: "italic" },
         { token: "string", foreground: "e3a01a" },
-        { token: "keyword", foreground: "8bc0bb" },
+        { token: "keyword", foreground: "8fe0d4" },
         { token: "number", foreground: "8bb8b3" },
         { token: "type", foreground: "c3a6ff" }
       ],
       colors: {
-        "editor.background": "#121317",
-        "editor.foreground": "#ece7dc",
-        "editorLineNumber.foreground": "#9a9488",
-        "editorLineNumber.activeForeground": "#8bc0bb",
-        "editor.selectionBackground": "#6aa8a255",
-        "editor.inactiveSelectionBackground": "#6aa8a233",
-        "editor.lineHighlightBackground": "#2c2d3588",
-        "editorCursor.foreground": "#6aa8a2",
-        "editorWidget.background": "#26272e",
-        "editorWidget.border": "#2d2e32",
-        "editorIndentGuide.background": "#2d2e3288",
-        "editorGutter.background": "#121317",
-        "scrollbarSlider.background": "#2d2e3288",
-        "scrollbarSlider.hoverBackground": "#3a3b40aa"
+        "editor.background": "#0b0d10",
+        "editor.foreground": "#e7e9ee",
+        "editorLineNumber.foreground": "#a2aab6",
+        "editorLineNumber.activeForeground": "#8fe0d4",
+        "editor.selectionBackground": "#5cc8b855",
+        "editor.inactiveSelectionBackground": "#5cc8b833",
+        "editor.lineHighlightBackground": "#23283388",
+        "editorCursor.foreground": "#5cc8b8",
+        "editorWidget.background": "#1d2129",
+        "editorWidget.border": "#2a2f39",
+        "editorIndentGuide.background": "#2a2f3988",
+        "editorGutter.background": "#0b0d10",
+        "scrollbarSlider.background": "#2a2f3988",
+        "scrollbarSlider.hoverBackground": "#3a414caa"
       }
     });
     monaco.__vfCockpitTheme = true;

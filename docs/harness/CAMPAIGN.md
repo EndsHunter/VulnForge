@@ -45,7 +45,7 @@ The return includes `lock_cleared` (`run.lock` is absent). `ok` is false when a 
 
 Drain. Writes `STOP` and returns immediately. Ralph (`scripts/ralph.py`) checks `STOP` between iterations and exits after the current `vf run-once` finishes. Pause does not kill workers and does not call `reclaim_all_leased_tasks`, so a lease held by the live task is kept. Recorded as `runner_pause`. `killed` is false and `reclaimed_leases` is 0. Queued tasks stay queued.
 
-While a Ralph pid is alive and `STOP` is present, `runner_status` is `pausing` (`draining: true`). After that pid exits, state is `paused`. Pause does not wait out the task timeout; the dashboard polls. With no live Ralph pid, writing `STOP` is enough for `paused`. The Mission card `status` is `paused` while `STOP` is present (the `runs.status` row stays the durable value, which may still be `active`). When the campaign is finished (`has_work` false and no `STOP`), durable `runs.status` and the card `status` are `idle`. Queued work returns that row to `active`.
+While a Ralph pid is alive and `STOP` is present, `runner_status` is `pausing` (`draining: true`). After that pid exits, state is `paused`. Pause does not wait out the task timeout; the dashboard polls. With no live Ralph pid, writing `STOP` is enough for `paused`. The run card `status` is `paused` while `STOP` is present (the `runs.status` row stays the durable value, which may still be `active`). When the campaign is finished (`has_work` false and no `STOP`), durable `runs.status` and the card `status` are `idle`. Queued work returns that row to `active`.
 
 ### `resume`
 
@@ -55,7 +55,30 @@ If no Ralph worker is alive and a live PID still holds `run.lock`, resume kills 
 
 ### `status`
 
-Read. Returns the operator-chat `get_status` payload (`card`, `runner`, `codemap`) plus `harness`: task counts, finding counts, `has_work`, and `leased` from `harness.db`. Does not take a lease.
+Read. Returns the operator-chat `get_status` payload (`card`, `runner`, `codemap`) plus `harness`: task counts, finding counts, `has_work`, and `leased` from `harness.db`, plus `yield` (below). Does not take a lease.
+
+#### `yield` — gated findings per token (advisory)
+
+Schema `vulnforge.yield@1`, derived on read by `vulnforge/control/yield_curve.py` (`run_yield` → pure `compute_yield_series`). No table and no cache. It is **advisory only**: nothing reads it to pause or stop Ralph. The hard budget stop is #175.
+
+- **Window:** the last `window.size` (default 20) **finished hunt tasks**, in finish order (`tasks.updated_at`, then id). Finished means any state except `queued`, `leased`, `paused`, `cancelled`. Hunts were chosen over a token window because a hunt is what the operator plans and re-queues, and a hunt's tokens are never split across two windows. Tokens are still the denominator.
+- **Numerator (`gated`):** findings whose state on read is `needs_human`, `confirmed` or `rejected_human` (they passed the gates; a later human reject does not erase that). `candidate`, `rejected_mech`, `rejected_llm` and `superseded` never count. Each finding is attributed to the first finished hunt whose result names its `finding_id`. Near-duplicates count once: findings that share a `merge_key` (`vulnforge/stages/dedup.py`) or are linked by `near_dup_of` / `superseded_by` form one group, placed at the earliest hunt that filed a gated member. Because it is derived on read, a window's count can fall when disprove or a human later moves a finding out.
+- **Denominator (`tokens`):** total tokens (`total_tokens`, else prompt + completion) of the hunts in the window, plus `validate_mech` / `validate_llm` tasks for findings those hunts filed. Source is `llm_usage.jsonl` by `task_id`; older runs without a ledger fall back to `llm_usage_summary.json` `by_task`. Recon, PoC and chat tokens are not counted.
+- **Unavailable, not zero:** a window is `available: false` with `rate_per_mtok: null` when it has no tokens, or when a `succeeded` hunt in it has no usage (the host reported no counts). A failed hunt with no usage does not blank the window.
+
+| Field | Meaning |
+|-------|---------|
+| `schema`, `advisory` | `vulnforge.yield@1`, always `true` |
+| `window` | `{basis: "hunts", size}` |
+| `gated_states` | States that count as gated |
+| `available` | Latest window has token counts |
+| `reason` | `null`, `no_hunts`, `no_usage`, `usage_incomplete`, or `error` (status still returns) |
+| `latest` | The most recent window (same shape as a series point), or `null` |
+| `sentence` | Plain text, e.g. `0 new gated findings in the last 1.4M tokens (20 hunts)` |
+| `series[]` | Sliding windows ending at each finished hunt (sampled down to at most 120 points, always ending at the latest): `start_task_id`, `end_task_id`, `end_at`, `hunts`, `tokens`, `gated`, `hunts_without_usage`, `available`, `reason`, `rate_per_mtok` (gated per million tokens; `null` when unavailable) |
+| `totals` | `finished_hunts`, `gated_findings` (near-dup groups), `gated_attributed`, `gated_unattributed` (gated with no filing hunt), `tokens` |
+
+Campaign tab: a sparkline beside the pipeline heading, with the latest-window sentence and the open-cell count from the coverage matrix. A flat curve is not a clean bill of health; the open-cell count sits next to it so "no yield" cannot read as "nothing left to hunt". Unavailable windows are gaps in the line, never zeros.
 
 ### `findings`
 

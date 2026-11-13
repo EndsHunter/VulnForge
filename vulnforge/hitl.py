@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from vulnforge.db import Database
+from vulnforge.evidence_tier import evidence_tier
 from vulnforge.util import utc_now_iso, write_json
 
 SCHEMA_ID = "vulnforge/hitl-report@1"
@@ -248,9 +249,11 @@ def build_finding_packet(
     title = str(body.get("title") or finding.stable_key or f"Finding {fid}")[:300]
     tm = body.get("threat_model") if isinstance(body.get("threat_model"), dict) else {}
     summary = str(body.get("summary") or "_No summary._")
+    tier = evidence_tier(body, finding.state)
     markdown = "\n".join(
         [
             f"**State:** `{finding.state}`",
+            f"**Evidence tier:** `{tier['tier']}` ({tier['summary']})",
             "",
             summary,
             "",
@@ -279,6 +282,8 @@ def build_finding_packet(
         },
         # Copied so inbox UI can disable Accept without reading the finding body.
         "pending_llm": finding_pending_llm(finding),
+        # Derived label (vulnforge/evidence_tier.py). Never an approval.
+        "evidence_tier": tier,
         "blocks": [
             {"type": "prose", "title": "Finding", "markdown": markdown},
             {
@@ -750,6 +755,7 @@ def list_inbox(db: Database, run_dir: Path) -> dict[str, Any]:
                 "blocks": packet.get("blocks") or [],
                 "responses": subset,
                 "pending_llm": bool(packet.get("pending_llm")),
+                "evidence_tier": packet.get("evidence_tier"),
             }
         )
     return {

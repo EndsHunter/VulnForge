@@ -7,16 +7,18 @@
 **VulnForge** runs a durable security-audit loop against a **read-only target tree**:
 
 1. **init** — snapshot inventory, create `harness.db`, enqueue `recon`
-2. **recon** (LLM) — map architecture; enqueue **hunt** tasks. When a map already exists, each recon **merges** (LLM merge with mechanical fallback) instead of blank-overwriting; Mission **History** can view/restore prior revisions. Mechanical **codemap** (`runs.codemap_json`) is structure-only (modules/entrypoints), separate from architecture.
+2. **recon** (LLM) — mechanical skeleton first (no LLM), then map agents label it with trust zones and cited relations, then a **flow-tracer** fan-out records data flows (entrypoint → sink, cited `path:line`); then enqueue **hunt** tasks. Flows steer hunts; they are never findings. When a map already exists, each recon **merges** into it instead of blank-overwriting: structure merges deterministically with citation checks, and only the summary paragraph goes through the LLM. Atlas **History** can view/restore prior revisions. Spec: [`docs/harness/recon/FLOWS.md`](docs/harness/recon/FLOWS.md). Mechanical **codemap** (`runs.codemap_json`) is structure-only (modules/entrypoints), separate from architecture.
 3. **hunt** (LLM) — one area × weakness class; candidate or `submit_none`
 4. **validate_mech** (no LLM) — mechanical gates → `needs_human` or `rejected_mech`
 5. **validate_llm** (default on) — dual adversarial disprove; both reject → `rejected_llm`, else stay `needs_human`. Never auto-confirms. Set `stages.validate_llm: false` to skip for speed/debug.
-6. **human review** (Mission needs-review indicator + Report) — accept → `confirmed`, reject → `rejected_human`. Durable `vulnforge/hitl-report@1` packet and responses; the harness re-reads them and never invents an approval. Optional notes.
+6. **human review** (Review tab; its badge counts `needs_human`) — accept → `confirmed`, reject → `rejected_human`. Durable `vulnforge/hitl-report@1` packet and responses; the harness re-reads them and never invents an approval. Optional notes.
 7. **develop_poc / validate_poc** (operator) — write runnable PoC under `evidence/`; optional controlled harness run → `poc_run.json` (never auto-`confirmed`)
 7b. **develop_fix / verify_fix** (operator) — propose a patch as `evidence/<pack>/fix.patch` (never applied to the target); independently re-check a patched tree, git rev, or the fix patch → `verify_fix.json` with `fixed` / `still_vulnerable` / `inconclusive` (re-runs the PoC in the sandbox against the patched tree when one exists). Never changes finding state. See [`docs/system/FIX.md`](docs/system/FIX.md).
 8. **project projection** — regenerates `project/*` on idle `run-once` / `vf project`
 
 **`needs_human` = mech gates passed (and disprove did not kill, if enabled). `confirmed` = human accepted.** Neither is exploit proof.
+
+**Evidence tier.** Every finding also carries a derived `evidence_tier`, weakest first: `ungated` (gates not passed), `gated` (gates passed; disprove off, pending, split or not run), `stood` (every disprove slot returned `stand`; same-model stand is weaker still) and `reproduced` (the latest finished sandbox PoC run returned `signal_observed`). One pure function, `vulnforge/evidence_tier.py`, computes it from `validation_mech`, `validation_llm` and `poc_validation_latest`; the snapshot, HITL packet, exports and the `human_review` entry (tier at verdict time) all read it. The Review queue sorts by tier, then severity. It is a label: it never changes state, never raises severity and never confirms. A failed or inconclusive PoC run does not raise the tier but is shown next to it.
 
 ## Quick start
 
@@ -39,17 +41,20 @@ files changed between the two commit trees plus their codemap callers/callees. S
 
 The dashboard is the main operator surface:
 
-| Mode | Job |
-|------|-----|
-| **Mission** | Architecture map of the target; campaign health; light needs-review indicator |
-| **Hunts** | Plan hunts (areas × skills) + residual-risk matrix; re-queue shallow/aborted/none cells |
-| **Explorer** | Browse target, select code, enqueue hunts |
-| **Report** | Structured findings table, Needs review filter, human accept/reject, exports (incl. SARIF 2.1.0, [`docs/harness/SARIF.md`](docs/harness/SARIF.md)), **Track** in GitHub Issues (preview → Publish); detail links to Evidence |
-| **Evidence** | On-disk evidence packs (browse / open from Report) |
-| **Tasks** | Task queue / transcripts, event timeline (mode id `audit`) |
-| **AI** | Campaign co-pilot: start/query hunts, status, findings, runner control (confirm mutators) |
+Run pages are tabs under one header (run switcher, tabs, pipeline totals, Ralph status, Start/Pause, ⌘K, ⋯ menu). Mode ids are kept as URL hashes; `#mission` opens Campaign. Spec: [`docs/ui/REDESIGN.md`](docs/ui/REDESIGN.md). **Review** exports include SARIF 2.1.0 ([`docs/harness/SARIF.md`](docs/harness/SARIF.md)) and **Track** in GitHub Issues (preview → Publish). The operator **Security policy** editor is a fold on **Atlas**.
 
-**Home** (`/`): all runs + **AI Chat** (`/chat`, fleet co-pilot) + **Tool gaps** (`/tool-gaps`) + **Dev dashboard** (`/dev`, hunt skills) + **Settings** (`/settings` — hosts, verified model catalog, role pickers, per-model context and max tokens, hunt MoA perspectives). A pair with no override uses the global context and max tokens as the seed. Max context fraction stays global.
+| Tab (mode id) | Job |
+|------|-----|
+| **Review** (`report`) | Human gate: queue → finding (data flow, cited code) → verdict rail (mech gates, disprove judges as a weak signal, PoC, notes, **Accept / Reject**); exports. Badge counts `needs_human` only |
+| **Campaign** (`hunts`, default) | Pipeline (recon → hunt → gates → disprove → review → PoC) with an advisory yield sparkline (gated findings per token, last 20 hunts, beside the open-cell count), hunt-coverage matrix (area × skill, re-queue open cells), cell inspector, now running / up next / activity, **Plan hunts** drawer |
+| **Atlas** (`explorer`) | Architecture map in trust-zone bands with data-flow arrows (flows / links / imports), Files and Flows tabs, area or flow inspector, **Hunt this area / flow**, Code view (select lines → enqueue hunt), recon brief, History, Codemap |
+| **Evidence** | On-disk evidence packs (browse / open from Review) |
+| **Tasks** (`audit`) | Task queue / transcripts, event timeline |
+| **AI** (`ai`, ⌘K) | Campaign co-pilot sheet: start/query hunts, status, findings, runner control (confirm mutators) |
+
+Coverage cell states use one vocabulary everywhere: Finding filed, Nothing found, Too shallow, Aborted, Queued, Hunting now, Not hunted. Everything except Finding filed and Hunting now is **open**; "Nothing found" is still open (a miss is not proof of safety).
+
+**Home** (`/`): all runs + **AI Chat** (`/chat`, fleet co-pilot) + **Tool gaps** (`/tool-gaps`) + **Dev dashboard** (`/dev`, hunt skills) + **Benchmarks** (`/benchmarks`, `vf bench`: suite runs vs a pinned baseline, with gated recall, unmatched findings per target and tokens per hit; L0 fixture checks are not model quality; see [`benchmarks/README.md`](benchmarks/README.md)) + **Settings** (`/settings` — hosts, verified model catalog, role pickers, per-model context and max tokens, hunt MoA perspectives). A pair with no override uses the global context and max tokens as the seed. Max context fraction stays global.
 
 ### Operator AI chat
 
@@ -68,10 +73,10 @@ Seven verbs — `start`, `stop`, `pause`, `resume`, `status`, `findings`, `gate`
 
 ### Steer a live campaign
 
-1. Start Ralph from the mission bar.
-2. **Explorer**: open a file, optionally select lines, pick a hunt class, add notes, **Enqueue hunt**.
-3. **Hunts**: plan area×skill batches, or click residual cells (shallow/aborted/none) → re-queue with notes.
-4. **Report**: open a finding → **Open Evidence**; **Develop POC** opens a **workshop modal** (not a mode tab) — hub is `evidence/<pack>/poc_develop.md`; optional Ralph `develop_poc` writes **runnable** PoC code (not a narrative rewrite); **Run in harness** queues a sandbox one-shot `validate_poc` (microVM or gVisor only; writes `poc_run.json`; does not confirm); **Iterate in sandbox** keeps that guest for rewrite/re-run cycles (default 5, 15-minute TTL, both in Settings) and writes `poc_session.json` without confirming; **Export validation job** builds a handoff zip; **Accept / Reject / Needs review** with optional notes. None of these auto-prove exploitability. Opt-in **Suggested owners** (blame on cited lines, file/module authors, CODEOWNERS; read-only git) show in finding detail and exports, pseudonymised in exports by default — [`docs/harness/OWNERS.md`](docs/harness/OWNERS.md). New audit can opt in to the same one-shot as a validation-phase step (**Sandbox PoC one-shot**).
+1. Start Ralph from the run header.
+2. **Atlas**: pick an area or a traced flow → **Hunt this area / flow**; or switch to Code, select lines, pick a hunt class, add notes, **Enqueue hunt**.
+3. **Campaign**: **Plan hunts** for area × skill batches, or click open cells (not hunted / too shallow / aborted / nothing found) → re-queue with notes.
+4. **Review**: open a finding → **Open Evidence**; **Develop POC** opens a **workshop modal** (not a mode tab) — hub is `evidence/<pack>/poc_develop.md`; optional Ralph `develop_poc` writes **runnable** PoC code (not a narrative rewrite); **Run in harness** queues a sandbox one-shot `validate_poc` (microVM or gVisor only; writes `poc_run.json`; does not confirm); **Iterate in sandbox** keeps that guest for rewrite/re-run cycles (default 5, 15-minute TTL, both in Settings) and writes `poc_session.json` without confirming; **Export validation job** builds a handoff zip; **Accept / Reject / Needs review** with optional notes. None of these auto-prove exploitability. Opt-in **Suggested owners** (blame on cited lines, file/module authors, CODEOWNERS; read-only git) show in finding detail and exports, pseudonymised in exports by default — [`docs/harness/OWNERS.md`](docs/harness/OWNERS.md). New audit can opt in to the same one-shot as a validation-phase step (**Sandbox PoC one-shot**).
 
 CLI handoff / harness:
 
@@ -81,7 +86,7 @@ vf export-validation-job --run-dir runs/<target_id>/run-001 --finding-id 3
 vf validate-poc --run-dir runs/<target_id>/run-001 --finding-id 3 --execute
 ```
 
-Keyboard: `e` focuses Explorer.
+Keyboard: ⌘/Ctrl+K opens AI; `e` opens Atlas (outside Review); on Review `J`/`K` move, `A` accept, `R` reject, `E` open evidence.
 
 ## Package layout (maintainers)
 
@@ -135,7 +140,7 @@ Add check in `stages/validate_mech.py` `CHECKS` list; unit test in `tests/test_v
 
 **Preferred path (one file):** add `vulnforge/tools/agent/<name>.py` with `SPEC = ToolSpec(...)` and `run(ctx, **args)`. Registry auto-discovers name, schema, stages, aliases, and `critical_for`. See [`docs/LAYOUT.md`](docs/LAYOUT.md).
 
-**Full offline / AI generate guide:** [`toolgen.md`](toolgen.md). Dev dashboard: Home → **Open Dev** → **Tools** (drafts → validate → integrate). Validation: `python scripts/validate_tool.py config/tool_drafts/<id>`.
+**Full offline / AI generate guide:** [`toolgen.md`](toolgen.md). Dev dashboard: Home → **Open Dev** → **Tool lab** (brief → spec → impl → validate → integrate). **Tools** is read/configure only (catalog + per-stage defaults). Validation: `python scripts/validate_tool.py config/tool_drafts/<id>`.
 
 **When to open it**
 
@@ -143,7 +148,7 @@ Add check in `stages/validate_mech.py` `CHECKS` list; unit test in `tests/test_v
 - Extending `grep` / `file_inventory` / etc. with new args
 - Adding a brand-new `code_static` tool name
 
-Integrate **apply** mutates package source — dry-run first. Prefer writing a SPEC module under `tools/agent/`; `extra_registry` remains a compatibility path for older integrates.
+Integrate **apply** mutates package source. The server refuses apply without the `plan_hash` from a fresh dry-run (409), and refuses to overwrite an existing file unless `allow_overwrite` is sent. Prefer writing a SPEC module under `tools/agent/`; `extra_registry` remains a compatibility path for older integrates.
 
 **Rules** (same as honesty + `toolgen.md`): target tree read-only; evidence only via `write_evidence`; soft path jail for path tools; no unrestricted shell on default `code_static`. Prefer extending an existing tool when the model only needs filters/args.
 

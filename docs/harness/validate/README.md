@@ -46,6 +46,10 @@ Default: `stages.validate_llm: true`. Set **false** to skip for speed, debug, or
 
 **`llm.validate_consensus`** (`majority` default, or `all`) is a multi-model **stand** annotation on disprove. It fills `validation_llm.multi_model` (`stand_consensus`, `consensus_mode`, and the “N/M models stand” label). It does not change finding state. Auto-reject (`rejected_llm`) still requires **every** model×perspective slot to return `reject`. A majority of stands, or `validate_consensus: majority`, does not drop a dissenting `reject` slot and does not confirm. The same key also gates positive agreement on the PoC referee; that path only annotates.
 
+## Evidence tier (derived label)
+
+`vulnforge/evidence_tier.py` `evidence_tier(body, state)` is a pure function that labels how much evidence backs a finding, weakest first: `ungated` → `gated` → `stood` → `reproduced` (rank 30 between the last two is reserved for a future deterministic-tool tier). `gated` needs a passed `validation_mech` (or, for older findings without the stamp, a post-mech state). `stood` needs `validation_llm.verdict == "stand"`, meaning every slot stood; a split, unparsed, skipped, pending or turned-off disprove stays `gated`, and the result records whether the slots used one model or several. `reproduced` needs the latest finished `poc_validation_latest` / `poc_validation` run to be `signal_observed`; a queued re-run does not erase it, and a later `signal_absent`, `poc_broken`, `inconclusive` or fail-closed run drops it back while staying visible as `poc.verdict`. The snapshot (`finding.evidence_tier`), the HITL packet, the exports and each `human_review` entry (tier at verdict time, so confirm rate per tier can be measured) read this one function. It never sets `confirmed`, never changes state and never raises severity.
+
 ## Quality recipe (better severity / impact results)
 
 | Lever | What to do |

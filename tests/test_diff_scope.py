@@ -145,6 +145,9 @@ def _fake_cfg(responses: list, *, max_tasks: int = 30) -> dict:
         "packet": {},
         "tools": {},
         "stages": {"hunt_moa": False},
+        # Plan hunts on the map finalizer (R3 flow tracing defers planning to the
+        # last flow task; both paths share _finalize_hunts_and_skills).
+        "recon": {"flow_tracer": {"enabled": False}},
     }
 
 

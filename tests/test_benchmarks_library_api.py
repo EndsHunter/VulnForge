@@ -13,7 +13,7 @@ from vulnforge.benchmarks import (
     seed_from_ground_truth,
     update_def,
 )
-from vulnforge.eval.vulngym import SLICE_IDS
+from vulnforge.benchmarks.vulngym import SLICE_IDS
 from vulnforge.ui.app import create_app
 
 
@@ -177,13 +177,42 @@ def test_seed_endpoint_idempotent():
         assert body["seeded"] == []
 
 
-def test_library_page_lists_hook():
+def test_cases_page_and_library_redirect():
     app = create_app(runs_root=Path("/tmp/vf-bench-runs-unused"))
     with TestClient(app) as client:
-        page = client.get("/benchmarks/library")
+        page = client.get("/benchmarks/cases")
         assert page.status_code == 200
-        assert 'id="bench-library-table"' in page.text
-        assert "/api/benchmarks" in page.text
+        assert 'data-bench-view="cases"' in page.text
+        assert "/static/pages/bench/cases.js" in page.text
+        old = client.get("/benchmarks/library", follow_redirects=False)
+        assert old.status_code == 308
+        assert old.headers["location"] == "/benchmarks/cases"
+
+
+def test_retired_poc_dev_defs_are_skipped_on_load(tmp_path):
+    """A library written before poc_dev was retired still loads; the def is dropped."""
+    import json
+
+    from vulnforge.benchmarks import set_library_root
+
+    root = tmp_path / "lib"
+    root.mkdir()
+    (root / "collection.json").write_text(
+        json.dumps(
+            {
+                "format": "vulnforge.benchmark_library/v1",
+                "defs": [
+                    {"id": "toy_poc_dev", "name": "old", "types": ["poc_dev"], "head_version": 1},
+                    {"id": "keep_me", "name": "k", "types": ["hunt"], "head_version": 1},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    set_library_root(root)
+    ids = [d["id"] for d in list_defs()]
+    assert ids == ["keep_me"]
+    assert list_defs()[0]["suite"] == "synthetic"
 
 
 def test_write_version_refuses_overwrite():
