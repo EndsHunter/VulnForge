@@ -32,9 +32,9 @@ Related (not covered here as full folders): `develop_poc`, `validate_poc`, `gene
 - `confirmed` is **only** set by human review (Report / HITL approval). Automation never auto-confirms. Durable inbox: [validate/HITL.md](validate/HITL.md).
 - Same-model `validate_llm` can only demote/reject; never raise severity or confirm.
 
-## Mission task progress
+## Run task progress
 
-The Mission **Tasks known** figure is finished work over every task row known so far: `done_tasks / total_tasks`.
+The **Tasks known** figure is finished work over every task row known so far: `done_tasks / total_tasks`.
 
 Finished states are `succeeded`, `failed_task`, `blocked`, `deadletter`, and `cancelled`. Queued and leased tasks count only in the denominator. `continue_hunt`, `continue_recon`, split children, and operator enqueues insert new rows immediately. The finished count can stay flat while the total grows, so the share can drop (for example 3/10 → 3/11). That drop is new work entering the queue. The share stays live for the whole run: each new task counts as soon as it is queued.
 
@@ -42,7 +42,7 @@ Finished states are `succeeded`, `failed_task`, `blocked`, `deadletter`, and `ca
 
 | Kind | Typical priority | Notes |
 |------|------------------|--------|
-| Operator recon (Mission re-run) | `min(queued)−1` | Front of queue vs bulk hunts |
+| Operator recon (Atlas re-run) | `min(queued)−1` | Front of queue vs bulk hunts |
 | Init recon | `5` (`RECON_INIT_PRIORITY`) | Ahead of hunts |
 | Recon child / fan-out / continue_recon | `8` | Still ahead of hunts |
 | Hunt continuation (`continue_hunt`) | `42` | Ahead of default planned hunts |

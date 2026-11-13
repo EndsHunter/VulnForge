@@ -315,34 +315,42 @@ function runStatusLabel(r, group) {
 }
 
 function renderRunRow(r, group) {
+  // Home redesign (docs/ui/REDESIGN.md): status pill | run | pipeline | last activity | tokens.
+  const H = globalThis.HomeHelpers;
   const tpath = r.target_path || "";
   const runLabel = `${r.target_id || ""} / ${r.run_id || ""}`;
   const last = lastEventLine(r);
-  const queued = Number((r.tasks || {}).queued || 0);
-  const accepted = Number((r.findings || {}).confirmed || 0);
-  const review = Number((r.findings || {}).needs_human || 0);
-  const metaBits = [tpath, last].filter(Boolean);
-  if (group !== "settled" && queued > 0) metaBits.push(`${queued} queued`);
-  if (group === "settled" && accepted > 0) metaBits.push(`${accepted} accepted`);
-  const status = runStatusLabel(r, group);
+  const st = H ? H.runStatus(r) : statusChip(r);
+  const stLabel = (H && H.STATUS_LABEL[st]) || runStatusLabel(r, group).text || st;
+  const tone = (H && H.STATUS_TONE[st]) || "";
+  const pipe = H
+    ? H.runPipeline(r)
+    : {
+        tasks: String(r.done_tasks || 0),
+        review: Number((r.findings || {}).needs_human || 0),
+        confirmed: Number((r.findings || {}).confirmed || 0),
+      };
   const age = shortAge(r.updated_at || r.created_at || r.mtime);
   const usage = llmUsageOf(r);
   const tokTitle = modelUsageTooltipSafe(usage);
+  const total = tokenCountsSafe(usage).total;
   return `
-      <a class="run-row" href="/runs/${encodeURIComponent(r.target_id)}/${encodeURIComponent(r.run_id)}" title="${esc(runLabel)}">
-        <span>
-          <div class="title">${esc(runLabel)}</div>
-          <div class="meta">${esc(metaBits.join(" · "))}</div>
-          ${renderTokenCountsHtml(usage, {
-            className: "tok-counts run-tok",
-            title: tokTitle,
-          })}
+      <a class="run-row" data-status="${esc(st)}" href="/runs/${encodeURIComponent(r.target_id)}/${encodeURIComponent(r.run_id)}" title="${esc(runLabel)}">
+        <span class="vf-run-status"><span class="vf-runner-pill ${tone}"><span class="dot" aria-hidden="true"></span>${esc(stLabel)}</span></span>
+        <span class="vf-run-id">
+          <span class="title">${esc(runLabel)}</span>
+          <span class="meta vf-mono">${esc(tpath)}</span>
         </span>
-        <span class="right">
-          ${status.text ? `<span class="${status.cls}">${esc(status.text)}</span>` : ""}
-          ${review > 0 ? `<span class="review">${review} review</span>` : ""}
-          ${age ? `<span class="ago">${esc(age)}</span>` : ""}
+        <span class="vf-run-pipe" aria-label="Pipeline">
+          <span>Tasks <b>${esc(pipe.tasks)}</b></span>
+          <span class="${pipe.review > 0 ? "is-review" : ""}">Review <b>${pipe.review}</b></span>
+          <span class="${pipe.confirmed > 0 ? "is-confirmed" : ""}">Confirmed <b>${pipe.confirmed}</b></span>
         </span>
+        <span class="vf-run-last">
+          <span class="vf-run-last-ev">${esc(last || "—")}</span>
+          ${age ? `<span class="ago">${esc(age)} ago</span>` : ""}
+        </span>
+        <span class="vf-run-tok vf-mono"${tokTitle ? ` title="${esc(tokTitle)}"` : ""}>${total ? esc(fmtTokens(total)) : "—"}</span>
       </a>`;
 }
 
@@ -440,6 +448,15 @@ function renderRunCards(runs) {
   if (!box) return;
   const filtered = runs.filter((r) => !r.error && matchesQuery(r, homeQuery));
   const errors = runs.filter((r) => r.error);
+  const attention = $("#home-attention");
+  if (attention && globalThis.HomeHelpers) {
+    const html = globalThis.HomeHelpers.renderAttentionHtml(
+      globalThis.HomeHelpers.attentionItems(runs),
+      esc
+    );
+    attention.innerHTML = html;
+    attention.hidden = !html;
+  }
   if (!runs.length) {
     box.innerHTML = `<div class="empty">No runs yet. Start a new audit to begin recon -> hunt -> validate.</div>`;
     return;
@@ -457,16 +474,12 @@ function renderRunCards(runs) {
     });
     return;
   }
-  const live = filtered.filter((r) => classifyRun(r) === "live");
-  const failed = filtered.filter((r) => classifyRun(r) === "failed");
-  const settled = filtered.filter((r) => classifyRun(r) === "settled");
-  const parts = [];
-  parts.push(...live.map((r) => renderRunRow(r, "live")));
-  parts.push(...failed.map((r) => renderRunRow(r, "failed")));
-  if (settled.length) {
-    parts.push(`<div class="home-group">Settled</div>`);
-    parts.push(...settled.map((r) => renderRunRow(r, "settled")));
-  }
+  const H = globalThis.HomeHelpers;
+  const ordered = H ? H.sortRuns(filtered) : filtered;
+  const parts = [
+    `<div class="vf-run-head" aria-hidden="true"><span>Status</span><span>Run</span><span>Pipeline</span><span>Last activity</span><span>Tokens</span></div>`,
+  ];
+  parts.push(...ordered.map((r) => renderRunRow(r, classifyRun(r))));
   const errHtml = errors
     .map(
       (r) =>
@@ -995,61 +1008,6 @@ window.showInitFloatingTip = showInitFloatingTip;
 window.hideInitFloatingTip = hideInitFloatingTip;
 window.wireFloatingTipViewport = wireFloatingTipViewport;
 
-function wireMissionHoverTips() {
-  const root = $("#arch-panel");
-  if (!root || root.dataset.tipsWired === "1") return;
-  root.dataset.tipsWired = "1";
-  wireFloatingTipViewport();
-
-  const anchorOf = (target) => {
-    const el = target && target.closest?.("[data-tip]");
-    if (!el || !root.contains(el)) return null;
-    if (!el.closest(".arch-campaign-strip")) return null;
-    return el;
-  };
-  const onEnter = (e) => {
-    const el = anchorOf(e.target);
-    if (el) showInitFloatingTip(el);
-  };
-  const onLeave = (e) => {
-    const el = anchorOf(e.target);
-    if (!el) return;
-    const next = e.relatedTarget;
-    if (next && (next === el || el.contains(next))) return;
-    hideInitFloatingTip(el);
-  };
-
-  root.addEventListener("mouseover", onEnter);
-  root.addEventListener("mouseout", onLeave);
-  root.addEventListener("focusin", onEnter);
-  root.addEventListener("focusout", onLeave);
-  root.addEventListener("click", (e) => {
-    const step = e.target.closest?.(".arch-campaign-funnel-step");
-    if (step && root.contains(step)) hideInitFloatingTip();
-  });
-}
-
-function refreshMissionHoverTip() {
-  const apply = () => {
-    const hovered = document.querySelector(
-      "#arch-panel .arch-campaign-strip [data-tip]:hover"
-    );
-    if (hovered) {
-      showInitFloatingTip(hovered);
-      return;
-    }
-    if (
-      _initTipAnchor &&
-      typeof _initTipAnchor.closest === "function" &&
-      _initTipAnchor.closest("#arch-panel") &&
-      !_initTipAnchor.isConnected
-    ) {
-      hideInitFloatingTip();
-    }
-  };
-  apply();
-  requestAnimationFrame(apply);
-}
 
 /* ---------- Host path picker (New audit) ---------- */
 
@@ -1819,9 +1777,6 @@ function renderRunner(runner, snap = {}) {
   const pid = runner?.pid;
   const workersAlive = runner?.workers_alive ?? (Array.isArray(runner?.pids) ? runner.pids.length : 0);
   const workersCfg = runner?.workers ?? runner?.meta?.workers ?? 1;
-  const bits = [];
-  bits.push(badge(st));
-  if (incomplete) bits.push(badge("incomplete"));
   const meta = [];
   if (workersAlive > 1 || workersCfg > 1) {
     meta.push(`agents ${workersAlive || 0}/${workersCfg}`);
@@ -1830,10 +1785,12 @@ function renderRunner(runner, snap = {}) {
   }
   if (runner?.stop) meta.push("STOP set");
   if (incomplete) meta.push("residual work");
-  if (meta.length) {
-    bits.push(`<span class="controls-hint runner-meta">${esc(meta.join(" | "))}</span>`);
-  }
-  el.innerHTML = bits.join(" ");
+  const label = st.charAt(0).toUpperCase() + st.slice(1);
+  const tone = st === "running" ? "is-running"
+    : st === "paused" || st === "pausing" ? `is-${st}`
+      : st === "error" || st === "dead" || st === "crashed" ? "is-error" : "";
+  const tip = `Ralph (task loop) ${label.toLowerCase()}${meta.length ? ` — ${meta.join(" | ")}` : ""}`;
+  el.innerHTML = `<span class="vf-runner-pill ${tone}" title="${esc(tip)}"><span class="dot" aria-hidden="true"></span>${esc(label)}${incomplete && st !== "running" ? " · residual" : ""}</span>`;
 
   // One primary runner action visible: Start | Pause | Resume
   const running = st === "running";
@@ -1869,40 +1826,6 @@ function renderRunner(runner, snap = {}) {
   }
 }
 
-function goStatLink(nav) {
-  const modes = window.VulnForgeModes;
-  const report = window.VulnForgeReport;
-  switch (nav) {
-    case "progress":
-      modes?.setMode?.("mission", "arch");
-      break;
-    case "tasks":
-      modes?.setMode?.("audit", "tasks");
-      break;
-    case "confirmed":
-      modes?.setMode?.("report", "report");
-      report?.setFilter?.("confirmed");
-      break;
-    case "candidates":
-    case "needs_human":
-      modes?.setMode?.("report", "report");
-      report?.setFilter?.("needs_human");
-      break;
-    case "rejected":
-      modes?.setMode?.("report", "report");
-      report?.setFilter?.("rejected");
-      break;
-    case "high":
-      modes?.setMode?.("report", "report");
-      report?.setFilter?.("all");
-      break;
-    case "events":
-      modes?.setMode?.("audit", "timeline");
-      break;
-    default:
-      break;
-  }
-}
 
 /** Campaign KPI / work-lane helpers — see mission_overview_helpers.js */
 const {
@@ -1913,616 +1836,23 @@ const {
 } = globalThis.MissionOverviewHelpers;
 
 /** Compact Hunts strip: live hunt feed + needs_human above coverage matrix. */
-function renderHuntsStripHtml(snap, opts = {}) {
-  const variant = opts.variant || "mission"; // mission | hunts
-  const includeMatrix = !!opts.includeMatrix;
-  const showOpenHunts = opts.showOpenHunts !== false && variant === "mission";
-  const queue = summarizeHuntQueue(snap?.tasks, { limit: opts.feedLimit || 8 });
-  const needs = listNeedsHumanFindings(snap?.findings, { limit: opts.needsLimit || 6 });
-  const residual = summarizeCoverageResidual(snap?.coverage);
-  const empty =
-    queue.total === 0 &&
-    needs.count === 0 &&
-    residual.cells === 0 &&
-    residual.areas === 0;
-
-  const stat = (label, value, tone, title) => {
-    const toneCls = tone ? ` ${tone}` : "";
-    return `<div class="hunts-strip-stat${toneCls}" title="${esc(title || label)}">
-      <div class="hunts-strip-stat-label">${esc(label)}</div>
-      <div class="hunts-strip-stat-value mono">${esc(String(value))}</div>
-    </div>`;
-  };
-
-  const feedRows = queue.feed.length
-    ? queue.feed
-        .map((t) => {
-          const open =
-            t.has_transcript && t.id != null
-              ? `<button type="button" class="btn btn-ghost btn-sm hunts-strip-open-log" data-tid="${esc(String(t.id))}">Log</button>`
-              : t.id != null
-                ? `<button type="button" class="btn btn-ghost btn-sm hunts-strip-open-tasks" data-tid="${esc(String(t.id))}">Tasks</button>`
-                : "";
-          const cellBtn =
-            t.area && t.class
-              ? `<button type="button" class="btn btn-ghost btn-sm hunts-strip-open-cell" data-area="${esc(t.area)}" data-class="${esc(t.class)}" title="Open cell in Hunts">Cell</button>`
-              : "";
-          return `<li class="hunts-strip-feed-row" data-state="${esc(t.state)}">
-            <span class="mono hunts-strip-tid">#${esc(String(t.id))}</span>
-            ${badge(t.state)}
-            <span class="hunts-strip-feed-label" title="${esc(t.label)}">${esc(t.label)}</span>
-            <span class="hunts-strip-feed-actions">${cellBtn}${open}</span>
-          </li>`;
-        })
-        .join("")
-    : `<li class="controls-hint hunts-strip-empty-row">${
-        queue.total === 0
-          ? "No hunts yet — run recon or open Hunts to plan area × skill batches."
-          : "No recent hunt activity in this snapshot."
-      }</li>`;
-
-  const needsRows = needs.items.length
-    ? needs.items
-        .map((f) => {
-          const sev = f.severity
-            ? `<span class="sev-pill ${esc(String(f.severity).toLowerCase())}">${esc(f.severity)}</span>`
-            : "";
-          const cls = f.class
-            ? `<span class="mono controls-hint">${esc(f.class)}</span>`
-            : "";
-          return `<li class="hunts-strip-needs-row">
-            ${badge(f.state)}
-            ${sev}
-            <button type="button" class="btn btn-ghost btn-sm hunts-strip-open-finding" data-fid="${esc(String(f.id))}">#${esc(String(f.id))} ${esc(f.title)}</button>
-            ${cls}
-          </li>`;
-        })
-        .join("")
-    : `<li class="controls-hint hunts-strip-empty-row">${
-        needs.count
-          ? `${needs.count} awaiting review (open Report for full list).`
-          : "No needs_human / candidate findings yet."
-      }</li>`;
-
-  const openBtn = showOpenHunts
-    ? `<button type="button" class="btn btn-sm" id="hunts-strip-go-hunts">Open Hunts</button>`
-    : `<button type="button" class="btn btn-sm" id="hunts-strip-go-tasks">Open Tasks</button>`;
-
-  const matrixBlock = includeMatrix
-    ? `<div class="hunts-strip-matrix" id="coverage-inline">${renderCoverageHtml(snap.coverage, { interactive: false })}</div>`
-    : "";
-
-  const hint =
-    variant === "mission"
-      ? "Live hunt queue and needs_human without leaving Mission. Matrix below is preview-only."
-      : "Live hunt queue and needs_human — residual matrix below.";
-
-  return `
-    <section class="hunts-strip card hunts-strip-${esc(variant)}" aria-label="Hunts strip">
-      <div class="hunts-strip-head">
-        <div class="hunts-strip-head-text">
-          <h2 class="hunts-strip-title">${esc(variant === "hunts" ? "Live queue" : "Hunts")}</h2>
-          <p class="controls-hint hunts-strip-hint">${esc(hint)}</p>
-        </div>
-        <div class="hunts-strip-head-actions toolbar">${openBtn}</div>
-      </div>
-      <div class="hunts-strip-stats" role="group" aria-label="Hunt queue counts">
-        ${stat("Queued", queue.queued, queue.queued ? "warn" : "", "Queued + paused hunt tasks")}
-        ${stat("Running", queue.active, queue.active ? "info" : "", "Leased / running hunt tasks")}
-        ${stat("Done", queue.done, "", "Completed hunt tasks (incl. failed)")}
-        ${stat("Residual", residual.residual, residual.residual ? "warn" : "", "Empty, planned, shallow, none, or aborted cells")}
-        <button type="button" class="hunts-strip-stat warn hunts-strip-stat-btn" data-stat="needs_human" title="Open Report: needs human review">
-          <div class="hunts-strip-stat-label">Needs human</div>
-          <div class="hunts-strip-stat-value mono">${esc(String(needs.count))}</div>
-        </button>
-      </div>
-      ${
-        empty
-          ? `<div class="hunts-strip-empty empty"><div class="empty-ico">*</div>No hunts yet. Run recon (enqueue hunts) or open Hunts to plan area × skill batches.</div>`
-          : `<div class="hunts-strip-body">
-        <div class="hunts-strip-feed-panel">
-          <h3 class="hunts-strip-subhead">Live feed</h3>
-          <ul class="hunts-strip-feed">${feedRows}</ul>
-        </div>
-        <div class="hunts-strip-needs-panel">
-          <h3 class="hunts-strip-subhead">Needs human</h3>
-          <ul class="hunts-strip-needs">${needsRows}</ul>
-        </div>
-      </div>`
-      }
-      ${matrixBlock}
-    </section>`;
-}
-
-function bindHuntsStrip(root) {
-  const scope = root || document;
-  scope.querySelector("#hunts-strip-go-hunts")?.addEventListener("click", () => {
-    window.VulnForgeModes?.goHunts?.() ||
-      window.VulnForgeModes?.goCoverage?.() ||
-      window.VulnForgeModes?.setMode?.("hunts");
-  });
-  scope.querySelector("#hunts-strip-go-tasks")?.addEventListener("click", () => {
-    window.VulnForgeModes?.setMode?.("audit", "tasks");
-  });
-  scope.querySelectorAll(".hunts-strip-stat-btn[data-stat]").forEach((btn) => {
-    btn.addEventListener("click", () => goStatLink(btn.getAttribute("data-stat")));
-  });
-  scope.querySelectorAll(".hunts-strip-open-finding").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const fid = btn.getAttribute("data-fid");
-      window.VulnForgeModes?.setMode?.("report", "report");
-      if (window.VulnForgeReport?.openFinding) {
-        window.VulnForgeReport.openFinding(fid);
-      } else {
-        window.VulnForgeReport?.setFilter?.("needs_human");
-      }
-    });
-  });
-  scope.querySelectorAll(".hunts-strip-open-log").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const tid = btn.getAttribute("data-tid");
-      if (tid && typeof window.openTranscript === "function") {
-        try {
-          window.openTranscript(Number(tid));
-        } catch {
-          /* ignore */
-        }
-      }
-    });
-  });
-  scope.querySelectorAll(".hunts-strip-open-tasks").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      window.VulnForgeModes?.setMode?.("audit", "tasks");
-    });
-  });
-  scope.querySelectorAll(".hunts-strip-open-cell").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const area = btn.getAttribute("data-area");
-      const cls = btn.getAttribute("data-class");
-      window.VulnForgeModes?.goHunts?.() || window.VulnForgeModes?.setMode?.("hunts");
-      if (area && cls && typeof window.openCoverageCell === "function") {
-        setTimeout(() => window.openCoverageCell(area, cls), 60);
-      } else if (area && cls && window.VulnForgeCoverage?.openCell) {
-        setTimeout(() => window.VulnForgeCoverage.openCell(area, cls), 60);
-      }
-    });
-  });
-}
-
-function paintHuntsModeStrip(snap) {
-  const el = document.querySelector("#hunts-strip");
-  if (!el) return;
-  el.hidden = false;
-  el.innerHTML = renderHuntsStripHtml(snap, {
-    variant: "hunts",
-    includeMatrix: false,
-    showOpenHunts: false,
-  });
-  // Flatten: paint into #hunts-strip without nesting an extra outer card chrome clash
-  const inner = el.querySelector(".hunts-strip");
-  if (inner) {
-    el.className = inner.className;
-    el.innerHTML = inner.innerHTML;
-  }
-  bindHuntsStrip(el);
-}
-
-window.renderHuntsStripHtml = renderHuntsStripHtml;
-window.bindHuntsStrip = bindHuntsStrip;
-window.paintHuntsModeStrip = paintHuntsModeStrip;
-
-const missionEventRing = {
-  limit: 12,
-  _items: [],
-  reset() {
-    this._items = [];
-  },
-  push(events) {
-    if (!events || !events.length) return;
-    this._items = this._items.concat(events);
-    if (this._items.length > this.limit) {
-      this._items = this._items.slice(-this.limit);
-    }
-  },
-  snapshot() {
-    return this._items.slice();
-  },
-};
-
-function applyKpiNav(nav) {
-  if (!nav) return;
-  const modes = window.VulnForgeModes;
-  if (nav.filter) {
-    if (modes?.goReport) modes.goReport(nav.filter);
-    else modes?.setMode?.("report", nav.tab || "report");
-    return;
-  }
-  modes?.setMode?.(nav.mode, nav.tab);
-}
-
-function missionFailReason(snap) {
-  const last = snap?.last_event && typeof snap.last_event === "object" ? snap.last_event : {};
-  const kind = String(last.event || last.kind || "").toLowerCase();
-  if (kind === "failed_infra") return last.message || "Infra failure";
-  const lr = snap?.target_inventory?.last_recon;
-  if (lr && lr.state && lr.state !== "succeeded") {
-    return lr.error || lr.state || "failed";
-  }
-  return "";
-}
-
-function missionTargetLabel() {
-  if (!currentKey) return "";
-  return String(currentKey.split("/")[0] || "");
-}
-
-function missionCampaignVm(snap) {
-  const helpers = globalThis.MissionOverviewHelpers;
-  if (!helpers?.buildMissionCockpit) {
-    return { kpis: [], pipeline: [], events: [], validateLlmOn: false, usage: { input: 0, output: 0, total: 0, models: [] } };
-  }
-  return helpers.buildMissionCockpit(snap, {
-    recentEvents: missionEventRing.snapshot(),
-  });
-}
-
-function goMissionEventsAll() {
-  window.VulnForgeModes?.setMode?.("audit", "timeline");
-}
-
-function needsReviewCount(snap) {
-  const helpers = globalThis.MissionOverviewHelpers;
-  if (helpers?.countFindingState) {
-    return Number(helpers.countFindingState(snap, "needs_human")) || 0;
-  }
-  const findings = snap && snap.findings;
-  if (Array.isArray(findings)) {
-    return findings.filter(
-      (f) => String((f && f.state) || "").toLowerCase() === "needs_human"
-    ).length;
-  }
-  if (findings && typeof findings === "object") {
-    return Number(findings.needs_human || 0) || 0;
-  }
-  return 0;
-}
-
-function renderNeedsReviewIndicatorHtml(count) {
-  const n = Number(count) || 0;
-  if (n <= 0) return "";
-  const label = n === 1 ? "1 needs review" : n + " need review";
-  return `<button type="button" class="mission-needs-review" id="mission-needs-review" title="Open Report filtered to findings that need review" aria-label="${esc(label)}">${esc(label)}</button>`;
-}
-
-function renderArchPageHeaderHtml(pageTitle, opts) {
-  const hasArch = !!(opts && opts.hasArch);
-  const target = missionTargetLabel();
-  const title = pageTitle || "Architecture";
-  const targetHtml = target
-    ? ` <span class="arch-page-target">· ${esc(target)}</span>`
-    : "";
-  const actions = [];
-  if (hasArch) {
-    actions.push(
-      `<button type="button" class="btn btn-sm" id="arch-edit-toggle">Edit</button>`
-    );
-    actions.push(
-      `<button type="button" class="btn btn-sm" id="arch-history-toggle">History</button>`
-    );
-  }
-  actions.push(
-    `<button type="button" class="btn btn-sm" id="arch-policy-toggle" title="Operator security policy: trust boundaries, exclusions, severity rubric">Policy</button>`
-  );
-  actions.push(
-    `<button type="button" class="btn btn-sm" id="arch-recon-toggle">Recon</button>`
-  );
-  const indicator = renderNeedsReviewIndicatorHtml(opts && opts.needsReview);
-  return `<header class="arch-page-header">
-    <h2 class="arch-page-title">${esc(title)}${targetHtml}</h2>
-    <div class="arch-page-actions">${actions.join("")}</div>
-    ${indicator}
-  </header>`;
-}
-
-function renderArchMastheadHtml(pageTitle, opts, campaignHtml) {
-  return `<div class="arch-masthead">
-    ${renderArchPageHeaderHtml(pageTitle, opts)}
-    ${campaignHtml}
-  </div>`;
-}
-
 const CAMPAIGN_LANE_STATES = new Set(["idle", "running", "idle-with-results", "failed"]);
 
-function campaignLaneState(stage) {
-  const status = stage && stage.status;
-  return CAMPAIGN_LANE_STATES.has(status) ? status : "idle";
-}
-
-function campaignLaneAria(stage, state, counts) {
-  const name = (stage && stage.label) || "Lane";
-  const word = state === "idle-with-results" ? "idle with results" : state;
-  return [name, word, counts].filter(Boolean).join(", ");
-}
 
 /**
  * Finding counts: ingested → screened → needs_human → confirmed.
  * Arrows are the funnel, not work-lane progress. Lanes stay concurrent.
  */
-function missionTipId(prefix, id) {
-  const safe = String(id || "item").replace(/[^A-Za-z0-9_-]/g, "") || "item";
-  return prefix + safe;
-}
 
-function renderFindingFunnelHtml(funnel) {
-  const steps = funnel || [];
-  if (!steps.length) return "";
-  const described = [];
-  const body = steps
-    .map((step, i) => {
-      const arrow =
-        i > 0
-          ? `<span class="arch-campaign-funnel-arrow" aria-hidden="true">→</span>`
-          : "";
-      const label = step.label || step.id || "";
-      const value = String(step.value ?? 0);
-      const hint = String(step.hint || "").trim();
-      const aria = label + " " + value;
-      const hintId = hint ? missionTipId("mission-funnel-hint-", step.id || i) : "";
-      const tipAttrs = hint
-        ? ` data-tip="${esc(hint)}" title="${esc(hint)}" aria-describedby="${esc(hintId)}"`
-        : "";
-      if (hint) {
-        described.push(
-          `<span id="${esc(hintId)}" class="visually-hidden">${esc(hint)}</span>`
-        );
-      }
-      const inner = `<span class="arch-campaign-funnel-label">${esc(label)}</span><span class="arch-campaign-funnel-value mono">${esc(value)}</span>`;
-      if (step.nav) {
-        return `${arrow}<button type="button" class="arch-campaign-funnel-step" data-funnel-idx="${i}"${tipAttrs} aria-label="${esc(aria)}">${inner}</button>`;
-      }
-      const tab = hint ? ' tabindex="0"' : "";
-      return `${arrow}<span class="arch-campaign-funnel-step"${tab}${tipAttrs} aria-label="${esc(aria)}">${inner}</span>`;
-    })
-    .join("");
-  return `<div class="arch-campaign-funnel" role="group" aria-label="Finding funnel">${body}${described.join("")}</div>`;
-}
-
-function renderPresenceHtml(presence) {
-  const segments =
-    presence && Array.isArray(presence.segments) ? presence.segments : [];
-  const line = presence && presence.line ? String(presence.line) : "";
-  if (!line && !segments.length) return "";
-  const paused =
-    (presence.pauses && presence.pauses.length) ||
-    presence.pausedCount ||
-    presence.runnerState === "paused" ||
-    presence.runnerState === "pausing";
-  const mark = paused ? ' data-paused="1"' : "";
-  if (!segments.length) {
-    return `<p class="arch-campaign-presence" role="status"${mark}>${esc(line)}</p>`;
-  }
-  const described = [];
-  const bits = segments
-    .map((seg, i) => {
-      const sep = i > 0 ? `<span class="arch-campaign-presence-sep"> · </span>` : "";
-      const text = String(seg.text || "");
-      const tip = String(seg.tip || "").trim();
-      const hintId = tip ? missionTipId("mission-presence-hint-", seg.id || i) : "";
-      const tipAttrs = tip
-        ? ` data-tip="${esc(tip)}" title="${esc(tip)}" aria-describedby="${esc(hintId)}"`
-        : "";
-      if (tip) {
-        described.push(
-          `<span id="${esc(hintId)}" class="visually-hidden">${esc(tip)}</span>`
-        );
-      }
-      return `${sep}<span class="arch-campaign-presence-bit" tabindex="0"${tipAttrs}>${esc(text)}</span>`;
-    })
-    .join("");
-  return `<div class="arch-campaign-presence-wrap"><p class="arch-campaign-presence" role="status"${mark}>${bits}</p>${described.join("")}</div>`;
-}
 
 /**
  * Recon / Hunt / Validate are concurrent lanes. Ralph stays on #runner-status.
  * The funnel and who/why line sit on this strip; they are not lane lights.
  */
-function renderCampaignStripHtml(vm, snap) {
-  const fail = missionFailReason(snap);
-  const banner = fail
-    ? `<div class="mission-fail arch-campaign-fail">
-      <p class="mission-fail-reason">${esc(fail)}</p>
-      <button type="button" class="btn btn-primary btn-sm" id="mission-retry">Retry</button>
-    </div>`
-    : "";
 
-  const kpis = (vm && vm.kpis) || [];
-  const kpiHtml = kpis
-    .map((k, i) => {
-      const sep =
-        i > 0 ? `<span class="arch-campaign-sep" aria-hidden="true">·</span>` : "";
-      const described = [k.label, k.value, k.hint].filter(Boolean).join(". ");
-      return `${sep}<button type="button" class="arch-campaign-kpi" data-kpi-idx="${i}" title="${esc(k.hint || k.label)}" aria-label="${esc(described)}">
-        <span class="arch-campaign-kpi-label">${esc(k.label)}</span>
-        <span class="arch-campaign-kpi-value mono">${esc(k.value)}</span>
-      </button>`;
-    })
-    .join("");
 
-  const stages = (vm && vm.pipeline) || [];
-  const laneHtml = stages
-    .map((s) => {
-      const state = campaignLaneState(s);
-      const counts = String((s && s.counts) || "");
-      const hint = [s.hint || s.label, counts].filter(Boolean).join(" · ");
-      const aria = campaignLaneAria(s, state, counts);
-      const countsHtml = counts
-        ? `<span class="arch-campaign-lane-counts">${esc(counts)}</span>`
-        : "";
-      return `<span class="arch-campaign-lane arch-campaign-lane-${esc(state)}" data-stage="${esc(s.id)}" data-lane-status="${esc(state)}" title="${esc(hint)}" role="listitem" aria-label="${esc(aria)}">
-        <span class="arch-campaign-lane-light" aria-hidden="true"></span>
-        <span class="arch-campaign-lane-label">${esc(s.label)}</span>
-        ${countsHtml}
-      </span>`;
-    })
-    .join("");
-  const lanes = stages.length
-    ? `<div class="arch-campaign-lanes" role="list" aria-label="Work lanes">${laneHtml}</div>`
-    : "";
 
-  const note =
-    !fail && vm && vm.validateLlmOn
-      ? `<span class="arch-campaign-note" title="validate_llm is on. Mech-pass is needs_human; disprove may rejected_llm only. Never auto-confirms.">disprove on</span>`
-      : "";
 
-  const funnelHtml = renderFindingFunnelHtml((vm && vm.funnel) || []);
-  const presenceHtml = renderPresenceHtml(vm && vm.presence);
-  const usage = (vm && vm.usage) || tokenCountsSafe(snap && snap.llm_usage);
-  const models = Array.isArray(usage.models)
-    ? usage.models
-    : (globalThis.MissionOverviewHelpers?.modelUsageRows?.(snap && snap.llm_usage) || []);
-  const modelRows = models
-    .map(
-      (m) => `<li class="mission-usage-model">
-        <span class="mission-usage-model-id mono">${esc(m.id)}</span>
-        ${renderTokenCountsHtml(m, { className: "tok-counts" })}
-      </li>`
-    )
-    .join("");
-  const usageHtml = `<div class="mission-usage" id="mission-usage" aria-label="Token usage">
-    <span class="tok-strip-label">Tokens</span>
-    ${renderTokenCountsHtml(usage, { className: "tok-counts" })}
-    ${modelRows ? `<ul class="mission-usage-models">${modelRows}</ul>` : ""}
-  </div>`;
-
-  return `<div class="arch-campaign-strip${fail ? " is-failed" : ""}">
-    ${banner}
-    <div class="arch-campaign-row">
-      <div class="arch-campaign-kpis">${kpiHtml || `<span class="controls-hint">No campaign stats yet.</span>`}</div>
-      ${lanes}
-      ${note}
-    </div>
-    ${funnelHtml}
-    ${presenceHtml}
-    ${usageHtml}
-  </div>`;
-}
-
-function renderArchEventsFooterHtml(events) {
-  const recent = (events || []).slice(-5).reverse();
-  const rows = recent
-    .map((ev) => {
-      const name = ev.event || ev.type || "event";
-      return `<li class="arch-events-item">
-        <span class="ts">${esc(ev.ts || "")}</span>
-        <span class="name">${esc(name)}</span>
-      </li>`;
-    })
-    .join("");
-  return `<section class="arch-events-footer" data-arch-events>
-    <div class="arch-events-head">
-      <h3 class="arch-events-title">Recent events</h3>
-      <button type="button" class="btn btn-sm" data-arch-events-all>View all → Tasks</button>
-    </div>
-    <ul class="arch-events-list">${rows || `<li class="controls-hint">No events yet.</li>`}</ul>
-  </section>`;
-}
-
-function renderArchRefineHtml(hasArch) {
-  const heading = hasArch ? "Refine recon" : "Run recon";
-  const hint = hasArch
-    ? "Re-run recon with guidance. Prior architecture is included so the model can correct and deepen the map."
-    : "Queue recon with optional operator guidance. Ralph must be Start/Resume to execute.";
-  const primary = hasArch ? "Re-run recon" : "Run recon + hunts";
-  const placeholder = hasArch
-    ? "What did recon miss? Which areas need better path_hints?"
-    : "What should recon map first? Auth, SQL entrypoints, trust boundaries…";
-  return `<section class="card arch-refine" id="arch-refine-section" hidden>
-    <header class="arch-section-head">
-      <h3>${esc(heading)}</h3>
-    </header>
-    <p class="controls-hint">${esc(hint)}</p>
-    <div class="field">
-      <label for="arch-recon-notes">Operator brief</label>
-      <textarea id="arch-recon-notes" class="op-notes" rows="3" placeholder="${esc(placeholder)}"></textarea>
-    </div>
-    <div class="toolbar arch-toolbar-actions">
-      <button type="button" class="btn btn-primary" id="arch-recon-rerun">${esc(primary)}</button>
-      <button type="button" class="btn" id="arch-recon-only">Architecture only</button>
-    </div>
-  </section>`;
-}
-
-function renderArchRawJsonHtml(arch, summary) {
-  return `<details class="card arch-footer-fold arch-raw-card">
-    <summary>Raw architecture JSON</summary>
-    <pre class="arch-box">${esc(JSON.stringify(arch || summary || {}, null, 2))}</pre>
-  </details>`;
-}
-
-function toggleArchRefine(forceShow) {
-  const box = $("#arch-refine-section");
-  if (!box) return;
-  const show =
-    forceShow === true ? true : forceShow === false ? false : box.hidden;
-  box.hidden = !show;
-  if (!show) return;
-  box.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  setTimeout(() => $("#arch-recon-notes")?.focus(), 50);
-}
-
-function bindArchCampaignHandlers(root, vm) {
-  const scope = root || document;
-  scope.querySelector("#mission-retry")?.addEventListener("click", () => control("start"));
-  const kpis = (vm && vm.kpis) || [];
-  scope.querySelectorAll(".arch-campaign-kpi").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const i = Number(btn.getAttribute("data-kpi-idx"));
-      applyKpiNav(kpis[i] && kpis[i].nav);
-    });
-  });
-  const funnel = (vm && vm.funnel) || [];
-  scope.querySelectorAll(".arch-campaign-funnel-step[data-funnel-idx]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      hideInitFloatingTip();
-      const i = Number(btn.getAttribute("data-funnel-idx"));
-      applyKpiNav(funnel[i] && funnel[i].nav);
-    });
-  });
-  scope.querySelector("[data-arch-events-all]")?.addEventListener("click", goMissionEventsAll);
-  scope.querySelector("#arch-recon-toggle")?.addEventListener("click", () => toggleArchRefine());
-}
-
-function paintArchEventsLive(events) {
-  const el = document.querySelector("[data-arch-events]");
-  if (!el) return;
-  const tmp = document.createElement("div");
-  tmp.innerHTML = renderArchEventsFooterHtml(events);
-  const next = tmp.firstElementChild;
-  if (!next) return;
-  el.replaceWith(next);
-  next.querySelector("[data-arch-events-all]")?.addEventListener("click", goMissionEventsAll);
-}
-
-function reconFailureHint(snap) {
-  const lr = snap?.target_inventory?.last_recon;
-  if (!lr || lr.state === "succeeded") return "";
-  const err = lr.error || lr.state || "failed";
-  const gen = lr.recon_generation != null ? ` (generation ${esc(String(lr.recon_generation))})` : "";
-  const retry = lr.recon_requeued
-    ? ` A follow-up recon was queued${lr.child_task_id != null ? ` as task ${esc(String(lr.child_task_id))}` : ""}.`
-    : " Auto-retries may be exhausted — check Tasks / transcript for submit_architecture.";
-  let tip = "";
-  if (err === "no_submit" || err === "max_tool_rounds") {
-    tip =
-      " The model never called submit_architecture (or exhausted tool rounds). Architecture is only stored after a non-empty summary.";
-  } else if (err === "no_architecture") {
-    tip = " Recon finished without a usable architecture summary.";
-  } else if (err === "no_hunt_tasks") {
-    tip =
-      " Architecture may exist, but hunt planning produced zero tasks (check run.max_tasks and active hunt skills).";
-  }
-  return `<p class="controls-hint" style="margin:0.5rem 0 0;color:var(--danger, #c44)"><strong>Last recon:</strong> <span class="mono">${esc(String(err))}</span>${gen}.${tip}${retry}</p>`;
-}
 
 function runApiBase() {
   const [target_id, run_id] = currentKey.split("/");
@@ -3804,6 +3134,14 @@ const EVENT_ICONS = {
 
 function appendEvents(events) {
   const list = Array.isArray(events) ? events : [];
+  if (list.length) {
+    // Activity feeds on page modules (Campaign) listen for this.
+    try {
+      window.dispatchEvent(new CustomEvent("vf:events", { detail: list }));
+    } catch (err) {
+      console.error("vf:events listener failed", err);
+    }
+  }
   const tl = $("#timeline");
   if (tl && list.length) {
     const frag = document.createDocumentFragment();
@@ -3829,10 +3167,6 @@ function appendEvents(events) {
     if ($("#autoscroll")?.checked) {
       tl.scrollTop = tl.scrollHeight;
     }
-  }
-  missionEventRing.push(list);
-  if (document.querySelector("[data-arch-events]")) {
-    paintArchEventsLive(missionEventRing.snapshot());
   }
 }
 
@@ -3986,120 +3320,6 @@ function inlineMd(s) {
 
 /* ---------- Architecture (Mission page) ---------- */
 
-function archEmptyItem(label) {
-  return `<li class="arch-item arch-item-empty"><span class="controls-hint">${label || "None recorded"}</span></li>`;
-}
-
-function archListOrEmpty(itemsHtml, emptyLabel) {
-  return itemsHtml || archEmptyItem(emptyLabel);
-}
-
-function archPathChips(hints, limit) {
-  const list = Array.isArray(hints) ? hints.filter(Boolean) : [];
-  if (!list.length) return "";
-  const lim = limit != null ? limit : 6;
-  const shown = list.slice(0, lim);
-  const more = list.length > lim ? list.length - lim : 0;
-  return `<div class="arch-chip-row">${shown
-    .map((h) => `<span class="arch-chip mono" title="${esc(String(h))}">${esc(String(h))}</span>`)
-    .join("")}${
-    more ? `<span class="arch-chip arch-chip-muted">+${more}</span>` : ""
-  }</div>`;
-}
-
-function archComponentCard(c) {
-  if (!c || typeof c !== "object") {
-    return `<article class="arch-comp-card"><div class="arch-comp-name">${esc(String(c || "?"))}</div></article>`;
-  }
-  const name = esc(c.name || c.id || "?");
-  const role = c.role ? `<p class="arch-comp-role">${esc(String(c.role))}</p>` : "";
-  const paths = archPathChips(c.path_hints, 8);
-  return `<article class="arch-comp-card">
-    <div class="arch-comp-name">${name}</div>
-    ${role}
-    ${paths}
-  </article>`;
-}
-
-function archFormatSurfaceItem(x) {
-  if (typeof x === "string") {
-    return `<li class="arch-item">${esc(x)}</li>`;
-  }
-  if (x && typeof x === "object") {
-    const name = x.name || x.id || x.surface || "";
-    const desc = x.description || x.role || x.kind || "";
-    const paths = archPathChips(x.path_hints || x.paths, 4);
-    return `<li class="arch-item">
-      <div class="arch-item-title">${esc(String(name || JSON.stringify(x)))}</div>
-      ${desc ? `<div class="arch-item-desc">${esc(String(desc))}</div>` : ""}
-      ${paths}
-    </li>`;
-  }
-  return `<li class="arch-item">${esc(JSON.stringify(x))}</li>`;
-}
-
-function archFormatBoundItem(x) {
-  if (typeof x === "string") {
-    return `<li class="arch-item">${esc(x)}</li>`;
-  }
-  if (x && typeof x === "object") {
-    const name = x.name || x.id || "";
-    const desc = x.description || x.role || "";
-    return `<li class="arch-item">
-      <div class="arch-item-title">${esc(String(name || "Boundary"))}</div>
-      ${desc ? `<div class="arch-item-desc">${esc(String(desc))}</div>` : !name ? `<div class="arch-item-desc mono">${esc(JSON.stringify(x))}</div>` : ""}
-    </li>`;
-  }
-  return `<li class="arch-item">${esc(JSON.stringify(x))}</li>`;
-}
-
-function archFormatFocusItem(x) {
-  if (typeof x === "string") {
-    return `<li class="arch-item"><span class="mono">${esc(x)}</span></li>`;
-  }
-  if (x && typeof x === "object") {
-    const area = esc(String(x.area || x.name || x.component || "?"));
-    const cls = x.class || x.weakness_class || x.hunt_class || "";
-    const note = x.note || x.reason || x.why || "";
-    const paths = archPathChips(x.path_hints || x.paths, 4);
-    return `<li class="arch-item">
-      <div class="arch-item-title">
-        <span class="mono">${area}</span>
-        ${cls ? `<span class="badge">${esc(String(cls))}</span>` : ""}
-      </div>
-      ${note ? `<div class="arch-item-desc">${esc(String(note))}</div>` : ""}
-      ${paths}
-    </li>`;
-  }
-  return `<li class="arch-item">${esc(JSON.stringify(x))}</li>`;
-}
-
-function archFormatSinkItem(x) {
-  if (!x || typeof x !== "object") {
-    return `<li class="arch-item mono">${esc(String(x || ""))}</li>`;
-  }
-  const sym = esc(String(x.symbol || x.name || "?"));
-  const kind = x.kind ? `<span class="badge">${esc(String(x.kind))}</span>` : "";
-  const addr = x.address
-    ? `<span class="mono controls-hint">${esc(String(x.address))}</span>`
-    : "";
-  return `<li class="arch-item">
-    <div class="arch-item-title"><span class="mono">${sym}</span>${kind}${addr}</div>
-  </li>`;
-}
-
-function archFormatAgentItem(a) {
-  const id = esc(a?.id || "?");
-  const title = a?.title ? esc(String(a.title)) : "";
-  const ok = a?.ok === true ? "ok" : a?.ok === false ? "fail" : "";
-  const badge = ok
-    ? ` <span class="badge ${ok === "ok" ? "good" : "bad"}">${ok}</span>`
-    : "";
-  return `<li class="arch-item">
-    <div class="arch-item-title"><span class="mono">${id}</span>${badge}</div>
-    ${title ? `<div class="arch-item-desc">${title}</div>` : ""}
-  </li>`;
-}
 
 /**
  * @param {string} title
@@ -4108,649 +3328,7 @@ function archFormatAgentItem(a) {
  * @param {string} [extraClass]
  * @param {string} [tone]  arch-tone-* key: components | surfaces | boundaries | focus | agents | sinks
  */
-function archSectionCard(title, count, bodyHtml, extraClass, tone) {
-  const countHtml =
-    count != null
-      ? `<span class="arch-section-count">${esc(String(count))}</span>`
-      : "";
-  const toneClass = tone ? `arch-tone-${tone}` : "";
-  const idAttr = tone ? ` id="arch-section-${tone}"` : "";
-  return `<section class="card arch-section ${toneClass} ${extraClass || ""}"${idAttr}>
-    <header class="arch-section-head">
-      <h3>${esc(title)}</h3>
-      ${countHtml}
-    </header>
-    ${bodyHtml}
-  </section>`;
-}
 
-function bindArchPage(el, vm, arch, summary) {
-  bindArchCampaignHandlers(el, vm);
-  refreshMissionHoverTip();
-  $("#arch-focus-refine")?.addEventListener("click", () => toggleArchRefine(true));
-  $("#arch-go-explorer")?.addEventListener("click", () => {
-    window.VulnForgeModes?.setMode?.("explorer");
-  });
-  $("#arch-recon-rerun")?.addEventListener("click", () => submitArchRecon(true));
-  $("#arch-recon-only")?.addEventListener("click", () => submitArchRecon(false));
-  $("#arch-history-toggle")?.addEventListener("click", () => toggleArchHistory());
-  $("#arch-edit-toggle")?.addEventListener("click", () => toggleArchEdit(arch || summary));
-  el.querySelector("#mission-needs-review")?.addEventListener("click", () => {
-    window.VulnForgeModes?.goReport?.("needs_human");
-  });
-  $("#arch-edit-cancel")?.addEventListener("click", () => {
-    const p = $("#arch-edit-panel");
-    if (p) p.style.display = "none";
-  });
-  $("#arch-edit-save")?.addEventListener("click", () => saveArchEdit());
-  window.VFSecurityPolicy?.bind?.();
-  bindCodemapHandlers();
-}
-
-function renderArchitecture(arch, summary, snap) {
-  const el = $("#arch-panel");
-  if (!el) return;
-  const s = summary || {};
-  const pageTitle = s.title || "Architecture";
-  const has = !!(s.has_architecture || arch);
-  const vm = missionCampaignVm(snap);
-  const campaignHtml = renderCampaignStripHtml(vm, snap);
-  const mastheadHtml = renderArchMastheadHtml(
-    pageTitle,
-    { hasArch: has, needsReview: needsReviewCount(snap) },
-    campaignHtml
-  );
-  const eventsHtml = renderArchEventsFooterHtml(vm.events);
-  const policyHtml = window.VFSecurityPolicy?.panelHtml?.() || "";
-  const policyState = window.VFSecurityPolicy?.capture?.() || null;
-  const refineHtml = renderArchRefineHtml(has);
-  const rawHtml = renderArchRawJsonHtml(arch, s);
-
-  if (!has) {
-    el.innerHTML = `<div class="arch-page">
-      ${mastheadHtml}
-      <div class="card">
-        <div class="empty empty-cta">
-          <p><strong>No architecture yet</strong></p>
-          <p class="controls-hint">Recon has not finished (or has not run). Architecture is stored after submit_architecture (or free-text salvage). Use Recon, then hunt from Explorer or Hunts.</p>
-          ${reconFailureHint(snap)}
-          <div class="empty-cta-actions">
-            <button type="button" class="btn btn-primary" id="arch-focus-refine">Run recon with brief</button>
-            <button type="button" class="btn" id="arch-go-explorer">Open Explorer</button>
-          </div>
-        </div>
-      </div>
-      ${policyHtml}
-      ${refineHtml}
-      ${eventsHtml}
-      ${renderCodemapCardHtml(snap)}
-      ${rawHtml}
-    </div>`;
-    bindArchPage(el, vm, arch, s);
-    window.VFSecurityPolicy?.restore?.(policyState);
-    return;
-  }
-
-  const components = Array.isArray(s.components) ? s.components : [];
-  const surfaces = Array.isArray(s.input_surfaces) ? s.input_surfaces : [];
-  const bounds = Array.isArray(s.trust_boundaries) ? s.trust_boundaries : [];
-  const huntFocus = Array.isArray(s.hunt_focus) ? s.hunt_focus : [];
-  const seedSinks = Array.isArray(s.seed_sinks) ? s.seed_sinks : [];
-  const agentsRun = Array.isArray(s.recon_agents_run) ? s.recon_agents_run : [];
-
-  const compsHtml = components.map(archComponentCard).join("");
-  const surfacesHtml = surfaces.map(archFormatSurfaceItem).join("");
-  const boundsHtml = bounds.map(archFormatBoundItem).join("");
-  const focusHtml = huntFocus.map(archFormatFocusItem).join("");
-  const sinksHtml = seedSinks.map(archFormatSinkItem).join("");
-  const agentsHtml = agentsRun.map(archFormatAgentItem).join("");
-
-  const summaryHtml = renderMarkdown(s.summary || "(no summary)");
-
-  const sideSections = [
-    archSectionCard(
-      "Input surfaces",
-      surfaces.length,
-      `<ul class="arch-list arch-list-plain">${archListOrEmpty(surfacesHtml)}</ul>`,
-      "arch-section-surfaces",
-      "surfaces"
-    ),
-    archSectionCard(
-      "Trust boundaries",
-      bounds.length,
-      `<ul class="arch-list arch-list-plain">${archListOrEmpty(boundsHtml)}</ul>`,
-      "arch-section-boundaries",
-      "boundaries"
-    ),
-    archSectionCard(
-      "Hunt focus",
-      huntFocus.length,
-      `<ul class="arch-list arch-list-plain">${archListOrEmpty(focusHtml, "No hunt_focus yet")}</ul>`,
-      "arch-section-focus",
-      "focus"
-    ),
-  ];
-  if (seedSinks.length) {
-    sideSections.push(
-      archSectionCard(
-        "Seed sinks",
-        seedSinks.length,
-        `<ul class="arch-list arch-list-plain">${sinksHtml}</ul>`,
-        "arch-section-sinks",
-        "sinks"
-      )
-    );
-  }
-  sideSections.push(
-    archSectionCard(
-      "Recon agents",
-      agentsRun.length,
-      `<ul class="arch-list arch-list-plain">${archListOrEmpty(
-        agentsHtml,
-        "No recon agents recorded on this map"
-      )}</ul>`,
-      "arch-section-agents",
-      "agents"
-    )
-  );
-
-  el.innerHTML = `
-    <div class="arch-page">
-      ${mastheadHtml}
-
-      <div id="arch-edit-panel" class="card arch-edit-panel" style="display:none">
-        <header class="arch-section-head">
-          <h3>Edit architecture</h3>
-        </header>
-        <p class="controls-hint">Edit summary and/or full JSON. Saved as source <span class="mono">manual</span> (DB only).</p>
-        <div class="field">
-          <label for="arch-edit-summary">Summary</label>
-          <textarea id="arch-edit-summary" class="op-notes" rows="4" placeholder="Architecture summary…"></textarea>
-        </div>
-        <div class="field">
-          <label for="arch-edit-json">Full architecture JSON</label>
-          <textarea id="arch-edit-json" class="op-notes mono" rows="12" spellcheck="false"></textarea>
-        </div>
-        <div class="field">
-          <label for="arch-edit-note">Note (optional)</label>
-          <input type="text" id="arch-edit-note" class="op-notes" placeholder="Why this edit?" />
-        </div>
-        <div class="toolbar arch-toolbar-actions">
-          <button type="button" class="btn btn-primary" id="arch-edit-save">Save</button>
-          <button type="button" class="btn" id="arch-edit-cancel">Cancel</button>
-        </div>
-      </div>
-
-      <div id="arch-history-panel" class="card arch-history-panel" style="display:none">
-        <header class="arch-section-head">
-          <h3>Architecture history</h3>
-        </header>
-        <p class="controls-hint">Prior maps (last 50). View a revision or restore it — restore archives the current map first.</p>
-        <div id="arch-history-list" class="arch-history-list controls-hint">Loading…</div>
-        <div id="arch-history-detail" class="arch-history-detail" style="display:none"></div>
-      </div>
-
-      ${policyHtml}
-
-      ${refineHtml}
-
-      <div class="arch-body">
-        <div class="arch-main">
-          <section class="card arch-summary-card">
-            <header class="arch-section-head">
-              <h3>Summary</h3>
-            </header>
-            <div class="arch-summary-text md-prose">${summaryHtml}</div>
-          </section>
-
-          <section class="card arch-section arch-components-section arch-tone-components" id="arch-section-components">
-            <header class="arch-section-head">
-              <h3>Components</h3>
-              <span class="arch-section-count">${esc(String(components.length))}</span>
-            </header>
-            ${
-              compsHtml
-                ? `<div class="arch-comp-grid">${compsHtml}</div>`
-                : `<p class="controls-hint arch-section-empty">No components recorded.</p>`
-            }
-          </section>
-        </div>
-
-        <aside class="arch-side">
-          ${sideSections.join("")}
-        </aside>
-      </div>
-
-      ${eventsHtml}
-      ${renderCodemapCardHtml(snap)}
-      ${rawHtml}
-    </div>`;
-  bindArchPage(el, vm, arch, s);
-  window.VFSecurityPolicy?.restore?.(policyState);
-}
-
-function renderCodemapCardHtml(snap) {
-  const sum = (snap && snap.codemap_summary) || {};
-  const map = (snap && snap.codemap) || null;
-  const has =
-    !!(sum.has_codemap || (snap && snap.has_codemap) || (map && (map.modules || []).length));
-  if (!has) {
-    return `
-    <details class="card arch-footer-fold codemap-card" id="codemap-card">
-      <summary>Codemap</summary>
-      <div class="empty empty-cta codemap-empty">
-        <p><strong>No codemap yet</strong></p>
-        <p class="controls-hint">Run recon or Rebuild after init. Mechanical structure is stored in the run DB (not under project/) and does not replace architecture.</p>
-      </div>
-      <div class="arch-footer-fold-actions">
-        <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild</button>
-      </div>
-    </details>`;
-  }
-  const fileCount = sum.file_count != null ? sum.file_count : (map.summary && map.summary.file_count) || 0;
-  const moduleCount =
-    sum.module_count != null ? sum.module_count : (map.modules || []).length;
-  const roots = Array.isArray(sum.package_roots)
-    ? sum.package_roots
-    : (map.summary && map.summary.package_roots) || [];
-  const langs = sum.languages || (map.summary && map.summary.languages) || {};
-  const topLangs = Object.entries(langs)
-    .sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0))
-    .slice(0, 6);
-  const annCount =
-    sum.annotation_count != null
-      ? sum.annotation_count
-      : (map.annotations || []).length;
-  const epCount =
-    sum.entrypoint_count != null
-      ? sum.entrypoint_count
-      : (map.entrypoints || []).length;
-  const symbolCount =
-    sum.symbol_count != null
-      ? sum.symbol_count
-      : (map.summary && map.summary.symbol_count) || 0;
-  const chips = [
-    `<span class="arch-chip"><strong>files</strong> ${esc(String(fileCount))}</span>`,
-    `<span class="arch-chip"><strong>modules</strong> ${esc(String(moduleCount))}</span>`,
-    symbolCount
-      ? `<span class="arch-chip"><strong>symbols</strong> ${esc(String(symbolCount))}</span>`
-      : "",
-    roots.length
-      ? `<span class="arch-chip"><strong>package_roots</strong> ${esc(String(roots.length))}</span>`
-      : "",
-    epCount
-      ? `<span class="arch-chip"><strong>entrypoints</strong> ${esc(String(epCount))}</span>`
-      : "",
-    annCount
-      ? `<span class="arch-chip"><strong>annotations</strong> ${esc(String(annCount))}</span>`
-      : "",
-    sum.source || (map && map.source)
-      ? `<span class="arch-chip"><strong>source</strong> ${esc(String(sum.source || map.source))}</span>`
-      : "",
-  ]
-    .filter(Boolean)
-    .join("");
-  const langChips = topLangs
-    .map(
-      ([k, v]) =>
-        `<span class="arch-chip mono"><strong>${esc(String(k))}</strong> ${esc(String(v))}</span>`
-    )
-    .join("");
-  const rootChips = (roots || [])
-    .slice(0, 12)
-    .map((r) => `<span class="arch-chip mono" title="${esc(String(r))}">${esc(String(r))}</span>`)
-    .join("");
-  const modules = Array.isArray(map && map.modules) ? map.modules : [];
-  const modLimit = 40;
-  const modItems = modules
-    .slice(0, modLimit)
-    .map((m) => {
-      if (!m || typeof m !== "object") return "";
-      const path = esc(String(m.path || m.name || "?"));
-      const kind = m.kind ? `<span class="badge">${esc(String(m.kind))}</span>` : "";
-      const nsym =
-        m.symbol_count != null
-          ? `<span class="badge">${esc(String(m.symbol_count))} sym</span>`
-          : "";
-      const signals = Array.isArray(m.signals)
-        ? m.signals
-        : Array.isArray(m.security_signals)
-          ? m.security_signals
-          : [];
-      const sigChips = signals.length
-        ? `<div class="arch-chip-row">${signals
-            .slice(0, 6)
-            .map((sig) => `<span class="arch-chip arch-chip-muted mono">${esc(String(sig))}</span>`)
-            .join("")}</div>`
-        : "";
-      return `<li class="arch-item">
-        <div class="arch-item-title"><span class="mono">${path}</span>${kind}${nsym}</div>
-        ${sigChips}
-      </li>`;
-    })
-    .filter(Boolean)
-    .join("");
-  const moreMods =
-    modules.length > modLimit
-      ? `<li class="arch-item arch-item-empty"><span class="controls-hint">…and ${modules.length - modLimit} more</span></li>`
-      : "";
-  const anns = Array.isArray(map && map.annotations) ? map.annotations : [];
-  const annItems = anns
-    .slice(0, 20)
-    .map((a) => {
-      if (!a || typeof a !== "object") return "";
-      const p = a.path ? `<span class="mono">${esc(String(a.path))}</span>` : "";
-      const sym = a.symbol ? `<span class="badge">${esc(String(a.symbol))}</span>` : "";
-      const note = a.note ? esc(String(a.note).slice(0, 200)) : "";
-      return `<li class="arch-item">
-        <div class="arch-item-title">${p}${sym}</div>
-        ${note ? `<div class="arch-item-desc">${note}</div>` : `<div class="arch-item-desc controls-hint">(empty)</div>`}
-      </li>`;
-    })
-    .filter(Boolean)
-    .join("");
-  return `
-    <details class="card arch-footer-fold codemap-card" id="codemap-card">
-      <summary>Codemap</summary>
-      <p class="controls-hint arch-page-sub">Mechanical modules + function-level symbols (full index in DB). Rebuild does not wipe architecture.</p>
-      <div class="arch-footer-fold-actions">
-        <button type="button" class="btn btn-sm" id="codemap-rebuild">Rebuild</button>
-      </div>
-      <div class="arch-chip-row">${chips}</div>
-      ${
-        langChips
-          ? `<div class="codemap-meta-block"><div class="codemap-meta-label">Languages</div><div class="arch-chip-row">${langChips}</div></div>`
-          : ""
-      }
-      ${
-        rootChips
-          ? `<div class="codemap-meta-block"><div class="codemap-meta-label">Package roots</div><div class="arch-chip-row">${rootChips}</div></div>`
-          : ""
-      }
-      <details class="arch-raw">
-        <summary>Modules (${moduleCount})</summary>
-        <ul class="arch-list arch-list-plain">${modItems || archEmptyItem()}${moreMods}</ul>
-      </details>
-      ${
-        annItems
-          ? `<details class="arch-raw">
-              <summary>Agent annotations (${annCount})</summary>
-              <ul class="arch-list arch-list-plain">${annItems}</ul>
-            </details>`
-          : annCount
-            ? `<p class="controls-hint codemap-ann-hint">${annCount} annotation(s) present</p>`
-            : ""
-      }
-      <details class="arch-raw">
-        <summary>Raw codemap JSON</summary>
-        <pre class="arch-box">${esc(JSON.stringify(map || sum, null, 2))}</pre>
-      </details>
-    </details>`;
-}
-
-function bindCodemapHandlers() {
-  $("#codemap-rebuild")?.addEventListener("click", async () => {
-    const btn = $("#codemap-rebuild");
-    if (btn) btn.disabled = true;
-    try {
-      const r = await api(`${runApiBase()}/codemap/rebuild`, { method: "POST" });
-      const n =
-        (r.summary && r.summary.module_count) ||
-        (r.codemap && (r.codemap.modules || []).length) ||
-        0;
-      toast(`Codemap rebuilt (${n} module(s))`);
-      if (typeof loadRunFull === "function") await loadRunFull();
-    } catch (e) {
-      toast(e.message || String(e), true);
-    } finally {
-      if (btn) btn.disabled = false;
-    }
-  });
-}
-
-
-async function toggleArchHistory() {
-  const panel = $("#arch-history-panel");
-  if (!panel) return;
-  const show = panel.style.display === "none";
-  panel.style.display = show ? "block" : "none";
-  if (!show) return;
-  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  const list = $("#arch-history-list");
-  const detail = $("#arch-history-detail");
-  if (detail) {
-    detail.style.display = "none";
-    detail.innerHTML = "";
-  }
-  if (!list) return;
-  list.innerHTML = "Loading…";
-  try {
-    const r = await api(`${runApiBase()}/architecture/history?limit=50`);
-    const revs = Array.isArray(r.revisions) ? r.revisions : [];
-    if (!revs.length) {
-      list.innerHTML = "<p class='controls-hint' style='margin:0'>No prior revisions yet.</p>";
-      return;
-    }
-    list.innerHTML = `<ul class="arch-rev-list">${revs
-      .map((rev) => {
-        const id = rev.id;
-        const src = esc(rev.source || "—");
-        const when = esc(rev.created_at || "");
-        const note = rev.note ? esc(String(rev.note).slice(0, 120)) : "";
-        const gen =
-          rev.recon_generation != null
-            ? `gen ${esc(String(rev.recon_generation))}`
-            : "";
-        const agents =
-          Array.isArray(rev.agent_ids) && rev.agent_ids.length
-            ? `<span class="mono">${esc(rev.agent_ids.join(", "))}</span>`
-            : "";
-        return `<li class="arch-rev-row">
-          <div class="arch-rev-meta">
-            <a href="#arch-rev-${esc(String(id))}" class="mono arch-rev-link" data-rev-id="${esc(String(id))}" title="View this revision">#${esc(String(id))}</a>
-            <span class="badge">${src}</span>
-            <span class="controls-hint">${when}</span>
-            ${gen ? `<span class="controls-hint">${gen}</span>` : ""}
-            ${agents ? `<span class="controls-hint">agents: ${agents}</span>` : ""}
-            ${note ? `<span class="controls-hint arch-rev-note">${note}</span>` : ""}
-          </div>
-          <div class="arch-rev-actions">
-            <button type="button" class="btn btn-sm arch-view-btn" data-rev-id="${esc(String(id))}">View</button>
-            <button type="button" class="btn btn-sm arch-restore-btn" data-rev-id="${esc(String(id))}">Restore</button>
-          </div>
-        </li>`;
-      })
-      .join("")}</ul>`;
-    list.querySelectorAll(".arch-rev-link, .arch-view-btn").forEach((el) => {
-      el.addEventListener("click", async (ev) => {
-        ev.preventDefault();
-        const revId = el.getAttribute("data-rev-id");
-        if (revId) await showArchRevision(revId);
-      });
-    });
-    list.querySelectorAll(".arch-restore-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        const revId = btn.getAttribute("data-rev-id");
-        if (!revId) return;
-        if (!confirm(`Restore architecture revision #${revId}? Current map will be archived.`)) {
-          return;
-        }
-        try {
-          await api(`${runApiBase()}/architecture/restore/${revId}`, {
-            method: "POST",
-            body: JSON.stringify({ note: `restored from #${revId}` }),
-          });
-          toast(`Restored architecture #${revId}`);
-          await loadRunFull();
-        } catch (e) {
-          toast(e.message, true);
-        }
-      });
-    });
-  } catch (e) {
-    list.innerHTML = `<p class="controls-hint" style="color:var(--danger,#c44)">${esc(e.message)}</p>`;
-  }
-}
-
-function renderArchSnapshotHtml(snap, title) {
-  const s = snap && typeof snap === "object" ? snap : {};
-  const comps = (s.components || [])
-    .map((c) => {
-      if (typeof c === "string") return archComponentCard({ name: c });
-      return archComponentCard(c);
-    })
-    .join("");
-  const surfaces = (s.input_surfaces || []).map(archFormatSurfaceItem).join("");
-  const bounds = (s.trust_boundaries || []).map(archFormatBoundItem).join("");
-  const focus = (s.hunt_focus || []).map(archFormatFocusItem).join("");
-  const summaryHtml = renderMarkdown(s.summary || "(no summary)");
-  return `
-    <div class="arch-rev-detail-head">
-      <h4 class="arch-rev-detail-title">${title}</h4>
-      <button type="button" class="btn btn-sm" id="arch-history-detail-close">Close</button>
-    </div>
-    <div class="arch-summary-text md-prose">${summaryHtml}</div>
-    <div class="arch-meta-grid">
-      <div class="arch-meta-block">
-        <div class="codemap-meta-label">Components</div>
-        ${
-          comps
-            ? `<div class="arch-comp-grid arch-comp-grid-compact">${comps}</div>`
-            : `<p class="controls-hint">—</p>`
-        }
-      </div>
-      <div class="arch-meta-block">
-        <div class="codemap-meta-label">Input surfaces</div>
-        <ul class="arch-list arch-list-plain">${archListOrEmpty(surfaces)}</ul>
-      </div>
-      <div class="arch-meta-block">
-        <div class="codemap-meta-label">Trust boundaries</div>
-        <ul class="arch-list arch-list-plain">${archListOrEmpty(bounds)}</ul>
-      </div>
-      <div class="arch-meta-block">
-        <div class="codemap-meta-label">Hunt focus</div>
-        <ul class="arch-list arch-list-plain">${archListOrEmpty(focus, "None")}</ul>
-      </div>
-    </div>
-    <details class="arch-raw">
-      <summary>Raw revision JSON</summary>
-      <pre class="arch-box">${esc(JSON.stringify(s, null, 2))}</pre>
-    </details>`;
-}
-
-async function showArchRevision(revId) {
-  const detail = $("#arch-history-detail");
-  if (!detail) return;
-  detail.style.display = "block";
-  detail.innerHTML = `<p class="controls-hint" style="margin:0">Loading revision #${esc(String(revId))}…</p>`;
-  try {
-    const rev = await api(`${runApiBase()}/architecture/history/${encodeURIComponent(revId)}`);
-    const snap = rev.snapshot && typeof rev.snapshot === "object" ? rev.snapshot : {};
-    const src = esc(rev.source || "—");
-    const when = esc(rev.created_at || "");
-    const note = rev.note ? ` — ${esc(String(rev.note).slice(0, 200))}` : "";
-    const gen =
-      rev.recon_generation != null
-        ? ` · gen ${esc(String(rev.recon_generation))}`
-        : "";
-    const title = `Revision <span class="mono">#${esc(String(rev.id ?? revId))}</span> <span class="badge">${src}</span> <span class="controls-hint">${when}${gen}${note}</span>`;
-    detail.innerHTML = renderArchSnapshotHtml(snap, title);
-    detail.id = "arch-history-detail";
-    // Ensure the detail node stays addressable if innerHTML replaced id on a child only
-    $("#arch-history-detail-close")?.addEventListener("click", () => {
-      const d = $("#arch-history-detail");
-      if (d) {
-        d.style.display = "none";
-        d.innerHTML = "";
-      }
-    });
-    detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  } catch (e) {
-    detail.innerHTML = `<p class="controls-hint" style="color:var(--danger,#c44);margin:0">${esc(e.message)}</p>`;
-  }
-}
-
-function toggleArchEdit(arch) {
-  const panel = $("#arch-edit-panel");
-  if (!panel) return;
-  const show = panel.style.display === "none";
-  panel.style.display = show ? "block" : "none";
-  if (!show) return;
-  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  const base = arch && typeof arch === "object" ? arch : {};
-  const sumEl = $("#arch-edit-summary");
-  const jsonEl = $("#arch-edit-json");
-  if (sumEl) sumEl.value = String(base.summary || "");
-  if (jsonEl) {
-    try {
-      jsonEl.value = JSON.stringify(base, null, 2);
-    } catch {
-      jsonEl.value = "{}";
-    }
-  }
-  sumEl?.focus?.();
-}
-
-async function saveArchEdit() {
-  const jsonEl = $("#arch-edit-json");
-  const sumEl = $("#arch-edit-summary");
-  const noteEl = $("#arch-edit-note");
-  let arch;
-  try {
-    arch = JSON.parse((jsonEl?.value || "{}").trim() || "{}");
-  } catch (e) {
-    toast("Invalid JSON: " + e.message, true);
-    return;
-  }
-  if (!arch || typeof arch !== "object" || Array.isArray(arch)) {
-    toast("Architecture must be a JSON object", true);
-    return;
-  }
-  // Prefer summary textarea if the operator edited it
-  if (sumEl) {
-    arch.summary = sumEl.value;
-  }
-  try {
-    await api(`${runApiBase()}/architecture`, {
-      method: "PUT",
-      body: JSON.stringify({
-        architecture: arch,
-        note: (noteEl?.value || "").trim(),
-      }),
-    });
-    toast("Architecture saved");
-    await loadRunFull();
-  } catch (e) {
-    toast(e.message, true);
-  }
-}
-
-async function submitArchRecon(enqueueHunts) {
-  const notes = ($("#arch-recon-notes")?.value || "").trim();
-  try {
-    const r = await api(`${runApiBase()}/recon/rerun`, {
-      method: "POST",
-      body: JSON.stringify({
-        operator_notes: notes,
-        include_prior_architecture: true,
-        enqueue_hunts: enqueueHunts,
-        reason: enqueueHunts ? "operator_recon_from_arch" : "operator_recon_arch_only",
-      }),
-    });
-    const ids = Array.isArray(r.task_ids) && r.task_ids.length
-      ? r.task_ids
-      : r.task_id != null
-        ? [r.task_id]
-        : [];
-    const idLabel = ids.length ? ids.map((n) => `#${n}`).join(", ") : "recon";
-    const multi =
-      ids.length > 1 ? ` (${ids.length} agent loops)` : "";
-    toast(`Queued recon ${idLabel}${multi}`);
-    await loadRunFull();
-  } catch (e) {
-    toast(e.message, true);
-  }
-}
 
 /* ---------- Target Explorer ---------- */
 
@@ -5345,7 +3923,6 @@ async function loadRunFull() {
   window.__VF_max_task_attempts = Number(snap.max_task_attempts) || 3;
   renderRunner(snap.runner || {}, snap);
   renderTasks(snap.tasks || []);
-  renderArchitecture(snap.architecture, snap.architecture_summary, snap);
   renderExplorer();
   renderEvidence(snap.evidence || []);
   window.__VF_cov_policy = snap.coverage_policy;
@@ -5362,9 +3939,58 @@ async function loadRunFull() {
     window.VulnForgeReport.render(snap);
   }
   await refreshHitlInbox();
+  renderHeaderStrip(snap);
+  // Page modules (static/pages/*.js) subscribe to this instead of patching app.js.
+  try {
+    window.dispatchEvent(new CustomEvent("vf:snapshot", { detail: snap }));
+  } catch (err) {
+    console.error("vf:snapshot listener failed", err);
+  }
   // Align live drift detector with the snap we just applied.
   noteLiveTaskSig(snap);
   return snap;
+}
+
+/** Run token usage for the header strip; in/out split + per-model rows in the tooltip. */
+function renderHeaderTokensHtml(snap, helpers) {
+  if (!helpers?.buildMissionUsage || !helpers?.formatTokenCount) return "";
+  const u = helpers.buildMissionUsage(snap || {});
+  if (!u.total) return "";
+  const lines = [`In ${helpers.formatTokenCount(u.input)} · Out ${helpers.formatTokenCount(u.output)}`];
+  for (const m of u.models || []) {
+    lines.push(`${m.id}: ${helpers.formatTokenCount(m.total)}`);
+  }
+  return `<span class="sep" aria-hidden="true">·</span><span class="vf-strip-tokens" id="run-token-usage" title="${esc(lines.join("\n"))}">Tokens <b>${esc(helpers.formatTokenCount(u.total))}</b></span>`;
+}
+
+/** Header pipeline strip + Review tab badge (single source of run totals). */
+function renderHeaderStrip(snap) {
+  const el = $("#run-pipeline-strip");
+  const helpers = window.MissionOverviewHelpers;
+  if (!el || !helpers?.buildHeaderStrip) return;
+  const items = helpers.buildHeaderStrip(snap || {});
+  el.innerHTML = items
+    .map(
+      (it, i) =>
+        `${i ? '<span class="sep" aria-hidden="true">›</span>' : ""}<button type="button" class="is-${esc(it.id)}" data-strip="${esc(it.id)}">${esc(it.label)} <b>${esc(it.value)}</b></button>`
+    )
+    .join("") + renderHeaderTokensHtml(snap, helpers);
+  if (!el.dataset.bound) {
+    el.dataset.bound = "1";
+    el.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("[data-strip]");
+      if (!btn) return;
+      const it = helpers
+        .buildHeaderStrip(window.__VF_last_snap || {})
+        .find((row) => row.id === btn.dataset.strip);
+      const modes = window.VulnForgeModes;
+      if (!it || !modes) return;
+      if (it.nav.mode === "report") modes.goReport(it.nav.filter);
+      else modes.setMode(it.nav.mode);
+    });
+  }
+  const review = items.find((it) => it.id === "review");
+  window.VulnForgeModes?.setReviewBadge?.(review ? review.count : 0);
 }
 
 function connectStream() {
@@ -5804,7 +4430,6 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   if (page === "run") {
     currentKey = document.body.dataset.runKey;
-    wireMissionHoverTips();
     setupTabs();
     eventOffset = 0;
     loadRunFull()
@@ -5814,7 +4439,6 @@ document.addEventListener("DOMContentLoaded", () => {
           `/api/runs/${encodeURIComponent(target_id)}/${encodeURIComponent(run_id)}/events?after=0&limit=2000`
         );
         $("#timeline") && ($("#timeline").innerHTML = "");
-        missionEventRing.reset();
         appendEvents(ev.events || []);
         eventOffset = ev.next || 0;
         connectStream();

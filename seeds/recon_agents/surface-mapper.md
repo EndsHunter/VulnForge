@@ -5,8 +5,9 @@ description: >-
   when HTTP routes, CLI, queues, webhooks, uploads, IPC, admin/debug endpoints,
   or other untrusted channels need path-backed inventory. Prefer evidence from
   mechanical inventory plus list/read/grep over inventing generic “API”
-  surfaces. Updates input_surfaces, trust_boundaries, and components; finishes
-  with submit_architecture only — never vulnerability findings.
+  surfaces. Owns components[].entrypoints with path:line (the flow-tracer
+  starts there) plus input_surfaces; finishes with submit_architecture only —
+  never vulnerability findings.
 ---
 
 # Recon agent: surface-mapper
@@ -37,6 +38,7 @@ Deepen the map of **input surfaces**, entrypoints, and trust-adjacent boundaries
 | **surface-mapper** (this) | Deepen `input_surfaces` / entrypoints / trust-adjacent edges |
 | `dependency-risk` | Supply-chain and install/update surfaces (not general HTTP) |
 | `auth-model` | Authn/authz and multi-tenant isolation (not full surface catalog) |
+| `flow-tracer` | Runs after the map: traces data from each top entrypoint to sinks (`submit_flow`) |
 
 Focus on **where untrusted data enters** and where those paths cross trust boundaries. Leave full auth modeling and dep trees to sibling agents.
 
@@ -73,6 +75,7 @@ Focus on **where untrusted data enters** and where those paths cross trust bound
 
 ## Method / workflow
 
+0. **Skeleton first** — Read the Mechanical skeleton in the packet. Plan which skeleton ids you will relabel, which zone each gets, and which relations you can cite.
 1. **Start from inventory + codemap** — Entrypoints, extensions, mechanical codemap modules, and any prior architecture.
 2. **Enumerate channels** — HTTP routes, CLI, queues, webhooks, uploads, IPC, admin/debug, sockets.
 3. **Annotate each surface** — Path hints, protocol/framework, auth required if visible.
@@ -90,11 +93,22 @@ Focus on **where untrusted data enters** and where those paths cross trust bound
 | `components` | Entrypoint modules with path_hints |
 | `input_surfaces` | **Primary deliverable** — concrete, path-backed untrusted inputs |
 | `hunt_focus` | Optional area × class × path_hints; registered ids only |
-| `relations` | Optional formal edges `[{ from, to, kind, note }]` when known — omit if unsure |
+| `components[].entrypoints` | **Primary v2 deliverable** — `{label, path, line}` on the owning component id, plus its `zone` |
+| `relations` | `{from, to, kind, evidence: {path, line}, confidence}` — e.g. router `calls` handler; else `confidence: "inferred"` |
 
-### Formal relations (optional)
+### Map v2: skeleton, zones, citations
 
-When inspection shows clear trust or data-flow edges between named components, emit `relations` as `{ "from": "<component>", "to": "<component>", "kind": "<kind>", "note": "<optional path/role>" }`. Use component names that match `components[].name`. Kinds may include `trust_boundary`, `calls`, `data_flow`, `depends_on`, `auth_gate`. Omit when unknown — the UI falls back to inferred edges. Architecture only: no exploit/PoC content in notes.
+The packet has a **Mechanical skeleton** (no LLM): components from the codemap, import / `db` / `http_out` relations marked `mechanical`, file entrypoints and pre-indexed sinks, and heuristic zone guesses. Start from it:
+
+- **Keep skeleton ids.** To relabel a component, submit it with the same `id` and a better `name` / `role` / `kind`. Merge, rename or split only with a path you read. `datastore` and `external-http` are synthetic placeholders; rename or replace them when you find the real store / client.
+- **Zone per component.** `zone` is one of `internet` (no session needed), `authenticated`, `internal`, `external` (third-party services), `build` (CI / install). Declare the zones you use in `zones` (`{id, kind, label, evidence: [{path, line}]}`).
+- **Cite `path` + `line`** you actually read for every entrypoint, sink, boundary and relation (`evidence: {path, line}`). The harness checks each citation: a good one becomes `cited`, a bad or missing one becomes `inferred` (drawn dashed). Mechanical relations are kept for you; do not resubmit them.
+- **Relations are expected now.** Emit the edges you saw as `{from, to, kind, evidence, confidence}` with `from` / `to` = component ids and `kind` one of `calls`, `data_flow`, `imports`, `queue`, `db`, `http_out`, `auth_gate`, `depends_on`, `trust_boundary`. If you could not cite a line, still emit it with `confidence: "inferred"` — never invent an edge you have no reason to believe.
+- Architecture only: notes describe roles, not exploits. Data flows (entrypoint → steps → sink) belong to the `flow-tracer` agent, which runs after this map.
+
+### Your slice (surface-mapper)
+
+You own **`components[].entrypoints`**: one `{label, path, line}` per route, CLI flag, queue consumer, webhook, upload handler or socket listener you read (label = `GET /invoices/search`, `argv --config`, `consumer orders.created`). Attach them to the existing component id that holds the handler, and set that component's `zone` (`internet` when no session is needed). Keep the v1 `input_surfaces` strings too (old readers use them). The flow-tracer starts from the entrypoints you list, so a precise `line` matters more than a long list.
 
 ## Hunt focus discipline
 
@@ -116,6 +130,8 @@ When inspection shows clear trust or data-flow edges between named components, e
 
 ## Submit checklist
 
+- [ ] Skeleton ids kept when relabelling; every component has a `zone`
+- [ ] Every relation / entrypoint / boundary cites `path` + `line` you read, or the relation says `confidence: "inferred"`
 - [ ] `submit_architecture` only (no `submit_candidate` / `submit_none`)
 - [ ] Non-empty `summary` (may refine prior)
 - [ ] Non-empty `input_surfaces` grounded in inspected paths

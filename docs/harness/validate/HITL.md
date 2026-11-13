@@ -45,7 +45,7 @@ The next read rewrites the projections from the database. A missing response key
 
 ## Surfaces
 
-- Mission: light **needs review** indicator (jumps to Report with the Needs review filter).
+- Run header: the **Review** tab badge counts `needs_human` (opens Review on the Needs review filter).
 - Report: **Needs review** filter plus finding-row Accept / Reject. That is the human review UI; there is no second inbox section on Report.
 - Report Accept / Reject still calls human review and records the same response.
 - Report → a `rejected_human` finding → **Promote to policy** drafts a security-policy rule from the stored reject response. The rule's provenance names that response (`finding-N` / `finding-N-review`). See [`POLICY.md`](POLICY.md#promote-from-a-human-reject).

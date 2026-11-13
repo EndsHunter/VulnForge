@@ -1,4 +1,6 @@
-/* VulnForge Target Explorer — Monaco code viewer (Ticket 5) */
+/* VulnForge Target Explorer — Monaco code viewer (Ticket 5).
+ * Hosted inside the Atlas page's Code view (static/pages/atlas.js), which owns the
+ * file tree; this module keeps the viewer, selection and selection-hunt enqueue. */
 
 (function () {
   const $ = (sel, el = document) => el.querySelector(sel);
@@ -300,6 +302,21 @@
     else if (!state.treeLoaded) loadTree();
   }
 
+  /** Sorted directory listing (dirs first). Shared with the Atlas tree. */
+  async function listDir(path) {
+    const data = await api(
+      `${runApiBase()}/target/list?path=${encodeURIComponent(path || ".")}`
+    );
+    const entries = [...(data.entries || [])];
+    entries.sort((a, b) => {
+      if (!!a.is_dir !== !!b.is_dir) return a.is_dir ? -1 : 1;
+      return String(a.name).localeCompare(String(b.name), undefined, {
+        sensitivity: "base",
+      });
+    });
+    return { ...data, entries };
+  }
+
   async function loadTree() {
     const list = $("#explorer-tree-list");
     if (!list) return;
@@ -309,16 +326,8 @@
     const up = $("#explorer-up");
     if (up) up.disabled = !state.browsePath || state.browsePath === ".";
     try {
-      const data = await api(
-        `${runApiBase()}/target/list?path=${encodeURIComponent(state.browsePath || ".")}`
-      );
-      state.entries = [...(data.entries || [])];
-      state.entries.sort((a, b) => {
-        if (!!a.is_dir !== !!b.is_dir) return a.is_dir ? -1 : 1;
-        return String(a.name).localeCompare(String(b.name), undefined, {
-          sensitivity: "base",
-        });
-      });
+      const data = await listDir(state.browsePath || ".");
+      state.entries = data.entries;
       state.treeLoaded = true;
       window.explorerTreeLoaded = true;
       if (data.single_file && state.entries.length === 1 && !state.entries[0].is_dir) {
@@ -490,6 +499,8 @@
   }
 
   function reveal(path, line) {
+    // Atlas hosts this viewer in its Code view; switch to it so the file is visible.
+    window.VFPages?.atlas?.showCode?.();
     ensureMounted();
     const norm = normalize(path);
     const parts = norm.split("/").filter(Boolean);
@@ -501,19 +512,39 @@
     loadTree().then(() => loadFile(norm, line != null ? Number(line) : undefined));
   }
 
+  function layout() {
+    try {
+      state.editor?.layout?.();
+    } catch (_) {
+      /* editor not ready */
+    }
+  }
+
+  /**
+   * Snapshot refresh hook (app.js calls window.renderExplorer on every load).
+   * Mount once; never tear down the open editor on a refresh.
+   */
+  function renderLazy() {
+    if (state.mounted && $("#explorer-tree-list")) return;
+    const host = $("#explorer-panel");
+    if (host && host.offsetParent !== null) mount();
+  }
+
   window.VulnForgeExplorer = {
     mount,
     ensureMounted,
     reveal,
     loadFile,
     loadTree,
+    listDir,
+    layout,
     get state() {
       return state;
     },
   };
 
   window.mountExplorer = mount;
-  window.renderExplorer = mount;
+  window.renderExplorer = renderLazy;
   window.loadExplorerTree = loadTree;
   window.loadExplorerFile = loadFile;
   window.loadArchTree = loadTree;

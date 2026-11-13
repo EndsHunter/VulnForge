@@ -7,229 +7,309 @@
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="/static/logo.png" />
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/shell.css" />
+  <link rel="stylesheet" href="/static/pages/settings.css" />
 </head>
 <body data-page="settings">
-  <header class="app-header">
-    <div class="brand">
-      <a href="/" class="home-link" title="Home — all runs">
-        <img class="logo" src="/static/logo-128.png" width="32" height="32" alt="" />
-        <div>
-          VulnForge
-          <div class="sub">Settings</div>
-        </div>
-      </a>
-    </div>
-    <div class="header-actions">
-      <a class="btn btn-primary home-btn" href="/" title="Home">⌂ Home</a>
-      <a class="btn" href="/settings" aria-current="page">⚙ Settings</a>
-      <a class="btn" href="/chat">AI Chat</a>
-      <a class="btn" href="/dev">Dev</a>
-      <a class="btn" href="/benchmarks">Benchmarks</a>
-      <span class="controls-hint mono">{{ runs_root }}</span>
-    </div>
+  <header class="vfs-head">
+    <a href="/" class="home-mark" title="Home — all runs"><img class="logo" src="/static/logo.svg" width="28" height="28" alt="VulnForge" /></a>
+    <a href="/" class="vfs-crumb">Runs</a>
+    <span class="vfs-crumb-sep" aria-hidden="true">/</span>
+    <h1 class="vfs-title">Settings</h1>
+    <span class="vf-spacer"></span>
+    <span class="vfs-store vf-mono vf-faint" title="Runs root">{{ runs_root }}</span>
+    <details class="danger-menu vfs-menu">
+      <summary class="btn btn-ghost" title="Operator tools" aria-label="Operator tools">···</summary>
+      <nav class="danger-menu-body" aria-label="Operator tools">
+        <a href="/" class="vf-menu-link">Home</a>
+        <a href="/chat" class="vf-menu-link">AI Chat</a>
+        <a href="/dev" class="vf-menu-link">Dev</a>
+        <a href="/benchmarks" class="vf-menu-link">Benchmarks</a>
+        <a href="/tool-gaps" class="vf-menu-link">Tool gaps</a>
+      </nav>
+    </details>
   </header>
 
-  <main class="main settings-page">
-    <div class="page-hero">
-      <div>
-        <h1>Settings</h1>
-        <p>
-          Hosts, verified models, role assignments, agent budget, and sandbox iterate caps.
-          Saved to <code>config/ui_settings.json</code> and applied on the next task lease.
+  <form id="settings-form" class="vfs-layout" novalidate>
+    <nav class="vfs-nav" aria-label="Settings sections">
+      <a href="#settings-connections" data-section="connections">Connections</a>
+      <a href="#settings-roles" data-section="roles">Models per role</a>
+      <a href="#settings-validation" data-section="validation">Validation and MoA</a>
+      <a href="#settings-budget" data-section="budgets">Budgets</a>
+      <a href="#settings-poc-iterate" data-section="sandbox">Sandbox</a>
+      <a href="#settings-finding-owners" data-section="exports">Report and exports</a>
+      <p class="vfs-nav-note">
+        Saved to <code>config/ui_settings.json</code>. The next task lease picks it up.
+        <code>VF_*</code> env vars still win.
+      </p>
+    </nav>
+
+    <div class="vfs-main">
+      <!-- 1. Connections: hosts + catalog -->
+      <section class="vf-card vfs-section" id="settings-connections" data-section="connections" aria-labelledby="h-connections">
+        <header class="vfs-section-head">
+          <h2 id="h-connections">Connections</h2>
+          <span class="vfs-dirty" hidden>unsaved</span>
+        </header>
+        <p class="vfs-lede">Where the models live. A role can use only a model you verified here.</p>
+
+        <div class="settings-card-hosts" id="settings-hosts">
+          <div class="vfs-sub-head">
+            <h3 class="vf-section-label">Hosts</h3>
+            <button type="button" class="vf-btn vf-btn--ghost vfs-btn-sm" id="set-host-add">+ Add host</button>
+          </div>
+          <p class="vfs-hint">
+            Each host has its own URL, API mode and API key. Keys are write-only: the page never
+            receives them, it only shows whether one is set. Leave the field blank to keep the stored key.
+          </p>
+          <div id="set-hosts" class="vfs-hosts"></div>
+          <p id="set-hosts-impact" class="vfs-warn" hidden></p>
+        </div>
+
+        <div class="settings-card-catalog" id="settings-catalog">
+          <div class="vfs-sub-head">
+            <h3 class="vf-section-label">Catalog</h3>
+            <span class="vfs-legend" aria-hidden="true">
+              <span class="vf-pill vf-pill--confirmed">verified</span>
+              <span class="vf-pill vfs-pill--bad">failing</span>
+              <span class="vf-pill">unchecked</span>
+            </span>
+          </div>
+          <p class="vfs-hint">
+            <b>Refresh</b> reads <code>/v1/models</code> from a saved host. <b>Verify</b> probes one model. It is a button and is not automatic.
+            Roles pick from verified pairs only.
+          </p>
+          <div id="set-catalog" class="vfs-catalog"></div>
+        </div>
+      </section>
+
+      <!-- 2. Models per role -->
+      <section class="vf-card vfs-section settings-card-roles" id="settings-roles" data-section="roles" aria-labelledby="h-roles">
+        <header class="vfs-section-head">
+          <h2 id="h-roles">Models per role</h2>
+          <span class="vfs-dirty" hidden>unsaved</span>
+        </header>
+        <p class="vfs-lede">
+          Roles: which verified model does each stage. A blank stage uses Default. A blank Validate / Referee is (same as hunt).
+          The lease fails if the role's host is missing.
         </p>
-      </div>
+        <div class="vfs-grid">
+          <div class="field vfs-span">
+            <label class="field-label" for="set-model"><span class="label-text">Default</span></label>
+            <select id="set-model" class="settings-select"></select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-model-recon"><span class="label-text">Recon</span></label>
+            <select id="set-model-recon" class="settings-select"></select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-model-hunt"><span class="label-text">Hunt</span></label>
+            <select id="set-model-hunt" class="settings-select"></select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-model-develop-poc"><span class="label-text">Develop PoC</span></label>
+            <select id="set-model-develop-poc" class="settings-select"></select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-model-validate"><span class="label-text">Validate / Referee</span></label>
+            <select id="set-model-validate" class="settings-select"></select>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. Validation and MoA -->
+      <section class="vf-card vfs-section" id="settings-validation" data-section="validation" aria-labelledby="h-validation">
+        <header class="vfs-section-head">
+          <h2 id="h-validation">Validation and MoA</h2>
+          <span class="vfs-dirty" hidden>unsaved</span>
+        </header>
+        <p class="vfs-lede">
+          These only demote. Nothing here sets <code>confirmed</code>. Only a human accept does.
+        </p>
+
+        <h3 class="vf-section-label">Multi-model validation</h3>
+        <p class="vfs-hint">
+          When any model is checked, the checked models are the validation slots and they replace the Validate / Referee pick.
+          With none checked, that role is used, or the hunt role when it is blank. A finding is auto-rejected only when every disprove slot rejects it.
+        </p>
+        <div id="set-validate-models" class="vfs-checks"></div>
+        <p id="set-validate-models-warn" class="vfs-warn" hidden></p>
+
+        <div class="vfs-grid">
+          <div class="field">
+            <label class="field-label" for="set-validate-consensus"><span class="label-text">Positive consensus</span></label>
+            <select id="set-validate-consensus" class="settings-select">
+              <option value="majority">majority</option>
+              <option value="all">all (strictest)</option>
+            </select>
+          </div>
+          <div class="field">
+            <span class="field-label"><span class="label-text">Pipeline steps</span></span>
+            <label class="vfs-toggle">
+              <input type="checkbox" id="set-validate-llm" />
+              <span>LLM disprove after mech pass</span>
+            </label>
+            <p id="set-validate-llm-env" class="vfs-hint vfs-env-note" hidden></p>
+            <label class="vfs-toggle">
+              <input type="checkbox" id="set-validate-poc-referee" checked />
+              <span>PoC multi-model referee (after harness run)</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="vfs-divider"></div>
+
+        <div class="vfs-sub-head" id="settings-hunt-moa">
+          <h3 class="vf-section-label">Hunt perspectives</h3>
+          <label class="vfs-toggle vfs-toggle--inline">
+            <input type="checkbox" id="set-hunt-moa" />
+            <span>Enable hunt MoA</span>
+          </label>
+        </div>
+        <p class="vfs-hint">
+          Off by default. Each perspective may pick a model from the verified list. These are not validation models.
+          An empty list keeps the built-in perspectives. MoA never confirms a finding.
+        </p>
+        <div class="vfs-persp-head" aria-hidden="true">
+          <span>Perspective id</span>
+          <span>Model (optional)</span>
+          <span></span>
+        </div>
+        <div id="set-hunt-perspectives" class="vfs-persp-list"></div>
+        <p id="set-hunt-perspectives-warn" class="vfs-warn" hidden></p>
+        <button type="button" class="vf-btn vf-btn--ghost vfs-btn-sm" id="set-hunt-perspective-add">+ Add perspective</button>
+      </section>
+
+      <!-- 4. Budgets -->
+      <section class="vf-card vfs-section settings-card-budget" id="settings-budget" data-section="budgets" aria-labelledby="h-budget">
+        <header class="vfs-section-head">
+          <h2 id="h-budget">Budgets</h2>
+          <span class="vfs-dirty" hidden>unsaved</span>
+        </header>
+        <ol class="vfs-precedence" aria-label="Precedence">
+          <li><b>Per-model override</b> (table below)</li>
+          <li><b>Global seed</b> (used when a model's cell is blank)</li>
+        </ol>
+        <p class="vfs-hint">Max context fraction, tool rounds, HTTP timeout and the hunt enqueue cap are global only.</p>
+
+        <h3 class="vf-section-label">Global seeds</h3>
+        <div class="vfs-grid vfs-grid--3">
+          <div class="field">
+            <label class="field-label" for="set-ctx"><span class="label-text">Context window</span> <span class="vfs-tag">seed</span></label>
+            <input id="set-ctx" type="number" min="1024" step="1024" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-maxtok"><span class="label-text">Max output tokens</span> <span class="vfs-tag">seed</span></label>
+            <input id="set-maxtok" type="number" min="256" step="256" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-workers"><span class="label-text">Concurrent agents</span> <span class="vfs-tag">seed</span></label>
+            <input id="set-workers" type="number" min="1" step="1" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-frac"><span class="label-text">Max context fraction</span> <span class="vfs-tag vfs-tag--global">global</span></label>
+            <input id="set-frac" type="number" min="0.01" max="1" step="0.01" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-rounds"><span class="label-text">Max tool rounds</span> <span class="vfs-tag vfs-tag--global">global</span></label>
+            <input id="set-rounds" type="number" min="1" step="1" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-timeout"><span class="label-text">HTTP timeout (s)</span> <span class="vfs-tag vfs-tag--global">global</span></label>
+            <input id="set-timeout" type="number" min="1" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-maxtasks" title="Caps how many hunts init and the Hunts batch planner enqueue. It is not Ralph's --max-tasks."><span class="label-text">Hunt enqueue cap</span> <span class="vfs-tag vfs-tag--global">global</span></label>
+            <input id="set-maxtasks" type="number" min="1" step="1" />
+          </div>
+        </div>
+
+        <h3 class="vf-section-label">Per-model overrides</h3>
+        <p class="vfs-hint">Each blank cell uses the seed, which is shown as the placeholder. The column under each model shows the value a lease will use.</p>
+        <div class="vfs-table-wrap">
+          <table class="vfs-table" id="set-available-table">
+            <thead>
+              <tr>
+                <th scope="col" class="vfs-col-pick"><span class="visually-hidden">Select</span></th>
+                <th scope="col">Model</th>
+                <th scope="col">Context window</th>
+                <th scope="col">Max output</th>
+                <th scope="col">Concurrent</th>
+              </tr>
+            </thead>
+            <tbody id="set-available"></tbody>
+          </table>
+        </div>
+        <div class="vfs-row-actions">
+          <button type="button" class="vf-btn vfs-btn-sm" id="settings-optimize">Optimize selected</button>
+          <span class="vfs-hint">Probes the selected models and fills in their cells. Nothing is saved until you click Save.</span>
+        </div>
+        <pre class="vfs-report vf-mono" id="settings-optimize-report" hidden></pre>
+      </section>
+
+      <!-- 5. Sandbox -->
+      <section class="vf-card vfs-section settings-card-iterate" id="settings-poc-iterate" data-section="sandbox" aria-labelledby="h-sandbox">
+        <header class="vfs-section-head">
+          <h2 id="h-sandbox">Sandbox iterate</h2>
+          <span class="vfs-dirty" hidden>unsaved</span>
+        </header>
+        <p class="vfs-lede">
+          Iterate in sandbox lets the agent rewrite and re-run inside one microVM or gVisor session. The human steer box joins
+          that session. These caps end it. They never confirm a finding or clear needs-human.
+        </p>
+        <div class="vfs-grid">
+          <div class="field">
+            <label class="field-label" for="set-poc-iterate-cycles"><span class="label-text">Max rewrite cycles</span></label>
+            <input id="set-poc-iterate-cycles" type="number" min="1" max="50" step="1" value="5" />
+          </div>
+          <div class="field">
+            <label class="field-label" for="set-poc-iterate-ttl"><span class="label-text">Session wall TTL (minutes)</span></label>
+            <input id="set-poc-iterate-ttl" type="number" min="1" max="240" step="1" value="15" />
+          </div>
+        </div>
+      </section>
+
+      <!-- 6. Report and exports -->
+      <section class="vf-card vfs-section settings-card-owners" id="settings-finding-owners" data-section="exports" aria-labelledby="h-exports">
+        <header class="vfs-section-head">
+          <h2 id="h-exports">Report and exports</h2>
+          <span class="vfs-dirty" hidden>unsaved</span>
+        </header>
+        <p class="vfs-lede">
+          Suggested owners come from read-only git on the target: blame on the cited lines, recent file and module
+          authors, and CODEOWNERS. Off by default. Suggestions, not assignments. Finding detail always shows real
+          identities. Exports follow the redaction toggle.
+        </p>
+        <label class="vfs-check">
+          <input type="checkbox" id="set-finding-owners" />
+          Suggest finding owners from git history
+        </label>
+        <label class="vfs-check">
+          <input type="checkbox" id="set-finding-owners-redact" checked />
+          Hide author identities in exports (pseudonyms)
+        </label>
+      </section>
+
+      <details class="vf-card vfs-effective">
+        <summary>Effective config (what the next lease uses)</summary>
+        <dl id="settings-effective" class="vfs-eff-list"></dl>
+      </details>
     </div>
 
-    <form id="settings-form" class="settings-page-form">
-      <div class="settings-page-grid">
-        <section class="card settings-card settings-card-hosts" id="settings-hosts">
-          <h2>Hosts</h2>
-          <p class="controls-hint" style="margin-top:0">
-            Each host has its own URL, API mode, and API key. Save before refresh.
-          </p>
-          <div id="set-hosts" class="host-list"></div>
-          <button type="button" class="btn" id="set-host-add">Add host</button>
-        </section>
-
-        <section class="card settings-card settings-card-catalog" id="settings-catalog">
-          <h2>Catalog</h2>
-          <p class="controls-hint" style="margin-top:0">
-            Refresh reads <code>/v1/models</code> for that host. Verify is a button — not automatic.
-            Available is verified pairs only.
-          </p>
-          <div id="set-catalog"></div>
-          <h3 class="settings-subhead">Available</h3>
-          <div class="available-head" aria-hidden="true">
-            <span></span>
-            <span>Model</span>
-            <span>Context window</span>
-            <span>Max output</span>
-            <span>Concurrent</span>
-          </div>
-          <ul id="set-available" class="settings-available"></ul>
-          <button type="button" class="btn" id="settings-optimize">Optimize selected</button>
-          <pre class="controls-hint mono" id="settings-optimize-report" hidden style="margin-top:0.65rem;max-height:12rem;overflow:auto;white-space:pre-wrap;padding:0.5rem;border:1px solid var(--border);border-radius:6px"></pre>
-        </section>
-
-        <section class="card settings-card settings-card-roles" id="settings-roles">
-          <h2>Roles</h2>
-          <p class="controls-hint" style="margin-top:0">
-            Pick from Available. A blank stage uses the default role. Validate / Referee blank is (same as hunt). A missing host fails the lease.
-          </p>
-          <div class="grid-2">
-            <div class="field" style="grid-column:1/-1">
-              <label class="field-label" for="set-model"><span class="label-text">Default</span></label>
-              <select id="set-model" class="settings-select"></select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-model-recon"><span class="label-text">Recon</span></label>
-              <select id="set-model-recon" class="settings-select"></select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-model-hunt"><span class="label-text">Hunt</span></label>
-              <select id="set-model-hunt" class="settings-select"></select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-model-develop-poc"><span class="label-text">Develop PoC</span></label>
-              <select id="set-model-develop-poc" class="settings-select"></select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-model-validate"><span class="label-text">Validate / Referee</span></label>
-              <select id="set-model-validate" class="settings-select"></select>
-            </div>
-          </div>
-
-          <h3 class="settings-subhead">Multi-model validation</h3>
-          <p class="controls-hint" style="margin-top:0">
-            Checked models are the validation slots when any are checked (they replace the Validate / Referee pick).
-            None checked uses that role, or the hunt role when it is blank.
-            Same model as hunt is a weak signal. Auto-reject only when every disprove slot rejects.
-            Never auto-confirms.
-          </p>
-          <div id="set-validate-models" class="validate-model-picks"></div>
-          <p id="set-validate-models-warn" class="controls-hint warn-text" hidden style="color:var(--warn,#c9a227)"></p>
-          <div class="grid-2">
-            <div class="field">
-              <label class="field-label" for="set-validate-consensus"><span class="label-text">Positive consensus</span></label>
-              <select id="set-validate-consensus" class="settings-select">
-                <option value="majority">majority</option>
-                <option value="all">all (strictest)</option>
-              </select>
-            </div>
-            <div class="field">
-              <label class="field-label"><span class="label-text">Pipeline toggles</span></label>
-              <label class="settings-check">
-                <input type="checkbox" id="set-validate-poc-referee" checked />
-                PoC multi-model referee (after harness run)
-              </label>
-              <label class="settings-check">
-                <input type="checkbox" id="set-validate-llm" />
-                LLM disprove after mech pass
-              </label>
-            </div>
-          </div>
-
-          <h3 class="settings-subhead" id="settings-hunt-moa">Hunt perspectives</h3>
-          <p class="controls-hint" style="margin-top:0">
-            Off by default. Optional model from Available — not validation models.
-            An empty list keeps the built-in perspectives. Never confirms a finding.
-          </p>
-          <label class="settings-check">
-            <input type="checkbox" id="set-hunt-moa" />
-            Enable hunt MoA
-          </label>
-          <div class="hunt-perspective-head" aria-hidden="true">
-            <span>Perspective id</span>
-            <span>Model (optional)</span>
-            <span></span>
-          </div>
-          <div id="set-hunt-perspectives" class="hunt-perspective-list"></div>
-          <p id="set-hunt-perspectives-warn" class="controls-hint warn-text" hidden style="color:var(--warn,#c9a227)"></p>
-          <button type="button" class="btn" id="set-hunt-perspective-add">Add perspective</button>
-        </section>
-
-        <section class="card settings-card settings-card-owners">
-          <h2 id="settings-finding-owners">Report and exports</h2>
-          <p class="controls-hint" style="margin-top:0">
-            Suggested owners come from read-only git on the target: blame on the cited lines,
-            recent file and module authors, and CODEOWNERS. Off by default. Suggestions, not assignments.
-            Finding detail always shows real identities. Exports follow the redaction toggle.
-          </p>
-          <label class="settings-check">
-            <input type="checkbox" id="set-finding-owners" />
-            Suggest finding owners from git history
-          </label>
-          <label class="settings-check">
-            <input type="checkbox" id="set-finding-owners-redact" checked />
-            Hide author identities in exports (pseudonyms)
-          </label>
-        </section>
-
-        <section class="card settings-card settings-card-budget">
-          <h2>Agent budget</h2>
-          <div class="grid-2">
-            <div class="field">
-              <label class="field-label" for="set-workers"><span class="label-text">Max concurrent agents</span></label>
-              <input id="set-workers" type="number" min="1" step="1" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-ctx"><span class="label-text">Default context window</span></label>
-              <input id="set-ctx" type="number" min="1024" step="1024" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-frac"><span class="label-text">Max context fraction</span></label>
-              <input id="set-frac" type="number" min="0.01" max="1" step="0.01" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-maxtok"><span class="label-text">Default max output</span></label>
-              <input id="set-maxtok" type="number" min="256" step="256" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-rounds"><span class="label-text">Max tool rounds</span></label>
-              <input id="set-rounds" type="number" min="1" step="1" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-timeout"><span class="label-text">HTTP timeout (s)</span></label>
-              <input id="set-timeout" type="number" min="1" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-maxtasks"><span class="label-text">Default max tasks</span></label>
-              <input id="set-maxtasks" type="number" min="1" step="1" />
-            </div>
-          </div>
-        </section>
-
-        <section class="card settings-card settings-card-iterate" id="settings-poc-iterate">
-          <h2>Sandbox iterate</h2>
-          <p class="controls-hint" style="margin-top:0">
-            After a one-shot, or from Iterate in sandbox, the agent rewrites and re-runs inside the same microVM or gVisor session.
-            The human steer box joins that session. Caps end it. They do not confirm a finding or clear needs-human.
-          </p>
-          <div class="grid-2">
-            <div class="field">
-              <label class="field-label" for="set-poc-iterate-cycles"><span class="label-text">Max rewrite cycles</span></label>
-              <input id="set-poc-iterate-cycles" type="number" min="1" max="50" step="1" value="5" />
-            </div>
-            <div class="field">
-              <label class="field-label" for="set-poc-iterate-ttl"><span class="label-text">Session wall TTL (minutes)</span></label>
-              <input id="set-poc-iterate-ttl" type="number" min="1" max="240" step="1" value="15" />
-            </div>
-          </div>
-        </section>
-
-      </div>
-
-      <div class="card settings-card settings-actions-card">
-        <div class="controls-hint" id="settings-effective"></div>
-        <div class="modal-actions" style="margin-top:0.75rem">
-          <button type="submit" class="btn btn-primary" id="settings-save">Save settings</button>
-        </div>
-      </div>
-    </form>
-  </main>
+    <div class="vfs-savebar" role="region" aria-label="Save settings">
+      <span class="vfs-save-state" id="settings-save-state" aria-live="polite" data-state="clean">
+        <span class="dot" aria-hidden="true"></span><span class="text">Loading…</span>
+      </span>
+      <span class="vf-spacer"></span>
+      <span class="vfs-kbd-hint vf-faint"><kbd class="vf-kbd">Ctrl</kbd>+<kbd class="vf-kbd">S</kbd></span>
+      <button type="button" class="vf-btn vf-btn--ghost" id="settings-discard" disabled>Discard</button>
+      <button type="submit" class="vf-btn vf-btn--primary" id="settings-save" disabled>Save settings</button>
+    </div>
+  </form>
 
   <script src="/static/mission_overview_helpers.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/pages/settings_helpers.js"></script>
   <script src="/static/settings.js"></script>
 </body>
 </html>

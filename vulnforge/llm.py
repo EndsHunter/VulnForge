@@ -824,6 +824,7 @@ class FakeLLMClient:
                         "submit_candidate",
                         "submit_none",
                         "submit_architecture",
+                        "submit_flow",
                         "continue_hunt",
                         "continue_recon",
                     ):

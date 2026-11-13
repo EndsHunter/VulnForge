@@ -31,84 +31,45 @@ def test_mission_overview_helpers_js():
     )
 
 
-def test_mission_hover_tips_are_wired():
-    """Funnel stages and presence bits expose immediate data-tip help, not title alone."""
-    app = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "app.js").read_text(
-        encoding="utf-8"
-    )
-    css = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "styles.css").read_text(
-        encoding="utf-8"
-    )
-    funnel_start = app.index("function renderFindingFunnelHtml")
-    presence_start = app.index("function renderPresenceHtml")
-    strip_start = app.index("function renderCampaignStripHtml")
-    funnel = app[funnel_start:presence_start]
-    presence = app[presence_start:strip_start]
-    assert "data-tip=" in funnel
-    assert "aria-describedby=" in funnel
-    assert 'title="' in funnel
-    assert "arch-campaign-presence-bit" in presence
-    assert "data-tip=" in presence
-    assert "aria-describedby=" in presence
-    assert "function wireMissionHoverTips(" in app
-    assert "wireMissionHoverTips()" in app
-    assert "init-floating-tip" in css
-    assert "arch-campaign-presence-bit[data-tip]" in css
-
-
-def test_mission_needs_review_indicator_not_inbox_card():
-    """Mission uses a light top-right indicator; Report has no duplicate inbox."""
+def test_review_needs_review_lives_on_tab_badge_and_chip():
+    """Mission is gone: needs_human shows as the Review tab badge + header strip,
+    and Review's default chip. Candidates are never counted as needs review."""
     html = (PROJECT_ROOT / "vulnforge" / "ui" / "templates" / "run.html").read_text(
         encoding="utf-8"
     )
     app = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "app.js").read_text(
         encoding="utf-8"
     )
-    css = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "styles.css").read_text(
+    modes = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "modes.js").read_text(
         encoding="utf-8"
     )
-    report = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "report.js").read_text(
-        encoding="utf-8"
-    )
+    review_js = (
+        PROJECT_ROOT / "vulnforge" / "ui" / "static" / "pages" / "review.js"
+    ).read_text(encoding="utf-8")
     helpers = HELPERS.read_text(encoding="utf-8")
 
     assert 'id="hitl-inbox"' not in html
     assert 'id="hitl-inbox-report"' not in html
-    assert 'data-rfilter="needs_human"' in report
-    assert ">Needs review<" in report
-
-    assert "function renderNeedsReviewIndicatorHtml(" in app
-    assert 'id="mission-needs-review"' in app
-    assert 'goReport?.("needs_human")' in app
-    assert "needsReview: needsReviewCount(snap)" in app
-    assert "countFindingState," in helpers
+    assert 'id="arch-panel"' not in html
+    assert '{ id: "needs_human", label: "Needs review" }' in review_js
+    assert 'id="tab-badge-review"' in modes
+    assert "setReviewBadge?.(review ? review.count : 0)" in app
+    assert "function buildHeaderStrip(" in helpers
+    assert "value: String(counts.needs_human || 0)" in helpers
 
 
-def test_mission_and_home_token_usage_wired():
-    """Mission strip and Home rows render In/Out/Total from llm_usage."""
+def test_run_header_token_usage_and_home_tokens_wired():
+    """Run header strip and Home rows render token usage from llm_usage."""
     app = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "app.js").read_text(
         encoding="utf-8"
     )
-    html = (PROJECT_ROOT / "vulnforge" / "ui" / "templates" / "index.html").read_text(
-        encoding="utf-8"
-    )
-    css = (PROJECT_ROOT / "vulnforge" / "ui" / "static" / "styles.css").read_text(
-        encoding="utf-8"
-    )
     helpers = HELPERS.read_text(encoding="utf-8")
-    assert 'id="home-stats"' in html
-    assert 'id="mission-usage"' in app
-    assert "Tokens</span>" in app
+    assert 'id="run-token-usage"' in app
+    assert "function renderHeaderTokensHtml(" in app
     assert "renderTokenCountsHtml" in app
-    assert "run-tok" in app
     assert "function tokenCountsOf" in helpers
     assert "function modelUsageRows" in helpers
     assert "function aggregateRunUsage" in helpers
-    assert ".mission-usage" in css
-    assert ".home-stats" in css
     assert "prompt_tokens" not in app.split("function renderTokenCountsHtml", 1)[1].split(
         "function renderHomeStats", 1
     )[0]
-
-    assert ".mission-needs-review" in css
-    assert "margin-left: auto" in css.split(".mission-needs-review", 1)[1].split("}", 1)[0]

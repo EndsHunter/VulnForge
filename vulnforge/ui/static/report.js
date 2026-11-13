@@ -1,11 +1,14 @@
-/* VulnForge Report mode - findings table, expandable detail, export */
+/* VulnForge Review (Triage Desk, mode id "report"): queue | finding | verdict rail, export,
+ * Develop PoC workshop. Pure helpers live in pages/review.js (window.ReviewHelpers). */
 
 (function () {
   const $ = (sel, el = document) => el.querySelector(sel);
   const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 
   let cache = [];
-  let filter = "all";
+  /** Default queue: needs_human. `filterChosen` stops the empty-filter fallback once the operator picks. */
+  let filter = "needs_human";
+  let filterChosen = false;
   let openId = null;
   /** Exclusive Report book page. Invalid combo: not findings without openId. */
   let reviewPage = "findings";
@@ -31,8 +34,13 @@
    * sortKey: id | title | class | severity | state | location
    * sortDir: asc | desc
    */
-  let sortKey = "state";
-  let sortDir = "asc";
+  let sortKey = "severity";
+  let sortDir = "desc";
+
+  /** Pure helpers from pages/review.js (loaded later; read at call time). */
+  function RH() {
+    return window.ReviewHelpers || null;
+  }
 
   const STATE_ORDER = {
     needs_human: 0,
@@ -259,17 +267,14 @@
   }
 
   function matchesFilter(f) {
+    const H = RH();
+    const near = (x) => !!(x && (x.near_dup || clusterByFinding[x.id]));
+    if (H) return H.matchesQueueFilter(f, filter, near);
     const st = (f.state || "").toLowerCase();
     const ftr = (filter || "all").toLowerCase();
     if (ftr === "all") return true;
     if (ftr === "rejected") return st.startsWith("rejected") || st === "superseded";
-    if (ftr === "near_dup" || ftr === "overlaps") {
-      return !!(f.near_dup || clusterByFinding[f.id]);
-    }
-    if (ftr === "needs_human") {
-      const b = bodyOf(f);
-      return st === "needs_human" || !!(b.needs_human || b.validation_mech?.pending_llm);
-    }
+    if (ftr === "near_dup" || ftr === "overlaps") return near(f);
     return st === ftr;
   }
 
@@ -376,7 +381,13 @@
       if (ga !== gb) return ga < gb ? -1 : 1;
     }
     const dir = sortDir === "desc" ? -1 : 1;
-    const key = sortKey || "state";
+    const key = sortKey || "severity";
+    const H = RH();
+    if (key === "severity" && H) {
+      // Evidence tier desc, severity desc, needs review first, newest (asc flips it).
+      const q = H.compareQueue(a, b);
+      return sortDir === "asc" ? -q : q;
+    }
     let cmp = 0;
     if (key === "id") {
       cmp = (Number(a.id) || 0) - (Number(b.id) || 0);
@@ -417,23 +428,8 @@
   }
 
   function updateSortHeaders() {
-    $$(".report-table thead th.th-sortable").forEach((th) => {
-      const key = th.getAttribute("data-sort") || "";
-      const active = key === sortKey;
-      th.classList.toggle("sorted-asc", active && sortDir === "asc");
-      th.classList.toggle("sorted-desc", active && sortDir === "desc");
-      th.setAttribute(
-        "aria-sort",
-        active ? (sortDir === "asc" ? "ascending" : "descending") : "none"
-      );
-      const btn = th.querySelector(".th-sort-btn");
-      if (btn) {
-        btn.setAttribute(
-          "aria-pressed",
-          active ? "true" : "false"
-        );
-      }
-    });
+    const sel = $("#report-sort");
+    if (sel && sel.value !== sortKey) sel.value = sortKey;
   }
 
   function defaultDirForSortKey(key) {
@@ -441,9 +437,12 @@
     return "asc";
   }
 
-  function setSort(key) {
+  function setSort(key, opts) {
     if (!key) return;
-    if (sortKey === key) {
+    if (opts && opts.fromSelect) {
+      sortKey = key;
+      sortDir = defaultDirForSortKey(key);
+    } else if (sortKey === key) {
       sortDir = sortDir === "asc" ? "desc" : "asc";
     } else {
       sortKey = key;
@@ -480,136 +479,91 @@
   }
 
   function summaryCounts() {
-    const c = {
-      confirmed: 0,
-      needs_human: 0,
-      candidate: 0,
-      rejected: 0,
-      near_dup: 0,
-      other: 0,
-      total: cache.length,
-    };
-    for (const f of cache) {
-      const st = (f.state || "").toLowerCase();
-      if (st === "confirmed") c.confirmed++;
-      else if (st === "needs_human") c.needs_human++;
-      else if (st === "candidate") c.candidate++;
-      else if (st.startsWith("rejected") || st === "superseded") c.rejected++;
-      else c.other++;
-      if (f.near_dup || clusterByFinding[f.id]) c.near_dup++;
+    const H = RH();
+    const near = (x) => !!(x && (x.near_dup || clusterByFinding[x.id]));
+    if (H) {
+      const c = H.queueCounts(cache, near);
+      return { ...c, total: c.all };
     }
-    return c;
+    return { all: cache.length, total: cache.length, needs_human: 0, candidate: 0, confirmed: 0, rejected: 0, near_dup: 0 };
   }
 
+  /** Queue filter chips (replaces the old summary cards). */
   function renderSummary() {
     const el = $("#report-summary");
     if (!el) return;
     const c = summaryCounts();
     const ftr = (filter || "all").toLowerCase();
-    const active = (key) => (ftr === key ? " active" : "");
-    el.innerHTML = `
-      <div class="report-summary-grid report-summary-grid-wide">
-        <button type="button" class="stat info stat-link${active("all")}" data-rfilter="all" title="Show all findings" aria-pressed="${ftr === "all"}">
-          <div class="label">All</div><div class="value">${c.total}</div>
-        </button>
-        <button type="button" class="stat warn stat-link${active("needs_human")}" data-rfilter="needs_human" title="Filter: needs human review (includes pending disprove)" aria-pressed="${ftr === "needs_human"}">
-          <div class="label">Needs review</div><div class="value">${c.needs_human}</div>
-        </button>
-        <button type="button" class="stat good stat-link${active("confirmed")}" data-rfilter="confirmed" title="Filter: human-accepted findings" aria-pressed="${ftr === "confirmed"}">
-          <div class="label">Accepted</div><div class="value">${c.confirmed}</div>
-        </button>
-        <button type="button" class="stat bad stat-link${active("rejected")}" data-rfilter="rejected" title="Filter: mech / LLM / human rejections" aria-pressed="${ftr === "rejected"}">
-          <div class="label">Rejected</div><div class="value">${c.rejected}</div>
-        </button>
-        <button type="button" class="stat warn stat-link${active("near_dup")}" data-rfilter="near_dup" title="Filter: near-dup / overlaps" aria-pressed="${ftr === "near_dup"}">
-          <div class="label">Near-dup</div><div class="value">${c.near_dup}</div>
-        </button>
-      </div>`;
+    const H = RH();
+    const chips = (H && H.FILTERS) || [
+      { id: "needs_human", label: "Needs review" },
+      { id: "all", label: "All" },
+    ];
+    el.innerHTML = chips
+      .map((chip) => {
+        const on = ftr === chip.id;
+        const n = chip.id === "all" ? c.total : c[chip.id] || 0;
+        const warn = chip.id === "needs_human" ? " vf-chip--warn" : "";
+        return `<button type="button" class="vf-chip${warn}" data-rfilter="${chip.id}" aria-pressed="${on}">${esc(chip.label)} <span class="rv-chip-n">${n}</span></button>`;
+      })
+      .join("");
     el.querySelectorAll("[data-rfilter]").forEach((btn) => {
       btn.addEventListener("click", () => {
+        filterChosen = true;
         setFilter(btn.getAttribute("data-rfilter") || "all");
       });
     });
   }
 
-
   function emptyDetailHtml() {
-    return `<div class="report-pane-empty">Select a finding to review.</div>`;
+    if (!cache.length) {
+      return `<div class="rv-empty-cta">
+        <h2>No findings yet</h2>
+        <p class="vf-faint">Hunts file findings here. Steer work from Campaign or Atlas.</p>
+        <div class="rv-row">
+          <button type="button" class="vf-btn vf-btn--primary" data-rv-go="hunts">Open Campaign</button>
+          <button type="button" class="vf-btn" data-rv-go="explorer">Open Atlas</button>
+        </div>
+      </div>`;
+    }
+    return `<div class="vf-empty">${
+      sortedFindings().length ? "Select a finding to review." : "Nothing in this filter. Pick another chip."
+    }</div>`;
   }
 
   function emptyContextHtml() {
-    return `<div class="report-pane-empty">Citation snippets and evidence pack preview appear here.</div>`;
+    return `<div class="vf-empty">Gates, disprove results and the verdict appear here.</div>`;
   }
 
+  /** Kept for callers; the desk has no separate pages. */
   function setReviewPage(page) {
-    if (page !== "findings" && openId == null) page = "findings";
-    if (page !== "findings" && page !== "detail" && page !== "evidence") {
-      page = "findings";
-    }
-    reviewPage = page;
-    const book = $("#report-book");
+    reviewPage = page === "evidence" ? "evidence" : openId != null ? "detail" : "findings";
     const shell = $("#report-shell");
-    if (book) book.setAttribute("data-review-page", page);
-    if (shell) shell.setAttribute("data-review-page", page);
-    const tabs = $("#report-book-tabs");
-    if (tabs) {
-      tabs.hidden = page === "findings";
-      tabs.querySelectorAll("[data-book-page]").forEach((btn) => {
-        const target = btn.getAttribute("data-book-page");
-        const show =
-          page === "detail"
-            ? target === "findings"
-            : page === "evidence"
-              ? target === "findings" || target === "detail"
-              : false;
-        btn.hidden = !show;
-      });
+    if (shell) {
+      shell.setAttribute("data-review-page", reviewPage);
+      shell.classList.toggle("has-selection", openId != null);
     }
-    const panes = $("#report-review-panes");
-    if (panes) panes.classList.toggle("has-selection", openId != null);
   }
 
   function goReviewPage(page) {
-    if (page === "findings") {
-      setReviewPage("findings");
-      renderTable();
-      return;
-    }
     const f = cache.find((x) => Number(x.id) === Number(openId));
     if (!f) {
-      openId = null;
-      setReviewPage("findings");
+      clearFindingPanes();
       renderTable();
       return;
     }
     fillFindingPanes(f);
     setReviewPage(page);
-  }
-
-  function setupBookTabs() {
-    const tabs = $("#report-book-tabs");
-    if (!tabs || tabs.dataset.bound) return;
-    tabs.dataset.bound = "1";
-    tabs.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-book-page]");
-      if (!btn || !tabs.contains(btn)) return;
-      const page = btn.getAttribute("data-book-page");
-      if (page) goReviewPage(page);
-    });
-    document.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape") return;
-      if (e.target && ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName)) return;
-      const panel = document.querySelector('[data-mode-panel="report"]');
-      if (!panel || !panel.classList.contains("active")) return;
-      if (window.VulnForgeReport?.isPocOpen?.()) return;
-      if (reviewPage === "evidence") goReviewPage("detail");
-      else if (reviewPage === "detail") goReviewPage("findings");
-    });
+    if (page === "evidence") {
+      $("#rv-evidence-preview")?.setAttribute("open", "");
+      $("#rv-evidence-preview")?.scrollIntoView({ block: "nearest" });
+    }
   }
 
   function clearFindingPanes() {
     openId = null;
     contextToken += 1;
+    $$(".rv-queue-row.is-open").forEach((el) => el.classList.remove("is-open"));
     const d = $("#report-detail");
     if (d) {
       d.hidden = false;
@@ -652,7 +606,7 @@
 
   function ownersHtml(o) {
     if (!o || o.reason === "disabled") return "";
-    const head = `<h4>Suggested owners <button type="button" class="btn btn-sm report-owners-refresh" title="Re-run git for this finding">Refresh</button></h4>`;
+    const head = `<h3 class="vf-section-label">Suggested owners <button type="button" class="vf-btn vf-btn--ghost report-owners-refresh" title="Re-run git for this finding">Refresh</button></h3>`;
     if (o.loading) return `${head}<p class="controls-hint">Reading git history…</p>`;
     if (!o.available) {
       const why = OWNER_REASONS[o.reason] || `Unavailable (${o.reason || "error"}).`;
@@ -724,101 +678,145 @@
     setReviewPage((opts && opts.page) || "detail");
   }
 
-  function contextShellHtml(f) {
+  /** Verdict rail: gates, disprove judges, evidence + PoC, reviewer note, Accept / Reject. */
+  function verdictHtml(f) {
+    const H = RH();
     const b = bodyOf(f);
-    const eid = f.evidence_id || b.evidence_id;
-    const cites = (b.citations || []).filter((c) => c && c.path);
-    const citeChips = cites
-      .map((c) => {
-        const line = c.start_line != null ? c.start_line : "";
-        return `<button type="button" class="path-chip report-cite" data-path="${esc(c.path)}" data-line="${esc(line)}">${esc(pathLabel(c))}${c.symbol ? " · " + esc(c.symbol) : ""}</button>`;
-      })
-      .join(" ");
-    const packs = window.__VF_last_snap?.evidence || [];
-    const pack = eid ? packs.find((p) => String(p.id) === String(eid)) : null;
-    const files = ((pack && pack.files) || []).map((x) => x.relpath || x);
-    const fileChips = files
-      .slice(0, 12)
+    const gates = H ? H.mechGates(f) : { status: "pending", gates: [], other: [], passed: 0, total: 0 };
+    const gateIcon = (s) =>
+      `<span class="rv-gate-dot is-${s}" aria-hidden="true"></span>`;
+    const gateRows = gates.gates
       .map(
-        (rel) =>
-          `<button type="button" class="path-chip report-ctx-ev" data-pack="${esc(String(eid))}" data-rel="${esc(rel)}">${esc(rel)}</button>`
+        (g) => `<li class="rv-gate is-${g.status}">${gateIcon(g.status)}<span>${esc(g.label)}</span>${
+          g.reasons.length
+            ? `<span class="rv-gate-why mono">${esc(g.reasons.join(", "))}</span>`
+            : ""
+        }<span class="visually-hidden"> — ${g.status}</span></li>`
       )
-      .join(" ");
-    const primary = cites[0] || null;
+      .join("");
+    const otherRows = gates.other
+      .map((r) => `<li class="rv-gate is-failed">${gateIcon("failed")}<span class="mono">${esc(r)}</span></li>`)
+      .join("");
+    const gateHead =
+      gates.status === "pending"
+        ? `<span class="vf-faint">not run yet</span>`
+        : `<span class="rv-gate-count is-${gates.status}">${gates.passed}/${gates.total}</span>`;
+
+    const judges = H ? H.disproveJudges(f) : [];
+    const badges = window.ReportStateBadges;
+    const llm = llmVerifyMeta(f);
+    const sameModel =
+      llm && badges && typeof badges.sameModelOnBothPerspectives === "function"
+        ? badges.sameModelOnBothPerspectives(llm.verifiers)
+        : false;
+    const weak = sameModel
+      ? (badges.SAME_MODEL_WEAK_SIGNAL || "Same model on both perspectives — weak signal; not exploit proof.")
+      : "Disprove can only demote a finding. It is not exploit proof and never confirms.";
+    const judgeCards = judges.length
+      ? judges
+          .map(
+            (j) => `<div class="rv-judge is-${j.tone}">
+              <div class="rv-judge-head"><span class="vf-faint">${esc(j.name)}${j.model ? ` · <span class="mono">${esc(j.model)}</span>` : ""}</span><strong>${esc(j.label)}</strong></div>
+              ${
+                j.note
+                  ? `<details class="rv-judge-note"><summary>${esc(j.note.slice(0, 160))}${j.note.length > 160 ? "…" : ""}</summary><pre class="mono">${esc(j.note.slice(0, 2000))}</pre></details>`
+                  : `<p class="vf-faint">No reasoning recorded.</p>`
+              }
+            </div>`
+          )
+          .join("")
+      : `<p class="vf-faint">${
+          b.validation_mech && b.validation_mech.pending_llm
+            ? "Dual disprove is queued or running."
+            : "Disprove has not run for this finding."
+        }</p>`;
+
+    const eid = f.evidence_id || b.evidence_id;
+    const evRel = preferredEvidenceRel(f);
+    const poc = H ? H.pocStatus(f) : { text: "" };
+    const st = String(f.state || "").toLowerCase();
+    const decided = !(st === "needs_human" || st === "candidate");
+    const reviews = Array.isArray(b.human_review) ? b.human_review : [];
+    const reviewHist =
+      reviews.length > 0
+        ? `<details class="rv-history"><summary>Review history (${reviews.length})</summary><ul>${reviews
+            .slice()
+            .reverse()
+            .slice(0, 10)
+            .map(
+              (r) =>
+                `<li class="mono">${esc(r.at || "")} · ${esc(r.from_state || "?")} → ${esc(
+                  r.to_state || "?"
+                )} · ${esc(r.action || "")}${
+                  r.evidence_tier ? ` · tier ${esc(r.evidence_tier)}` : ""
+                }${
+                  r.notes ? ` — ${esc(String(r.notes).slice(0, 160))}` : ""
+                }</li>`
+            )
+            .join("")}</ul></details>`
+        : "";
+    const tierPill = tierPillHtml(f);
+    const tierInfo = H && typeof H.tierOf === "function" ? H.tierOf(f) : null;
+    const tierSection = tierPill
+      ? `<section class="rv-tier-block">
+          <h3 class="vf-section-label">Evidence tier</h3>
+          <div class="rv-row">${tierPill}</div>
+          <p class="rv-note">${esc(tierInfo ? tierInfo.summary : "")}</p>
+          <p class="rv-note vf-faint">A label for queue order. It does not change state or severity and does not confirm.</p>
+        </section>`
+      : "";
     return `
-      <div class="report-context-inner" data-fid="${f.id}">
-        <div class="report-detail-head">
-          <h3>${esc(b.title || f.stable_key || "Finding #" + f.id)}</h3>
-          <div class="report-detail-badges">
-            ${stateTrailHtml(f)}
-            ${sevBadge(f.severity || b.severity_claim || "unknown")}
-            <span class="mono">#${f.id}</span>
-          </div>
-        </div>
-        <div class="report-context-block">
-          <h4>Citations</h4>
-          <div class="finding-paths">${citeChips || '<span class="controls-hint">None</span>'}</div>
-        </div>
-        <div class="report-context-block">
-          <h4>Code context</h4>
-          <div id="report-ctx-code" class="report-ctx-code"><div class="controls-hint">${
-            primary ? "Loading " + esc(pathLabel(primary)) + "…" : "No citation path to preview."
-          }</div></div>
-        </div>
-        <div class="report-context-block">
-          <h4>Evidence pack</h4>
-          <p class="controls-hint mono">${eid ? esc(String(eid)) : b.no_poc ? "no_poc" : "None linked"}</p>
-          <div class="finding-paths">${fileChips || '<span class="controls-hint">No files</span>'}</div>
-          <div id="report-ctx-evidence" class="report-ctx-evidence"></div>
+      <div class="rv-verdict-inner" data-fid="${f.id}">
+        ${tierSection}
+        <section>
+          <h3 class="vf-section-label">Mechanical gates ${gateHead}</h3>
+          <ul class="rv-gates">${gateRows}${otherRows}</ul>
+        </section>
+        <section>
+          <h3 class="vf-section-label">Adversarial disprove ${llm ? `<span class="mono rv-llm-label">${esc(llm.label)}</span>` : ""}</h3>
+          <div class="rv-judges">${judgeCards}</div>
+          <p class="rv-note" ${sameModel ? 'data-llm-weak-signal="same-model"' : ""}>${esc(weak)}</p>
+        </section>
+        <section>
+          <h3 class="vf-section-label">Evidence &amp; PoC</h3>
           ${
             eid
-              ? `<button type="button" class="btn btn-sm report-open-ev" data-pack="${esc(String(eid))}" data-rel="${esc(preferredEvidenceRel(f) || "")}">Open Evidence mode</button>`
+              ? `<button type="button" class="rv-link mono report-open-ev" data-pack="${esc(String(eid))}" data-rel="${esc(evRel || "")}">evidence/${esc(String(eid))}/</button>`
+              : `<p class="vf-faint">${b.no_poc ? "no_poc recorded" : "No evidence pack linked."}</p>`
+          }
+          <p class="rv-poc is-${esc(poc.tone || "none")}">${esc(poc.text || "")}</p>
+          <div class="rv-row">
+            <button type="button" class="vf-btn report-develop-poc" data-fid="${f.id}" title="Open the PoC workshop: draft, run in sandbox, iterate">Develop PoC</button>
+            <button type="button" class="vf-btn vf-btn--ghost report-track-one" data-fid="${f.id}" title="Preview, then publish this finding as an external issue (outward-facing)">Track…</button>
+          </div>
+          ${trackedLinksHtml(f)}
+        </section>
+        <section class="rv-decide vf-card">
+          <label class="rv-note-label" for="report-review-notes-${f.id}">Reviewer note (optional)</label>
+          <textarea id="report-review-notes-${f.id}" class="report-review-notes" rows="3" placeholder="Why you accepted or rejected this finding…"></textarea>
+          <label class="rv-check">
+            <input type="checkbox" id="report-review-write-ev-${f.id}" checked />
+            Also write the note into the evidence pack
+          </label>
+          ${acceptPendingHintHtml(f)}
+          <div class="rv-decide-actions">
+            <button type="button" class="vf-btn vf-btn--primary vf-btn--lg report-review-btn" data-action="confirm" data-fid="${f.id}"${acceptButtonAttrs(f)}>Accept <kbd class="vf-kbd">A</kbd></button>
+            <button type="button" class="vf-btn vf-btn--danger vf-btn--lg report-review-btn" data-action="reject" data-fid="${f.id}">Reject <kbd class="vf-kbd">R</kbd></button>
+          </div>
+          ${
+            decided
+              ? `<button type="button" class="vf-btn vf-btn--ghost report-review-btn" data-action="needs_human" data-fid="${f.id}">Move back to needs review</button>`
               : ""
           }
-        </div>
-      </div>`;
-  }
-
-  function bindContextActions(root, f) {
-    if (!root) return;
-    root.querySelectorAll(".report-cite").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const path = btn.getAttribute("data-path");
-        const line = btn.getAttribute("data-line");
-        if (!path) return;
-        if (window.VulnForgeModes?.goExplorer) {
-          window.VulnForgeModes.goExplorer(path, line ? Number(line) : undefined);
-        } else {
-          window.VulnForgeModes?.setMode?.("explorer");
-          window.VulnForgeExplorer?.reveal?.(path, line ? Number(line) : undefined);
-        }
-      });
-    });
-    root.querySelectorAll(".report-ctx-ev").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const pack = btn.getAttribute("data-pack");
-        const rel = btn.getAttribute("data-rel");
-        if (pack && rel) loadContextEvidence(pack, rel);
-      });
-    });
-    root.querySelectorAll(".report-open-ev").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const pack = btn.getAttribute("data-pack");
-        const rel = btn.getAttribute("data-rel") || null;
-        if (!pack) return;
-        if (window.VulnForgeModes?.goEvidence) {
-          window.VulnForgeModes.goEvidence(pack, rel || undefined);
-        } else {
-          window.VulnForgeModes?.setMode?.("evidence");
-          if (typeof window.openEvidenceFile === "function" && rel) {
-            window.openEvidenceFile(pack, rel);
+          ${
+            window.ReportPolicyPromote && window.ReportPolicyPromote.canPromote(f)
+              ? `<button type="button" class="vf-btn vf-btn--ghost report-promote-policy-btn" data-fid="${f.id}" title="Draft a security-policy rule from this reject (edit, then Save; nothing is applied until you save)">Promote to policy</button>`
+              : ""
           }
-        }
-      });
-    });
+          <p class="rv-note">Accepting marks the finding confirmed. It does not prove the finding is exploitable.</p>
+          ${reviewHist}
+        </section>
+      </div>`;
   }
 
   async function loadContextCode(f, token) {
@@ -841,23 +839,41 @@
       if (token !== contextToken) return;
       const lines = String(data.content || "").split("\n");
       const base = data.start_line || 1;
-      const focus = primary.start_line != null ? Number(primary.start_line) : null;
-      const end = primary.end_line != null ? Number(primary.end_line) : focus;
+      // Every citation in this file, tagged by its data-flow role (source / sink / flow).
+      const H = RH();
+      const trace = H ? H.buildTrace(b) : [];
+      const ranges = cites
+        .filter((c) => c.path === primary.path && c.start_line != null)
+        .map((c, i) => {
+          const s = Number(c.start_line);
+          const e = c.end_line != null ? Number(c.end_line) : s;
+          const step = trace.find((x) => x.path === c.path && x.line === s);
+          return { s, e, kind: step ? step.kind : i === 0 ? "source" : "sink" };
+        });
+      const focus = ranges.length ? Math.min(...ranges.map((r) => r.s)) : null;
+      const end = ranges.length ? Math.max(...ranges.map((r) => r.e)) : focus;
       const windowPad = 4;
       let from = 0;
       let to = Math.min(lines.length, 40);
       if (focus != null) {
         from = Math.max(0, focus - base - windowPad);
-        to = Math.min(lines.length, (end || focus) - base + 1 + windowPad);
+        to = Math.min(lines.length, Math.min(end, focus + 80) - base + 1 + windowPad);
       }
+      const roleOf = (n) => {
+        const hit = ranges.filter((r) => n >= r.s && n <= r.e);
+        if (!hit.length) return "";
+        return hit.some((r) => r.kind === "sink" || r.kind === "cited") ? " is-cite is-sink" : " is-cite is-src";
+      };
       const slice = lines.slice(from, to);
+      if (!slice.length || (focus != null && focus - base >= lines.length)) {
+        host.innerHTML = `<div class="vf-empty">Cited line ${esc(String(focus ?? ""))} is outside the file (${lines.length} lines).</div>`;
+        return;
+      }
       host.innerHTML = `
-        <div class="report-ctx-code-head mono">${esc(pathLabel(primary))}</div>
-        <pre class="report-ctx-pre">${slice
+        <pre class="report-ctx-pre rv-code-pre">${slice
           .map((ln, i) => {
             const n = base + from + i;
-            const hl =
-              focus != null && n >= focus && n <= (end || focus) ? " is-cite" : "";
+            const hl = roleOf(n);
             return `<div class="code-line${hl}" data-line="${n}"><span class="ln">${n}</span><span class="tx">${esc(ln)}</span></div>`;
           })
           .join("")}</pre>`;
@@ -903,8 +919,8 @@
     }
     contextToken += 1;
     const token = contextToken;
-    c.innerHTML = contextShellHtml(f);
-    bindContextActions(c, f);
+    c.innerHTML = verdictHtml(f);
+    bindDetailActions(c);
     loadContextCode(f, token);
     const rel = preferredEvidenceRel(f);
     const eid = f.evidence_id || bodyOf(f).evidence_id;
@@ -925,6 +941,71 @@
     return names[0] || null;
   }
 
+  function sevTagHtml(f) {
+    const H = RH();
+    const k = H ? H.sevKey(f) : "";
+    const label = H ? H.sevLabel(f) : String(f.severity || bodyOf(f).severity_claim || "unknown");
+    return `<span class="vf-sev${k ? " vf-sev--" + k : ""}">${esc(label)}</span>`;
+  }
+
+  /**
+   * Evidence tier pill (derived label from the server; never a state). A PoC run that
+   * did not raise the tier is shown beside it. Empty when the API sent no tier.
+   */
+  function tierPillHtml(f, opts) {
+    const H = RH();
+    const t = H && typeof H.tierPill === "function" ? H.tierPill(f) : null;
+    if (!t) return "";
+    const bars = [1, 2, 3]
+      .map((i) => `<i class="${i <= t.steps ? "is-on" : ""}"></i>`)
+      .join("");
+    const side =
+      t.side && !(opts && opts.noSide)
+        ? ` <span class="rv-tier-side mono" title="Latest sandbox run did not raise the tier">${esc(t.side)}</span>`
+        : "";
+    return `<span class="vf-pill rv-tier is-${esc(t.tier)}" data-tier="${esc(t.tier)}" title="${esc(
+      t.title
+    )}"><span class="rv-tier-bars" aria-hidden="true">${bars}</span>${esc(t.label)}</span>${side}`;
+  }
+
+  /** Current state only (never the trail) — queue rows and the finding header. */
+  function statePill(f) {
+    const H = RH();
+    const p = H ? H.statePill(f) : { tone: "candidate", label: String(f.state || "") };
+    const tip =
+      typeof window.stateTip === "function" ? window.stateTip(String(f.state || ""), f) : "";
+    return `<span class="vf-pill vf-pill--${p.tone}" title="${esc(tip)}">${esc(p.label)}</span>`;
+  }
+
+  function overlapsHtml(f) {
+    const cm = clusterByFinding[f.id];
+    if (!cm) return "";
+    const c = clustersCache.find((x) => String(x.cluster_id) === String(cm.cluster_id));
+    if (!c) return "";
+    const others = (c.members || []).filter((m) => Number(m.id) !== Number(f.id));
+    if (!others.length) return "";
+    const isPrimary = Number(c.primary_id) === Number(f.id);
+    const rows = others
+      .map(
+        (m) =>
+          `<li><button type="button" class="rv-link report-open-related" data-fid="${m.id}">#${m.id}</button> <span class="vf-faint">${esc(m.title || "")}</span></li>`
+      )
+      .join("");
+    return `<section class="vf-card rv-overlaps" aria-label="Overlapping findings">
+      <h3 class="vf-section-label">Overlaps with ${others.length} finding${others.length === 1 ? "" : "s"} <span class="mono vf-faint">${esc(c.strength || "overlap")}</span></h3>
+      <ul>${rows}</ul>
+      <div class="rv-row">
+        ${
+          isPrimary
+            ? ""
+            : `<button type="button" class="vf-btn report-merge-into" data-keep="${c.primary_id}" data-drop="${f.id}" title="Supersede this finding by the cluster primary">Merge into #${c.primary_id}</button>`
+        }
+        <button type="button" class="vf-btn vf-btn--ghost report-ask-ai-cluster" data-cluster="${esc(c.cluster_id || "")}">Ask AI to compare</button>
+      </div>
+    </section>`;
+  }
+
+  /** Finding column: header, summary, data flow, cited code, overlaps, evidence preview. */
   /** Operator security policy effects on this finding (exclusion, severity cap, disprove cites). */
   function policyDetailHtml(b) {
     const items = [];
@@ -935,7 +1016,7 @@
       items.push(
         `<li><strong>${esc(kind)}</strong> by rule <code>${esc(m.rule_id || "?")}</code>` +
           (m.policy_revision != null ? ` (policy rev ${esc(m.policy_revision)})` : "") +
-          `: ${esc(m.reason || "")}${paths ? `<br><span class="muted">Cited paths: ${paths}</span>` : ""}</li>`
+          `: ${esc(m.reason || "")}${paths ? `<br><span class="vf-faint">Cited paths: ${paths}</span>` : ""}</li>`
       );
     }
     const sr = b && b.severity_rubric;
@@ -957,137 +1038,112 @@
       );
     }
     if (!items.length) return "";
-    return `<h4>Security policy</h4><ul class="report-reasons report-policy">${items.join("")}</ul>`;
+    return `<section class="vf-card rv-policy" aria-label="Security policy"><h3 class="vf-section-label">Security policy</h3><ul class="report-reasons report-policy">${items.join("")}</ul></section>`;
   }
 
   function detailHtml(f) {
+    const H = RH();
     const b = bodyOf(f);
     const tm = b.threat_model || {};
-    const cites = (b.citations || [])
-      .filter((c) => c && c.path)
-      .map((c) => {
-        const line = c.start_line != null ? c.start_line : "";
-        return `<button type="button" class="path-chip report-cite" data-path="${esc(c.path)}" data-line="${esc(line)}">${esc(pathLabel(c))}${c.symbol ? " · " + esc(c.symbol) : ""}</button>`;
-      })
-      .join(" ");
-    const rejectBox =
-      typeof window.formatValidationReasonsHtml === "function"
+    const st = String(f.state || "").toLowerCase();
+    const rejected = st.startsWith("rejected") || st === "superseded";
+    const reasonsBox =
+      rejected && typeof window.formatValidationReasonsHtml === "function"
         ? window.formatValidationReasonsHtml(f)
-        : (b.validation_reasons || [])
-            .map((r) => `<li>${esc(typeof r === "string" ? r : JSON.stringify(r))}</li>`)
-            .join("")
-          ? `<h4>Validation notes</h4><ul class="report-reasons">${(b.validation_reasons || [])
-              .map((r) => `<li>${esc(typeof r === "string" ? r : JSON.stringify(r))}</li>`)
-              .join("")}</ul>`
-          : "";
-    // Policy fields are harness-written by validate_mech; ignore them before it ran.
-    const policyTrusted = String(f.state || "") !== "candidate";
-    const policyBox = policyTrusted ? policyDetailHtml(b) : "";
-    const eid = f.evidence_id || b.evidence_id;
-    const evRel = preferredEvidenceRel(f);
-    const reviews = Array.isArray(b.human_review) ? b.human_review : [];
-    const reviewHist =
-      reviews.length > 0
-        ? `<details class="report-review-hist"><summary>Review history (${reviews.length})</summary><ul class="report-reasons">${reviews
-            .slice()
-            .reverse()
-            .slice(0, 10)
-            .map(
-              (r) =>
-                `<li class="mono">${esc(r.at || "")} · ${esc(r.from_state || "?")} → ${esc(
-                  r.to_state || "?"
-                )} · ${esc(r.action || "")}${
-                  r.notes ? ` — ${esc(String(r.notes).slice(0, 160))}` : ""
-                }</li>`
-            )
-            .join("")}</ul></details>`
         : "";
     const cm = clusterByFinding[f.id];
-    const nearBadge = f.near_dup || cm
-      ? `<span class="badge near-dup" title="Near-duplicate / overlap">near-dup${
-          cm && cm.label ? " " + esc(cm.label) : ""
-        }</span>`
-      : "";
-    const llmBadge = llmVerifyBadge(f);
-    const llmDetail = llmVerifyDetailHtml(f);
-    const primary = primaryPath(f);
+    const near =
+      f.near_dup || cm
+        ? `<span class="vf-pill" title="Near-duplicate / overlap">near-dup${cm && cm.label ? " " + esc(cm.label) : ""}</span>`
+        : "";
+    const age = H ? H.ageLabel(f.created_at) : "";
+    const hunt = b.task_id ?? b.hunt_task_id ?? b.source_task_id;
+    const filed = [hunt != null ? `filed by hunt #${esc(String(hunt))}` : "", age]
+      .filter(Boolean)
+      .join(" · ");
+    const trace = H ? H.buildTrace(b) : [];
+    const traceCards = trace
+      .map(
+        (s) => `<li><button type="button" class="rv-trace-card report-cite" data-path="${esc(s.path)}" data-line="${s.line ?? ""}" title="Open in Atlas">
+            <span class="rv-trace-kind is-${esc(s.kind)}">${esc(s.kind)}</span>
+            <span class="mono rv-trace-what">${esc(s.what)}</span>
+            <span class="mono vf-faint rv-trace-where">${esc(s.where)}</span>
+          </button></li>`
+      )
+      .join("");
+    const primary = (b.citations || []).find((c) => c && c.path) || null;
+    const eid = f.evidence_id || b.evidence_id;
+    const packs = window.__VF_last_snap?.evidence || [];
+    const pack = eid ? packs.find((x) => String(x.id) === String(eid)) : null;
+    const files = ((pack && pack.files) || []).map((x) => x.relpath || x);
+    const fileChips = files
+      .slice(0, 12)
+      .map(
+        (rel) =>
+          `<button type="button" class="vf-chip report-ctx-ev" data-pack="${esc(String(eid))}" data-rel="${esc(rel)}">${esc(rel)}</button>`
+      )
+      .join(" ");
     const nearMod = nearestModuleForPath(primary && primary.path);
-    const moduleRow = nearMod && nearMod.path
-      ? `<div class="k">Module</div><div class="v mono">${esc(String(nearMod.path))}</div>`
-      : "";
+    const moa = huntMoaDetailHtml(f);
+    // Policy fields are harness-written by validate_mech; ignore them before it ran.
+    const policyTrusted = st !== "candidate";
+    const policyBox = policyTrusted ? policyDetailHtml(b) : "";
+    const policyPill =
+      policyTrusted && b.policy_match
+        ? `<span class="vf-pill badge policy" title="Matched an operator security policy rule">policy ${esc(b.policy_match.rule_id || "")}</span>`
+        : "";
     return `
-      <div class="report-detail-inner" data-fid="${f.id}">
-        <div class="report-detail-head">
-          <h3>${esc(b.title || f.stable_key || "Finding #" + f.id)}</h3>
-          <div class="report-detail-badges">
-            ${stateTrailHtml(f)}
-            ${sevBadge(f.severity || b.severity_claim || "unknown")}
-            <span class="badge info">${esc(b.weakness_class || "-")}</span>
-            ${nearBadge}
-            ${llmBadge}
+      <div class="report-detail-inner rv-finding-inner" data-fid="${f.id}">
+        <header class="rv-finding-head">
+          <div class="rv-row rv-meta">
+            ${sevTagHtml(f)}
+            ${statePill(f)}
+            <span class="vf-faint">${esc(b.weakness_class || "unclassified")}</span>
+            ${near}
             ${huntMoaBadgeHtml(f)}
-            ${policyTrusted && b.policy_match ? `<span class="badge policy" title="Matched an operator security policy rule">policy ${esc(b.policy_match.rule_id || "")}</span>` : ""}
+            ${policyPill}
+            <span class="vf-faint">#${f.id}${filed ? " · " + filed : ""}</span>
           </div>
-        </div>
-        <p class="report-detail-summary">${esc(b.summary || "No summary.")}</p>
+          <h2 class="rv-title">${esc(b.title || f.stable_key || "Finding #" + f.id)}</h2>
+          <p class="rv-summary">${esc(b.summary || "No summary.")}</p>
+          ${reasonsBox}
+        </header>
         ${policyBox}
-        ${rejectBox}
-        ${llmDetail}
-        ${huntMoaDetailHtml(f)}
-        <div class="report-detail-grid">
-          <div>
-            <h4>Threat model</h4>
-            <div class="kv">
-              <div class="k">Attacker</div><div class="v">${esc(tm.attacker || "-")}</div>
-              <div class="k">Boundary</div><div class="v">${esc(tm.boundary || "-")}</div>
-              <div class="k">Impact</div><div class="v">${esc(tm.impact || "-")}</div>
-            </div>
-          </div>
-          <div>
-            <h4>Identity</h4>
-            <div class="kv">
-              <div class="k">ID</div><div class="v mono">${f.id}</div>
-              <div class="k">stable_key</div><div class="v mono">${esc(f.stable_key || "-")}</div>
-              <div class="k">Evidence</div><div class="v mono">${eid ? esc(String(eid)) : b.no_poc ? "no_poc" : "-"}</div>
-              ${moduleRow}
-            </div>
-          </div>
-        </div>
-        <h4>Citations</h4>
-        <div class="finding-paths">${cites || '<span class="controls-hint">None</span>'}</div>
-        <div class="report-owners" data-fid="${f.id}" hidden></div>
-        <div class="report-review-panel">
-          <h4>Human review</h4>
-          <p class="controls-hint">Mech can auto-reject; otherwise findings wait here under Needs review. Accept, reject, or reclassify confirmed/rejected items. Notes are saved on the finding, under the evidence pack, and in the durable HITL responses store. Accept is the explicit human review that sets confirmed.</p>
-          <label class="field-label" for="report-review-notes-${f.id}"><span class="label-text">Notes / supporting commentary</span></label>
-          <textarea id="report-review-notes-${f.id}" class="op-notes report-review-notes" rows="3" placeholder="Why accept or reject? Links, residual risk, extra context…"></textarea>
-          <label class="controls-hint report-review-ev-opt">
-            <input type="checkbox" id="report-review-write-ev-${f.id}" checked />
-            Write notes into evidence pack as human_review_*.md
-          </label>
-          ${acceptPendingHintHtml(f)}
-          <div class="report-review-actions">
-            <button type="button" class="btn btn-good report-review-btn" data-action="confirm" data-fid="${f.id}"${acceptButtonAttrs(f)}>Accept (confirmed)</button>
-            <button type="button" class="btn btn-bad report-review-btn" data-action="reject" data-fid="${f.id}">Reject</button>
-            <button type="button" class="btn report-review-btn" data-action="needs_human" data-fid="${f.id}">Needs human review</button>
+        <dl class="rv-threat">
+          <div><dt>Attacker</dt><dd>${esc(tm.attacker || "—")}</dd></div>
+          <div><dt>Boundary</dt><dd>${esc(tm.boundary || "—")}</dd></div>
+          <div><dt>Impact</dt><dd>${esc(tm.impact || "—")}</dd></div>
+        </dl>
+        <section class="vf-card" aria-label="Data flow">
+          <h3 class="vf-section-label">Data flow ${
+            trace.length && trace[0].derived ? '<span class="rv-derived">from citations</span>' : ""
+          }</h3>
+          ${traceCards ? `<ol class="rv-trace">${traceCards}</ol>` : '<p class="vf-faint">No citations or trace recorded.</p>'}
+        </section>
+        <section class="rv-code" aria-label="Cited code">
+          <div class="rv-code-head">
+            <span class="mono">${esc(primary ? pathLabel(primary) : "No cited file")}</span>
             ${
-              window.ReportPolicyPromote && window.ReportPolicyPromote.canPromote(f)
-                ? `<button type="button" class="btn report-promote-policy-btn" data-fid="${f.id}" title="Draft a security-policy rule from this reject (edit, then Save; nothing is applied until you save)">Promote to policy</button>`
+              primary
+                ? `<button type="button" class="rv-link report-cite" data-path="${esc(primary.path)}" data-line="${primary.start_line ?? ""}">Open in Atlas</button>`
                 : ""
             }
           </div>
-          ${reviewHist}
-        </div>
-        <div class="report-detail-actions">
-          <button type="button" class="btn btn-primary report-open-book-evidence">Evidence and context</button>
-          <button type="button" class="btn btn-primary report-develop-poc" data-fid="${f.id}" title="Open working PoC workshop for this finding">Develop POC</button>
-          <button type="button" class="btn report-track-one" data-fid="${f.id}" title="Preview, then publish this finding as an external issue (outward-facing)">Track…</button>
-        </div>
-        ${trackedLinksHtml(f)}
-        <p class="controls-hint">Run in harness (inside Develop POC) is a sandbox one-shot. Signal observed does not accept the finding or clear needs-human.</p>
+          <div id="report-ctx-code" class="report-ctx-code">${
+            primary ? `<div class="vf-empty">Loading ${esc(pathLabel(primary))}…</div>` : ""
+          }</div>
+        </section>
+        <section class="vf-card report-owners" data-fid="${f.id}" aria-label="Suggested owners" hidden></section>
+        ${overlapsHtml(f)}
+        ${moa ? `<details class="rv-more"><summary>Hunt perspectives</summary>${moa}</details>` : ""}
+        <details class="rv-more" id="rv-evidence-preview">
+          <summary>Evidence preview${eid ? ` <span class="mono vf-faint">${esc(String(eid))}</span>` : ""}</summary>
+          ${fileChips ? `<div class="rv-row rv-wrap">${fileChips}</div>` : '<p class="vf-faint">No files in the pack.</p>'}
+          <div id="report-ctx-evidence" class="report-ctx-evidence"></div>
+        </details>
+        <p class="vf-faint rv-ident mono">${esc(f.stable_key || "")}${nearMod && nearMod.path ? " · module " + esc(String(nearMod.path)) : ""}</p>
       </div>`;
   }
-
   /** Same sentence as report_state_badges.js ACCEPT_PENDING_COPY. */
   const ACCEPT_PENDING_COPY =
     "Dual disprove still running — Accept after it settles, or Reject now.";
@@ -1165,8 +1221,11 @@
             ? `Finding #${fid} rejected`
             : `Finding #${fid} marked needs human review`
       );
-      // Refresh snapshot so table + evidence packs update
-      openId = Number(fid);
+      // Move to the next undecided finding (triage flow); stay put for reclassify.
+      const H = RH();
+      const next =
+        action === "needs_human" || !H ? null : H.nextUndecided(sortedFindings(), fid);
+      openId = next != null ? Number(next) : Number(fid);
       if (typeof window.loadRunFull === "function") {
         await window.loadRunFull();
       } else if (r && r.finding) {
@@ -1177,6 +1236,7 @@
             state: r.to_state,
             evidence_id: r.evidence_id || cache[idx].evidence_id,
             body: r.finding.body || cache[idx].body,
+            evidence_tier: r.finding.evidence_tier || cache[idx].evidence_tier,
           };
         }
         renderSummary();
@@ -2129,95 +2189,151 @@
         if (fid) openTrackModal([fid]);
       });
     });
-    root.querySelector(".report-open-book-evidence")?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      goReviewPage("evidence");
+    root.querySelectorAll(".report-ctx-ev").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const pack = btn.getAttribute("data-pack");
+        const rel = btn.getAttribute("data-rel");
+        if (pack && rel) loadContextEvidence(pack, rel);
+      });
+    });
+    root.querySelectorAll("[data-rv-go]").forEach((btn) => {
+      btn.addEventListener("click", () => window.VulnForgeModes?.setMode?.(btn.getAttribute("data-rv-go")));
     });
   }
 
+  /** Review queue (left column). Name kept: many callers refresh through renderTable(). */
   function renderTable() {
-    const tbody = $("#report-tbody");
-    if (!tbody) return;
+    const list = $("#report-queue");
+    if (!list) return;
     const rows = sortedFindings();
     if (!cache.length) {
-      tbody.innerHTML = `<tr><td colspan="7"><div class="empty empty-cta">
-        <p><strong>No findings yet</strong></p>
-        <p class="controls-hint">Run recon and hunts, then return here. Use Explorer to steer work.</p>
-        <div class="empty-cta-actions">
-          <button type="button" class="btn btn-primary" id="report-go-explorer">Open Explorer</button>
-          <button type="button" class="btn" id="report-go-mission">Mission</button>
-        </div>
-      </div></td></tr>`;
-      $("#report-go-explorer")?.addEventListener("click", () =>
-        window.VulnForgeModes?.setMode?.("explorer")
-      );
-      $("#report-go-mission")?.addEventListener("click", () =>
-        window.VulnForgeModes?.setMode?.("mission", "arch")
-      );
+      list.innerHTML = `<li class="vf-empty">No findings yet.</li>`;
+      const d = $("#report-detail");
+      if (d && openId == null) {
+        d.innerHTML = emptyDetailHtml();
+        bindDetailActions(d);
+      }
       updateSearchCount();
       updateSortHeaders();
       return;
     }
     if (!rows.length) {
-      const msg = searchOrFilterActive()
-        ? "No findings match this search / filter."
-        : "No findings match this filter.";
-      tbody.innerHTML = `<tr><td colspan="7" class="empty">${msg}</td></tr>`;
+      list.innerHTML = `<li class="vf-empty">${
+        searchOrFilterActive() ? "No findings match this search / filter." : "No findings match this filter."
+      }</li>`;
       updateSearchCount();
       updateSortHeaders();
       return;
     }
     const grouping = nearDupFilterActive();
     let prevGroup = "";
-    tbody.innerHTML = rows
+    const H = RH();
+    list.innerHTML = rows
       .map((f) => {
         const b = bodyOf(f);
         const p = primaryPath(f);
         const open = Number(openId) === Number(f.id);
         const cm = clusterByFinding[f.id];
-        const near =
-          f.near_dup || cm
-            ? `<span class="badge near-dup" title="Near-duplicate / overlap">${
-                cm && cm.label ? esc(cm.label) + " near-dup" : "near-dup"
-              }</span>`
-            : "";
-        const llmBadge = llmVerifyBadge(f);
-        const moaBadge = huntMoaBadgeHtml(f);
         const group = grouping ? nearDupGroupKey(f) : "";
         const groupStart = grouping && group !== prevGroup;
         prevGroup = group;
-        const groupClass = groupStart ? " near-dup-cluster-start" : "";
+        const decided = H ? !H.isUndecided(f) : false;
+        const cls = [
+          "rv-queue-row",
+          open ? "is-open" : "",
+          decided ? "is-decided" : "",
+          f.near_dup || cm ? "near-dup-row" : "",
+          groupStart ? "near-dup-cluster-start" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
         const groupAttr = grouping ? ` data-near-group="${esc(group)}"` : "";
-        return `<tr class="report-row${open ? " open" : ""}${f.near_dup || cm ? " near-dup-row" : ""}${groupClass}" data-fid="${f.id}"${groupAttr} tabindex="0">
-          <td class="mono">${f.id}</td>
-          <td class="report-title-cell">${esc(b.title || f.stable_key || "-")} ${near} ${llmBadge} ${moaBadge}</td>
-          <td><span class="mono">${esc(b.weakness_class || "-")}</span></td>
-          <td>${sevBadge(f.severity || b.severity_claim || "unknown")}</td>
-          <td class="report-state-cell">${badge(f.state, f)}</td>
-          <td class="mono report-path-cell" title="${esc(pathLabel(p))}">${esc(pathLabel(p))}</td>
-          <td class="report-row-action">${open ? "Open" : "Details"}</td>
-        </tr>`;
+        return `<li><button type="button" class="${cls}" data-fid="${f.id}"${groupAttr} aria-current="${open ? "true" : "false"}">
+            <span class="rv-row rv-queue-top">
+              ${sevTagHtml(f)}
+              <span class="mono vf-faint">#${f.id}</span>
+              ${tierPillHtml(f, { noSide: true })}
+              <span class="rv-spacer"></span>
+              <span class="report-state-cell">${statePill(f)}</span>
+            </span>
+            <span class="rv-queue-title-text">${esc(b.title || f.stable_key || "-")}</span>
+            <span class="rv-queue-sub"><span class="mono">${esc(pathLabel(p))}</span> · ${esc(b.weakness_class || "-")}${
+              f.near_dup || cm ? ` · <span class="rv-near">near-dup${cm && cm.label ? " " + esc(cm.label) : ""}</span>` : ""
+            }</span>
+          </button></li>`;
       })
       .join("");
 
-    tbody.querySelectorAll(".report-row").forEach((tr) => {
-      const openDetail = () => {
-        const id = Number(tr.getAttribute("data-fid"));
+    list.querySelectorAll(".rv-queue-row").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = Number(btn.getAttribute("data-fid"));
         const f = cache.find((x) => Number(x.id) === id);
-        if (f) showFindingDetail(f);
+        if (f) selectFinding(f);
         else renderTable();
-      };
-      tr.addEventListener("click", openDetail);
-      tr.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          openDetail();
-        }
       });
     });
 
     updateSearchCount();
     updateSortHeaders();
+  }
+
+  /** Open a finding in the desk and mark its queue row. */
+  function selectFinding(f, opts) {
+    if (!f) return;
+    showFindingDetail(f, opts);
+    $$(".rv-queue-row").forEach((el) => {
+      const on = Number(el.getAttribute("data-fid")) === Number(f.id);
+      el.classList.toggle("is-open", on);
+      el.setAttribute("aria-current", on ? "true" : "false");
+      if (on && !(opts && opts.noScroll)) el.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  /** Select the first visible finding when nothing is open (triage desk default). */
+  function ensureSelection() {
+    if (openId != null && cache.some((x) => Number(x.id) === Number(openId))) return;
+    const first = sortedFindings()[0];
+    if (first) selectFinding(first, { noScroll: true });
+    else clearFindingPanes();
+  }
+
+  function selectRelative(delta) {
+    const H = RH();
+    const rows = sortedFindings();
+    const id = H ? H.stepSelection(rows, openId, delta) : rows[0] && rows[0].id;
+    if (id == null) return;
+    const f = cache.find((x) => Number(x.id) === Number(id));
+    if (f) selectFinding(f);
+  }
+
+  /** Keyboard A / R: same path as the buttons (POST /findings/{id}/review). */
+  function decide(action) {
+    if (openId == null) return;
+    const rail = $("#report-context");
+    const btn = rail && rail.querySelector(`.report-review-btn[data-action="${action}"]`);
+    if (!btn || btn.disabled || btn.getAttribute("aria-disabled") === "true") {
+      if (action === "confirm") {
+        const f = cache.find((x) => Number(x.id) === Number(openId));
+        if (f && acceptBlockedByPending(f)) toast(acceptPendingCopy(), true);
+      }
+      return;
+    }
+    submitReview(openId, action, rail);
+  }
+
+  /** Keyboard E: open the current finding's evidence pack. */
+  function openCurrentEvidence() {
+    const f = cache.find((x) => Number(x.id) === Number(openId));
+    if (!f) return false;
+    const eid = f.evidence_id || bodyOf(f).evidence_id;
+    if (!eid) {
+      toast("No evidence pack linked to this finding", true);
+      return true;
+    }
+    const rel = preferredEvidenceRel(f);
+    if (window.VulnForgeModes?.goEvidence) window.VulnForgeModes.goEvidence(String(eid), rel || undefined);
+    return true;
   }
 
   function downloadBlob(filename, text, mime) {
@@ -2281,6 +2397,7 @@
       id: f.id,
       state: f.state || "",
       severity: f.severity || b.severity_claim || "",
+      evidence_tier: (f.evidence_tier && f.evidence_tier.tier) || "",
       weakness_class: b.weakness_class || "",
       title: b.title || f.stable_key || `Finding #${f.id}`,
       summary: b.summary || "",
@@ -3290,7 +3407,6 @@
     wireReportStateTips();
     setupExportModal();
     ensureExportMeta();
-    setupBookTabs();
 
     const search = $("#report-search");
     if (search && !search.dataset.bound) {
@@ -3306,17 +3422,11 @@
       });
     }
 
-    $$(".report-table thead th.th-sortable").forEach((th) => {
-      if (th.dataset.bound) return;
-      th.dataset.bound = "1";
-      const onSort = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setSort(th.getAttribute("data-sort") || "");
-      };
-      // Single handler on th (button clicks bubble); keeps a11y button for keyboard.
-      th.addEventListener("click", onSort);
-    });
+    const sortSel = $("#report-sort");
+    if (sortSel && !sortSel.dataset.bound) {
+      sortSel.dataset.bound = "1";
+      sortSel.addEventListener("change", () => setSort(sortSel.value, { fromSelect: true }));
+    }
 
     setupReportPanels();
     updateSortHeaders();
@@ -3327,6 +3437,7 @@
     filter = next || "all";
     renderSummary();
     refreshTablePreserveDetail();
+    ensureSelection();
   }
 
   /** Open Report and expand a finding by id (Coverage deep-link). */
@@ -3342,12 +3453,12 @@
     updateSearchCount();
     updateSortHeaders();
     const f = cache.find((x) => Number(x.id) === Number(openId));
-    if (f) showFindingDetail(f, { page: "detail" });
+    if (f) selectFinding(f, { page: "detail" });
     else clearFindingPanes();
   }
 
   function renderReport(snap) {
-    if (!$("#panel-report") && !$("#report-tbody")) return;
+    if (!$("#panel-report") && !$("#report-queue")) return;
     cache = Array.isArray(snap.findings) ? snap.findings : cache;
     meta = {
       target_id: snap.target_id || meta.target_id,
@@ -3357,8 +3468,8 @@
     projectFiles = Array.isArray(snap.project_files) ? snap.project_files : [];
     renderExportProjections();
     window.__VF_report_findings = cache;
-    // Keep filter if it still matches something; otherwise reset to all
-    if (filter !== "all" && !cache.some(matchesFilter)) {
+    // Default Needs review; fall back to All only until the operator picks a chip.
+    if (!filterChosen && filter !== "all" && !cache.some(matchesFilter)) {
       filter = "all";
     }
     if (!filter) filter = "all";
@@ -3380,14 +3491,16 @@
         : null;
       if (f) {
         fillFindingPanes(f);
-        setReviewPage(reviewPage === "findings" ? "findings" : reviewPage);
+        setReviewPage(reviewPage);
         renderTable();
       } else {
         clearFindingPanes();
         renderTable();
+        ensureSelection();
       }
     } else {
       clearFindingPanes();
+      ensureSelection();
     }
 
     // Keep open POC workshop headers in sync when snap refreshes
@@ -3401,6 +3514,10 @@
     render: renderReport,
     setFilter,
     openFinding,
+    selectRelative,
+    decide,
+    openCurrentEvidence,
+    ensureSelection,
     openDevelopPoc,
     closeDevelopPoc,
     refreshPocWorkshop,

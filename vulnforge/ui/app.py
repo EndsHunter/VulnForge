@@ -474,6 +474,9 @@ class ToolIntegrateBody(BaseModel):
     dry_run: bool = True
     apply: bool = False
     add_to_profiles: Optional[list[str]] = None
+    # Apply gate: hash from a fresh dry-run; explicit consent to replace files.
+    plan_hash: Optional[str] = None
+    allow_overwrite: bool = False
 
 
 class ToolRejectBody(BaseModel):
@@ -488,12 +491,6 @@ class HuntGenerateBody(BaseModel):
     activate: bool = False
     save: bool = True
     signals: Optional[Any] = None
-
-
-class HuntImportBody(BaseModel):
-    data: Any
-    mode: str = "merge"
-    llm_review: bool = False
 
 
 class DevSetupImportBody(BaseModel):
@@ -519,11 +516,6 @@ class ReconAgentBody(BaseModel):
     temperature: Optional[float] = None
     max_tool_rounds: Optional[int] = None
     output: Optional[str] = None
-
-
-class ReconAgentImportBody(BaseModel):
-    data: Any
-    mode: str = "merge"
 
 
 class CoverageRequeueBody(BaseModel):
@@ -933,63 +925,40 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             {"runs_root": str(app.state.runs_root)},
         )
 
+    def _bench_page(request: Request, view: str, **ctx: Any):
+        return TEMPLATES.TemplateResponse(request, "benchmarks.html", {"view": view, **ctx})
+
     @app.get("/benchmarks", response_class=HTMLResponse)
-    def benchmarks_root(request: Request):
-        """Bench desk hub — redirect to Run so /benchmarks lands on a page."""
-        return RedirectResponse(url="/benchmarks/run", status_code=307)
+    def benchmarks_scoreboard(request: Request):
+        """Benchmarks desk: suites × tiers vs baseline, active runs, recent runs."""
+        return _bench_page(request, "scoreboard")
 
-    @app.get("/benchmarks/run", response_class=HTMLResponse)
-    def benchmarks_run_page(request: Request):
-        """Bench desk: Run (stub)."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {"runs_root": str(app.state.runs_root), "active": "run"},
-        )
+    @app.get("/benchmarks/cases", response_class=HTMLResponse)
+    def benchmarks_cases(request: Request):
+        return _bench_page(request, "cases")
 
-    @app.get("/benchmarks/poc", response_class=HTMLResponse)
-    def benchmarks_poc_page(request: Request):
-        """Bench desk: POC workshop (stub)."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {"runs_root": str(app.state.runs_root), "active": "poc"},
-        )
+    @app.get("/benchmarks/runs/{run_id}", response_class=HTMLResponse)
+    def benchmarks_run(request: Request, run_id: str):
+        return _bench_page(request, "run", run_id=run_id)
 
-    @app.get("/benchmarks/results", response_class=HTMLResponse)
-    def benchmarks_results_page(request: Request):
-        """Bench desk: Results history table."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {
-                "runs_root": str(app.state.runs_root),
-                "active": "results",
-                "detail_run_id": None,
-            },
-        )
+    @app.get("/benchmarks/compare", response_class=HTMLResponse)
+    def benchmarks_compare(request: Request, a: str = "", b: str = ""):
+        return _bench_page(request, "compare", compare_a=a, compare_b=b)
 
-    @app.get("/benchmarks/results/{run_id}", response_class=HTMLResponse)
-    def benchmarks_results_detail_page(request: Request, run_id: str):
-        """Bench desk: single BenchmarkRun detail."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {
-                "runs_root": str(app.state.runs_root),
-                "active": "results",
-                "detail_run_id": run_id,
-            },
-        )
+    # Pre-#204 bench desk URLs.
+    @app.get("/benchmarks/results/{run_id}")
+    def benchmarks_legacy_result(run_id: str):
+        from urllib.parse import quote
 
-    @app.get("/benchmarks/library", response_class=HTMLResponse)
-    def benchmarks_library_page(request: Request):
-        """Bench desk: Library (lists defs from /api/benchmarks)."""
-        return TEMPLATES.TemplateResponse(
-            request,
-            "benchmarks.html",
-            {"runs_root": str(app.state.runs_root), "active": "library"},
-        )
+        return RedirectResponse(url=f"/benchmarks/runs/{quote(run_id)}", status_code=308)
+
+    @app.get("/benchmarks/{legacy}")
+    def benchmarks_legacy(legacy: str):
+        if legacy == "library":
+            return RedirectResponse(url="/benchmarks/cases", status_code=308)
+        if legacy in ("run", "poc", "results"):
+            return RedirectResponse(url="/benchmarks", status_code=308)
+        raise HTTPException(404, "not found")
 
     # ---------- API: operator AI chat ----------
 
@@ -2399,6 +2368,20 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 codemap = merge_annotations_into_codemap(codemap, prior_notes)
             db.set_codemap(codemap, source=str(codemap.get("source") or "mechanical"))
             stored = db.get_codemap()
+            # Refresh the R0 skeleton alongside (separate file; never raises).
+            from vulnforge.recon_skeleton import (
+                build_and_store_skeleton,
+                seed_sinks_for_target,
+            )
+
+            try:
+                sk_sinks = seed_sinks_for_target(target, ignore)
+            except Exception as exc:
+                from vulnforge.errors import note_swallowed
+
+                note_swallowed(exc, context="codemap_rebuild.seed_sinks", run_dir=run.path)
+                sk_sinks = []
+            build_and_store_skeleton(run.path, stored or codemap, sk_sinks, None, target)
             summary = codemap_summary_for_ui(stored)
             from vulnforge.tools.codemap import slim_codemap_for_ui
 
@@ -3277,39 +3260,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(500, f"hunt profiles failed: {e}") from e
 
-    @app.get("/api/hunt-profiles/export")
-    def api_hunt_profiles_export():
-        """Legacy: hunt-only export. Prefer GET /api/dev-setup/export for full setup."""
-        from vulnforge.hunt_profiles import HuntProfileError, export_collection
-
-        try:
-            data = export_collection()
-            return JSONResponse(
-                content=data,
-                headers={
-                    "Content-Disposition": 'attachment; filename="hunt_collection.json"'
-                },
-            )
-        except HuntProfileError as e:
-            raise HTTPException(400, str(e)) from e
-
-    @app.post("/api/hunt-profiles/import")
-    def api_hunt_profiles_import(body: HuntImportBody):
-        from vulnforge.hunt_profiles import HuntProfileError, import_collection
-
-        try:
-            result = import_collection(
-                body.data,
-                mode=body.mode or "merge",
-                llm_review=bool(body.llm_review),
-                cfg=(getattr(app.state, "config", None) or load_config())
-                if body.llm_review
-                else None,
-            )
-            return result
-        except HuntProfileError as e:
-            raise HTTPException(400, str(e)) from e
-
     @app.post("/api/hunt-profiles/reseed")
     def api_hunt_profiles_reseed():
         from vulnforge.hunt_profiles import HuntProfileError, reseed_from_package
@@ -3544,31 +3494,6 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
             raise HTTPException(400, str(e)) from e
         except Exception as e:
             raise HTTPException(500, f"recon agents failed: {e}") from e
-
-    @app.get("/api/recon-agents/export")
-    def api_recon_agents_export():
-        from vulnforge.recon_agents import ReconAgentError, export_collection
-
-        try:
-            data = export_collection()
-            return JSONResponse(
-                content=data,
-                headers={
-                    "Content-Disposition": 'attachment; filename="recon_collection.json"'
-                },
-            )
-        except ReconAgentError as e:
-            raise HTTPException(400, str(e)) from e
-
-    @app.post("/api/recon-agents/import")
-    def api_recon_agents_import(body: ReconAgentImportBody):
-        from vulnforge.recon_agents import ReconAgentError, import_collection
-
-        try:
-            result = import_collection(body.data, mode=body.mode or "merge")
-            return result
-        except ReconAgentError as e:
-            raise HTTPException(400, str(e)) from e
 
     @app.post("/api/recon-agents/reseed")
     def api_recon_agents_reseed():
@@ -3945,22 +3870,28 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
 
     @app.post("/api/tool-drafts/{draft_id}/integrate")
     def api_tool_draft_integrate(draft_id: str, body: Optional[ToolIntegrateBody] = None):
-        from vulnforge.toolgen.integrate import IntegrateToolError, integrate
+        from vulnforge.toolgen.integrate import (
+            IntegrateConflictError,
+            IntegrateToolError,
+            integrate,
+        )
         from vulnforge.toolgen.store import ToolDraftError
 
-        dry = body.dry_run if body else True
         apply = body.apply if body else False
-        add = body.add_to_profiles if body else None
         try:
             result = integrate(
                 draft_id,
-                dry_run=dry if not apply else False,
+                dry_run=not apply,
                 apply=apply,
-                add_to_profiles=add,
+                plan_hash=body.plan_hash if body else None,
+                allow_overwrite=bool(body.allow_overwrite) if body else False,
+                add_to_profiles=body.add_to_profiles if body else None,
             )
             return {"ok": True, **result}
         except ToolDraftError as e:
             raise HTTPException(404, str(e)) from e
+        except IntegrateConflictError as e:
+            raise HTTPException(409, str(e)) from e
         except IntegrateToolError as e:
             raise HTTPException(400, str(e)) from e
 

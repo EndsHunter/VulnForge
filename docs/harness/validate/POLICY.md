@@ -111,18 +111,18 @@ finding (which deletes the live review response) and later edits to the rule's g
 
 `provenance` is harness-owned. `Database.set_security_policy` refuses any provenance object
 that is not already stored on the same list and rule id in some revision. The one exception
-is the rule the promote path is adding. A Mission JSON save or `vf policy set` can therefore
+is the rule the promote path is adding. An Atlas policy JSON save or `vf policy set` can therefore
 carry provenance forward unchanged (edits, History → Load → Save, restore), but cannot
 fabricate it or paste it onto another rule. Provenance never reaches LLM packets.
 
-Policy history (`GET .../security-policy/history`, Mission → Policy → History) adds
+Policy history (`GET .../security-policy/history`, Atlas → Security policy → History) adds
 `promoted_rules` to each revision. It lists the rules whose provenance first appears in that
 revision (finding id, HITL response, operator), so the record stays visible even after a
 restore rewrites the revision note.
 
 ## Operator surfaces
 
-- Dashboard: **Mission → Policy** — JSON editor, Save (server-validated), History
+- Dashboard: **Atlas → Security policy** fold — JSON editor, Save (server-validated), History
   (load into editor / restore), **Draft from SECURITY.md** (fills the editor; not saved).
 - API: `GET|PUT /api/runs/{t}/{r}/security-policy`, `GET .../security-policy/history`,
   `GET .../findings/{fid}/policy-draft`, `POST .../findings/{fid}/promote-to-policy`,

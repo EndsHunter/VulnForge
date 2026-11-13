@@ -27,7 +27,17 @@ MAX_BODY_BYTES = 256 * 1024
 
 # Default seed: only default-map active so single-agent recon matches legacy.
 SEED_ACTIVE_IDS = frozenset({"default-map"})
-SEED_ORDER = ("default-map", "surface-mapper", "dependency-risk", "auth-model")
+SEED_ORDER = (
+    "default-map",
+    "surface-mapper",
+    "dependency-risk",
+    "auth-model",
+    "flow-tracer",
+)
+# Phase agents: never part of the first (map) fan-out. flow-tracer runs once
+# per selected entrypoint after the map batch finalizes (stages/recon.py R3).
+FLOW_AGENT_ID = "flow-tracer"
+FLOW_OUTPUT = "flows"
 
 _root_override: Optional[Path] = None
 
@@ -282,6 +292,16 @@ def _seed_agents_from_package() -> list[dict[str, Any]]:
             "order": 40,
             "active": False,
         },
+        FLOW_AGENT_ID: {
+            "title": "Flow tracer",
+            "description": (
+                "Trace untrusted data from one entrypoint to sinks with cited "
+                "path:line steps (runs after the map batch; submit_flow)."
+            ),
+            "order": 90,
+            "active": True,
+            "output": FLOW_OUTPUT,
+        },
     }
 
     agents: list[dict[str, Any]] = []
@@ -299,7 +319,7 @@ def _seed_agents_from_package() -> list[dict[str, Any]]:
                 "tools": None,
                 "temperature": None,
                 "max_tool_rounds": None,
-                "output": "architecture",
+                "output": str(meta.get("output") or "architecture"),
                 "body_file": f"bodies/{aid}.md",
                 "source": "seed",
                 "_body": body,
@@ -441,6 +461,69 @@ def active_agents(
         return active
     # Empty active set: fall back to all so recon never deadlocks
     return [dict(p) for p in coll["agents"]]
+
+
+def is_flow_phase_agent(agent: Any) -> bool:
+    """True for agents that run in the flow phase (never the first map batch)."""
+    if isinstance(agent, dict):
+        aid = str(agent.get("id") or "").strip().lower()
+        return aid == FLOW_AGENT_ID or str(agent.get("output") or "") == FLOW_OUTPUT
+    return str(agent or "").strip().lower() == FLOW_AGENT_ID
+
+
+def seed_body(agent_id: str) -> Optional[str]:
+    """Package seed body for *agent_id* (read-only; never written to config)."""
+    aid = _validate_id(agent_id)
+    path = SEED_PROMPTS_DIR / f"{aid}.md"
+    try:
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return None
+
+
+def flow_agent() -> Optional[dict[str, Any]]:
+    """The flow-tracer entry with ``body_md``.
+
+    Runtime collection wins (operator edits). Installs seeded before the
+    flow-tracer existed fall back to the package seed body without writing
+    to ``config/recon_agents/`` (Dev **Reseed** adds it to the collection).
+    Returns None when the operator disabled it (``active: false``) or no
+    body exists anywhere.
+    """
+    coll = ensure_collection()
+    for p in coll["agents"]:
+        if p["id"] == FLOW_AGENT_ID:
+            if not p.get("active"):
+                return None
+            row = dict(p)
+            try:
+                row["body_md"] = get_body(FLOW_AGENT_ID)
+            except ReconAgentError:
+                body = seed_body(FLOW_AGENT_ID)
+                if not body:
+                    return None
+                row["body_md"] = body
+            return row
+    body = seed_body(FLOW_AGENT_ID)
+    if not body:
+        return None
+    return {
+        "id": FLOW_AGENT_ID,
+        "title": "Flow tracer",
+        "description": "",
+        "active": True,
+        "order": 90,
+        "mode": "sequential",
+        "tools": None,
+        "temperature": None,
+        "max_tool_rounds": None,
+        "output": FLOW_OUTPUT,
+        "body_file": f"bodies/{FLOW_AGENT_ID}.md",
+        "source": "package_seed",
+        "body_md": body,
+    }
 
 
 def catalog_for_ui() -> dict[str, list[str]]:

@@ -73,18 +73,20 @@ def check_tools_in_protocol() -> list[str]:
     return []
 
 
-def check_dashboard_hunts_name() -> list[str]:
+def check_dashboard_tab_names() -> list[str]:
+    """Run tabs are Review / Campaign / Atlas (docs/ui/REDESIGN.md); the old
+    Mission / Hunts / Explorer / Report / Coverage mode rows must not return."""
     errors: list[str] = []
-    readme = _read("README.md")
-    if "| **Hunts** |" not in readme:
-        errors.append("README.md dashboard table must name **Hunts** as a mode")
-    if "| **Coverage** |" in readme:
-        errors.append(
-            "README.md still lists **Coverage** as a dashboard mode; the tab is Hunts"
-        )
-    agents = _read("AGENTS.md")
-    if "| **Hunts** |" not in agents:
-        errors.append("AGENTS.md cockpit table must name **Hunts** as a mode")
+    for doc in ("README.md", "AGENTS.md"):
+        text = _read(doc)
+        for tab in ("Review", "Campaign", "Atlas"):
+            if f"| **{tab}**" not in text:
+                errors.append(f"{doc} dashboard table must name **{tab}** as a run tab")
+        for stale in ("Mission", "Hunts", "Explorer", "Report", "Coverage"):
+            if f"| **{stale}** |" in text:
+                errors.append(
+                    f"{doc} still lists **{stale}** as a dashboard mode; see docs/ui/REDESIGN.md"
+                )
     return errors
 
 
@@ -135,7 +137,7 @@ def main() -> int:
         check_seed_catalog,
         check_cli_in_protocol,
         check_tools_in_protocol,
-        check_dashboard_hunts_name,
+        check_dashboard_tab_names,
         check_agents_posix_quickstart,
         check_phantom_paths,
         check_hunt_preamble_claim,

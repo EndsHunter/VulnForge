@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from vulnforge.eval.recall import (
+from vulnforge.benchmarks.match import (
     finding_matches_oracle,
     load_ground_truth,
     score_findings,

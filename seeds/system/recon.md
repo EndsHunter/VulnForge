@@ -36,6 +36,7 @@ This is the **shared stage** recon prompt (legacy single-agent path and harness 
 | `surface-mapper` | Input surfaces / entrypoints |
 | `dependency-risk` | Deps, supply-chain, install/update |
 | `auth-model` | Roles, sessions, multi-tenant |
+| `flow-tracer` | Runs after the map: traces data from each top entrypoint to sinks (`submit_flow`) |
 
 ## Decision tree
 
@@ -79,6 +80,7 @@ Use **short class id strings** from the **Registered hunt classes** section inje
 
 ## Method / workflow
 
+0. **Skeleton first** — Read the Mechanical skeleton in the packet. Plan which skeleton ids you will relabel, which zone each gets, and which relations you can cite.
 1. Skim inventory **languages**, extensions, and entrypoints (including C/C++/Ada/Java/Perl build markers); align components with the mechanical codemap; open a few real paths per language stack.
 2. Name major components with path hints you actually saw (prefer codemap module paths; do not invent modules outside the map without tool evidence).
 3. List trust boundaries and input surfaces grounded in code.
@@ -95,12 +97,23 @@ Use **short class id strings** from the **Registered hunt classes** section inje
 | `components` | Major modules/services with path hints |
 | `input_surfaces` | HTTP, CLI, queues, files, IPC |
 | `hunt_focus` | Areas worth (area × class) tasks — optional |
-| `relations` | Optional formal edges `[{ from, to, kind, note }]` when known — omit if unsure |
+| `zones` / `boundaries` | v2 zones and zone crossings with `path` + `line` |
+| `relations` | `{from, to, kind, evidence: {path, line}, confidence}` — cite a line, else `confidence: "inferred"` |
 | *(comparables)* | Similar systems for baseline — fold into `summary` |
 
-### Formal relations (optional)
+### Map v2: skeleton, zones, citations
 
-When inspection shows clear trust or data-flow edges between named components, emit `relations` as `{ "from": "<component>", "to": "<component>", "kind": "<kind>", "note": "<optional path/role>" }`. Use component names that match `components[].name`. Kinds may include `trust_boundary`, `calls`, `data_flow`, `depends_on`, `auth_gate`. Omit when unknown — the UI falls back to inferred edges. Architecture only: no exploit/PoC content in notes.
+The packet has a **Mechanical skeleton** (no LLM): components from the codemap, import / `db` / `http_out` relations marked `mechanical`, file entrypoints and pre-indexed sinks, and heuristic zone guesses. Start from it:
+
+- **Keep skeleton ids.** To relabel a component, submit it with the same `id` and a better `name` / `role` / `kind`. Merge, rename or split only with a path you read. `datastore` and `external-http` are synthetic placeholders; rename or replace them when you find the real store / client.
+- **Zone per component.** `zone` is one of `internet` (no session needed), `authenticated`, `internal`, `external` (third-party services), `build` (CI / install). Declare the zones you use in `zones` (`{id, kind, label, evidence: [{path, line}]}`).
+- **Cite `path` + `line`** you actually read for every entrypoint, sink, boundary and relation (`evidence: {path, line}`). The harness checks each citation: a good one becomes `cited`, a bad or missing one becomes `inferred` (drawn dashed). Mechanical relations are kept for you; do not resubmit them.
+- **Relations are expected now.** Emit the edges you saw as `{from, to, kind, evidence, confidence}` with `from` / `to` = component ids and `kind` one of `calls`, `data_flow`, `imports`, `queue`, `db`, `http_out`, `auth_gate`, `depends_on`, `trust_boundary`. If you could not cite a line, still emit it with `confidence: "inferred"` — never invent an edge you have no reason to believe.
+- Architecture only: notes describe roles, not exploits. Data flows (entrypoint → steps → sink) belong to the `flow-tracer` agent, which runs after this map.
+
+### Your slice (shared recon prompt)
+
+As the single-agent path you cover the whole map: component names, roles and zones, `zones`, `boundaries`, entrypoints with lines, and relations with evidence, plus `hunt_focus`. Flows are traced afterwards by the `flow-tracer` agent.
 
 ## Hunt focus discipline
 
@@ -124,6 +137,8 @@ When inspection shows clear trust or data-flow edges between named components, e
 
 ## Submit checklist
 
+- [ ] Skeleton ids kept when relabelling; every component has a `zone`
+- [ ] Every relation / entrypoint / boundary cites `path` + `line` you read, or the relation says `confidence: "inferred"`
 - [ ] `submit_architecture` only (no `submit_candidate` / `submit_none`)
 - [ ] Non-empty `summary`
 - [ ] Prefer active class ids in `hunt_focus` when provided

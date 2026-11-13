@@ -190,6 +190,15 @@ owners:
   max_suggestions: 5
   timeout_seconds: 10      # per git command (process group killed on expiry)
   export_budget_seconds: 60  # whole export; later findings → budget_exhausted
+# Recon pipeline v2 (docs/harness/recon/FLOWS.md). R3 flow tracer runs after
+# the map batch: one recon task per top entrypoint (internet zone first, then
+# components with sinks), each finishing with submit_flow. Flows steer hunts;
+# they are never findings. Hunts are planned after the last flow task.
+recon:
+  flow_tracer:
+    enabled: true
+    max_flows: 8            # entrypoints traced per recon (0 also disables)
+    # max_tool_rounds: 12   # default: llm.max_tool_rounds
 
 # Mechanical codemap (structure scaffold for recon + hunt targeting).
 # Full map (modules + files + symbols) is stored in runs.codemap_json.

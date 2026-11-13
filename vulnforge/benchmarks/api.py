@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
+from vulnforge.benchmarks.compare import compare_runs, summarize_repeats
 from vulnforge.benchmarks.live import (
+    LIVE_MAX_REPEAT,
     cancel_live_run,
     find_active_live_run,
     list_active_runs,
@@ -15,19 +17,15 @@ from vulnforge.benchmarks.live import (
     start_live_run,
     start_live_suite,
 )
-from vulnforge.benchmarks.poc_workshop import run_poc_workshop
-from vulnforge.benchmarks.runner import (
-    SUITE_DEF_IDS,
-    run_benchmark,
-    run_benchmark_suite,
-    suite_types_for,
-)
+from vulnforge.benchmarks.runner import run_benchmark, run_fixture_checks
 from vulnforge.benchmarks.runs import (
     BenchmarkRunError,
+    baseline_for,
     get_run,
     list_runs,
+    load_baselines,
+    set_baseline,
 )
-from vulnforge.benchmarks.series import build_series, compare_versions
 from vulnforge.benchmarks.store import (
     BenchmarkLibraryError,
     create_def,
@@ -40,6 +38,7 @@ from vulnforge.benchmarks.store import (
     seed_from_ground_truth,
     update_def,
 )
+from vulnforge.benchmarks.suites import SUITES, TIERS, suite_catalog
 
 router = APIRouter(prefix="/api/benchmarks", tags=["benchmarks"])
 
@@ -57,17 +56,17 @@ class BenchmarkBody(BaseModel):
 
 
 class BenchmarkRunBody(BaseModel):
+    """Either a suite run (``suite`` + ``tier``) or a single case (``def_id``)."""
+
+    suite: Optional[str] = None
+    tier: Optional[str] = None
+    repeat: int = 1
+    validate_llm: bool = True
+    note: str = ""
+    only: Optional[list[str]] = None
     def_id: Optional[str] = None
     version: Optional[int] = None
     types: Optional[list[str]] = None
-    mode: Optional[str] = "mechanical"
-    suite: bool = False
-    only: Optional[list[str]] = None
-
-
-class PocWorkshopRunBody(BaseModel):
-    def_id: str
-    version: Optional[int] = None
     mode: Optional[str] = "mechanical"
 
 
@@ -123,6 +122,85 @@ def _parse_suite_query(raw: Optional[str]) -> Optional[bool]:
     return None
 
 
+@router.get("/suites")
+def api_benchmark_suites():
+    """Suites, tiers, baselines, and the latest finished run per suite × tier."""
+    try:
+        ensure_library()
+        defs = list_defs()
+    except BenchmarkLibraryError as e:
+        raise _http_lib(e) from e
+    baselines = load_baselines()
+    suites = suite_catalog(defs)
+    for s in suites:
+        s["runs"] = {}
+        for tier in s["tiers"]:
+            rows = list_runs(suite_id=s["id"], tier=tier, suite=True, limit=30)
+            finished = [r for r in rows if r["status"] in ("passed", "failed", "error")]
+            latest = finished[0] if finished else None
+            base_id = baselines.get(f"{s['id']}:{tier}")
+            s["runs"][tier] = {
+                "baseline_id": base_id,
+                "latest": _run_card(latest) if latest else None,
+                "baseline": _run_card(_safe_get(base_id)) if base_id else None,
+                # Oldest → newest for the trend line.
+                "trend": [_trend_point(r) for r in reversed(finished[:20])],
+            }
+    return {
+        "ok": True,
+        "suites": suites,
+        "tiers": [{"id": k, **v} for k, v in TIERS.items()],
+        "max_repeat": LIVE_MAX_REPEAT,
+    }
+
+
+def _safe_get(run_id: Optional[str]) -> Optional[dict[str, Any]]:
+    if not run_id:
+        return None
+    try:
+        return get_run(run_id)
+    except BenchmarkRunError:
+        return None
+
+
+def _run_card(run: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Compact run row for the scoreboard (no member lists)."""
+    if not run:
+        return None
+    m = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
+    summary = m.get("summary") if isinstance(m.get("summary"), dict) else {}
+    return {
+        "id": run.get("id"),
+        "status": run.get("status"),
+        "tier": run.get("tier"),
+        "suite_id": run.get("suite_id"),
+        "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+        "note": run.get("note"),
+        "fingerprint": run.get("fingerprint") or {},
+        "headline": summary.get("headline") or {},
+        "spread": summary.get("spread") or {},
+        "n_repeats": summary.get("n_repeats"),
+        "totals": summary.get("totals") or {},
+        "passed_count": m.get("passed_count"),
+        "count": m.get("count"),
+    }
+
+
+def _trend_point(run: dict[str, Any]) -> dict[str, Any]:
+    m = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
+    head = (m.get("summary") or {}).get("headline") or {}
+    fp = run.get("fingerprint") or {}
+    return {
+        "id": run.get("id"),
+        "started_at": run.get("started_at"),
+        "recall": head.get("recall"),
+        "tokens_per_hit": head.get("tokens_per_hit"),
+        "model": fp.get("model"),
+        "git_sha": (fp.get("git_sha") or "")[:8],
+    }
+
+
 @router.get("/runs")
 def api_benchmark_runs_list(
     def_id: Optional[str] = None,
@@ -130,16 +208,16 @@ def api_benchmark_runs_list(
     status: Optional[str] = None,
     type: Optional[str] = None,
     suite: Optional[str] = None,
+    suite_id: Optional[str] = None,
+    tier: Optional[str] = None,
     sort: Optional[str] = "started_at",
     order: Optional[str] = "desc",
+    limit: int = 200,
 ):
-    """List BenchmarkRun records with filters/sort (default newest started_at first).
+    """List BenchmarkRun records with filters/sort (default newest first).
 
-    Query:
-      def_id, version, status, type (types_run contains),
-      suite=true|false (parent collectives vs individual defs),
-      sort=started_at|finished_at|recall|status|def_id,
-      order=asc|desc
+    ``suite=true|false`` keeps suite parents / single cases; ``suite_id`` and
+    ``tier`` filter by suite and tier.
     """
     try:
         return {
@@ -150,140 +228,85 @@ def api_benchmark_runs_list(
                 status=status,
                 run_type=type,
                 suite=_parse_suite_query(suite),
+                suite_id=suite_id,
+                tier=tier,
                 sort=sort or "started_at",
                 order=order or "desc",
+                limit=limit,
             ),
         }
     except BenchmarkRunError as e:
         raise _http_run(e) from e
 
 
+def _conflict_if_live_active() -> None:
+    active = find_active_live_run()
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "ok": False,
+                "error": "a live benchmark run is already queued or running",
+                "run_id": active.get("id"),
+                "run": active,
+            },
+        )
+
+
 @router.post("/runs")
 def api_benchmark_runs_create(body: BenchmarkRunBody):
-    """Create + execute a bench run (recon|hunt|finding_report).
+    """Start a run.
 
-    Mechanical is sync create+score. Live (hunt only) returns immediately
-    with ``async: true`` and the GUI polls GET-by-id.
+    Suite: ``{"suite": "realworld", "tier": "directed", "repeat": 1,
+    "validate_llm": true, "note": ""}`` → async live parent (poll GET by id).
+    ``{"suite": "fixtures", "tier": "l0"}`` → sync L0 fixture checks.
 
-    ``poc_dev`` is refused. Default types = all runnable types on the snapshot.
-
-    Suite: ``def_id`` of ``all-hunt`` / ``all-recon`` / ``all-finding_report`` /
-    ``all-runnable``, or ``suite=true`` with ``types``. Live suites must be
-    all-hunt. Optional ``only`` subsets live suite member defs.
+    Single case: ``{"def_id": "toy_sqli", "mode": "mechanical"|"live"}``.
     """
     try:
         ensure_library()
+        sid = str(body.suite or "").strip().lower()
+        if sid:
+            tier = str(body.tier or "").strip().lower() or (
+                SUITES.get(sid, {}).get("tiers") or ("directed",)
+            )[0]
+            if tier == "l0":
+                if sid != "fixtures":
+                    raise HTTPException(400, "L0 runs only as the fixtures suite")
+                return {"ok": True, "suite": True, "run": run_fixture_checks(note=body.note)}
+            _conflict_if_live_active()
+            run = start_live_suite(
+                suite_id=sid,
+                repeat=body.repeat,
+                only=body.only,
+                validate_llm=body.validate_llm,
+                note=body.note,
+            )
+            return {"ok": True, "async": True, "suite": True, "run": run}
+        if not (body.def_id or "").strip():
+            raise HTTPException(400, "suite or def_id is required")
         mode_n = str(body.mode or "mechanical").strip().lower()
-        suite_types = suite_types_for(body.def_id or "")
-        if suite_types is None and body.suite:
-            suite_types = tuple(body.types or []) or tuple(SUITE_DEF_IDS["all-runnable"])
         if mode_n == "live":
-            active = find_active_live_run()
-            if active is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "ok": False,
-                        "error": "a live benchmark run is already queued or running",
-                        "run_id": active.get("id"),
-                        "run": active,
-                    },
-                )
-            if suite_types is not None:
-                run = start_live_suite(
-                    types=list(suite_types),
-                    only=body.only,
-                )
-                return {"ok": True, "async": True, "suite": True, "run": run}
-            if not (body.def_id or "").strip():
-                raise HTTPException(
-                    400,
-                    "def_id is required (or suite=true / all-hunt|all-recon|"
-                    "all-finding_report|all-runnable)",
-                )
+            _conflict_if_live_active()
             run = start_live_run(
                 def_id=body.def_id or "",
                 version=body.version,
                 types=body.types,
+                validate_llm=body.validate_llm,
+                note=body.note,
             )
             return {"ok": True, "async": True, "run": run}
-        if suite_types is not None:
-            run = run_benchmark_suite(
-                types=list(suite_types),
-                mode=body.mode or "mechanical",
-            )
-            return {"ok": True, "suite": True, "run": run}
-        if not (body.def_id or "").strip():
-            raise HTTPException(
-                400,
-                "def_id is required (or suite=true / all-hunt|all-recon|"
-                "all-finding_report|all-runnable)",
-            )
         run = run_benchmark(
             def_id=body.def_id or "",
             version=body.version,
             types=body.types,
-            mode=body.mode or "mechanical",
+            mode=mode_n,
         )
         return {"ok": True, "run": run}
     except BenchmarkRunError as e:
         raise _http_run(e) from e
     except BenchmarkLibraryError as e:
         raise _http_lib(e) from e
-
-
-@router.post("/poc/runs")
-def api_benchmark_poc_runs_create(body: PocWorkshopRunBody):
-    """POC workshop: create + execute a ``poc_dev`` BenchmarkRun (isolated).
-
-    Sandbox under ``benchmarks/runs/<id>/sandbox/``; ``network: none``.
-    Never auto-confirms findings. Separate from Report ``#poc-modal``.
-    Run-page ``POST /api/benchmarks/runs`` still refuses ``poc_dev``.
-    """
-    try:
-        ensure_library()
-        run = run_poc_workshop(
-            def_id=body.def_id,
-            version=body.version,
-            mode=body.mode or "mechanical",
-        )
-        return {"ok": True, "run": run}
-    except BenchmarkRunError as e:
-        raise _http_run(e) from e
-    except BenchmarkLibraryError as e:
-        raise _http_lib(e) from e
-
-
-@router.get("/runs/series")
-def api_benchmark_runs_series(
-    def_id: Optional[str] = None,
-    type: Optional[str] = None,
-):
-    """Live passed-run scatter: duration_s (speed) vs score (accuracy).
-
-    Mechanical L0 is omitted. Query:
-      def_id (optional; omit for every live passed run), type (optional types_run filter)
-    """
-    bid = (def_id or "").strip()
-    try:
-        ensure_library()
-        if bid and bid not in SUITE_DEF_IDS:
-            get_def(bid, include_oracle=False)
-    except BenchmarkLibraryError as e:
-        raise _http_lib(e) from e
-    try:
-        runs = list_runs(
-            def_id=bid or None,
-            run_type=type,
-            status="passed",
-            sort="started_at",
-            order="asc",
-            limit=500,
-        )
-        payload = build_series(runs, def_id=bid or None, run_type=type)
-        return {"ok": True, **payload}
-    except BenchmarkRunError as e:
-        raise _http_run(e) from e
 
 
 @router.get("/runs/active")
@@ -303,59 +326,46 @@ def api_benchmark_run_stop(run_id: str):
         raise _http_run(e) from e
 
 
+@router.post("/runs/{run_id}/baseline")
+def api_benchmark_run_baseline(run_id: str):
+    """Pin a finished suite run as the baseline for its suite + tier."""
+    try:
+        return {"ok": True, **set_baseline(run_id)}
+    except BenchmarkRunError as e:
+        raise _http_run(e) from e
+
+
 @router.get("/runs/{run_id}")
 def api_benchmark_run_get(run_id: str):
     try:
         run = get_run(run_id)
         if run.get("mode") == "live" and run.get("status") in {"queued", "running"}:
             run = reconcile_live_run(run_id)
-        return {"ok": True, "run": run}
+        out: dict[str, Any] = {"ok": True, "run": run}
+        if run.get("suite_id"):
+            out["baseline_id"] = baseline_for(run["suite_id"], run["tier"])
+            m = run.get("metrics") if isinstance(run.get("metrics"), dict) else {}
+            if not isinstance(m.get("summary"), dict) and isinstance(m.get("members"), list):
+                out["summary"] = summarize_repeats(m["members"])
+        return out
     except BenchmarkRunError as e:
         raise _http_run(e) from e
 
 
 @router.get("/compare")
-def api_benchmark_compare(
-    def_id: Optional[str] = None,
-    version_a: Optional[int] = None,
-    version_b: Optional[int] = None,
-    type: Optional[str] = None,
-):
-    """Side-by-side latest/aggregate metrics for two versions of one def.
+def api_benchmark_compare(a: Optional[str] = None, b: Optional[str] = None):
+    """Diff run ``b`` against baseline run ``a``.
 
-    Query:
-      def_id, version_a, version_b (required); type (optional types_run filter).
-    Missing version → empty/zeros (not 404).
+    Refuses (``comparable: false`` + ``refusal``) across tiers, suites, or when
+    a shared case's oracle changed. Warns on n=1 and differing case sets.
     """
-    bid = (def_id or "").strip()
-    if not bid:
-        raise HTTPException(400, "def_id is required")
-    if version_a is None or version_b is None:
-        raise HTTPException(400, "version_a and version_b are required")
+    if not a or not b:
+        raise HTTPException(400, "a and b (run ids) are required")
     try:
-        ensure_library()
-        if bid not in SUITE_DEF_IDS:
-            get_def(bid, include_oracle=False)
-    except BenchmarkLibraryError as e:
-        raise _http_lib(e) from e
-    try:
-        runs = list_runs(
-            def_id=bid,
-            run_type=type,
-            sort="started_at",
-            order="asc",
-            limit=500,
-        )
-        payload = compare_versions(
-            runs,
-            def_id=bid,
-            version_a=int(version_a),
-            version_b=int(version_b),
-            run_type=type,
-        )
-        return {"ok": True, **payload}
+        ra, rb = get_run(a), get_run(b)
     except BenchmarkRunError as e:
         raise _http_run(e) from e
+    return {"ok": True, **compare_runs(ra, rb)}
 
 
 # --- Library CRUD -----------------------------------------------------------

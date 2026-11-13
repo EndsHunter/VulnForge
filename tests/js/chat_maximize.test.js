@@ -515,7 +515,12 @@ describe("history sidebar, parallel panes, live stream", () => {
     release();
     await wait(40);
     const panes = document.querySelectorAll(".oc-pane");
-    assert.match(panes[0].textContent, /tool: list_runs/);
+    const toolCard = panes[0].querySelector(".oc-tool-card");
+    assert.ok(toolCard, "tool result renders as a collapsible card");
+    assert.equal(toolCard.tagName, "DETAILS");
+    assert.equal(panes[0].querySelector(".oc-tool-name").textContent, "list_runs");
+    assert.ok(toolCard.classList.contains("is-ok"));
+    assert.match(panes[0].querySelector(".oc-tool-sum").textContent, /1 result/);
     assert.match(panes[0].textContent, /final answer here/);
     assert.doesNotMatch(document.querySelector(".oc-pane.is-active").textContent, /final answer here/);
     assert.equal(document.querySelectorAll(".oc-session.is-busy").length, 0);
@@ -572,5 +577,164 @@ describe("history sidebar, parallel panes, live stream", () => {
     assert.ok(toast.classList.contains("oc-toast-err"));
     assert.equal(document.querySelectorAll(".oc-session.is-busy").length, 0);
     assert.match(document.querySelector(".oc-pane").textContent, /Request failed/);
+  });
+});
+
+describe("confirm card for mutating tools", () => {
+  const PENDING = {
+    token: "tok-1",
+    tool_name: "start_run",
+    arguments: { target_id: "toy", run_id: "run-001" },
+    summary: "start run for toy/run-001",
+    scope: "home",
+    session_id: "s1",
+    run_key: null,
+    expires_in_s: 600,
+  };
+
+  function setup(opts) {
+    const env = boot({});
+    const posts = [];
+    const pending = Object.assign({}, PENDING, (opts && opts.pending) || {});
+    env.sandbox.fetch = (url, req) => {
+      const u = String(url);
+      if (req && req.method === "POST") {
+        const body = JSON.parse(req.body || "{}");
+        posts.push({ url: u, body });
+        if (u.endsWith("/confirm")) {
+          if (opts && opts.confirmStatus) {
+            return Promise.resolve(jsonResponse({ detail: "invalid or expired confirm token" }, opts.confirmStatus));
+          }
+          return Promise.resolve(
+            jsonResponse({
+              ok: true,
+              session_id: "s1",
+              messages: [
+                { role: "tool", name: "start_run", content: { ok: true, started: true }, confirmed: true },
+                { role: "assistant", content: "Ralph started on **toy/run-001**." },
+              ],
+              ui_hints: { refresh_run: true },
+            })
+          );
+        }
+        return Promise.resolve(
+          ndjsonResponse([
+            { event: "session", session_id: "s1" },
+            { event: "message", message: { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "start_run", arguments: JSON.stringify(pending.arguments) } }] } },
+            { event: "message", message: { role: "tool", name: "start_run", content: { ok: false, pending_confirm: true, token: pending.token }, pending_confirm: pending } },
+            { event: "done", ok: true, session_id: "s1", pending_confirm: pending, ui_hints: {} },
+          ])
+        );
+      }
+      if (u.endsWith("/sessions")) return Promise.resolve(jsonResponse({ sessions: [] }));
+      return Promise.resolve(jsonResponse({ id: "s1", messages: [] }));
+    };
+    return Object.assign(env, { posts });
+  }
+
+  async function askToStart(env) {
+    env.sandbox.VulnForgeChat.openSheet();
+    await wait(20);
+    env.document.getElementById("oc-input").value = "start ralph on toy";
+    env.document.getElementById("oc-send").click();
+    await wait(50);
+  }
+
+  it("shows a prominent card naming the action and run, and runs nothing until Confirm", async () => {
+    const env = setup();
+    await askToStart(env);
+    const pane = env.document.querySelector(".oc-pane.is-active");
+    const slot = pane.querySelector(".oc-confirm");
+    assert.equal(slot.hidden, false);
+    const card = slot.querySelector(".oc-confirm-card");
+    assert.ok(card.classList.contains("is-pending"));
+    assert.match(card.querySelector(".oc-confirm-title").textContent, /Start Ralph/);
+    assert.match(card.querySelector(".oc-confirm-meta").textContent, /toy\/run-001/);
+    assert.match(card.querySelector(".oc-confirm-timer").textContent, /expires in 10:00|expires in 9:5\d/);
+    assert.match(card.textContent, /Nothing runs until you press Confirm/);
+    assert.ok(pane.classList.contains("has-pending"));
+    assert.equal(env.document.querySelector(".ai-badge").hidden, false);
+    assert.equal(pane.querySelector(".oc-tool-card").classList.contains("is-pending"), true);
+    assert.match(pane.querySelector(".oc-call-name").textContent, /start_run/);
+    assert.equal(env.posts.filter((p) => p.url.endsWith("/confirm")).length, 0);
+  });
+
+  it("Confirm posts the one-shot token once, then clears the card and records a receipt", async () => {
+    const env = setup();
+    await askToStart(env);
+    const pane = env.document.querySelector(".oc-pane.is-active");
+    const yes = pane.querySelector(".oc-confirm-yes");
+    yes.click();
+    yes.click();
+    await wait(40);
+    const confirms = env.posts.filter((p) => p.url.endsWith("/confirm"));
+    assert.equal(confirms.length, 1);
+    assert.match(confirms[0].url, /\/api\/chat\/confirm$/);
+    assert.deepEqual(confirms[0].body, { token: "tok-1", session_id: "s1" });
+    assert.equal(pane.querySelector(".oc-confirm").hidden, true);
+    assert.equal(pane.querySelector(".oc-confirm-card"), null);
+    assert.ok(!pane.classList.contains("has-pending"));
+    assert.equal(env.document.querySelector(".ai-badge").hidden, true);
+    const receipt = pane.querySelector(".oc-receipt");
+    assert.ok(receipt.classList.contains("is-confirmed"));
+    assert.match(receipt.textContent, /Confirmed · Start Ralph · toy\/run-001/);
+    assert.match(pane.textContent, /Ralph started on/);
+  });
+
+  it("the countdown ticks without replacing the Confirm button", async () => {
+    const env = setup();
+    await askToStart(env);
+    const pane = env.document.querySelector(".oc-pane.is-active");
+    const yes = pane.querySelector(".oc-confirm-yes");
+    const before = pane.querySelector(".oc-confirm-timer").textContent;
+    await wait(2100);
+    assert.equal(pane.querySelector(".oc-confirm-yes"), yes, "same button node after ticks");
+    assert.notEqual(pane.querySelector(".oc-confirm-timer").textContent, before);
+    yes.click();
+    await wait(40);
+    assert.equal(env.posts.filter((p) => p.url.endsWith("/confirm")).length, 1);
+  });
+
+  it("Cancel never calls confirm and says no action was taken", async () => {
+    const env = setup();
+    await askToStart(env);
+    const pane = env.document.querySelector(".oc-pane.is-active");
+    pane.querySelector(".oc-confirm-no").click();
+    await wait(20);
+    assert.equal(env.posts.filter((p) => p.url.endsWith("/confirm")).length, 0);
+    assert.equal(pane.querySelector(".oc-confirm").hidden, true);
+    assert.match(pane.querySelector(".oc-receipt.is-cancelled").textContent, /Cancelled. No action was taken/);
+    assert.equal(env.document.querySelector(".ai-badge").hidden, true);
+  });
+
+  it("an expired token disables Confirm and cannot post", async () => {
+    const env = setup({ pending: { expires_in_s: 0 } });
+    await askToStart(env);
+    const pane = env.document.querySelector(".oc-pane.is-active");
+    const card = pane.querySelector(".oc-confirm-card");
+    assert.ok(card.classList.contains("is-expired"));
+    assert.match(card.textContent, /Confirm expired/);
+    const yes = pane.querySelector(".oc-confirm-yes");
+    assert.notEqual(yes.getAttribute("disabled"), null);
+    yes.click();
+    await wait(20);
+    assert.equal(env.posts.filter((p) => p.url.endsWith("/confirm")).length, 0);
+    assert.equal(env.document.querySelector(".ai-badge").hidden, true, "expired confirm is not flagged as pending");
+    assert.equal(pane.querySelector(".oc-confirm-no").textContent, "Dismiss");
+    pane.querySelector(".oc-confirm-no").click();
+    assert.equal(pane.querySelector(".oc-confirm").hidden, true);
+    assert.match(pane.querySelector(".oc-receipt").textContent, /Expired · Start Ralph/);
+  });
+
+  it("a rejected confirm drops the card and shows the server error", async () => {
+    const env = setup({ confirmStatus: 400 });
+    await askToStart(env);
+    const pane = env.document.querySelector(".oc-pane.is-active");
+    pane.querySelector(".oc-confirm-yes").click();
+    await wait(40);
+    assert.equal(pane.querySelector(".oc-confirm").hidden, true);
+    assert.ok(pane.querySelector(".oc-receipt").classList.contains("is-failed"));
+    assert.match(pane.textContent, /invalid or expired confirm token/);
+    assert.doesNotMatch(pane.textContent, /Confirmed ·/);
   });
 });

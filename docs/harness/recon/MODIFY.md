@@ -12,7 +12,11 @@
 | Change enqueue / re-run payload | `vulnforge/control/ops.py` → `requeue_recon` |
 | Change init recon enqueue | `vulnforge/cli.py` (init path) + `stages/recon.py` `enqueue_recon_agent_tasks` |
 | Change recon priority bands | `vulnforge/task_priority.py` |
-| Change merge / batch / hunt planning logic | `vulnforge/stages/recon.py` |
+| Change merge / batch / hunt planning logic | `vulnforge/stages/recon.py` (`store_merged_architecture`, `merge_architecture_parts`, `_finalize_hunts_and_skills`) |
+| Change v2 schema normalize / citation check / `merge_v2` | `vulnforge/architecture_schema.py` |
+| Change flow-tracer fan-out, entrypoint choice, flow normalize | `vulnforge/stages/recon.py` (`_enqueue_flow_tracer_tasks`, `_run_flow_phase_task`, `_trace_flows_inprocess`) + `vulnforge/recon_flows.py` |
+| Change the flow-tracer prompt / `submit_flow` schema | `seeds/recon_agents/flow-tracer.md` (then Dev **Reseed**) / `vulnforge/tools/agent/submit_flow.py` |
+| Change the mechanical skeleton | `vulnforge/recon_skeleton.py` |
 | Change recon packet packing | `vulnforge/packet.py` → `pack_recon` / `pack_recon_agent` |
 | Context-window continuation | `continue_recon` tool + `vulnforge/tools/continue_task.py` + `agent_runtime/context_watch.py` |
 | Change Architecture re-run UI | `vulnforge/ui/static/app.js` (`submitArchRecon` / Refine recon section) + API in `ui/app.py` |
@@ -38,7 +42,7 @@ seeds/system/preamble.md
 ## Tests to run after changes
 
 ```powershell
-python -m pytest tests/test_dashboard_ops.py tests/test_recon_plan.py tests/test_architecture_history.py -q
+python -m pytest tests/test_dashboard_ops.py tests/test_recon_plan.py tests/test_architecture_history.py tests/test_recon_flows.py tests/test_architecture_schema.py tests/test_recon_skeleton.py -q
 ```
 
 ## See also

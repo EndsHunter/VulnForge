@@ -9,6 +9,10 @@ from __future__ import annotations
 from vulnforge.recon_agents.store import (
     AGENT_ID_RE,
     COLLECTION_FORMAT,
+    FLOW_AGENT_ID,
+    flow_agent,
+    is_flow_phase_agent,
+    seed_body,
     ReconAgentError,
     active_agents,
     all_agent_ids,
@@ -30,6 +34,10 @@ from vulnforge.recon_agents.store import (
 __all__ = [
     "AGENT_ID_RE",
     "COLLECTION_FORMAT",
+    "FLOW_AGENT_ID",
+    "flow_agent",
+    "is_flow_phase_agent",
+    "seed_body",
     "ReconAgentError",
     "active_agents",
     "all_agent_ids",

@@ -478,8 +478,16 @@ def test_api_import_and_gate(client: TestClient):
 def test_dev_page_has_review_ui(client: TestClient):
     r = client.get("/dev")
     assert r.status_code == 200
-    for el in ("dev-review-panel", "dev-review-rerun", "dev-review-llm", "dev-import-llm-review"):
-        assert f'id="{el}"' in r.text
+    # Import modal: opt-in LLM review checkbox (static markup).
+    assert 'id="imp-llm-review"' in r.text
+    assert "/static/pages/dev/skills.js" in r.text
+    # The skills editor renders the review panel and its actions (pages/dev/skills.js).
+    js = client.get("/static/pages/dev/skills.js")
+    assert js.status_code == 200
+    for marker in ("dev-review-panel", 'data-act="review-rerun"', 'data-act="review-llm"', "putProfileGated"):
+        assert marker in js.text
+    setup = client.get("/static/pages/dev/setup.js")
+    assert "llm_review" in setup.text
 
 
 # ---------------------------------------------------------------- diff-review regressions

@@ -418,8 +418,14 @@ def pack_recon_agent(
     agent_id: str = "",
     codemap: dict | None = None,
     security_policy: dict | None = None,
+    skeleton: dict | None = None,
 ) -> Packet:
-    """Recon packet for one configurable recon agent body."""
+    """Recon packet for one configurable recon (map) agent body.
+
+    *skeleton* is the R0 mechanical v2 map (``architecture_skeleton.json``);
+    a compact, size-capped view is included so agents label and correct it
+    instead of inventing topology. ``submit_flow`` is removed (flow-tracer only).
+    """
     # Recon-focused system: shared preamble only — no hunt PRINCIPLES / submit tools.
     try:
         preamble = load_prompt_slice(prompts_root, "preamble.md")
@@ -492,6 +498,7 @@ def pack_recon_agent(
                 )
         except Exception:
             cm_block = ""
+    skel_block = _skeleton_block(skeleton, pkt)
     user = (
         recon
         + registry_section
@@ -500,14 +507,16 @@ def pack_recon_agent(
         + "\n```\n"
         + cm_block
         + _policy_block(security_policy, stage="recon", cfg=cfg)
+        + skel_block
         + "Use tools to inspect paths. Finish with submit_architecture.\n"
         + "If context is nearly full, call continue_recon (child recon, fresh window) "
         + "instead of more huge reads.\n"
     )
     if architecture_so_far:
+        max_prior = int(pkt.get("max_prior_architecture_chars", 6000))
         user += (
             "\n## Prior architecture (refine, correct, deepen — do not drop solid prior detail)\n"
-            + truncate(architecture_so_far, 3500, "arch")
+            + truncate(architecture_so_far, max(1500, max_prior), "arch")
             + "\n"
         )
     if focus_paths:
@@ -531,6 +540,7 @@ def pack_recon_agent(
     tools = _filter_tools_by_allowlist(
         tools, tools_allowlist, always_keep=_always_keep_for_stage("recon")
     )
+    tools = _drop_tools(tools, {"submit_flow"})
     budget = _budget_chars(cfg)
     total = len(system) + len(user)
     over = total > budget
@@ -543,6 +553,137 @@ def pack_recon_agent(
             "budget": budget,
             "stage": "recon",
             "recon_agent_id": agent_label,
+            "profile": run_profile,
+            "has_skeleton": bool(skel_block),
+        },
+        over_budget=over and total > budget * 1.5,
+    )
+
+
+def _drop_tools(tools: list[dict], names: set[str]) -> list[dict]:
+    out = []
+    for t in tools:
+        fn = (t.get("function") or {}) if isinstance(t, dict) else {}
+        if isinstance(fn, dict) and fn.get("name") in names:
+            continue
+        out.append(t)
+    return out
+
+
+def _skeleton_block(skeleton: dict | None, pkt: dict) -> str:
+    """Compact mechanical skeleton section (components, zones, relations)."""
+    if not isinstance(skeleton, dict) or not skeleton.get("components"):
+        return ""
+    try:
+        from vulnforge.recon_flows import format_skeleton_for_packet
+
+        max_chars = int(pkt.get("max_skeleton_chars", 3000))
+        txt = format_skeleton_for_packet(skeleton, max_chars=max(600, max_chars))
+    except Exception as exc:
+        note_swallowed(exc, context="packet.skeleton_block")
+        return ""
+    if not txt:
+        return ""
+    return (
+        "\n## Mechanical skeleton (no LLM; start here)\n"
+        "Built from the codemap, import edges and the sink pre-index. Zones are "
+        "heuristic guesses. Keep these component ids when you relabel; merge, "
+        "rename or split only with a cited path. `datastore` and `external-http` "
+        "are synthetic placeholders you may rename or replace. Mechanical "
+        "relations are kept automatically.\n```text\n"
+        + txt
+        + "\n```\n"
+    )
+
+
+def pack_flow_tracer(
+    cfg: dict,
+    prompts_root: Path,
+    agent_body: str,
+    *,
+    entrypoint: dict,
+    architecture: dict | None = None,
+    skeleton: dict | None = None,
+    operator_brief: str = "",
+    tools_allowlist: list[str] | None = None,
+) -> Packet:
+    """R3 packet: trace ONE entrypoint to sinks, finish with ``submit_flow``."""
+    try:
+        preamble = load_prompt_slice(prompts_root, "preamble.md")
+    except FileNotFoundError:
+        preamble = (
+            "Authorized defensive review of the provided codebase only.\n"
+            "Target is read-only. Use only provided tools.\n"
+        )
+    system = (
+        preamble
+        + "\n## Stage: recon (flow tracer)\n"
+        + "Trace data flow from one entrypoint. Architecture only: do **not** file "
+        + "vulnerability candidates. Finish with submit_flow (flows: [] plus a "
+        + "reason when you cannot trace anything). Every step cites a path and a "
+        + "line you read with read_file. Tools: query_flows (imports/calls), "
+        + "find_symbol, query_sinks, read_file with around_line, grep.\n"
+    )
+    pkt = cfg.get("packet") or {}
+    try:
+        from vulnforge.recon_flows import format_skeleton_for_packet, registered_class_ids
+
+        allowed, _aliases = registered_class_ids()
+        map_txt = format_skeleton_for_packet(
+            architecture or skeleton or {},
+            max_chars=max(800, int(pkt.get("max_flow_map_chars", 3000))),
+        )
+    except Exception as exc:
+        note_swallowed(exc, context="packet.pack_flow_tracer")
+        allowed, map_txt = set(), ""
+    ep = {k: entrypoint.get(k) for k in ("component", "zone", "label", "path", "line") if entrypoint.get(k)}
+    if entrypoint.get("component_sinks"):
+        ep["component_sinks"] = entrypoint.get("component_sinks")
+    user = (
+        (agent_body or "").strip()
+        + "\n\n## Entrypoint to trace\n```json\n"
+        + json.dumps(ep, indent=1)
+        + "\n```\n"
+    )
+    if map_txt:
+        user += (
+            "\n## Current map (component ids to use in source/steps/sink)\n```text\n"
+            + map_txt
+            + "\n```\n"
+        )
+    if allowed:
+        user += (
+            "\n## Registered hunt class ids (flow.classes uses only these)\n"
+            + ", ".join(f"`{c}`" for c in sorted(allowed))
+            + "\n"
+        )
+    brief = (operator_brief or "").strip()
+    if brief:
+        user += (
+            "\n## Operator brief\n" + truncate(brief, 3000, "operator_brief") + "\n"
+        )
+    user += "\nRead the code, then call submit_flow once.\n"
+    run_profile = str((cfg.get("run") or {}).get("profile") or "code_static")
+    tools = tool_schemas_for(run_profile, "recon")
+    keep = (_always_keep_for_stage("recon") | {"submit_flow"}) - {
+        "submit_architecture",
+        "continue_recon",
+    }
+    tools = _filter_tools_by_allowlist(tools, tools_allowlist, always_keep=keep)
+    tools = _drop_tools(tools, {"submit_architecture", "continue_recon"})
+    budget = _budget_chars(cfg)
+    total = len(system) + len(user)
+    over = total > budget
+    return Packet(
+        system=system,
+        user=user if not over else truncate(user, max(1000, budget - len(system)), "user"),
+        tools_schema=tools,
+        meta={
+            "chars": total,
+            "budget": budget,
+            "stage": "recon",
+            "recon_agent_id": "flow-tracer",
+            "recon_phase": "flows",
             "profile": run_profile,
         },
         over_budget=over and total > budget * 1.5,

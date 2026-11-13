@@ -1,0 +1,266 @@
+/*
+ * Run cockpit shell + shared primitives (docs/ui/REDESIGN.md).
+ * Loaded after styles.css. Pages build on these classes; colours come from
+ * :root tokens in styles.css — never hardcode new hues in page CSS.
+ */
+
+/* ---------- Top bar ---------- */
+body[data-page="run"] .vf-topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 8px 16px;
+  min-height: 52px;
+  justify-content: flex-start;
+}
+.vf-topbar .home-mark .logo { width: 28px; height: 28px; border-radius: 7px; }
+body[data-page="run"] .vf-topbar .strip-id { flex: 0 0 auto; min-width: 0; width: auto; }
+body[data-page="run"] .vf-topbar .strip-id select {
+  width: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-weight: 600;
+  padding: 6px 28px 6px 10px;
+  max-width: 280px;
+}
+.vf-spacer { flex: 1 1 8px; }
+body[data-page="run"] .vf-topbar .header-actions { flex-wrap: nowrap; gap: 6px; }
+
+/* Tabs */
+.vf-tabs { display: flex; flex-wrap: wrap; gap: 2px; }
+.vf-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.vf-tab:hover { color: var(--text); background: var(--row-hover); }
+.vf-tab[aria-selected="true"] { color: var(--text); background: var(--bg-card); font-weight: 600; }
+.vf-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.vf-tab-badge {
+  background: var(--warn);
+  color: #1a1406;
+  border-radius: 10px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+}
+.vf-tab-badge[hidden] { display: none; }
+
+/* Pipeline summary strip (single source of run totals) */
+.vf-pipeline-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.vf-pipeline-strip .sep { color: var(--border-strong); }
+.vf-pipeline-strip b { color: var(--text); font-family: var(--mono); font-weight: 500; }
+.vf-pipeline-strip button {
+  appearance: none; border: 0; background: transparent; color: inherit; font: inherit;
+  padding: 2px 4px; border-radius: 4px; cursor: pointer;
+}
+.vf-pipeline-strip button:hover { background: var(--row-hover); color: var(--text); }
+.vf-pipeline-strip .is-review b { color: var(--warn); }
+.vf-pipeline-strip .is-confirmed b { color: var(--accent); }
+
+/* Runner pill */
+.vf-runner-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.vf-runner-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.vf-runner-pill.is-running { border-color: #2e4a45; background: #13221f; color: var(--accent-bright); }
+.vf-runner-pill.is-running .dot { background: var(--accent); box-shadow: 0 0 0 3px rgba(92, 200, 184, 0.18); }
+.vf-runner-pill.is-paused, .vf-runner-pill.is-pausing { border-color: #5c4a1c; background: #2a2210; color: #f2c66e; }
+.vf-runner-pill.is-paused .dot, .vf-runner-pill.is-pausing .dot { background: var(--warn); }
+.vf-runner-pill.is-error { border-color: #7a3539; background: #2a1719; color: #ffc2c2; }
+.vf-runner-pill.is-error .dot { background: var(--bad); }
+
+.vf-icon-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--muted);
+  border-radius: 7px;
+  min-height: 32px;
+  padding: 0 10px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.vf-icon-btn:hover { color: var(--text); border-color: var(--border-strong); }
+
+/* ⋯ menu links */
+.danger-menu-body .vf-menu-link {
+  display: block;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+.danger-menu-body .vf-menu-link:hover { background: var(--row-hover); }
+.danger-menu-body hr { border: 0; border-top: 1px solid var(--border); margin: 6px 0; }
+
+/* No icon rail any more: workspace spans the page */
+body[data-page="run"] .run-shell { display: block; }
+body[data-page="run"] .run-workspace { height: 100vh; }
+
+/* ---------- Shared primitives ---------- */
+.vf-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.vf-section-label {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.vf-mono { font-family: var(--mono); }
+.vf-faint { color: var(--text-faint); }
+.vf-empty { color: var(--text-faint); font-size: 12px; padding: 12px 0; }
+.vf-kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  color: var(--text-soft);
+}
+
+.vf-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.vf-pill--review { color: #f2c66e; background: #2a2210; border-color: #5c4a1c; }
+.vf-pill--candidate { color: var(--text-soft); background: var(--bg-card); border-color: var(--border-strong); }
+.vf-pill--confirmed { color: var(--accent-bright); background: #13221f; border-color: #2e4a45; }
+.vf-pill--rejected { color: var(--muted); background: var(--bg-card); border-color: var(--border); }
+
+.vf-sev {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  background: var(--bg-card);
+}
+.vf-sev--crit { color: #ff8a8a; background: #3a1618; }
+.vf-sev--high { color: #ffb27a; background: #3a2412; }
+.vf-sev--med { color: #f2cc5b; background: #33290e; }
+.vf-sev--low { color: #8dbbff; background: #142438; }
+
+.vf-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0 14px;
+  min-height: 36px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.vf-btn:hover { border-color: var(--border-strong); background: var(--bg-card-hover); }
+.vf-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.vf-btn--primary { border: 0; background: var(--accent); color: #0b1f1c; }
+.vf-btn--primary:hover { background: var(--accent-bright); }
+.vf-btn--danger { border-color: #5a3434; background: #2a1617; color: #ffb0b0; }
+.vf-btn--danger:hover { border-color: #7a3539; background: #341b1d; }
+.vf-btn--ghost { background: transparent; }
+.vf-btn--lg { min-height: 44px; }
+
+.vf-chip {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.vf-chip:hover { color: var(--text); }
+.vf-chip[aria-pressed="true"] { border-color: #3b5f59; background: #18252a; color: var(--accent-bright); }
+.vf-chip--warn[aria-pressed="true"] { border-color: var(--warn); background: #2a2210; color: #f2c66e; }
+
+/* Residual cell states (matrix, atlas skill bars, coverage chips) */
+.vf-cell {
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-faint);
+  background: transparent;
+}
+.vf-cell--finding { background: #2e8f82; border-color: #2e8f82; color: #e9fffb; }
+.vf-cell--none { background: #2b3a55; border-color: #2b3a55; color: #c9d8f2; }
+.vf-cell--shallow { background: #5c4a1c; border-color: #8a6a1e; color: #ffe2a3; }
+.vf-cell--aborted { background: #4a1f22; border-color: #9a3c40; color: #ffc2c2; }
+.vf-cell--planned { background: transparent; border: 1px dashed #5d6573; color: var(--muted); }
+.vf-cell--running { background: #13221f; border-color: var(--accent); color: var(--accent-bright); }
+.vf-cell--empty { background: #14171c; border-color: #22262e; color: #5d6573; }
+.vf-cell--na { background: transparent; color: #3a404b; }
+
+/* Split layouts that stack on narrow screens */
+.vf-split { display: flex; flex-wrap: wrap; align-items: stretch; min-height: 0; }
+.vf-split > .vf-split-main { flex: 999 1 560px; min-width: 0; }
+.vf-split > .vf-split-side { flex: 1 1 320px; min-width: 0; }
+
+@media (max-width: 1340px) {
+  .vf-pipeline-strip .sep { display: none; }
+  .vf-pipeline-strip { gap: 2px; }
+}
+@media (max-width: 760px) {
+  body[data-page="run"] .vf-topbar { padding: 8px 12px; }
+  .vf-pipeline-strip { order: 10; width: 100%; }
+}
+
+/* The header ⌘K button opens the AI sheet on run pages; the floating button
+   would cover the Review verdict rail. Home keeps it. */
+body[data-page="run"] .ai-fab { display: none; }
