@@ -9,6 +9,7 @@ from vulnforge.tools.grep_index import grep as _grep
 
 SPEC = ToolSpec(
     name="grep",
+    returns_target_content=True,
     stages=("recon", "hunt", "develop_poc"),
     description=(
         "Search target files with a regex or literal string (read-only). "

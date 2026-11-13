@@ -111,17 +111,21 @@ def check_phantom_paths() -> list[str]:
 
 
 def check_hunt_preamble_claim() -> list[str]:
+    """Docs must match whether pack_hunt loads preamble.md (it does since #212)."""
     errors: list[str] = []
+    packet = _read("vulnforge/packet.py")
+    start = packet.find("def pack_hunt(")
+    end = packet.find("\ndef ", start + 1)
+    hunt_loads_preamble = '"preamble.md"' in packet[start:end]
     shared = _read("docs/system/SHARED.md")
-    if "hunt (via pack helpers)" in shared:
-        errors.append(
-            "docs/system/SHARED.md claims hunt packets load preamble.md; pack_hunt uses PRINCIPLES.md only"
-        )
     hunt = _read("docs/system/HUNT.md")
-    if "`preamble.md`, `PRINCIPLES.md`" in hunt:
-        errors.append(
-            "docs/system/HUNT.md claims hunt packets include preamble.md; pack_hunt does not"
-        )
+    if hunt_loads_preamble:
+        if "Hunt packets do not include this file" in shared:
+            errors.append("docs/system/SHARED.md says hunt skips preamble.md; pack_hunt loads it")
+        if "`preamble.md` then `PRINCIPLES.md`" not in hunt:
+            errors.append("docs/system/HUNT.md does not say hunt loads preamble.md then PRINCIPLES.md")
+    elif "`preamble.md` then `PRINCIPLES.md`" in hunt:
+        errors.append("docs/system/HUNT.md claims hunt packets include preamble.md; pack_hunt does not")
     return errors
 
 

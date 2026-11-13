@@ -18,6 +18,7 @@ from vulnforge.util import normalize_relpath
 
 SPEC = ToolSpec(
     name="query_sinks",
+    returns_target_content=True,
     stages=("recon", "hunt"),
     description=(
         "Query mechanical security-relevant sinks (sql, exec, path, auth, jwt, "

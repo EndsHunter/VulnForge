@@ -24,6 +24,7 @@ from vulnforge.util import normalize_relpath
 
 SPEC = ToolSpec(
     name="query_flows",
+    returns_target_content=True,
     stages=("recon", "hunt"),
     description=(
         "Coarse reachability helpers — NOT dataflow or taint proof. "

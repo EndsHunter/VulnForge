@@ -5,7 +5,7 @@
 ## What runs
 
 1. Task payload: `area`, `class`, `path_hints`, optional `operator_notes`, `force_depth`, etc.
-2. Packet: PRINCIPLES + class skill body + hunting angles slice + architecture slice + tools schema.
+2. Packet: preamble + PRINCIPLES + class skill body + hunting angles slice + architecture slice + tools schema.
 3. LLM tool loop (`code_static` tools) → `submit_candidate` or `submit_none`.
    If the conversation nears `llm.continue_context_fraction` of `context_tokens`,
    the harness instructs the model to call `continue_hunt` (child hunt, fresh

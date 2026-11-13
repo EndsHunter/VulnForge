@@ -27,6 +27,9 @@ class ToolSpec:
     stage_descriptions: Mapping[str, str] = field(default_factory=dict)
     stage_parameters: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     stage_required: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    # True when results carry text read from the target tree (file lines,
+    # search hits). Dispatch tags those results as untrusted target data.
+    returns_target_content: bool = False
 
     def description_for(self, stage: str) -> str:
         return str(self.stage_descriptions.get(stage) or self.description)
