@@ -1,0 +1,4 @@
+# Shell scripts must stay LF (a CRLF install.sh will not run); .cmd must stay CRLF.
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

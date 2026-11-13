@@ -647,7 +647,25 @@ def _run_loop(cfg: RalphConfig) -> int:
     return RALPH_BUDGET
 
 
+def _ensure_utf8_stdio() -> None:
+    """Same as vulnforge.stdio.ensure_utf8_stdio; inlined so Ralph stays import-free.
+
+    A redirected stdout on Windows is cp1252 and cannot print relayed vf output
+    containing characters such as an arrow or an em dash.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        reconfigure = getattr(stream, "reconfigure", None)
+        if encoding == "utf8" or reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    _ensure_utf8_stdio()
     parser = build_arg_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     cfg = config_from_args(args)

@@ -14,9 +14,7 @@ Read [features/README.md](features/README.md), then the matching feature file. P
 Work from the repo root. Create `.venv` if `.venv/bin/vf` is missing.
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -U pip
-.venv/bin/pip install -e ".[dev]"
+./install.sh
 ```
 
 Start an isolated dashboard. Never use the operator `runs/` tree. Never attach to a dashboard you did not start.

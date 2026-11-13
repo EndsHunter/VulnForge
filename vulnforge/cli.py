@@ -42,6 +42,9 @@ from vulnforge.control.exit_codes import (
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    from vulnforge.stdio import ensure_utf8_stdio
+
+    ensure_utf8_stdio()
     cmd: Optional[str] = None
     try:
         parser = build_parser()
@@ -2187,7 +2190,8 @@ def cmd_dashboard(args, cfg: dict) -> int:
     except ImportError as e:
         print(
             f"dashboard dependencies missing: {e}\n"
-            "  pip install -e \".[ui]\"   # or install fastapi uvicorn jinja2",
+            "  Re-run ./install.sh (Windows: install.ps1) from the repo root,\n"
+            "  or: pip install -e .",
             file=sys.stderr,
         )
         return EXIT_CONFIG

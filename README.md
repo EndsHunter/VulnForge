@@ -17,44 +17,48 @@ While `validation_mech.pending_llm` is true (LLM disprove still running), **Acce
 
 ---
 
-## Prerequisites
+## Quickstart
 
-- **Python 3.11+** (`python3 --version`)
-- An **OpenAI-compatible chat API** (typical: LM Studio on `http://127.0.0.1:1234/v1`)
-- A few GB free disk for runs, transcripts, and evidence packs
+Two commands from the repo root (the folder with `pyproject.toml`):
 
-The dashboard works without a loaded model; recon/hunt tasks need one.
+| | Linux / macOS | Windows |
+|---|---|---|
+| **Install** (once, and again after `git pull`) | `./install.sh` | `install.cmd` |
+| **Start** the dashboard | `./start.sh` | `start.cmd` |
+
+Then open **http://127.0.0.1:8787**. From there you can create an audit (**New**), point it at a model (**Settings**) and **Start** Ralph, all without touching the CLI.
+
+The installer creates `.venv` in this folder, installs the `vf` command into it, and checks that it runs. It is safe to re-run and repairs a broken `.venv`. `./start.sh` installs first if you skipped that step, and passes extra arguments on (`./start.sh --port 8788`).
+
+### What you need
+
+- **Python 3.11 or newer.** The installer checks. If your Python is older, or cannot create virtual environments (stock Debian / Ubuntu ship without `python3-venv`), it tells you the one command that fixes it, or offers to download [uv](https://docs.astral.sh/uv), which brings its own Python and leaves the system one alone.
+- An **OpenAI-compatible chat API** (typical: LM Studio on `http://127.0.0.1:1234/v1`). The dashboard works without a loaded model; recon/hunt tasks need one.
+- A few GB free disk for runs, transcripts, and evidence packs.
 
 **Scope:** source-code analysis only (`code_static`). PE binaries and reverse-engineering tooling are not supported. Sandbox PoC is **off** unless you opt in (Docker + gVisor `runsc` or a microVM on Linux) — see [docs/harness/validate/SANDBOX_HOST.md](docs/harness/validate/SANDBOX_HOST.md).
 
----
+### Point it at your model
 
-## Quickstart
+Dashboard **Settings**: add a host → Refresh catalog → Verify → assign roles → Save (`config/ui_settings.json` overrides YAML). Or edit `config/default.yaml` (`llm.base_url`, exact `llm.model` from `GET /v1/models`, `llm.api_mode` — usually `chat_completions` for LM Studio). Env overrides: `VF_BASE_URL`, `VF_MODEL`, `VF_HOST`+`VF_PORT`.
 
-Run commands from the **repo root** (the directory that contains `vulnforge/` and `seeds/`):
+### Use the CLI
+
+Activate the environment once per terminal, then `vf` is on your PATH:
 
 ```bash
-cd /path/to/this/repo   # directory with pyproject.toml + vulnforge/
-
-python3 -m venv .venv
-source .venv/bin/activate
-
-python -m pip install -U pip
-pip install -e ".[dev]"
-
+source .venv/bin/activate        # Windows PowerShell: .venv\Scripts\Activate.ps1
 vf --help
 ```
 
-Point `config/default.yaml` at your LLM (`llm.base_url`, exact `llm.model` from `GET /v1/models`, `llm.api_mode` — usually `chat_completions` for LM Studio). Or use Dashboard **Settings**: add a host → Refresh catalog → Verify → assign roles → Save (`config/ui_settings.json` overrides YAML). Env overrides: `VF_BASE_URL`, `VF_MODEL`, `VF_HOST`+`VF_PORT`.
-
-Smoke the toy fixture and open the cockpit:
+Smoke the toy fixture:
 
 ```bash
 vf init --target fixtures/toy_sqli
 # → runs/<target_id>/run-001
 
 vf dashboard
-# → http://127.0.0.1:8787
+# → http://127.0.0.1:8787   (same as ./start.sh)
 ```
 
 Leave the dashboard running. Open the new run and **Start** Ralph, or in another terminal:
@@ -63,9 +67,21 @@ Leave the dashboard running. Open the new run and **Start** Ralph, or in another
 python scripts/ralph.py --run-dir runs/<target_id>/run-001 --max-tasks 20
 ```
 
-After `git pull`, restart `vf dashboard` so it loads the new UI.
+After `git pull`, run the installer again (new dependencies) and restart the dashboard (new UI).
 
-Windows PowerShell install notes: [docs/README.md](docs/README.md) (operator path) — same `vf init` / `vf dashboard` once the venv is active.
+<details>
+<summary>Manual install (what the installer does)</summary>
+
+```bash
+python3 -m venv .venv            # needs Python 3.11+ with the venv module
+source .venv/bin/activate
+pip install -e ".[dev]"          # ".[dev]" adds pytest; plain "." is enough to run
+vf --help
+```
+
+With [uv](https://docs.astral.sh/uv): `uv venv --seed --python 3.12 .venv && uv pip install --python .venv/bin/python -e ".[dev]"`.
+
+</details>
 
 ---
 
@@ -158,6 +174,7 @@ vf dashboard --host 127.0.0.1 --port 8787
 ├── vulnforge/           # Python package (control plane, stages, UI)
 ├── seeds/               # Package seed library
 ├── config/              # default.yaml, hunt_profiles/, recon_agents/
+├── install.sh, start.sh # Install / start the dashboard (Windows: install.cmd, start.cmd)
 ├── scripts/ralph.py     # Outer loop
 ├── docs/                # LAYOUT.md, harness docs, images/
 ├── fixtures/            # Toy targets for tests / first run
@@ -174,8 +191,12 @@ If you only cloned the package folder, place `seeds/`, `config/`, `scripts/`, `f
 
 | Problem | Fix |
 |---------|-----|
-| `vf: command not found` | Activate `.venv` and `pip install -e .` from repo root |
-| Dashboard import errors | Reinstall from repo root: `pip install -e .` (FastAPI is core). `.[dev]` adds pytest. |
+| `ensurepip is not available`, `No module named pip`, or `pip: command not found` | The system Python has no `venv` module, and a half-built `.venv` was left behind. Run `./install.sh`; it rebuilds `.venv` and offers a fix. |
+| `requires a different Python: 3.x not in '>=3.11'` | Python is too old. Run `./install.sh`; it finds a newer one or offers to fetch one. |
+| `externally-managed-environment` | `pip` ran against the system Python instead of `.venv`. Use `./install.sh`, not a bare `pip install`. |
+| `vf: command not found` | `source .venv/bin/activate` (once per terminal), or use `./start.sh`. If `.venv` is missing, run `./install.sh`. |
+| Anything else odd after an upgrade | `./install.sh --recreate` (Windows: `install.cmd -Recreate`) rebuilds `.venv` from scratch. |
+| Dashboard import errors | Re-run `./install.sh` from the repo root (FastAPI is a core dependency). |
 | Recon/hunt fail with transport | Start LM Studio; check `config/default.yaml` `base_url` / `model` |
 | Empty / truncated answers | Raise `llm.max_tokens` (reasoning models need headroom) |
 | Wrong prompts path | Run from repo root; ensure `seeds/system/` exists beside `vulnforge/` |

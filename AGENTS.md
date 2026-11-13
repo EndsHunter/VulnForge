@@ -24,14 +24,15 @@
 
 ```bash
 cd VulnForge
-python3 -m venv .venv
+./install.sh                # Windows: install.cmd. Creates .venv, installs vf + dev deps; safe to re-run
 source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
 
 vf init --target /path/to/codebase
 python scripts/ralph.py --run-dir runs/<target_id>/run-001 --task-timeout 900 --max-tasks 50
-# or: vf dashboard → http://127.0.0.1:8787
+# or: ./start.sh (= vf dashboard) → http://127.0.0.1:8787
 ```
+
+`install.sh` needs Python 3.11+ and says what to do when it is missing or has no `venv` module. Manual equivalent: `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"`.
 
 **Diff-scoped audit** (PR / commit / branch): `vf init --target <repo> --diff base..head` hunts only the
 files changed between the two commit trees plus their codemap callers/callees. See
