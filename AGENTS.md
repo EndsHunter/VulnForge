@@ -121,7 +121,7 @@ Add check in `stages/validate_mech.py` `CHECKS` list; unit test in `tests/test_v
 
 **Preferred path (one file):** add `vulnforge/tools/agent/<name>.py` with `SPEC = ToolSpec(...)` and `run(ctx, **args)`. Registry auto-discovers name, schema, stages, aliases, and `critical_for`. See [`docs/LAYOUT.md`](docs/LAYOUT.md).
 
-**Full offline / AI generate guide:** [`toolgen.md`](toolgen.md). Dev dashboard: Home → **Open Dev** → **Tools** (drafts → validate → integrate). Validation: `python scripts/validate_tool.py config/tool_drafts/<id>`.
+**Full offline / AI generate guide:** [`toolgen.md`](toolgen.md). Dev dashboard: Home → **Open Dev** → **Tool lab** (brief → spec → impl → validate → integrate). **Tools** is read/configure only (catalog + per-stage defaults). Validation: `python scripts/validate_tool.py config/tool_drafts/<id>`.
 
 **When to open it**
 
@@ -129,7 +129,7 @@ Add check in `stages/validate_mech.py` `CHECKS` list; unit test in `tests/test_v
 - Extending `grep` / `file_inventory` / etc. with new args
 - Adding a brand-new `code_static` tool name
 
-Integrate **apply** mutates package source — dry-run first. Prefer writing a SPEC module under `tools/agent/`; `extra_registry` remains a compatibility path for older integrates.
+Integrate **apply** mutates package source. The server refuses apply without the `plan_hash` from a fresh dry-run (409), and refuses to overwrite an existing file unless `allow_overwrite` is sent. Prefer writing a SPEC module under `tools/agent/`; `extra_registry` remains a compatibility path for older integrates.
 
 **Rules** (same as honesty + `toolgen.md`): target tree read-only; evidence only via `write_evidence`; soft path jail for path tools; no unrestricted shell on default `code_static`. Prefer extending an existing tool when the model only needs filters/args.
 

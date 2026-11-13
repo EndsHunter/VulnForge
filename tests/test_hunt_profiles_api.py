@@ -67,7 +67,8 @@ def test_create_update_delete(client: TestClient):
     assert d.json()["deleted"] == "api-custom"
 
 
-def test_export_import(client: TestClient):
+def test_export_import_via_dev_setup(client: TestClient):
+    """Hunt collection round-trips through the single Dev setup pack."""
     client.post(
         "/api/hunt-profiles",
         json={
@@ -76,19 +77,30 @@ def test_export_import(client: TestClient):
             "body_md": "# export-me\n\nhello export\n",
         },
     )
-    exp = client.get("/api/hunt-profiles/export")
+    exp = client.get("/api/dev-setup/export")
     assert exp.status_code == 200
     blob = exp.json()
-    assert blob["format"] == COLLECTION_FORMAT
-    assert any(p["id"] == "export-me" for p in blob["profiles"])
+    hunts = blob["sections"]["hunt_profiles"]
+    assert hunts["format"] == COLLECTION_FORMAT
+    assert any(p["id"] == "export-me" for p in hunts["profiles"])
 
     client.delete("/api/hunt-profiles/export-me")
     imp = client.post(
-        "/api/hunt-profiles/import",
-        json={"data": blob, "mode": "merge"},
+        "/api/dev-setup/import",
+        json={"data": blob, "mode": "merge", "include": ["hunt_profiles"]},
     )
     assert imp.status_code == 200
-    assert "export-me" in imp.json()["profiles"]
+    out = imp.json()["sections"]
+    assert set(out) == {"hunt_profiles"}
+    assert "export-me" in out["hunt_profiles"]["profiles"]
+    assert client.get("/api/hunt-profiles/export-me").status_code == 200
+
+
+def test_legacy_collection_routes_removed(client: TestClient):
+    assert client.get("/api/hunt-profiles/export").status_code in (404, 405)
+    assert client.post("/api/hunt-profiles/import", json={"data": {}}).status_code in (404, 405)
+    assert client.get("/api/recon-agents/export").status_code in (404, 405)
+    assert client.post("/api/recon-agents/import", json={"data": {}}).status_code in (404, 405)
 
 
 def test_dev_page(client: TestClient):

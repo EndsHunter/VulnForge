@@ -3804,7 +3804,6 @@ tr.task-row .task-actions-cell .btn {
 .settings-select,
 .poc-lang-select,
 .explorer-steer-row select,
-.dev-body,
 .report-poc-editor,
 .report-poc-notes,
 .op-notes,
@@ -3825,7 +3824,6 @@ tr.task-row .task-actions-cell .btn {
 .field select,
 .field textarea,
 .settings-select,
-.dev-body,
 .report-poc-editor,
 .report-poc-notes,
 .op-notes,
@@ -3854,7 +3852,6 @@ tr.task-row .task-actions-cell .btn {
 .field textarea:hover,
 .settings-select:hover,
 .poc-lang-select:hover,
-.dev-body:hover,
 .report-poc-editor:hover,
 .report-poc-notes:hover,
 .op-notes:hover {
@@ -3865,7 +3862,6 @@ tr.task-row .task-actions-cell .btn {
 .field textarea:focus,
 .settings-select:focus,
 .poc-lang-select:focus,
-.dev-body:focus,
 .report-poc-editor:focus,
 .report-poc-notes:focus,
 .op-notes:focus {
@@ -3874,7 +3870,6 @@ tr.task-row .task-actions-cell .btn {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
 }
 .field textarea::placeholder,
-.dev-body::placeholder,
 .report-poc-editor::placeholder,
 .report-poc-notes::placeholder,
 .op-notes::placeholder {
@@ -5671,108 +5666,13 @@ button.llm-usage-task:focus-visible {
   color: var(--muted);
 }
 
-.home-tool-gaps-card,
-.home-dev-card {
+.home-tool-gaps-card {
   margin: 0;
   padding: 1rem 1.1rem;
 }
 .tool-gaps-per-run { margin-top: 0.5rem; }
 .task-loop { white-space: nowrap; font-size: 12px; }
 
-/* Dev dashboard */
-.dev-toolbar-card { margin-bottom: 0.85rem; padding: 0.75rem 1rem; }
-.dev-layout {
-  display: grid;
-  grid-template-columns: minmax(260px, 0.95fr) minmax(320px, 1.35fr);
-  gap: 0.85rem;
-  align-items: start;
-}
-@media (max-width: 960px) {
-  .dev-layout { grid-template-columns: 1fr; }
-}
-.dev-list-card,
-.dev-editor-card { margin: 0; }
-/* Library | Custom segmented toggle */
-.dev-seg {
-  display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-  background: var(--bg);
-}
-.dev-seg-btn {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 0.3rem 0.65rem;
-  cursor: pointer;
-  line-height: 1.2;
-}
-.dev-seg-btn + .dev-seg-btn {
-  border-left: 1px solid var(--border);
-}
-.dev-seg-btn:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.03);
-}
-.dev-seg-btn.is-selected {
-  color: var(--text);
-  background: rgba(122, 162, 247, 0.14);
-}
-/* Markdown body + import JSON (colors from shared form controls) */
-.dev-body {
-  min-height: 280px;
-  font-size: 12.5px;
-  line-height: 1.45;
-  resize: vertical;
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-}
-.dev-body-preview {
-  margin: 0;
-  min-height: 280px;
-  max-height: min(60vh, 520px);
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 12.5px;
-  line-height: 1.45;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--text);
-}
-#dev-import-json.dev-body {
-  min-height: 12rem;
-}
-.dev-editor-form .field-label-text,
-#dev-import-modal .field-label-text {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  margin: 0 0 0.4rem;
-}
-.dev-editor-form input.mono,
-.dev-editor-form #dev-id,
-.dev-editor-form #dev-title,
-.dev-editor-form #dev-description {
-  font-family: var(--mono);
-  font-size: 12.5px;
-}
-#dev-profiles-table tr.dev-row.is-selected td {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-#dev-profiles-table tr.dev-row:hover td {
-  background: rgba(255,255,255,0.03);
-}
-.dev-editor-form .field { margin-bottom: 0.75rem; }
 
 .sr-only {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
