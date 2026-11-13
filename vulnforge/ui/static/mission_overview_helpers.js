@@ -1065,6 +1065,120 @@
   }
 
   /**
+   * Campaign yield curve (#211). Input is `campaign/status` → `yield`
+   * (`vulnforge.yield@1`). Advisory only: it never pauses or stops Ralph.
+   *
+   * Returns { state, sentence, rateText, title, path, gapCount, last, hits,
+   * openText, openTitle }:
+   *  - state "ok": the latest window has token counts.
+   *  - state "unavailable": usage is missing; no line is drawn (never zeros).
+   *  - state "empty": no finished hunts yet.
+   * `path` is an SVG path over a width × height box. A window without token
+   * counts breaks the line (a gap), it is never drawn as zero.
+   * `openCells` is the matrix open-cell count (or `{ open, total }`), shown
+   * beside the curve so "no yield" cannot read as "nothing left to hunt". An
+   * empty matrix says so instead of "0 open cells".
+   */
+  function yieldSentence(latest) {
+    const l = latest || {};
+    const hunts = Number(l.hunts) || 0;
+    if (!hunts) return "No finished hunts yet.";
+    const huntWord = hunts === 1 ? "hunt" : "hunts";
+    if (!l.available) return `Yield unavailable: no token counts recorded for the last ${hunts} ${huntWord}.`;
+    const gated = Number(l.gated) || 0;
+    const noun = gated === 1 ? "finding" : "findings";
+    return `${gated} new gated ${noun} in the last ${formatTokenCount(l.tokens)} tokens (${hunts} ${huntWord})`;
+  }
+
+  function formatYieldRate(rate) {
+    const v = Number(rate);
+    if (rate == null || !Number.isFinite(v)) return "";
+    const txt = v >= 10 ? String(Math.round(v)) : v.toFixed(v >= 1 ? 1 : 2).replace(/\.?0+$/, "") || "0";
+    return `${txt} per 1M tokens`;
+  }
+
+  function buildYieldView(yieldPayload, openCells, opts) {
+    const o = opts || {};
+    const width = Number(o.width) || 120;
+    const height = Number(o.height) || 28;
+    const pad = 4;
+    const y = yieldPayload && typeof yieldPayload === "object" ? yieldPayload : null;
+    const series = Array.isArray(y && y.series) ? y.series : [];
+    const latest = (y && y.latest) || (series.length ? series[series.length - 1] : null);
+    // openCells: a number, or the matrix rollup { open, total }.
+    const oc = openCells && typeof openCells === "object" ? openCells : { open: openCells, total: null };
+    const open = Number(oc.open);
+    const noMatrix = oc.total != null && Number(oc.total) === 0;
+    const hasOpen = oc.open != null && Number.isFinite(open);
+    let openText = "";
+    let openTitle =
+      "Coverage cells with no finding filed and no hunt running. A flat curve does not mean nothing is left to hunt.";
+    if (noMatrix) {
+      openText = "No coverage matrix yet";
+      openTitle =
+        "There are no areas × skills to count yet, so open cells are unknown. A flat curve does not mean nothing is left to hunt.";
+    } else if (hasOpen) {
+      openText = `${open} open ${open === 1 ? "cell" : "cells"}`;
+    }
+    const base = { sentence: yieldSentence(latest), rateText: "", path: "", gapCount: 0, last: null, hits: [], openText, openTitle };
+    const size = Number(y && y.window && y.window.size) || 0;
+    const windowText = size ? `Window: last ${size} finished hunts. ` : "";
+    const advisory = "Advisory only; it never pauses or stops Ralph.";
+    if (!y || !latest || !(Number(latest.hunts) || 0)) {
+      return { ...base, state: "empty", title: windowText + advisory };
+    }
+    if (!y.available || !latest.available) {
+      return {
+        ...base,
+        state: "unavailable",
+        title: `${windowText}This host or run recorded no token counts for these hunts, so the rate is not drawn. ${advisory}`,
+      };
+    }
+    const rates = series.map((pt) => (pt && pt.available && pt.rate_per_mtok != null ? Number(pt.rate_per_mtok) : null));
+    const max = Math.max(0, ...rates.filter((r) => r != null && Number.isFinite(r)));
+    const n = series.length;
+    const xAt = (i) => (n <= 1 ? width - pad : pad + (i * (width - 2 * pad)) / (n - 1));
+    const yAt = (r) => (max > 0 ? height - pad - (r / max) * (height - 2 * pad) : height - pad);
+    let path = "";
+    let pen = false;
+    let gaps = 0;
+    const hits = [];
+    rates.forEach((r, i) => {
+      const pt = series[i] || {};
+      if (r == null || !Number.isFinite(r)) {
+        if (pen) gaps += 1;
+        pen = false;
+        hits.push({ x: xAt(i), y: null, title: `Hunts to #${pt.end_task_id}: no token counts` });
+        return;
+      }
+      const x = xAt(i).toFixed(1);
+      const yy = yAt(r).toFixed(1);
+      path += `${pen ? "L" : "M"}${x} ${yy}`;
+      pen = true;
+      hits.push({
+        x: xAt(i),
+        y: yAt(r),
+        title: `${yieldSentence(pt)} · ${formatYieldRate(r)} · hunts #${pt.start_task_id}–#${pt.end_task_id}`,
+      });
+    });
+    // A single point has no length: draw it as a short flat tick.
+    if (n === 1 && path) path += `L${(width - pad - 6).toFixed(1)} ${yAt(rates[0]).toFixed(1)}`;
+    const lastRate = rates[n - 1];
+    return {
+      ...base,
+      state: "ok",
+      rateText: formatYieldRate(latest.rate_per_mtok),
+      title: `${windowText}Gated findings per million tokens, near-dups counted once. ${advisory}`,
+      path,
+      gapCount: gaps,
+      last: lastRate != null ? { x: xAt(n - 1), y: yAt(lastRate) } : null,
+      hits,
+      width,
+      height,
+    };
+  }
+
+  /**
    * One vocabulary for coverage cell states, shared by Campaign, Atlas and any
    * legend. Order = legend order. `open` = still residual (an honest none is
    * open: a miss is not proof of safety). Colours come from shell.css .vf-cell--*.
@@ -1240,6 +1354,9 @@
     describeEvent,
     cellDisplayState,
     summarizeResidualMatrix,
+    yieldSentence,
+    formatYieldRate,
+    buildYieldView,
     pipelineStageOfKind,
     summarizePipelineStage,
     buildPipelineStages,
