@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from vulnforge.eval.recall import parse_line_number
+from vulnforge.benchmarks.match import parse_line_number
 from vulnforge.paths import PROJECT_ROOT
 from vulnforge.util import normalize_relpath
 

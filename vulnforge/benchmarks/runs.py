@@ -89,14 +89,15 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-# Run-page runnable types (poc_dev refused on Run path — use POC workshop).
 RUNNABLE_TYPES = frozenset({"recon", "hunt", "finding_report"})
-# Types allowed on BenchmarkRun.types_run (includes workshop poc_dev).
+# Types allowed on BenchmarkRun.types_run. Retired poc_dev rows still load.
 PERSISTED_TYPES = frozenset({"recon", "hunt", "finding_report", "poc_dev"})
-# Synthetic parent ids for all-hunt / all-recon / … suite runs (not library defs).
+# Parent def ids of suite runs: ``suite-<id>`` (current) and legacy ``all-*``.
 SUITE_PARENT_IDS = frozenset(
     {"all-hunt", "all-recon", "all-finding_report", "all-runnable"}
 )
+TIERS = frozenset({"l0", "directed"})
+BASELINES_NAME = "baselines.json"
 
 
 def is_suite_run(row: dict[str, Any]) -> bool:
@@ -104,7 +105,8 @@ def is_suite_run(row: dict[str, Any]) -> bool:
     metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
     if metrics.get("suite"):
         return True
-    return str(row.get("def_id") or "").strip().lower() in SUITE_PARENT_IDS
+    did = str(row.get("def_id") or "").strip().lower()
+    return did in SUITE_PARENT_IDS or did.startswith("suite-")
 
 
 def _normalize_types_run(raw: object) -> list[str]:
@@ -122,8 +124,6 @@ def _normalize_types_run(raw: object) -> list[str]:
         key = str(t or "").strip().lower().replace(" ", "_")
         if not key or key in seen:
             continue
-        # Unknown types dropped; poc_dev allowed for workshop runs only
-        # (Run path still refuses poc_dev before create_run).
         if key not in PERSISTED_TYPES:
             continue
         seen.add(key)
@@ -155,7 +155,20 @@ def _public_run(raw: dict[str, Any]) -> dict[str, Any]:
         "error": str(raw["error"]) if raw.get("error") else None,
         "target_ref": str(raw.get("target_ref") or ""),
         "oracle_hash": str(raw.get("oracle_hash") or ""),
+        "suite_id": str(raw.get("suite_id") or "") or None,
+        "tier": _tier_of(raw),
+        "fingerprint": deepcopy(raw["fingerprint"]) if isinstance(raw.get("fingerprint"), dict) else {},
+        "note": str(raw.get("note") or "")[:500],
+        "parent_id": str(raw.get("parent_id") or "") or None,
     }
+
+
+def _tier_of(raw: dict[str, Any]) -> str:
+    """Stored tier, else derived from mode for records written before tiers."""
+    tier = str(raw.get("tier") or "").strip().lower()
+    if tier in TIERS:
+        return tier
+    return "directed" if str(raw.get("mode") or "") == "live" else "l0"
 
 
 def create_run(
@@ -168,6 +181,11 @@ def create_run(
     oracle_hash: str = "",
     status: str = "queued",
     run_id: str | None = None,
+    suite_id: str | None = None,
+    tier: str | None = None,
+    fingerprint: dict[str, Any] | None = None,
+    note: str = "",
+    parent_id: str | None = None,
 ) -> dict[str, Any]:
     """Allocate a new BenchmarkRun record (queued/running)."""
     rid = _validate_run_id(run_id) if run_id else new_run_id()
@@ -195,6 +213,11 @@ def create_run(
             "error": None,
             "target_ref": target_ref,
             "oracle_hash": oracle_hash,
+            "suite_id": suite_id,
+            "tier": tier,
+            "fingerprint": fingerprint or {},
+            "note": note,
+            "parent_id": parent_id,
         }
     )
     row["format"] = RUNS_FORMAT
@@ -225,6 +248,8 @@ def update_run(run_id: str, **fields: Any) -> dict[str, Any]:
         "oracle_hash",
         "mode",
         "types_run",
+        "fingerprint",
+        "note",
     }
     for key, val in fields.items():
         if key not in allowed:
@@ -318,6 +343,8 @@ def list_runs(
     status: str | None = None,
     run_type: str | None = None,
     suite: bool | None = None,
+    suite_id: str | None = None,
+    tier: str | None = None,
     sort: str = "started_at",
     order: str = "desc",
     limit: int = 200,
@@ -383,6 +410,10 @@ def list_runs(
             types = [str(t).lower() for t in (row.get("types_run") or [])]
             if want_type not in types:
                 continue
+        if suite_id and row.get("suite_id") != suite_id:
+            continue
+        if tier and row.get("tier") != tier:
+            continue
         if suite is True and not is_suite_run(row):
             continue
         if suite is False and is_suite_run(row):
@@ -415,3 +446,49 @@ def list_runs(
             reverse=reverse,
         )
     return out[: max(1, int(limit))]
+
+
+# --- Baselines: one pinned run per (suite, tier) -----------------------------
+
+
+def _baselines_path() -> Path:
+    return runs_root() / BASELINES_NAME
+
+
+def baseline_key(suite_id: str, tier: str) -> str:
+    return f"{suite_id}:{tier}"
+
+
+def load_baselines() -> dict[str, str]:
+    """{"<suite>:<tier>": run_id}. Missing or corrupt file → empty."""
+    path = _baselines_path()
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    rows = raw.get("baselines") if isinstance(raw, dict) else None
+    if not isinstance(rows, dict):
+        return {}
+    return {str(k): str(v) for k, v in rows.items() if v}
+
+
+def set_baseline(run_id: str) -> dict[str, Any]:
+    """Pin a finished suite run as the baseline for its suite + tier."""
+    run = get_run(run_id)
+    if not run.get("suite_id") or not is_suite_run(run):
+        raise BenchmarkRunError("only suite runs can be a baseline")
+    if run["status"] not in TERMINAL_STATUSES or run["status"] == "cancelled":
+        raise BenchmarkRunError("baseline must be a finished run (passed / failed / error)")
+    rows = load_baselines()
+    rows[baseline_key(run["suite_id"], run["tier"])] = run["id"]
+    _atomic_write_json(
+        _baselines_path(),
+        {"format": "vulnforge.benchmark_baselines/v1", "baselines": rows, "updated_at": utc_now_iso()},
+    )
+    return {"key": baseline_key(run["suite_id"], run["tier"]), "run_id": run["id"]}
+
+
+def baseline_for(suite_id: str, tier: str) -> str | None:
+    return load_baselines().get(baseline_key(suite_id, tier))

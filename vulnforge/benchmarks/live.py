@@ -1,7 +1,13 @@
-"""Live hunt evals on the existing BenchmarkRun contract.
+"""Live **directed** hunt evals on the BenchmarkRun contract.
 
-Mechanical create+score stays in ``runner.py``. Live creates the same
-``BenchmarkRun`` row, drives Ralph off the HTTP worker, and GET reconciles.
+Directed = each hunt is pointed at the oracle's file and class
+(``hunt_hints_from_oracle``), so recall here means "recall when told where to
+look", not campaign recall.
+
+Live creates a ``BenchmarkRun`` row, records a fingerprint (commit, model,
+prompt/tool hashes, validate_llm), drives Ralph in a throwaway harness off the
+HTTP worker, then scores by finding state (``live_score.score_case``) with
+token usage from the eval run's ``llm_usage_summary.json``. GET reconciles.
 """
 
 from __future__ import annotations
@@ -17,15 +23,14 @@ from typing import Any, Callable, Literal
 
 import yaml
 
+from vulnforge.benchmarks.compare import member_row, summarize_repeats
+from vulnforge.benchmarks.fingerprint import capture_fingerprint
+from vulnforge.benchmarks.live_score import score_case
 from vulnforge.benchmarks.runner import (
-    SUITE_DEF_IDS,
-    _hunt_passed,
-    _member_score,
     _normalize_request_types,
-    _suite_def_id,
     _terminal_status,
-    defs_for_suite,
 )
+from vulnforge.benchmarks.suites import SUITES, suite_members, suite_refusal
 from vulnforge.benchmarks.runs import (
     TERMINAL_STATUSES,
     BenchmarkRunError,
@@ -40,14 +45,17 @@ from vulnforge.benchmarks.store import (
     BenchmarkLibraryError,
     get_def,
     get_version,
+    list_defs,
 )
-from vulnforge.eval.recall import score_findings
 from vulnforge.paths import PROJECT_ROOT
 from vulnforge.settings.load import load_config
 from vulnforge.ui.runner import runner_status, start_run, stop_run_hard
 from vulnforge.util import utc_now_iso
 
-LIVE_MAX_TASKS = 3
+# Ralph task cap per case: hunt + validate_mech per candidate + disprove.
+LIVE_TASKS_PER_HINT = 8
+LIVE_MIN_TASKS = 8
+LIVE_MAX_REPEAT = 5
 LIVE_TASK_TIMEOUT = 600
 LIVE_SUITE_CONCURRENCY = 1
 LIVE_ORPHAN_SECONDS = 30 * 60
@@ -90,7 +98,7 @@ class HuntHint:
 class LiveConfig:
     overlay_path: Path
     eval_runs_root: Path
-    max_tasks: int = LIVE_MAX_TASKS
+    max_tasks: int = LIVE_MIN_TASKS
     task_timeout: int = LIVE_TASK_TIMEOUT
     base_url: str = ""
     model: str = ""
@@ -117,7 +125,7 @@ def live_config_from_settings(run_id: str, cfg: dict[str, Any] | None = None) ->
     return LiveConfig(
         overlay_path=overlay_path_for(run_id),
         eval_runs_root=eval_runs_root_for(run_id),
-        max_tasks=LIVE_MAX_TASKS,
+        max_tasks=LIVE_MIN_TASKS,
         task_timeout=LIVE_TASK_TIMEOUT,
         base_url=str(llm.get("base_url") or "").strip(),
         model=str(llm.get("model") or "").strip(),
@@ -126,21 +134,19 @@ def live_config_from_settings(run_id: str, cfg: dict[str, Any] | None = None) ->
 
 
 def live_refusal(*, types: list[str], suite: bool, def_id: str) -> str | None:
-    """None = allowed. Else the error string written onto the BenchmarkRun."""
+    """None = allowed. Else the error string written onto the BenchmarkRun.
+
+    ``def_id`` is the suite id when ``suite`` is true.
+    """
     types_n = [
         str(t).strip().lower().replace(" ", "_")
         for t in (types or [])
         if str(t).strip()
     ]
     if not types_n or any(t != "hunt" for t in types_n):
-        return "live mode is hunt-only (refused recon, finding_report, poc_dev)"
+        return "live mode is hunt-only (recon and finding_report are L0 fixture checks)"
     if suite:
-        sid = str(def_id or "").strip().lower()
-        if sid and sid not in ("all-hunt",):
-            return "live suites must be all-hunt"
-        mapped = SUITE_DEF_IDS.get(sid)
-        if mapped is not None and mapped != ("hunt",):
-            return "live suites must be all-hunt"
+        return suite_refusal(str(def_id or "").strip().lower(), "directed")
     return None
 
 
@@ -259,8 +265,10 @@ def start_live_run(
     version: int | None = None,
     types: list[str] | None = None,
     worker: Callable[[str], None] | None = None,
+    validate_llm: bool = True,
+    note: str = "",
 ) -> dict[str, Any]:
-    """Create BenchmarkRun(mode=live). Spawn drive off the HTTP worker."""
+    """Create one directed BenchmarkRun(mode=live). Spawn drive off the HTTP worker."""
     bid = str(def_id or "").strip().lower()
     if not bid:
         raise BenchmarkRunError("def_id is required")
@@ -282,9 +290,8 @@ def start_live_run(
         if t not in snap_types:
             raise BenchmarkRunError(f"benchmark {bid}@{ver} does not include {t}")
 
-    err = live_refusal(types=types_n, suite=False, def_id=bid) or require_live_llm(
-        load_config()
-    )
+    cfg = load_config()
+    err = live_refusal(types=types_n, suite=False, def_id=bid) or require_live_llm(cfg)
     run = create_run(
         def_id=bid,
         version=ver,
@@ -293,6 +300,9 @@ def start_live_run(
         target_ref=str(snap.get("target_ref") or ""),
         oracle_hash=str(snap.get("oracle_hash") or ""),
         status="running",
+        tier="directed",
+        fingerprint=capture_fingerprint(cfg, validate_llm=validate_llm),
+        note=note,
     )
     rid = run["id"]
     if err:
@@ -316,108 +326,85 @@ def start_live_run(
 
 def start_live_suite(
     *,
-    types: list[str] | None = None,
+    suite_id: str,
+    repeat: int = 1,
     only: list[str] | None = None,
     worker: Callable[[str], None] | None = None,
+    validate_llm: bool = True,
+    note: str = "",
 ) -> dict[str, Any]:
-    """Create parent + one child BenchmarkRun per hunt def, then one worker."""
-    raw = [
-        str(t).strip().lower().replace(" ", "_")
-        for t in (types or ["hunt"])
-        if str(t).strip()
-    ]
-    types_n = raw or ["hunt"]
-    suite_id = _suite_def_id(types_n)
-    err = live_refusal(types=types_n, suite=True, def_id=suite_id) or require_live_llm(
-        load_config()
-    )
+    """Create a ``suite-<id>`` parent + one child per (case, repeat), then one worker.
+
+    Children run sequentially. ``only`` subsets the suite's cases.
+    """
+    sid = str(suite_id or "").strip().lower()
+    reps = max(1, min(int(repeat or 1), LIVE_MAX_REPEAT))
+    cfg = load_config()
+    fp = capture_fingerprint(cfg, validate_llm=validate_llm)
+    err = live_refusal(types=["hunt"], suite=True, def_id=sid) or require_live_llm(cfg)
     parent = create_run(
-        def_id=suite_id,
+        def_id=f"suite-{sid}" if sid in SUITES else "suite-unknown",
         version=1,
-        types_run=types_n,
+        types_run=["hunt"],
         mode="live",
-        target_ref="",
-        oracle_hash="",
         status="running",
+        suite_id=sid if sid in SUITES else None,
+        tier="directed",
+        fingerprint=fp,
+        note=note,
     )
     pid = parent["id"]
+    base_metrics = {"suite": True, "suite_id": sid, "tier": "directed", "mode": "live", "confirmed": False}
     if err:
-        return update_run(
-            pid,
-            status="error",
-            error=err,
-            metrics={"suite": True, "mode": "live", "confirmed": False},
-        )
+        return update_run(pid, status="error", error=err, metrics=base_metrics)
 
-    members = defs_for_suite(types_n)
+    members = suite_members(sid, "directed", list_defs())
     if only:
         want = {str(x).strip().lower() for x in only if str(x).strip()}
-        members = [
-            (d, mt) for d, mt in members if str(d.get("id") or "").strip().lower() in want
-        ]
+        members = [d for d in members if str(d.get("id") or "").strip().lower() in want]
     if not members:
         return update_run(
             pid,
             status="error",
-            error="no matching hunt defs for live suite",
-            metrics={"suite": True, "mode": "live", "confirmed": False},
+            error=f"no hunt cases in suite {sid}",
+            metrics=base_metrics,
         )
 
-    rows: list[dict[str, Any]] = []
-    for defn, member_types in members:
-        bid = str(defn.get("id") or "")
-        try:
-            head = get_def(bid, include_oracle=False)
-            ver = int(head.get("head_version") or 1)
-            snap = get_version(bid, ver)
-        except BenchmarkLibraryError as e:
-            return update_run(
-                pid,
-                status="error",
-                error=str(e),
-                metrics={"suite": True, "mode": "live", "confirmed": False},
+    plan: list[dict[str, Any]] = []
+    for rep in range(reps):
+        for defn in members:
+            bid = str(defn.get("id") or "")
+            try:
+                head = get_def(bid, include_oracle=False)
+                ver = int(head.get("head_version") or 1)
+                snap = get_version(bid, ver)
+            except BenchmarkLibraryError as e:
+                return update_run(pid, status="error", error=str(e), metrics=base_metrics)
+            child = create_run(
+                def_id=bid,
+                version=ver,
+                types_run=["hunt"],
+                mode="live",
+                target_ref=str(snap.get("target_ref") or ""),
+                oracle_hash=str(snap.get("oracle_hash") or ""),
+                status="queued",
+                tier="directed",
+                fingerprint=fp,
+                parent_id=pid,
             )
-        child = create_run(
-            def_id=bid,
-            version=ver,
-            types_run=list(member_types),
-            mode="live",
-            target_ref=str(snap.get("target_ref") or ""),
-            oracle_hash=str(snap.get("oracle_hash") or ""),
-            status="queued",
-        )
-        rows.append(
-            {
-                "def_id": bid,
-                "run_id": child.get("id"),
-                "status": child.get("status"),
-                "types_run": list(child.get("types_run") or member_types),
-                "score": None,
-                "recall": None,
-                "error": child.get("error"),
-            }
-        )
+            plan.append({"run_id": child["id"], "repeat": rep})
 
-    parent_metrics: dict[str, Any] = {
-        "suite": True,
-        "mode": "live",
-        "confirmed": False,
-        "types_run": list(types_n),
-        "count": len(rows),
-        "passed_count": 0,
-        "failed_count": 0,
-        "error_count": 0,
-        "score": 0.0,
-        "passed": False,
-        "members": rows,
-        "member_run_ids": [r.get("run_id") for r in rows],
-        "by_def": {str(r["def_id"]): r for r in rows if r.get("def_id")},
-        "live": {
-            "phase": "queued",
-            "updated_at": utc_now_iso(),
+    update_run(
+        pid,
+        metrics={
+            **base_metrics,
+            "repeat": reps,
+            "member_plan": plan,
+            "member_run_ids": [p["run_id"] for p in plan],
+            "live": {"phase": "queued", "updated_at": utc_now_iso()},
         },
-    }
-    update_run(pid, metrics=parent_metrics)
+    )
+    project_suite_parent(pid)
     if worker is not None:
         worker(pid)
     else:
@@ -501,7 +488,7 @@ def cancel_live_run(run_id: str) -> dict[str, Any]:
 
 
 def drive_live_hunt(run_id: str) -> dict[str, Any]:
-    """One hunt def. resolve → overlay → init → enqueue → ralph → score."""
+    """One hunt case. resolve → overlay → init → enqueue → ralph → score."""
     try:
         run = _open_live(run_id)
         if run is None:
@@ -516,7 +503,9 @@ def drive_live_hunt(run_id: str) -> dict[str, Any]:
         if _open_live(run_id) is None:
             return get_run(run_id)
         target = resolve_live_target(snap, oracle)
-        overlay = write_live_overlay(run_id, load_config())
+        overlay = write_live_overlay(
+            run_id, load_config(), validate_llm=_validate_llm_of(run)
+        )
         _set_live_phase(run_id, "init")
         if _open_live(run_id) is None:
             return get_run(run_id)
@@ -549,7 +538,7 @@ def drive_live_hunt(run_id: str) -> dict[str, Any]:
         _set_live_phase(run_id, "ralph")
         if _open_live(run_id) is None:
             return get_run(run_id)
-        started = start_eval_ralph(run_dir, overlay)
+        started = start_eval_ralph(run_dir, overlay, max_tasks=max_tasks_for(len(hints)))
         if not started.get("ok") and started.get("error") != "already running":
             return _fail(run_id, started.get("error") or "ralph start failed")
         wait_ralph_idle(run_dir)
@@ -569,7 +558,7 @@ def drive_live_hunt(run_id: str) -> dict[str, Any]:
 
 
 def drive_live_suite(parent_id: str) -> dict[str, Any]:
-    """Sequential for child_id in member_run_ids: drive_live_hunt; project parent."""
+    """Sequential for child in member_run_ids: drive_live_hunt; project parent."""
     try:
         parent = get_run(parent_id)
         ids = list((parent.get("metrics") or {}).get("member_run_ids") or [])
@@ -594,9 +583,12 @@ def drive_live_suite(parent_id: str) -> dict[str, Any]:
         )
 
 
-def write_live_overlay(run_id: str, cfg: dict[str, Any]) -> Path:
-    """Persist Settings snapshot + validate_llm false next to result.json.
+def write_live_overlay(
+    run_id: str, cfg: dict[str, Any], *, validate_llm: bool = True
+) -> Path:
+    """Persist the Settings snapshot next to result.json.
 
+    ``stages.validate_llm`` follows the run (default on, as in production).
     Snapshots ``llm`` (including ``api_mode``: chat_completions / responses /
     messages) so Ralph + Strands use the same endpoint style as Settings.
     """
@@ -606,7 +598,7 @@ def write_live_overlay(run_id: str, cfg: dict[str, Any]) -> Path:
     path = live.overlay_path
     path.parent.mkdir(parents=True, exist_ok=True)
     stages = dict(cfg.get("stages") or {}) if isinstance(cfg.get("stages"), dict) else {}
-    stages["validate_llm"] = False
+    stages["validate_llm"] = bool(validate_llm)
     payload = {
         "llm": dict(cfg.get("llm") or {}) if isinstance(cfg.get("llm"), dict) else {},
         "run": dict(cfg.get("run") or {}) if isinstance(cfg.get("run"), dict) else {},
@@ -641,7 +633,7 @@ def resolve_live_target(snap: dict[str, Any], oracle: dict[str, Any]) -> Path:
     finding = _vulngym_finding(oracle)
     if finding is None:
         raise BenchmarkRunError(f"target not found: {target_ref}")
-    from vulnforge.eval.vulngym import checkout_oracle
+    from vulnforge.benchmarks.vulngym import checkout_oracle
 
     try:
         dest = checkout_oracle(finding)
@@ -670,7 +662,6 @@ def init_eval_harness(
         loaded = yaml.safe_load(overlay.read_text(encoding="utf-8")) or {}
         if isinstance(loaded, dict):
             cfg = loaded
-    cfg.setdefault("stages", {})["validate_llm"] = False
 
     class Args:
         pass
@@ -723,7 +714,9 @@ def enqueue_eval_hunt(run_dir: Path, hint: HuntHint) -> dict[str, Any]:
     return r
 
 
-def start_eval_ralph(run_dir: Path, overlay: Path) -> dict[str, Any]:
+def start_eval_ralph(
+    run_dir: Path, overlay: Path, *, max_tasks: int = LIVE_MIN_TASKS
+) -> dict[str, Any]:
     """vulnforge.ui.runner.start_run (pid files, start_new_session)."""
     cfg_path = Path(overlay) if overlay and Path(overlay).is_file() else None
     saved: dict[str, str] = {}
@@ -735,14 +728,12 @@ def start_eval_ralph(run_dir: Path, overlay: Path) -> dict[str, Any]:
         result = start_run(
             Path(run_dir),
             task_timeout=LIVE_TASK_TIMEOUT,
-            max_tasks=LIVE_MAX_TASKS,
+            max_tasks=max_tasks,
             workers=1,
             config=cfg_path,
         )
     finally:
         os.environ.update(saved)
-    if result.get("error") == "already running":
-        return result
     return result
 
 
@@ -756,49 +747,38 @@ def wait_ralph_idle(run_dir: Path, *, poll_s: float = 1.0) -> None:
 
 
 def score_live_hunt(run_dir: Path, oracles: list[dict[str, Any]]) -> dict[str, Any]:
-    """Database.list_findings() with no state filter → score_findings."""
+    """All findings (any state) + usage summary → ``score_case``."""
     from vulnforge.db import Database
+    from vulnforge.usage import load_usage_summary
 
     db = Database(Path(run_dir) / "harness.db")
     try:
         findings = db.list_findings()
-        bodies = [f.body for f in findings]
     finally:
         db.close()
-    sc = score_findings(bodies, list(oracles or []))
-    sc["mode"] = "live"
-    sc["confirmed"] = False
-    sc["bench_type"] = "hunt"
-    sc["passed"] = _hunt_passed(sc)
-    return sc
+    return score_case(findings, list(oracles or []), usage=load_usage_summary(run_dir))
 
 
 def project_suite_parent(parent_id: str) -> dict[str, Any]:
-    """Rebuild parent members from child result.json. Close parent if all terminal."""
+    """Rebuild parent members + summary from child result.json. Close if all terminal."""
     parent = get_run(parent_id)
     metrics_in = parent.get("metrics") if isinstance(parent.get("metrics"), dict) else {}
-    ids = list(metrics_in.get("member_run_ids") or [])
+    plan = metrics_in.get("member_plan")
+    if not isinstance(plan, list) or not plan:
+        plan = [{"run_id": cid, "repeat": 0} for cid in (metrics_in.get("member_run_ids") or [])]
     rows: list[dict[str, Any]] = []
-    for cid in ids:
-        child = get_run(str(cid))
-        cm = child.get("metrics") if isinstance(child.get("metrics"), dict) else {}
-        rows.append(
-            {
-                "def_id": child.get("def_id"),
-                "run_id": child.get("id"),
-                "status": child.get("status"),
-                "types_run": list(child.get("types_run") or []),
-                "score": _member_score(cm),
-                "recall": cm.get("recall"),
-                "error": child.get("error"),
-            }
-        )
+    for item in plan:
+        if not isinstance(item, dict) or not item.get("run_id"):
+            continue
+        try:
+            child = get_run(str(item["run_id"]))
+        except BenchmarkRunError:
+            continue
+        rows.append(member_row(child, repeat=int(item.get("repeat") or 0)))
     n = len(rows)
     n_pass = sum(1 for r in rows if r.get("status") == "passed")
-    n_fail = sum(1 for r in rows if r.get("status") == "failed")
     n_err = sum(1 for r in rows if r.get("status") == "error")
     n_term = sum(1 for r in rows if r.get("status") in TERMINAL_STATUSES)
-    scores = [float(r["score"]) for r in rows if r.get("score") is not None]
     already = parent["status"] in TERMINAL_STATUSES
     if already:
         status = parent["status"]
@@ -811,33 +791,35 @@ def project_suite_parent(parent_id: str) -> dict[str, Any]:
             status = "failed"
     else:
         status = "running"
+    summary = summarize_repeats(rows)
     parent_metrics: dict[str, Any] = {
+        **{k: metrics_in.get(k) for k in ("suite_id", "tier", "repeat") if k in metrics_in},
         "suite": True,
         "mode": "live",
         "confirmed": False,
-        "types_run": list(parent.get("types_run") or metrics_in.get("types_run") or []),
         "count": n,
         "passed_count": n_pass,
-        "failed_count": n_fail,
+        "failed_count": sum(1 for r in rows if r.get("status") == "failed"),
         "error_count": n_err,
-        "score": round(sum(scores) / len(scores), 4) if scores else 0.0,
+        "recall": summary["headline"].get("recall"),
         "passed": status == "passed",
         "members": rows,
+        "member_plan": plan,
         "member_run_ids": [r.get("run_id") for r in rows],
-        "by_def": {str(r["def_id"]): r for r in rows if r.get("def_id")},
+        "summary": summary,
     }
     live = metrics_in.get("live") if isinstance(metrics_in.get("live"), dict) else {}
     parent_metrics["live"] = {
         **live,
         "phase": "done" if status in TERMINAL_STATUSES else live.get("phase") or "queued",
+        "done": n_term,
+        "total": n,
         "updated_at": utc_now_iso(),
     }
     err_msg = parent.get("error")
     if status in TERMINAL_STATUSES and n_err and status != "cancelled":
         sample = [str(r.get("def_id")) for r in rows if r.get("status") == "error"][:8]
-        err_msg = f"{n_err}/{n} members error" + (
-            ": " + ", ".join(sample) if sample else ""
-        )
+        err_msg = f"{n_err}/{n} cases error" + (": " + ", ".join(sample) if sample else "")
     return update_run(
         parent_id,
         status=status,
@@ -974,9 +956,21 @@ def _stop_harness(run: dict[str, Any]) -> None:
         return
 
 
+def max_tasks_for(n_hints: int) -> int:
+    """Ralph task cap for one case: enough for hunt + gates per hint."""
+    return max(LIVE_MIN_TASKS, LIVE_TASKS_PER_HINT * max(1, int(n_hints or 0)))
+
+
+def _validate_llm_of(run: dict[str, Any]) -> bool:
+    fp = run.get("fingerprint") if isinstance(run.get("fingerprint"), dict) else {}
+    return bool(fp.get("validate_llm", True))
+
+
 __all__ = [
     "HuntHint",
-    "LIVE_MAX_TASKS",
+    "LIVE_MAX_REPEAT",
+    "LIVE_MIN_TASKS",
+    "LIVE_TASKS_PER_HINT",
     "LIVE_ORPHAN_SECONDS",
     "LIVE_POLL_MS",
     "LIVE_SUITE_CONCURRENCY",
@@ -990,6 +984,7 @@ __all__ = [
     "list_active_runs",
     "hunt_hints_from_oracle",
     "live_refusal",
+    "max_tasks_for",
     "packet_leaks_oracle",
     "reconcile_live_run",
     "require_live_llm",
