@@ -58,3 +58,19 @@ def test_readme_leads_with_the_installer():
         assert needle in quick, f"README Quickstart no longer mentions {needle}"
     for script in ("install.sh", "start.sh", "install.ps1", "start.ps1", "install.cmd", "start.cmd"):
         assert (ROOT / script).is_file(), f"{script} is documented but missing"
+
+
+def test_vf_survives_a_non_utf8_stdout(tmp_path):
+    """Windows pipes/redirects are cp1252; `vf --help` has an arrow in it.
+
+    The installer verifies with `vf --help | Out-Null`, so this crashed install on
+    Windows CI before vulnforge.stdio.ensure_utf8_stdio.
+    """
+    import sys
+
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+    for argv in (["-m", "vulnforge.cli", "--help"], [str(ROOT / "scripts" / "ralph.py"), "--help"]):
+        proc = subprocess.run(
+            [sys.executable, *argv], capture_output=True, env=env, cwd=ROOT,
+        )
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")

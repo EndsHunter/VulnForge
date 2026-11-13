@@ -42,6 +42,9 @@ from vulnforge.control.exit_codes import (
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    from vulnforge.stdio import ensure_utf8_stdio
+
+    ensure_utf8_stdio()
     cmd: Optional[str] = None
     try:
         parser = build_parser()
