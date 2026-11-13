@@ -679,6 +679,21 @@ def cmd_init(args, cfg: dict) -> int:
         config=cfg_store,
     )
 
+    # R0 mechanical skeleton (no LLM): zones/arrows for Atlas before recon runs.
+    # Stored in {run_dir}/architecture_skeleton.json, never architecture_json.
+    if bool((cfg.get("recon_skeleton") or {}).get("at_init", True)):
+        try:
+            from vulnforge.recon_skeleton import build_skeleton_for_target, write_skeleton
+
+            write_skeleton(
+                run_dir,
+                build_skeleton_for_target(target, cfg, ignore_globs=list(ignore)),
+            )
+        except Exception as exc:
+            from vulnforge.errors import note_swallowed
+
+            note_swallowed(exc, context="init.recon_skeleton", run_dir=run_dir)
+
     # Optional operator recon selection / brief (UI + CLI)
     init_agent_ids = [
         str(a).strip().lower()
