@@ -91,7 +91,7 @@ A role ref resolves to that host's URL + API mode + API key + model (`vulnforge/
 1. Create `vulnforge/tools/agent/<name>.py` with `SPEC = ToolSpec(...)` and `run(ctx, **args)`.
 2. Registry auto-discovers the module (no hand edit of `packet.py` / giant if/elif).
 3. Add a unit test under `tests/`.
-4. Or use Dev → Tools → generate/validate/integrate (writes SPEC module when possible).
+4. Or use Dev → Tool lab → generate/validate/integrate (writes SPEC module when possible; dry-run + diff required before apply).
 
 Wire-up checklist (historical multi-touch path): see `toolgen.md`.
 

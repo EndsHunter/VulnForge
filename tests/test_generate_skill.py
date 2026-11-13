@@ -468,7 +468,8 @@ def test_api_generate(profiles_root: Path, tmp_path: Path, monkeypatch):
         assert data["skill"]["id"] == "api-gen-skill"
         assert data["profile"]["source"] == "generated"
 
-        # page mentions generate button
+        # page carries the generate dialog (opened from Hunt skills)
         page = c.get("/dev")
         assert page.status_code == 200
-        assert "Generate from description" in page.text
+        assert 'id="dev-generate-modal"' in page.text
+        assert 'id="gen-author"' in page.text  # author prompt lives in the dialog

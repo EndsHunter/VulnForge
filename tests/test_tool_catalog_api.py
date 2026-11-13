@@ -170,9 +170,12 @@ def test_from_gap(client: TestClient):
 def test_dev_page_has_tools_tab(client: TestClient):
     r = client.get("/dev")
     assert r.status_code == 200
-    assert "Tools" in r.text
-    assert "toolgen-wizard-modal" in r.text
-    assert "Approved tools" in r.text
+    assert 'data-dev-tab="tools"' in r.text
+    # Tool drafts / integrate live in the separate Tool lab section
+    assert 'data-dev-tab="lab"' in r.text
+    assert "/static/pages/dev/tools.js" in r.text
+    assert "/static/pages/dev/lab.js" in r.text
+    assert "/static/dev.js" not in r.text
 
 
 def test_filter_empty_allowlist_keeps_full_set():

@@ -8,645 +8,109 @@
   <link rel="icon" type="image/png" href="/static/logo.png" />
   <link rel="apple-touch-icon" href="/static/logo.png" />
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/shell.css" />
+  <link rel="stylesheet" href="/static/pages/dev/dev.css" />
 </head>
 <body data-page="dev">
-  <header class="app-header">
-    <div class="brand">
-      <a href="/" class="home-link" title="Home - all runs">
-        <img class="logo" src="/static/logo.svg" width="32" height="32" alt="" />
-        <div>
-          VulnForge
-          <div class="sub">Dev dashboard</div>
-        </div>
-      </a>
-    </div>
-    <div class="header-actions">
-      <a class="btn btn-primary home-btn" href="/" title="Home">Home</a>
-      <button type="button" class="btn" id="ai-entry" aria-expanded="false" title="AI">AI</button>
-      <span class="controls-hint mono">{{ runs_root }}</span>
-    </div>
-  </header>
+  <!-- Dev workbench (issue #203): what the agents are given (prompts + tools). -->
+  <main class="vf-dev">
+    <header class="vf-dev-head">
+      <a href="/" class="home-mark" title="Home: all runs"><img class="logo" src="/static/logo.svg" width="28" height="28" alt="VulnForge" /></a>
+      <h1 class="vf-dev-title">Dev</h1>
+      <nav class="vf-tabs" role="tablist" aria-label="Dev sections">
+        <button type="button" class="vf-tab" role="tab" data-dev-tab="skills" aria-selected="true">Hunt skills</button>
+        <button type="button" class="vf-tab" role="tab" data-dev-tab="recon" aria-selected="false">Recon agents</button>
+        <button type="button" class="vf-tab" role="tab" data-dev-tab="tools" aria-selected="false">Tools</button>
+        <button type="button" class="vf-tab dev-tab-lab" role="tab" data-dev-tab="lab" aria-selected="false" title="Writes package source">Tool lab</button>
+      </nav>
+      <span class="vf-spacer"></span>
+      <button type="button" class="vf-btn vf-btn--ghost" id="ai-entry" aria-expanded="false" title="AI co-pilot">AI</button>
+      <details class="danger-menu vf-dev-menu" id="dev-menu">
+        <summary class="vf-btn vf-btn--ghost" title="Setup and links" aria-label="Setup and links">···</summary>
+        <nav class="danger-menu-body" aria-label="Setup and links">
+          <button type="button" class="vf-menu-link dev-menu-btn" id="dev-export" title="Hunt skills, recon agents, author prompt, tool drafts and UI settings (API keys redacted)">Export setup</button>
+          <button type="button" class="vf-menu-link dev-menu-btn" id="dev-import">Import setup…</button>
+          <hr />
+          <a href="/" class="vf-menu-link">Home</a>
+          <a href="/settings" class="vf-menu-link">Settings</a>
+          <a href="/tool-gaps" class="vf-menu-link">Tool gaps</a>
+        </nav>
+      </details>
+    </header>
 
-  <main class="main">
-    <div class="page-hero">
-      <div>
-        <h1>Dev</h1>
-        <p>
-          Operator collections for hunt skills, recon agents, tool drafts, and LLM settings.
-          Changes apply to new tasks; active sets stay small for local models.
-        </p>
-      </div>
-      <div class="toolbar" style="flex-wrap:wrap;gap:0.5rem;align-items:center">
-        <button type="button" class="btn btn-primary" id="btn-dev-setup-export" title="Download hunt skills, recon agents, skill generator override, tool drafts, and UI settings">
-          Export setup
-        </button>
-        <button type="button" class="btn" id="btn-dev-setup-import" title="Restore a full setup pack on a fresh install">
-          Import setup…
-        </button>
-      </div>
-    </div>
-
-    <nav class="tabs" role="tablist" aria-label="Dev collections">
-      <button type="button" class="tab active" data-dev-tab="hunt" role="tab" aria-selected="true">Hunt skills</button>
-      <button type="button" class="tab" data-dev-tab="skillgen" role="tab" aria-selected="false">Skill generator</button>
-      <button type="button" class="tab" data-dev-tab="recon" role="tab" aria-selected="false">Recon agents</button>
-      <button type="button" class="tab" data-dev-tab="tools" role="tab" aria-selected="false">Tools</button>
-    </nav>
-
-    <!-- ========== Hunt skills ========== -->
-    <section id="panel-hunt" class="tab-panel active" data-dev-panel="hunt" role="tabpanel">
-      <div class="page-hero" style="padding-top:0.75rem">
-        <div>
-          <h2 style="margin:0 0 0.35rem">Hunt skills</h2>
-          <p style="margin:0">
-            Edit the operator hunt collection used by recon, Explorer, Hunts, and file-by-file.
-            <strong>Active</strong> skills are bulk-enqueued when recon has no hunt_focus and for Hunts “all areas × active”.
-          </p>
-        </div>
-      </div>
-
-      <div class="card dev-toolbar-card">
-        <div class="toolbar" style="margin-bottom:0;flex-wrap:wrap;gap:0.5rem;align-items:center">
-          <button type="button" class="btn btn-primary" id="btn-dev-new">+ New skill</button>
-          <button type="button" class="btn btn-primary" id="btn-dev-generate" title="LLM-author a skill from a brief">Generate from description</button>
-          <button type="button" class="btn" id="btn-dev-reseed" title="Replace collection with package seed">Reseed from package</button>
-          <button type="button" class="btn" id="btn-dev-refresh">Refresh</button>
-          <div class="dev-seg" id="dev-explorer-toggle" role="group" aria-label="Skill explorer">
-            <button type="button" class="dev-seg-btn is-selected" data-hunt-explorer="library" title="Seed and imported skills">Library</button>
-            <button type="button" class="dev-seg-btn" data-hunt-explorer="custom" title="Custom and generated skills">Custom &amp; generated</button>
-          </div>
-          <span class="controls-hint" id="dev-meta" style="margin-left:auto"></span>
-        </div>
-      </div>
-
-      <div class="dev-layout">
-        <div class="card dev-list-card">
-          <h2 style="margin-top:0">Collection</h2>
-          <div class="table-wrap">
-            <table class="data" id="dev-profiles-table">
-              <thead>
-                <tr id="dev-profiles-head">
-                  <th>Active</th>
-                  <th>Id</th>
-                  <th>Title</th>
-                  <th>Source</th>
-                </tr>
-              </thead>
-              <tbody id="dev-profiles-body">
-                <tr><td colspan="4" class="empty">Loading…</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="card dev-editor-card">
-          <h2 style="margin-top:0" id="dev-editor-title">Editor</h2>
-          <p class="controls-hint" id="dev-editor-hint">Select a skill or create a new one.</p>
-          <form id="dev-editor-form" class="dev-editor-form" hidden>
-            <p class="controls-hint" id="dev-editor-origin" hidden></p>
-            <div class="toolbar" id="dev-seed-actions" style="margin:0 0 0.75rem;flex-wrap:wrap;gap:0.5rem;align-items:center" hidden>
-              <span class="badge info" id="dev-seed-badge" title="Seed provenance">seed</span>
-              <button type="button" class="btn" id="dev-seed-diff" title="Compare body to package seed">Diff seed</button>
-              <button type="button" class="btn" id="dev-seed-restore" title="Restore markdown body from package seed">Restore seed body</button>
-            </div>
-            <div class="field">
-              <label class="field-label-text" for="dev-id">Skill id (class)</label>
-              <input id="dev-id" class="mono" autocomplete="off" spellcheck="false" pattern="[a-z][a-z0-9-]{0,63}" required />
-              <p class="controls-hint">Lowercase slug: <code>injection</code>, <code>my-custom</code></p>
-            </div>
-            <div class="init-row-2">
-              <div class="field">
-                <label class="field-label-text" for="dev-title">Title</label>
-                <input id="dev-title" autocomplete="off" />
-              </div>
-              <div class="field">
-                <label class="init-check" style="margin-top:1.4rem">
-                  <input type="checkbox" id="dev-active" />
-                  <span>Active (bulk enqueue)</span>
-                </label>
-              </div>
-            </div>
-            <div class="field">
-              <label class="field-label-text" for="dev-description">Description</label>
-              <input id="dev-description" autocomplete="off" placeholder="Short operator blurb" />
-            </div>
-            <div class="field">
-              <label class="field-label-text">Approved tools (optional)</label>
-              <p class="controls-hint" style="margin:0 0 0.35rem">
-                Empty = full hunt tool set. When set, only checked tools are offered (plus
-                <code>submit_candidate</code> / <code>submit_none</code>).
-              </p>
-              <div id="dev-tools-checks" class="dev-tools-checks" style="display:flex;flex-wrap:wrap;gap:0.35rem 0.75rem;max-height:9rem;overflow:auto;padding:0.35rem 0"></div>
-              <label class="init-check" style="margin-top:0.35rem">
-                <input type="checkbox" id="dev-tools-unrestricted" checked />
-                <span>Use full default hunt tools (ignore checkboxes)</span>
-              </label>
-            </div>
-            <div class="field">
-              <label class="field-label-text" for="dev-body">Markdown body</label>
-              <textarea id="dev-body" class="dev-body mono" rows="18" spellcheck="false" required placeholder="# Hunt class body…"></textarea>
-              <pre id="dev-body-preview" class="dev-body-preview mono" hidden></pre>
-            </div>
-            <div class="modal-actions" style="justify-content:flex-start;gap:0.5rem;flex-wrap:wrap">
-              <button type="button" class="btn btn-primary" id="dev-edit">Edit</button>
-              <button type="submit" class="btn btn-primary" id="dev-save">Save</button>
-              <button type="button" class="btn" id="dev-cancel" hidden>Cancel</button>
-              <button type="button" class="btn btn-bad" id="dev-delete">Delete</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </section>
-
-    <!-- ========== Skill generator prompt ========== -->
-    <section id="panel-skillgen" class="tab-panel" data-dev-panel="skillgen" role="tabpanel" hidden>
-      <div class="page-hero" style="padding-top:0.75rem">
-        <div>
-          <h2 style="margin:0 0 0.35rem">Skill generator</h2>
-          <p style="margin:0">
-            System prompt used when authoring hunt skills (Dev “Generate from description” and run-time
-            dynamic skills). Operator edits are stored under
-            <code>config/prompts/generate_skill.md</code>; reset restores the package seed.
-          </p>
-        </div>
-      </div>
-
-      <div class="card dev-toolbar-card">
-        <div class="toolbar" style="margin-bottom:0;flex-wrap:wrap;gap:0.5rem;align-items:center">
-          <button type="button" class="btn btn-primary" id="btn-sg-save">Save</button>
-          <button type="button" class="btn" id="btn-sg-reseed" title="Remove operator override; use package seed">Reset to package</button>
-          <button type="button" class="btn" id="btn-sg-refresh">Refresh</button>
-          <span class="controls-hint" id="sg-meta" style="margin-left:auto"></span>
-        </div>
-      </div>
-
-      <div class="card" style="margin-top:0.75rem">
-        <div class="field" style="margin:0">
-          <label class="field-label-text" for="sg-body">Author prompt (markdown)</label>
-          <p class="controls-hint" id="sg-path-hint" style="margin:0.15rem 0 0.5rem"></p>
-          <textarea
-            id="sg-body"
-            class="dev-body mono"
-            rows="24"
-            spellcheck="false"
-            placeholder="# Generate hunt skill…"
-          ></textarea>
-        </div>
-      </div>
-    </section>
-
-    <!-- ========== Recon agents ========== -->
-    <section id="panel-recon" class="tab-panel" data-dev-panel="recon" role="tabpanel" hidden>
-      <div class="page-hero" style="padding-top:0.75rem">
-        <div>
-          <h2 style="margin:0 0 0.35rem">Recon agents</h2>
-          <p style="margin:0">
-            Sequential recon specialists run after mechanical inventory. <strong>Active</strong> agents run in
-            <code>order</code> on every recon; operator re-runs can pass <code>agent_ids</code> to select a subset.
-            <code>default-map</code> preserves legacy recon.md behavior when alone.
-          </p>
-        </div>
-      </div>
-
-      <div class="card dev-toolbar-card">
-        <div class="toolbar" style="margin-bottom:0;flex-wrap:wrap;gap:0.5rem;align-items:center">
-          <button type="button" class="btn btn-primary" id="btn-ra-new">+ New agent</button>
-          <button type="button" class="btn" id="btn-ra-reseed" title="Replace collection with package seed">Reseed from package</button>
-          <button type="button" class="btn" id="btn-ra-refresh">Refresh</button>
-          <span class="controls-hint" id="ra-meta" style="margin-left:auto"></span>
-        </div>
-      </div>
-
-      <div class="dev-layout">
-        <div class="card dev-list-card">
-          <h2 style="margin-top:0">Collection</h2>
-          <div class="table-wrap">
-            <table class="data" id="ra-agents-table">
-              <thead>
-                <tr>
-                  <th>Active</th>
-                  <th>Order</th>
-                  <th>Id</th>
-                  <th>Title</th>
-                  <th>Source</th>
-                </tr>
-              </thead>
-              <tbody id="ra-agents-body">
-                <tr><td colspan="5" class="empty">Loading…</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="card dev-editor-card">
-          <h2 style="margin-top:0" id="ra-editor-title">Editor</h2>
-          <p class="controls-hint" id="ra-editor-hint">Select an agent or create a new one.</p>
-          <form id="ra-editor-form" class="dev-editor-form" hidden>
-            <div class="field">
-              <label class="field-label-text" for="ra-id">Agent id</label>
-              <input id="ra-id" class="mono" autocomplete="off" spellcheck="false" pattern="[a-z][a-z0-9-]{0,63}" required />
-              <p class="controls-hint">Lowercase slug: <code>default-map</code>, <code>my-agent</code></p>
-            </div>
-            <div class="init-row-2">
-              <div class="field">
-                <label class="field-label-text" for="ra-title">Title</label>
-                <input id="ra-title" autocomplete="off" />
-              </div>
-              <div class="field">
-                <label class="init-check" style="margin-top:1.4rem">
-                  <input type="checkbox" id="ra-active" />
-                  <span>Active (run on recon)</span>
-                </label>
-              </div>
-            </div>
-            <div class="init-row-2">
-              <div class="field">
-                <label class="field-label-text" for="ra-order">Order</label>
-                <input id="ra-order" type="number" step="1" placeholder="10" />
-              </div>
-              <div class="field">
-                <label class="field-label-text" for="ra-mode">Mode</label>
-                <input id="ra-mode" class="mono" value="sequential" readonly />
-              </div>
-            </div>
-            <div class="init-row-2">
-              <div class="field">
-                <label class="field-label-text" for="ra-temperature">Temperature (optional)</label>
-                <input id="ra-temperature" type="number" step="0.05" min="0" max="2" placeholder="cfg default" />
-              </div>
-              <div class="field">
-                <label class="field-label-text" for="ra-max-rounds">Max tool rounds (optional)</label>
-                <input id="ra-max-rounds" type="number" step="1" min="1" placeholder="cfg default" />
-              </div>
-            </div>
-            <div class="field">
-              <label class="field-label-text" for="ra-tools">Tools allowlist (comma-separated, optional)</label>
-              <input id="ra-tools" class="mono" autocomplete="off" placeholder="list_dir, read_file, grep, submit_architecture" />
-            </div>
-            <div class="field">
-              <label class="field-label-text" for="ra-description">Description</label>
-              <input id="ra-description" autocomplete="off" placeholder="Short operator blurb" />
-            </div>
-            <div class="field">
-              <label class="field-label-text" for="ra-body">Markdown body</label>
-              <textarea id="ra-body" class="dev-body mono" rows="18" spellcheck="false" required placeholder="# Recon agent body…"></textarea>
-            </div>
-            <div class="modal-actions" style="justify-content:flex-start;gap:0.5rem">
-              <button type="submit" class="btn btn-primary" id="ra-save">Save</button>
-              <button type="button" class="btn btn-bad" id="ra-delete">Delete</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </section>
-
-    <!-- ========== Tools catalog + drafts ========== -->
-    <section id="panel-tools" class="tab-panel" data-dev-panel="tools" role="tabpanel" hidden>
-      <div class="page-hero" style="padding-top:0.75rem">
-        <div>
-          <h2 style="margin:0 0 0.35rem">Tools</h2>
-          <p style="margin:0">
-            Integrated agent tools (description + parameters) and AI tool drafts.
-            Drafts are validated with <code>scripts/validate_tool.py</code> / <code>toolgen.md</code>
-            before integrate. See also <a href="/tool-gaps">Tool gaps</a>.
-          </p>
-        </div>
-      </div>
-
-      <div class="card dev-toolbar-card">
-        <div class="toolbar" style="margin-bottom:0;flex-wrap:wrap;gap:0.5rem;align-items:center">
-          <button type="button" class="btn btn-primary" id="btn-tg-new">Generate tool…</button>
-          <button type="button" class="btn" id="btn-tg-refresh">Refresh</button>
-          <a class="btn" href="/tool-gaps">Open tool gaps</a>
-          <span class="controls-hint" id="tg-meta" style="margin-left:auto"></span>
-        </div>
-      </div>
-
-      <div class="card" id="tg-defaults-card" style="margin-top:0.75rem">
-        <h2 style="margin-top:0">Global default tools</h2>
-        <p class="controls-hint" style="margin:0 0 0.75rem">
-          Narrow the tools offered to recon / hunt / develop_poc by default.
-          <strong>Use built-in</strong> = full packet surface for that stage.
-          Per-skill allowlists can still narrow further. Critical submit tools are always kept.
-          Unrestricted shell is never enabled on code_static.
-        </p>
-        <div class="init-row-2" style="align-items:flex-start;gap:1rem">
-          <div class="field" style="flex:1;min-width:12rem">
-            <label class="field-label-text">Recon</label>
-            <label class="init-check" style="margin:0.25rem 0">
-              <input type="checkbox" id="tg-def-recon-builtin" checked />
-              <span>Use built-in defaults</span>
-            </label>
-            <div id="tg-def-recon-checks" class="dev-tools-checks" style="display:flex;flex-wrap:wrap;gap:0.35rem 0.75rem;max-height:10rem;overflow:auto;padding:0.35rem 0"></div>
-          </div>
-          <div class="field" style="flex:1;min-width:12rem">
-            <label class="field-label-text">Hunt</label>
-            <label class="init-check" style="margin:0.25rem 0">
-              <input type="checkbox" id="tg-def-hunt-builtin" checked />
-              <span>Use built-in defaults</span>
-            </label>
-            <div id="tg-def-hunt-checks" class="dev-tools-checks" style="display:flex;flex-wrap:wrap;gap:0.35rem 0.75rem;max-height:10rem;overflow:auto;padding:0.35rem 0"></div>
-          </div>
-          <div class="field" style="flex:1;min-width:12rem">
-            <label class="field-label-text">Develop PoC</label>
-            <label class="init-check" style="margin:0.25rem 0">
-              <input type="checkbox" id="tg-def-develop_poc-builtin" checked />
-              <span>Use built-in defaults</span>
-            </label>
-            <div id="tg-def-develop_poc-checks" class="dev-tools-checks" style="display:flex;flex-wrap:wrap;gap:0.35rem 0.75rem;max-height:10rem;overflow:auto;padding:0.35rem 0"></div>
-          </div>
-        </div>
-        <div class="modal-actions" style="justify-content:flex-start;gap:0.5rem;margin-top:0.5rem">
-          <button type="button" class="btn btn-primary" id="btn-tg-save-defaults">Save defaults</button>
-          <button type="button" class="btn" id="btn-tg-reset-defaults" title="Reset all stages to built-in">Reset all to built-in</button>
-          <span class="controls-hint" id="tg-defaults-meta"></span>
-        </div>
-      </div>
-
-      <div class="dev-layout">
-        <div class="card dev-list-card">
-          <h2 style="margin-top:0">Integrated tools</h2>
-          <div class="table-wrap">
-            <table class="data" id="tg-tools-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Stages</th>
-                  <th>Source</th>
-                </tr>
-              </thead>
-              <tbody id="tg-tools-body">
-                <tr><td colspan="3" class="empty">Loading…</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <h2 style="margin-top:1.25rem">Drafts</h2>
-          <div class="table-wrap">
-            <table class="data" id="tg-drafts-table">
-              <thead>
-                <tr>
-                  <th>Id</th>
-                  <th>Status</th>
-                  <th>Source</th>
-                </tr>
-              </thead>
-              <tbody id="tg-drafts-body">
-                <tr><td colspan="3" class="empty">None</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="card dev-editor-card">
-          <h2 style="margin-top:0" id="tg-detail-title">Tool detail</h2>
-          <p class="controls-hint" id="tg-detail-hint">Select an integrated tool or draft.</p>
-          <div id="tg-tool-detail" hidden>
-            <p id="tg-tool-desc" style="margin-top:0"></p>
-            <p class="controls-hint" id="tg-tool-stages"></p>
-            <div class="table-wrap">
-              <table class="data">
-                <thead>
-                  <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
-                </thead>
-                <tbody id="tg-params-body"></tbody>
-              </table>
-            </div>
-          </div>
-          <div id="tg-draft-detail" hidden>
-            <p class="controls-hint" id="tg-draft-status"></p>
-            <div class="modal-actions" style="justify-content:flex-start;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.75rem">
-              <button type="button" class="btn btn-primary" id="btn-tg-open-wizard">Open wizard</button>
-              <button type="button" class="btn" id="btn-tg-validate">Validate</button>
-              <button type="button" class="btn" id="btn-tg-export">Export</button>
-              <button type="button" class="btn btn-bad" id="btn-tg-delete-draft">Delete</button>
-            </div>
-            <div class="field">
-              <label class="field-label-text">Spec</label>
-              <textarea id="tg-draft-spec" class="dev-body mono" rows="8" spellcheck="false"></textarea>
-            </div>
-            <div class="field">
-              <label class="field-label-text">Impl</label>
-              <textarea id="tg-draft-impl" class="dev-body mono" rows="10" spellcheck="false"></textarea>
-            </div>
-            <div class="field">
-              <label class="field-label-text">Schema JSON</label>
-              <textarea id="tg-draft-schema" class="dev-body mono" rows="6" spellcheck="false"></textarea>
-            </div>
-            <button type="button" class="btn btn-primary" id="btn-tg-save-draft">Save draft files</button>
-            <pre id="tg-validation-out" class="mono" style="white-space:pre-wrap;font-size:0.85rem;margin-top:0.75rem"></pre>
-          </div>
-        </div>
-      </div>
-    </section>
+    <section class="dev-panel" data-dev-panel="skills" role="tabpanel" aria-label="Hunt skills"></section>
+    <section class="dev-panel" data-dev-panel="recon" role="tabpanel" aria-label="Recon agents" hidden></section>
+    <section class="dev-panel" data-dev-panel="tools" role="tabpanel" aria-label="Tools" hidden></section>
+    <section class="dev-panel dev-panel--lab" data-dev-panel="lab" role="tabpanel" aria-label="Tool lab" hidden></section>
   </main>
 
-  <div class="modal-backdrop" id="toolgen-wizard-modal">
-    <div class="modal" role="dialog" aria-labelledby="toolgen-wizard-title" aria-modal="true" style="max-width:42rem">
-      <header>
-        <h2 id="toolgen-wizard-title">Generate agent tool</h2>
-        <p class="controls-hint">
-          Walk through brief → prompt slots → AI spec/impl → validate → integrate.
-          Rules: <code>toolgen.md</code>. Drafts never run until Integrate.
-        </p>
-        <p class="controls-hint" id="toolgen-step-label">Step 1 of 6</p>
-      </header>
-      <div id="toolgen-step-1">
-        <div class="field">
-          <label class="field-label-text" for="tgw-brief">Brief / problem</label>
-          <textarea id="tgw-brief" class="dev-body mono" rows="5" placeholder="What capability is missing and why?"></textarea>
-        </div>
-        <div class="init-row-2">
-          <div class="field">
-            <label class="field-label-text" for="tgw-id">Suggested tool id</label>
-            <input id="tgw-id" class="mono" placeholder="ast_query" pattern="[a-z][a-z0-9_]{0,47}" />
-          </div>
-          <div class="field">
-            <label class="field-label-text" for="tgw-risk">Risk class</label>
-            <select id="tgw-risk">
-              <option value="read_only" selected>read_only</option>
-              <option value="evidence_write">evidence_write</option>
-              <option value="exec">exec (not for code_static)</option>
-            </select>
-          </div>
-        </div>
-        <div class="field">
-          <label class="field-label-text">Stages</label>
-          <label class="init-check"><input type="checkbox" class="tgw-stage" value="recon" /> recon</label>
-          <label class="init-check"><input type="checkbox" class="tgw-stage" value="hunt" checked /> hunt</label>
-          <label class="init-check"><input type="checkbox" class="tgw-stage" value="develop_poc" /> develop_poc</label>
-        </div>
-        <div class="field">
-          <label class="field-label-text" for="tgw-extend">Prefer extend existing (optional)</label>
-          <input id="tgw-extend" class="mono" placeholder="grep" />
-        </div>
-      </div>
-      <div id="toolgen-step-2" hidden>
-        <p class="controls-hint">These slots fill the AI authoring prompts. Preview before generating.</p>
-        <div class="field">
-          <label class="field-label-text" for="tgw-problem">Problem statement</label>
-          <textarea id="tgw-problem" class="dev-body mono" rows="3"></textarea>
-        </div>
-        <div class="field">
-          <label class="field-label-text" for="tgw-nongoals">Non-goals</label>
-          <textarea id="tgw-nongoals" class="dev-body mono" rows="2">No host shell; no target writes; no unrestricted network.</textarea>
-        </div>
-        <div class="field">
-          <label class="field-label-text" for="tgw-io">I/O contract (example args + ok result)</label>
-          <textarea id="tgw-io" class="dev-body mono" rows="3" placeholder='{"path":"…"} → {"ok":true,…}'></textarea>
-        </div>
-        <div class="field">
-          <label class="field-label-text" for="tgw-safety">Safety constraints</label>
-          <textarea id="tgw-safety" class="dev-body mono" rows="2">Use resolve_target_path / soft jail for paths; return {ok: bool}.</textarea>
-        </div>
-        <button type="button" class="btn" id="tgw-preview-prompts">Preview prompts (spec stage)</button>
-        <pre id="tgw-prompt-preview" class="mono" style="white-space:pre-wrap;font-size:0.8rem;max-height:12rem;overflow:auto;margin-top:0.5rem"></pre>
-      </div>
-      <div id="toolgen-step-3" hidden>
-        <p class="controls-hint">Generate or edit the tool SPEC (markdown contract).</p>
-        <button type="button" class="btn btn-primary" id="tgw-gen-spec">Generate spec with AI</button>
-        <div class="field" style="margin-top:0.5rem">
-          <textarea id="tgw-spec" class="dev-body mono" rows="12" spellcheck="false"></textarea>
-        </div>
-      </div>
-      <div id="toolgen-step-4" hidden>
-        <p class="controls-hint">Generate implementation + schema + test stub (not live until integrate).</p>
-        <button type="button" class="btn btn-primary" id="tgw-gen-impl">Generate implementation</button>
-        <div class="field" style="margin-top:0.5rem">
-          <label class="field-label-text">impl.py</label>
-          <textarea id="tgw-impl" class="dev-body mono" rows="8" spellcheck="false"></textarea>
-        </div>
-        <div class="field">
-          <label class="field-label-text">schema.json</label>
-          <textarea id="tgw-schema" class="dev-body mono" rows="6" spellcheck="false"></textarea>
-        </div>
-      </div>
-      <div id="toolgen-step-5" hidden>
-        <p class="controls-hint">Deterministic validation (<code>validate_tool</code>). Optional AI fix on hard fails.</p>
-        <div class="modal-actions" style="justify-content:flex-start;gap:0.5rem">
-          <button type="button" class="btn btn-primary" id="tgw-validate">Run validation</button>
-          <button type="button" class="btn" id="tgw-ai-fix">AI fix</button>
-        </div>
-        <pre id="tgw-validation" class="mono" style="white-space:pre-wrap;font-size:0.85rem;margin-top:0.75rem"></pre>
-      </div>
-      <div id="toolgen-step-6" hidden>
-        <p class="controls-hint">Dry-run then apply. Writes package sources via extra_registry; review git diff after.</p>
-        <div class="modal-actions" style="justify-content:flex-start;gap:0.5rem">
-          <button type="button" class="btn" id="tgw-dry-run">Dry-run integrate</button>
-          <button type="button" class="btn btn-primary" id="tgw-apply">Apply integrate</button>
-        </div>
-        <pre id="tgw-integrate" class="mono" style="white-space:pre-wrap;font-size:0.85rem;margin-top:0.75rem"></pre>
-      </div>
-      <div class="modal-actions">
-        <button type="button" class="btn" id="tgw-cancel">Close</button>
-        <button type="button" class="btn" id="tgw-back" hidden>Back</button>
-        <button type="button" class="btn btn-primary" id="tgw-next">Next</button>
-      </div>
-    </div>
-  </div>
-
+  <!-- Hunt skills: generate from brief (+ author prompt) -->
   <div class="modal-backdrop" id="dev-generate-modal">
-    <div class="modal" role="dialog" aria-labelledby="dev-generate-title" aria-modal="true">
+    <div class="modal dev-modal" role="dialog" aria-labelledby="gen-title" aria-modal="true">
       <header>
-        <h2 id="dev-generate-title">Generate hunt skill</h2>
-        <p class="controls-hint">
-          Describe the custom hunt. The model authors a skill body (Mission / Method / Submit).
-          Saved skills get <code>source=generated</code> and stay inactive unless you activate them.
-        </p>
+        <h2 id="gen-title">Generate hunt skill</h2>
+        <p class="dev-hint">Describe the hunt. The model writes a skill body (Mission / Method / Submit). Generated skills stay inactive unless you activate them.</p>
       </header>
-      <div class="field">
-        <label class="field-label-text" for="dev-generate-brief">Description / brief</label>
-        <textarea id="dev-generate-brief" class="dev-body mono" rows="8" spellcheck="true" placeholder="e.g. Hunt for JWT algorithm confusion and kid path traversal in our API gateway auth middleware…"></textarea>
-      </div>
-      <div class="init-row-2">
-        <div class="field">
-          <label class="field-label-text" for="dev-generate-id">Suggested id (optional)</label>
-          <input id="dev-generate-id" class="mono" autocomplete="off" spellcheck="false" placeholder="jwt-confusion" pattern="[a-z][a-z0-9-]{0,63}" />
-        </div>
-        <div class="field">
-          <label class="init-check" style="margin-top:1.4rem">
-            <input type="checkbox" id="dev-generate-active" />
-            <span>Activate for bulk enqueue</span>
-          </label>
-          <label class="init-check" style="margin-top:0.5rem">
-            <input type="checkbox" id="dev-generate-save" checked />
-            <span>Save to collection</span>
-          </label>
+      <label class="dev-field"><span class="vf-section-label">Brief</span>
+        <textarea id="gen-brief" class="dev-textarea dev-textarea--sm" rows="6" placeholder="e.g. JWT algorithm confusion and kid path traversal in the API gateway auth middleware"></textarea></label>
+      <div class="dev-grid2">
+        <label class="dev-field"><span class="vf-section-label">Suggested id (optional)</span>
+          <input id="gen-id" class="vf-mono" autocomplete="off" spellcheck="false" placeholder="jwt-confusion" /></label>
+        <div class="dev-field dev-inline-checks">
+          <label class="dev-check"><input type="checkbox" id="gen-active" /> Activate</label>
+          <label class="dev-check"><input type="checkbox" id="gen-save" checked /> Save to collection</label>
         </div>
       </div>
+      <details class="dev-author" id="gen-author">
+        <summary>Author prompt <span class="vf-faint">(system prompt for generation and run-time dynamic skills)</span></summary>
+        <p class="dev-hint" id="gen-author-meta"></p>
+        <textarea id="gen-author-body" class="dev-textarea vf-mono" rows="14" spellcheck="false"></textarea>
+        <div class="dev-actions">
+          <button type="button" class="vf-btn" id="gen-author-save">Save prompt</button>
+          <button type="button" class="vf-btn vf-btn--ghost" id="gen-author-reset">Reset to package</button>
+        </div>
+      </details>
       <div class="modal-actions">
-        <button type="button" class="btn" id="dev-generate-cancel">Cancel</button>
-        <button type="button" class="btn btn-primary" id="dev-generate-submit">Generate</button>
+        <button type="button" class="vf-btn" id="gen-cancel">Cancel</button>
+        <button type="button" class="vf-btn vf-btn--primary" id="gen-submit">Generate</button>
       </div>
     </div>
   </div>
 
-  <div class="modal-backdrop" id="dev-seed-diff-modal">
-    <div class="modal modal-wide" role="dialog" aria-labelledby="dev-seed-diff-title" aria-modal="true" style="max-width:min(96vw,56rem)">
-      <header>
-        <h2 id="dev-seed-diff-title">Seed diff</h2>
-        <p class="controls-hint" id="dev-seed-diff-meta" style="margin:0"></p>
-      </header>
-      <div class="init-row-2" style="align-items:stretch;gap:0.75rem">
-        <div class="field" style="flex:1;min-width:12rem">
-          <label class="field-label-text">Current body</label>
-          <pre id="dev-seed-diff-current" class="dev-body-preview mono" style="max-height:28rem;overflow:auto;margin:0;white-space:pre-wrap"></pre>
-        </div>
-        <div class="field" style="flex:1;min-width:12rem">
-          <label class="field-label-text">Package seed</label>
-          <pre id="dev-seed-diff-seed" class="dev-body-preview mono" style="max-height:28rem;overflow:auto;margin:0;white-space:pre-wrap"></pre>
-        </div>
-      </div>
-      <div class="modal-actions">
-        <button type="button" class="btn" id="dev-seed-diff-close">Close</button>
-      </div>
-    </div>
-  </div>
-
+  <!-- Setup pack import -->
   <div class="modal-backdrop" id="dev-import-modal">
-    <div class="modal" role="dialog" aria-labelledby="dev-import-title" aria-modal="true">
+    <div class="modal dev-modal" role="dialog" aria-labelledby="imp-title" aria-modal="true">
       <header>
-        <h2 id="dev-import-title">Import Dev setup</h2>
-        <p class="controls-hint">
-          Paste or upload a <code>vulnforge_dev_setup.json</code> export (hunt skills, recon agents,
-          skill generator override, tool drafts, UI settings). Legacy single-collection JSON
-          (<code>hunt_collection</code>, <code>recon_collection</code>, tool drafts) still works.
-        </p>
+        <h2 id="imp-title">Import setup</h2>
+        <p class="dev-hint">A <code>vulnforge_dev_setup.json</code> export. Legacy single-collection JSON (hunt, recon, tool drafts) also works. Stored API keys are kept.</p>
       </header>
-      <div class="field">
-        <label class="field-label-text">Mode</label>
-        <div class="strategy-list" role="radiogroup">
-          <label class="strategy-option">
-            <input type="radio" name="dev-import-mode" value="merge" checked />
-            <span class="strategy-option-main">
-              <span class="strategy-option-title">Merge</span>
-              <span class="strategy-option-desc">Upsert by id; keep items not in the file.</span>
-            </span>
-          </label>
-          <label class="strategy-option">
-            <input type="radio" name="dev-import-mode" value="replace" />
-            <span class="strategy-option-main">
-              <span class="strategy-option-title">Replace</span>
-              <span class="strategy-option-desc">Wipe each imported collection, then load from this file.</span>
-            </span>
-          </label>
+      <div class="dev-field"><span class="vf-section-label">Sections</span>
+        <div class="dev-inline-checks">
+          <label class="dev-check"><input type="checkbox" class="imp-section" value="hunt_profiles" checked /> Hunt skills</label>
+          <label class="dev-check"><input type="checkbox" class="imp-section" value="recon_agents" checked /> Recon agents</label>
+          <label class="dev-check"><input type="checkbox" class="imp-section" value="skill_generator" checked /> Author prompt</label>
+          <label class="dev-check"><input type="checkbox" class="imp-section" value="tool_drafts" checked /> Tool drafts</label>
+          <label class="dev-check"><input type="checkbox" class="imp-section" value="ui_settings" checked /> UI settings</label>
         </div>
       </div>
-      <div class="field">
-        <label class="field-label-text" for="dev-import-file">Or choose a file</label>
-        <input type="file" id="dev-import-file" accept="application/json,.json" />
+      <div class="dev-field"><span class="vf-section-label">Mode</span>
+        <div class="dev-inline-checks">
+          <label class="dev-check"><input type="radio" name="imp-mode" value="merge" checked /> Merge: upsert by id, keep the rest</label>
+          <label class="dev-check"><input type="radio" name="imp-mode" value="replace" /> Replace: wipe each selected collection first</label>
+        </div>
       </div>
-      <div class="field">
-        <label class="field-label-text" for="dev-import-json">JSON</label>
-        <textarea id="dev-import-json" class="dev-body mono" rows="12" spellcheck="false" placeholder='{"format":"vulnforge.dev_setup/v1","sections":{...}}'></textarea>
-      </div>
+      <label class="dev-field"><span class="vf-section-label">File</span>
+        <input type="file" id="imp-file" accept="application/json,.json" /></label>
+      <label class="dev-field"><span class="vf-section-label">Or paste JSON</span>
+        <textarea id="imp-json" class="dev-textarea dev-textarea--sm vf-mono" rows="8" spellcheck="false" placeholder='{"format":"vulnforge.dev_setup/v1","sections":{…}}'></textarea></label>
       <div class="modal-actions">
-        <button type="button" class="btn" id="dev-import-cancel">Cancel</button>
-        <button type="button" class="btn btn-primary" id="dev-import-submit">Import setup</button>
+        <button type="button" class="vf-btn" id="imp-cancel">Cancel</button>
+        <button type="button" class="vf-btn vf-btn--primary" id="imp-submit">Import</button>
       </div>
     </div>
   </div>
 
-  <div id="toast" class="toast" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <div id="ai-sheet" class="ai-sheet" hidden>
     <header class="ai-head">
       <div id="ai-title">Across runs</div>
@@ -657,9 +121,17 @@
     </header>
     <div id="operator-chat-root" class="operator-chat-root" data-chat-scope="home"></div>
   </div>
+
   <script src="/static/mission_overview_helpers.js"></script>
   <script src="/static/app.js"></script>
-  <script src="/static/dev.js"></script>
+  <script src="/static/pages/dev/helpers.js"></script>
+  <script src="/static/pages/dev/collection.js"></script>
+  <script src="/static/pages/dev/skills.js"></script>
+  <script src="/static/pages/dev/recon.js"></script>
+  <script src="/static/pages/dev/tools.js"></script>
+  <script src="/static/pages/dev/lab.js"></script>
+  <script src="/static/pages/dev/setup.js"></script>
+  <script src="/static/pages/dev/router.js"></script>
   <script src="/static/chat.js"></script>
 </body>
 </html>
