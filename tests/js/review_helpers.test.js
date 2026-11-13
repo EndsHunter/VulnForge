@@ -166,3 +166,61 @@ describe("mechGates / disproveJudges / pocStatus", () => {
     assert.equal(H.ageLabel("nope", now), "");
   });
 });
+
+describe("evidence tier (server-derived label)", () => {
+  const RANK = { ungated: 0, gated: 10, stood: 20, reproduced: 40 };
+  const tf = (id, state, sev, tier, extra = {}) => ({
+    ...f(id, state, sev),
+    evidence_tier: { tier, rank: RANK[tier], summary: `${tier} summary`, ...extra },
+  });
+
+  it("sorts tier first, then severity, then state, then newest", () => {
+    const list = [
+      tf(1, "needs_human", "CRITICAL", "gated"),
+      tf(2, "needs_human", "LOW", "reproduced"),
+      tf(3, "needs_human", "HIGH", "stood"),
+      tf(4, "needs_human", "LOW", "stood"),
+      tf(5, "candidate", "HIGH", "stood"),
+      tf(6, "needs_human", "HIGH", "stood"),
+      tf(7, "candidate", "CRITICAL", "ungated"),
+    ];
+    assert.deepEqual(list.slice().sort(H.compareQueue).map((x) => x.id), [2, 6, 3, 5, 4, 1, 7]);
+  });
+
+  it("falls back to the old order when the API sent no tier", () => {
+    const list = [f(1, "needs_human", "LOW"), f(2, "needs_human", "HIGH")];
+    assert.deepEqual(list.slice().sort(H.compareQueue).map((x) => x.id), [2, 1]);
+    assert.equal(H.tierOf(f(1, "needs_human", "LOW")).rank, -1);
+    assert.equal(H.tierPill(f(1, "needs_human", "LOW")), null);
+    // Unknown tier name is treated as missing, not guessed.
+    assert.equal(H.tierOf({ id: 1, evidence_tier: { tier: "proven" } }).tier, "");
+    // Rank comes from the name when the server omitted it.
+    assert.equal(H.tierOf({ id: 1, evidence_tier: { tier: "stood" } }).rank, 20);
+  });
+
+  it("pill shows tier label and a PoC run that did not raise it", () => {
+    const p = H.tierPill(
+      tf(1, "needs_human", "HIGH", "stood", { poc: { verdict: "signal_absent", raises_tier: false } })
+    );
+    assert.equal(p.tier, "stood");
+    assert.equal(p.label, "Stood");
+    assert.equal(p.steps, 2);
+    assert.equal(p.side, "signal absent");
+    assert.equal(p.title, "stood summary");
+    const r = H.tierPill(
+      tf(2, "needs_human", "HIGH", "reproduced", { poc: { verdict: "signal_observed", raises_tier: true } })
+    );
+    assert.equal(r.label, "Reproduced");
+    assert.equal(r.side, "");
+    assert.equal(r.steps, 3);
+    const q = H.tierPill(tf(3, "needs_human", "HIGH", "gated", { poc: { verdict: null, pending: true } }));
+    assert.equal(q.side, "PoC queued");
+  });
+
+  it("never uses proof wording in tier labels", () => {
+    for (const t of Object.keys(RANK)) {
+      const p = H.tierPill(tf(1, "needs_human", "HIGH", t));
+      assert.doesNotMatch(p.label, /proven|verified/i);
+    }
+  });
+});

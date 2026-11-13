@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from vulnforge.db import Database
+from vulnforge.evidence_tier import evidence_tier
 
 
 @dataclass
@@ -651,6 +652,8 @@ def run_snapshot(run: RunRef) -> dict[str, Any]:
             or f.get("state") == "superseded"
         )
         f["severity"] = str(b.get("severity_claim") or "unknown").lower()
+        # Derived label only (vulnforge/evidence_tier.py); never changes state.
+        f["evidence_tier"] = evidence_tier(b, f.get("state"))
 
     try:
         from vulnforge.db import Database

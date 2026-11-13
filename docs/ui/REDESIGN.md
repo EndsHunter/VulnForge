@@ -77,14 +77,15 @@ owns `app.py`. Make the frontend degrade gracefully when the field is missing.
 
 ### Review (Triage Desk, mode `report`)
 Three columns: **queue | finding | verdict rail**. On narrow screens they stack.
-- Queue: findings sorted by severity, then state. Filter chips: Needs review (default) /
+- Queue: findings sorted by evidence tier (`finding.evidence_tier`, server-derived), then
+  severity, then state. Each row shows a tier pill. Filter chips: Needs review (default) /
   Candidate / Confirmed / Rejected / Near-dup / All. Keep search. Each row shows a severity
   tag, `#id`, a state pill, the title, `path:line` and the class. Decided rows are dimmed.
 - Finding: severity, state, class and "filed by hunt #n · age" → title → summary → **data
   flow** cards (source → flow → sink, built from citations / trace data when present,
   otherwise the cited locations in order) → **cited code** with the cited lines highlighted
   (reuse the existing context loader) → "Open in Atlas" (`VulnForgeModes.goExplorer`).
-- Verdict rail: mechanical gates checklist (`validationReasonsOf`), adversarial disprove
+- Verdict rail: evidence tier at the top, then mechanical gates checklist (`validationReasonsOf`), adversarial disprove
   judges (`llmVerifyMeta`) with the weak-signal note, evidence pack link, PoC status and
   buttons (reuse Develop PoC modal / Run in sandbox), reviewer note plus **Accept / Reject**.
   These go through the existing HITL respond path. Never set state directly.

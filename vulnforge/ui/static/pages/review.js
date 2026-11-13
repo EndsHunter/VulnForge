@@ -3,8 +3,8 @@
  *
  * Two parts:
  *  1. ReviewHelpers — pure functions (UMD, node --test): queue order/filter/counts,
- *     next-undecided selection, data-flow trace, mech gate checklist, disprove judges,
- *     PoC status line. report.js renders with these.
+ *     evidence tier pill, next-undecided selection, data-flow trace, mech gate checklist,
+ *     disprove judges, PoC status line. report.js renders with these.
  *  2. window.VFPages.review — page lifecycle + J/K/A/R/E keys (browser only). The
  *     rendering itself lives in report.js (window.VulnForgeReport).
  *
@@ -28,6 +28,16 @@
     rejected_human: 5,
     superseded: 6,
   };
+  /**
+   * Evidence tier ranks, weakest first. The tier itself is derived server side by
+   * vulnforge/evidence_tier.py and arrives as finding.evidence_tier; this file only
+   * reads it (no second derivation). 30 is reserved for a future tier.
+   */
+  const TIER_RANK = { ungated: 0, gated: 10, stood: 20, reproduced: 40 };
+  const TIER_LABEL = { ungated: "Not gated", gated: "Gated", stood: "Stood", reproduced: "Reproduced" };
+  /** Filled segments of the 3-step strength meter on the pill. */
+  const TIER_STEPS = { ungated: 0, gated: 1, stood: 2, reproduced: 3 };
+
   /** States a person still has to decide on. */
   const UNDECIDED = new Set(["needs_human", "candidate"]);
 
@@ -91,8 +101,51 @@
     return { tone: "candidate", label: st || "unknown" };
   }
 
-  /** Queue order: severity desc, then state (needs review first), then newest id. */
+  /**
+   * Evidence tier of a finding as sent by the server. Missing (older API) → tier ""
+   * with rank -1, so every such row ties and the old severity order still applies.
+   * @returns {{ tier: string, rank: number, label: string, summary: string, steps: number,
+   *   poc: object|null, disprove: object|null }}
+   */
+  function tierOf(f) {
+    const t = f && f.evidence_tier && typeof f.evidence_tier === "object" ? f.evidence_tier : null;
+    const name = t ? String(t.tier || "").toLowerCase() : "";
+    if (!name || !(name in TIER_RANK)) {
+      return { tier: "", rank: -1, label: "", summary: "", steps: 0, poc: null, disprove: null };
+    }
+    return {
+      tier: name,
+      rank: Number.isFinite(Number(t.rank)) ? Number(t.rank) : TIER_RANK[name],
+      label: TIER_LABEL[name],
+      summary: String(t.summary || ""),
+      steps: TIER_STEPS[name],
+      poc: t.poc && typeof t.poc === "object" ? t.poc : null,
+      disprove: t.disprove && typeof t.disprove === "object" ? t.disprove : null,
+    };
+  }
+
+  /**
+   * Pill data for the queue row / verdict rail. `side` is the PoC verdict that did not
+   * raise the tier (signal_absent, poc_broken, …), shown next to it. Never a state.
+   */
+  function tierPill(f) {
+    const t = tierOf(f);
+    if (!t.tier) return null;
+    const poc = t.poc;
+    const side = poc && !poc.raises_tier
+      ? poc.verdict ? String(poc.verdict).replace(/_/g, " ") : poc.pending ? "PoC queued" : ""
+      : "";
+    return { tier: t.tier, label: t.label, steps: t.steps, title: t.summary, side };
+  }
+
+  /**
+   * Queue order: evidence tier desc, then severity desc, then state (needs review
+   * first), then newest id.
+   */
   function compareQueue(a, b) {
+    const ra = tierOf(a).rank;
+    const rb = tierOf(b).rank;
+    if (ra !== rb) return rb - ra;
     const sa = SEVERITY_RANK[severityOf(a)] || 0;
     const sb = SEVERITY_RANK[severityOf(b)] || 0;
     if (sa !== sb) return sb - sa;
@@ -361,6 +414,9 @@
   return {
     FILTERS,
     MECH_GATES,
+    TIER_RANK,
+    tierOf,
+    tierPill,
     sevKey,
     sevLabel,
     statePill,

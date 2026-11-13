@@ -89,6 +89,21 @@ body[data-page="run"] .mode-panel[data-mode-panel="report"].active {
 .rv-queue-row.near-dup-cluster-start { margin-top: 8px; box-shadow: inset 0 1px 0 var(--border-strong); }
 .rv-queue-top { display: flex; align-items: center; gap: 8px; }
 .rv-spacer { flex: 1; }
+
+/* Evidence tier pill (derived label, never a state). Strength is the filled meter,
+   not a new colour: tokens only, so it cannot be read as the Confirmed pill. */
+.rv-tier { gap: 6px; font-weight: 500; }
+.rv-tier.is-ungated { color: var(--text-faint); }
+.rv-tier.is-gated { color: var(--text-soft); border-color: var(--border-strong); }
+.rv-tier.is-stood { color: var(--text); border-color: var(--border-strong); }
+.rv-tier.is-reproduced { color: var(--text-bright); border-color: var(--accent-dim); }
+.rv-tier-bars { display: inline-flex; gap: 2px; align-items: flex-end; }
+.rv-tier-bars i { display: block; width: 3px; height: 8px; border-radius: 1px; background: var(--border-strong); }
+.rv-tier-bars i:nth-child(1) { height: 5px; }
+.rv-tier-bars i:nth-child(2) { height: 7px; }
+.rv-tier-bars i:nth-child(3) { height: 9px; }
+.rv-tier-bars i.is-on { background: var(--accent-mid); }
+.rv-tier-side { font-size: 11px; color: var(--text-faint); }
 .rv-queue-title-text { display: block; font-weight: 500; margin-top: 6px; line-height: 1.35; }
 .rv-queue-sub {
   display: block;
