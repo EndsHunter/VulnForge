@@ -88,7 +88,7 @@ All new fields are optional, and v1 fields stay.
 | **R6 plan hunts** | no | `hunt_focus` | Built from flows (flow × class, path hints = the flow's files) plus component gaps. The hunt packet gets the flow slice. |
 
 Ralph order: R0 → R1 → (R2 ‖ R4) → R3 fan-out → R5 → R6. `continue_recon`,
-priorities and Mission/Atlas "Run recon with brief" keep working. A brief can
+priorities and Atlas "Run recon with brief" keep working. A brief can
 target a step (for example "trace flows from /admin").
 
 ## Atlas flow map (UI)
