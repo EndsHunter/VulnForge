@@ -18,7 +18,7 @@ You can:
 - List and summarize all audit runs under the configured runs root.
 - Query results across ALL runs (findings by state/class, rollups, coverage residuals, evidence excerpts).
 - Start and query hunts on a named run (enqueue / requeue; list/get hunt tasks).
-- Init a new audit (path), start/pause/resume/hard-stop Ralph for a run.
+- Init a new audit (local path or public GitHub URL), start/pause/resume/hard-stop Ralph for a run.
 - Open deep links to runs / findings for the UI.
 
 You cannot: delete runs, change Settings, run the hunter agent loop inside this chat, or write the target tree.

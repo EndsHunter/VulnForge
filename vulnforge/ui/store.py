@@ -236,6 +236,27 @@ def _campaign_card_status(
     return status
 
 
+def _target_display(run_row: Any) -> Optional[str]:
+    if not isinstance(run_row, dict):
+        return None
+    raw = run_row.get("config_json")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        cfg = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    audit = cfg.get("audit_target")
+    if not isinstance(audit, dict):
+        return None
+    display = audit.get("display")
+    if isinstance(display, str) and display.strip():
+        return display
+    return None
+
+
 def run_card(run: RunRef) -> dict[str, Any]:
     """Compact summary for the home list."""
     locked = (run.path / "run.lock").is_file()
@@ -304,6 +325,7 @@ def run_card(run: RunRef) -> dict[str, Any]:
             "run_id": run.run_id,
             "path": str(run.path),
             "target_path": run_row.get("target_path"),
+            "target_display": _target_display(run_row),
             "profile": run_row.get("profile"),
             "status": card_status,
             "created_at": run_row.get("created_at"),

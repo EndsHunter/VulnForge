@@ -262,6 +262,7 @@ function matchesQuery(r, q) {
   const blob = [
     r.target_id,
     r.run_id,
+    r.target_display,
     r.target_path,
     r.profile,
     r.key,
@@ -317,7 +318,7 @@ function runStatusLabel(r, group) {
 function renderRunRow(r, group) {
   // Home redesign (docs/ui/REDESIGN.md): status pill | run | pipeline | last activity | tokens.
   const H = globalThis.HomeHelpers;
-  const tpath = r.target_path || "";
+  const tpath = r.target_display || r.target_path || "";
   const runLabel = `${r.target_id || ""} / ${r.run_id || ""}`;
   const last = lastEventLine(r);
   const st = H ? H.runStatus(r) : statusChip(r);
@@ -802,7 +803,7 @@ function setInitProfile(profile) {
 function syncInitProfileFields() {
   const hint = $("#init-target-hint");
   if (hint) {
-    hint.textContent = "Source folder or single source file (source analysis only)";
+    hint.textContent = "Local folder or file, or a public GitHub URL (repo, tree, or blob). Source analysis only.";
   }
   const fbf = document.querySelector('input[name="init-strategy"][value="file_by_file"]');
   if (fbf) fbf.disabled = false;
@@ -1484,7 +1485,7 @@ async function submitInit(ev) {
     $("#init-target")?.focus();
     return;
   }
-  if (/\.(exe|dll)$/i.test(target.replace(/[\\/]+$/, ""))) {
+  if (!target.includes("://") && /\.(exe|dll)$/i.test(target.replace(/[\\/]+$/, ""))) {
     toast("PE binaries are not supported — choose a source tree", true);
     $("#init-target")?.focus();
     return;
@@ -3910,7 +3911,7 @@ async function loadRunFull() {
   );
   fillRunSwitch(snap);
   $("#run-subtitle") &&
-    ($("#run-subtitle").textContent = snap.target_path || snap.path || "");
+    ($("#run-subtitle").textContent = snap.target_display || snap.target_path || snap.path || "");
   window.__VF_cov_policy = snap.coverage_policy || { mode: "auto" };
   window.__VF_hunt_classes = snap.hunt_classes || window.__VF_hunt_classes || {};
   // Shared for report mode + evidence deep-links

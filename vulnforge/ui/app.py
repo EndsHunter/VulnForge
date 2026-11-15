@@ -1188,10 +1188,17 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         class Args:
             pass
 
+        from vulnforge.audit_target import GitHubSpec, TargetError, parse_target
         from vulnforge.util import is_pe_file
 
+        raw = body.target
+        try:
+            spec = parse_target(raw)
+        except TargetError as e:
+            raise HTTPException(400, str(e)) from e
+
         args = Args()
-        args.target = Path(body.target)
+        args.target = raw
         profile_raw = (body.profile or "").strip() or None
         args.profile = profile_raw
         args.runs_root = app.state.runs_root
@@ -1227,19 +1234,20 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
         args.diff = (body.diff or "").strip() or None
         args.diff_depth = body.diff_depth
 
-        profile_n = (args.profile or "code_static").strip().lower()
-        if not args.target.exists():
-            raise HTTPException(400, f"target not found: {body.target}")
-        if is_pe_file(args.target):
-            raise HTTPException(
-                400,
-                f"PE binaries are not supported (source analysis only): {body.target}",
-            )
-        if not args.target.is_dir() and not args.target.is_file():
-            raise HTTPException(
-                400,
-                f"target must be a directory or a single file: {body.target}",
-            )
+        if not isinstance(spec, GitHubSpec):
+            local = Path(raw).expanduser()
+            if not local.exists():
+                raise HTTPException(400, f"target not found: {body.target}")
+            if is_pe_file(local):
+                raise HTTPException(
+                    400,
+                    f"PE binaries are not supported (source analysis only): {body.target}",
+                )
+            if not local.is_dir() and not local.is_file():
+                raise HTTPException(
+                    400,
+                    f"target must be a directory or a single file: {body.target}",
+                )
         if args.strategy == "recon_docs" and args.docs_path is None:
             raise HTTPException(400, "recon_docs strategy requires docs_path")
         if args.strategy == "recon_docs" and not args.docs_path.exists():
@@ -1255,7 +1263,7 @@ def create_app(runs_root: Optional[Path] = None) -> FastAPI:
                 "phase": "queued",
                 "message": "Starting init...",
                 "percent": 0,
-                "target": str(args.target),
+                "target": raw,
                 "strategy": args.strategy,
             },
         )
