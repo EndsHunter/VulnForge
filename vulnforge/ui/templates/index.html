@@ -62,7 +62,7 @@
     <div class="modal modal-init" role="dialog" aria-labelledby="init-modal-title" aria-modal="true">
       <header class="modal-init-header">
         <h2 id="init-modal-title">New audit</h2>
-        <p class="modal-init-sub">Point VulnForge at a source tree (or single source file) and choose how to start. Hover <span class="init-help-inline" aria-hidden="true">?</span> for details.</p>
+        <p class="modal-init-sub">Point VulnForge at a local source tree, a single file, or a public GitHub URL and choose how to start. Hover <span class="init-help-inline" aria-hidden="true">?</span> for details.</p>
       </header>
       <form id="init-form" class="init-form">
 
@@ -71,14 +71,14 @@
           <h3 class="init-section-title" id="init-sec-target">Target</h3>
           <div class="field">
             <div class="field-label-row">
-              <label class="field-label-text" for="init-target">Path</label>
-              <button type="button" class="init-help" data-tip="Read-only audit path: a source directory or single source file. Agents never write into the target — evidence and run state live under the run directory. PE binaries are not supported." aria-label="Help: Target path">?</button>
+              <label class="field-label-text" for="init-target">Path or URL</label>
+              <button type="button" class="init-help" data-tip="Read-only audit target: a local source directory, a single source file, or a public https://github.com/owner/repo URL (repo, /tree/, or /blob/). Agents never write into the target. Evidence and run state live under the run directory. PE binaries are not supported." aria-label="Help: Target">?</button>
             </div>
             <div class="path-input-row">
-              <input id="init-target" name="target" required placeholder="C:\path\to\source-repo" autocomplete="off" spellcheck="false" />
+              <input id="init-target" name="target" required placeholder="C:\path\to\source or https://github.com/owner/repo" autocomplete="off" spellcheck="false" />
               <button type="button" class="btn" id="btn-browse-target" title="Browse for folder or file">Browse...</button>
             </div>
-            <p class="controls-hint init-hint" id="init-target-hint">Source folder or single source file (source analysis only)</p>
+            <p class="controls-hint init-hint" id="init-target-hint">Local folder or file, or a public GitHub URL (repo, tree, or blob). Source analysis only.</p>
           </div>
 
           <div class="field" id="init-diff-field">

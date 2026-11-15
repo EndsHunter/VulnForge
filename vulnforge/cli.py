@@ -497,7 +497,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def add_init_arguments(init_p: argparse.ArgumentParser, *, target_required: bool = True) -> None:
     """``vf init`` flags. ``vf ci`` reuses them so CI passes the real init surface."""
-    init_p.add_argument("--target", type=Path, required=target_required, default=None)
+    init_p.add_argument(
+        "--target",
+        type=str,
+        required=target_required,
+        default=None,
+        help=(
+            "Local source file or folder, or a public "
+            "https://github.com/owner/repo URL (repo, /tree/, or /blob/)"
+        ),
+    )
     init_p.add_argument(
         "--profile",
         default=None,
@@ -692,40 +701,13 @@ def apply_init_model_validate(cfg: dict, raw: str) -> dict:
 
 
 def cmd_init(args, cfg: dict) -> int:
-    from vulnforge.util import is_pe_file
-
-    target = Path(args.target).resolve()
-    profile = str(
-        args.profile or cfg.get("run", {}).get("profile", "code_static")
-    ).strip().lower() or "code_static"
-
-    if not target.exists():
-        print(f"target not found: {target}", file=sys.stderr)
-        return EXIT_CONFIG
-
-    if is_pe_file(target):
-        print(
-            f"PE binaries are not supported (source analysis only): {target}",
-            file=sys.stderr,
-        )
-        return EXIT_CONFIG
-
-    if not target.is_dir() and not target.is_file():
-        print(f"target not found or not a directory/file: {target}", file=sys.stderr)
-        return EXIT_CONFIG
-
-    flag = getattr(args, "model_validate", None)
-    if flag is not None and str(flag).strip():
-        try:
-            cfg = apply_init_model_validate(cfg, str(flag))
-        except ValueError as e:
-            print(str(e), file=sys.stderr)
-            return EXIT_CONFIG
-
-    strategy = str(getattr(args, "strategy", None) or "discovery").strip().lower()
-    docs_path_arg = getattr(args, "docs_path", None)
-    docs_path: Optional[Path] = Path(docs_path_arg).resolve() if docs_path_arg else None
-
+    from vulnforge.audit_target import (
+        GitHubSpec,
+        TargetError,
+        github_cache_root,
+        parse_target,
+        resolve_init_target,
+    )
     from vulnforge.strategies import (
         STRATEGY_DISCOVERY,
         STRATEGY_FILE_BY_FILE,
@@ -733,6 +715,16 @@ def cmd_init(args, cfg: dict) -> int:
         VALID_STRATEGIES,
         plan_file_by_file_hunts,
     )
+    from vulnforge.util import is_pe_file
+
+    raw = args.target if isinstance(args.target, str) else str(args.target or "")
+    profile = str(
+        args.profile or cfg.get("run", {}).get("profile", "code_static")
+    ).strip().lower() or "code_static"
+
+    strategy = str(getattr(args, "strategy", None) or "discovery").strip().lower()
+    docs_path_arg = getattr(args, "docs_path", None)
+    docs_path: Optional[Path] = Path(docs_path_arg).resolve() if docs_path_arg else None
 
     if strategy not in VALID_STRATEGIES:
         print(
@@ -769,6 +761,55 @@ def cmd_init(args, cfg: dict) -> int:
             print(msg, file=sys.stderr)
             return EXIT_CONFIG
 
+    flag = getattr(args, "model_validate", None)
+    if flag is not None and str(flag).strip():
+        try:
+            cfg = apply_init_model_validate(cfg, str(flag))
+        except ValueError as e:
+            setattr(args, "init_error", str(e))
+            print(str(e), file=sys.stderr)
+            return EXIT_CONFIG
+
+    runs_root = resolve_runs_root(cfg, getattr(args, "runs_root", None))
+    try:
+        spec = parse_target(raw)
+    except TargetError as e:
+        setattr(args, "init_error", str(e))
+        print(str(e), file=sys.stderr)
+        return EXIT_CONFIG
+
+    progress = getattr(args, "progress", None)
+    if isinstance(spec, GitHubSpec) and progress is not None:
+        progress(
+            {
+                "phase": "fetch",
+                "status": "running",
+                "message": "Fetching GitHub snapshot...",
+                "target": raw,
+                "percent": 1,
+            }
+        )
+
+    try:
+        resolved = resolve_init_target(
+            raw,
+            cache_root=github_cache_root(runs_root),
+            git=getattr(args, "git_fetcher", None),
+        )
+    except TargetError as e:
+        setattr(args, "init_error", str(e))
+        print(str(e), file=sys.stderr)
+        return EXIT_CONFIG
+
+    target = resolved.path
+    setattr(args, "materialized_target", target)
+
+    if is_pe_file(target):
+        msg = f"PE binaries are not supported (source analysis only): {target}"
+        setattr(args, "init_error", msg)
+        print(msg, file=sys.stderr)
+        return EXIT_CONFIG
+
     # Diff-scoped audit (#185): validate spec + revisions before creating the run dir.
     diff_spec = str(getattr(args, "diff", None) or "").strip()
     diff_changes: Optional[dict[str, Any]] = None
@@ -787,7 +828,6 @@ def cmd_init(args, cfg: dict) -> int:
             print(str(e), file=sys.stderr)
             return EXIT_CONFIG
 
-    runs_root = resolve_runs_root(cfg, getattr(args, "runs_root", None))
     tid = target_id_from_path(target)
     rid = next_run_id(runs_root, tid)
     run_dir = runs_root / tid / rid
@@ -811,7 +851,7 @@ def cmd_init(args, cfg: dict) -> int:
             "phase": "prepare",
             "status": "running",
             "message": f"Created run dir {tid}/{rid}",
-            "target": str(target),
+            "target": raw,
             "strategy": strategy,
             "target_id": tid,
             "run_id": rid,
@@ -940,6 +980,12 @@ def cmd_init(args, cfg: dict) -> int:
         "stages": cfg.get("stages", {}),
         "packet": cfg.get("packet", {}),
         "tools": cfg.get("tools", {}),
+        "audit_target": {
+            "display": resolved.display,
+            "commit": resolved.commit_sha,
+            "focus": resolved.spec.focus if isinstance(resolved.spec, GitHubSpec) else None,
+            "subpath": "/".join(resolved.subpath),
+        },
     }
     db.insert_run(
         run_id=rid,

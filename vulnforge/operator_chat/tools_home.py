@@ -258,12 +258,16 @@ def schemas() -> list[dict]:
         ),
         openai_tool(
             "init_run",
-            "Create a new audit run for a source directory or single source file "
-            "(confirm required). Source-code analysis only (code_static). Optional start Ralph.",
+            "Create a new audit run for a local source file or folder, or a public "
+            "GitHub URL (confirm required). Source-code analysis only (code_static). "
+            "Optional start Ralph.",
             {
                 "target": {
                     "type": "string",
-                    "description": "Absolute path to source codebase directory or source file",
+                    "description": (
+                        "Absolute local source path, or public "
+                        "https://github.com/owner/repo URL (repo, tree, or blob)"
+                    ),
                 },
                 "strategy": {
                     "type": "string",
@@ -413,30 +417,37 @@ def _ids(run: RunRef) -> dict[str, str]:
 
 def _init_run(args: dict, *, runs_root: Path, project_root: Path) -> dict[str, Any]:
     """Synchronous init for chat confirm path (blocking)."""
+    from vulnforge.audit_target import GitHubSpec, TargetError, parse_target
     from vulnforge.cli import cmd_init, load_config
-
     from vulnforge.util import is_pe_file
 
-    target = Path(str(args.get("target") or ""))
-    if not target.exists():
-        return {"ok": False, "error": f"target not found: {target}"}
+    raw = str(args.get("target") or "")
+    try:
+        spec = parse_target(raw)
+    except TargetError as e:
+        return {"ok": False, "error": str(e)}
+
     profile = str(args.get("profile") or "code_static").strip().lower() or "code_static"
-    if is_pe_file(target):
-        return {
-            "ok": False,
-            "error": f"PE binaries are not supported (source analysis only): {target}",
-        }
-    if not target.is_dir() and not target.is_file():
-        return {
-            "ok": False,
-            "error": f"target must be a directory or a single file: {target}",
-        }
+    if not isinstance(spec, GitHubSpec):
+        target = Path(raw).expanduser()
+        if not target.exists():
+            return {"ok": False, "error": f"target not found: {target}"}
+        if is_pe_file(target):
+            return {
+                "ok": False,
+                "error": f"PE binaries are not supported (source analysis only): {target}",
+            }
+        if not target.is_dir() and not target.is_file():
+            return {
+                "ok": False,
+                "error": f"target must be a directory or a single file: {target}",
+            }
 
     class Args:
         pass
 
     a = Args()
-    a.target = target
+    a.target = raw
     a.profile = profile
     a.runs_root = runs_root
     a.strategy = str(args.get("strategy") or "discovery").strip().lower()
@@ -464,11 +475,14 @@ def _init_run(args: dict, *, runs_root: Path, project_root: Path) -> dict[str, A
     # Discover run that matches this target path (never pick an unrelated newest run).
     from vulnforge.ui.store import discover_runs
 
+    materialized = getattr(a, "materialized_target", None)
+    if materialized is None:
+        return {"ok": False, "error": "init did not materialize a target"}
     chosen: Optional[RunRef] = None
     try:
-        target_resolved = target.resolve()
+        target_resolved = Path(materialized).resolve()
     except OSError:
-        target_resolved = target
+        target_resolved = Path(materialized)
     for r in discover_runs(runs_root)[:30]:
         try:
             from vulnforge.operator_chat.tools_common import _open_db
